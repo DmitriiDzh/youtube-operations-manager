@@ -7,6 +7,7 @@ import { ceil4 } from "@/lib/shared-money";
 import {
   DEFAULT_ELEVENLABS_SETTINGS,
   DomainError,
+  ELEVENLABS_ACCOUNT_REFRESH,
   ELEVENLABS_ACTIVE_STATUSES,
   ELEVENLABS_DEFAULT_MODEL,
   ELEVENLABS_DESIGN_MODEL,
@@ -18,6 +19,7 @@ import {
   elevenlabsJobNotFound,
   isDomainError,
   ownEntry,
+  type ElevenlabsAccountSnapshot,
   type ElevenlabsCostBasis,
   type ElevenlabsDesignParams,
   type ElevenlabsJobOutput,
@@ -25,6 +27,7 @@ import {
   type ElevenlabsJobView,
   type ElevenlabsKeyView,
   type ElevenlabsLimitName,
+  type ElevenlabsMonthlyLimit,
   type ElevenlabsRefusal,
   type ElevenlabsSettings,
   type ElevenlabsSpeechParams,
@@ -41,6 +44,9 @@ import { checkJobRules, createJobInputSchema, designVoiceInputSchema, getJobsInp
 export type ElevenlabsStore = {
   getSettingsJson(): Promise<string | null>;
   setSettingsJson(json: string): Promise<void>;
+  /** BL-250: the stored account snapshot (JSON) or null; set null to drop it. */
+  getAccountJson(): Promise<string | null>;
+  setAccountJson(json: string | null): Promise<void>;
   insertJob(row: StoredElevenlabsSpeechJob): Promise<boolean>;
   getJob(jobId: string): Promise<StoredElevenlabsSpeechJob | null>;
   getJobByRequest(createdBy: string, requestId: string): Promise<StoredElevenlabsSpeechJob | null>;
@@ -205,15 +211,97 @@ export function createElevenlabsSpeechServices(deps: ElevenlabsSpeechDeps) {
     return (await readApiKeyWithVersion())?.value ?? null;
   }
 
-  /** One free subscription read: a refused key throws; an account out of characters is accepted with that status. */
+  /** One free subscription read: a refused key throws; an account out of characters is accepted with that status. BL-250: the
+   * answer is stored as the account snapshot of that key (a key check reads it anyway). */
   async function checkKey(apiKey: string): Promise<"ok" | "payment_required"> {
     try {
-      await deps.api.getSubscription(apiKey);
+      const sub = await deps.api.getSubscription(apiKey);
+      await storeSnapshot(sub, elevenlabsKeyFingerprint(apiKey));
       return "ok";
     } catch (error) {
       if (isDomainError(error) && error.code === "elevenlabs_payment_required") return "payment_required";
       throw error;
     }
+  }
+
+  // ---- BL-250 (owner msgs 4203/4205/4207): the account's monthly threshold, read from ElevenLabs and stored here.
+  async function storeSnapshot(sub: { tier: string | null; characterCount: number | null; characterLimit: number | null; nextResetAt: string | null }, keyFingerprint: string): Promise<ElevenlabsAccountSnapshot | null> {
+    if (sub.characterLimit === null || !(sub.characterLimit > 0)) return null; // never store a missing limit
+    const snapshot: ElevenlabsAccountSnapshot = { tier: sub.tier, characterLimit: sub.characterLimit, characterCount: Math.max(0, sub.characterCount ?? 0), nextResetAt: sub.nextResetAt, readAt: now().toISOString(), keyFingerprint };
+    await deps.store.setAccountJson(JSON.stringify(snapshot));
+    return snapshot;
+  }
+
+  /** The stored snapshot when it belongs to the key stored now; null otherwise (never read, other key, no key). */
+  async function accountSnapshot(): Promise<ElevenlabsAccountSnapshot | null> {
+    const stored = parseJson<ElevenlabsAccountSnapshot | null>(await deps.store.getAccountJson(), null);
+    if (!stored || typeof stored.characterLimit !== "number" || !(stored.characterLimit > 0) || typeof stored.readAt !== "string") return null;
+    const fingerprint = await keyFingerprint();
+    return fingerprint !== null && stored.keyFingerprint === fingerprint ? stored : null;
+  }
+
+  /**
+   * Reads the account (free) and stores it. Returns the new snapshot, or `{ errorCode }` when it could not be read (the stored one is
+   * kept: "work from the last saved value", msg 4206). Never throws.
+   */
+  async function refreshAccount(): Promise<ElevenlabsAccountSnapshot | { errorCode: string }> {
+    try {
+      if (!(await deps.isGatewayEnabled())) return { errorCode: "media_gateway_disabled" };
+      const read = await readApiKeyWithVersion();
+      if (!read) return { errorCode: "elevenlabs_key_missing" };
+      const sub = await deps.api.getSubscription(read.value);
+      const fingerprint = elevenlabsKeyFingerprint(read.value);
+      return (await storeSnapshot(sub, fingerprint)) ?? { errorCode: "elevenlabs_no_character_limit" };
+    } catch (error) {
+      deps.log?.(`[elevenlabs-speech] the account's characters could not be read, the stored threshold stays: ${error instanceof Error ? error.message : String(error)}`);
+      return { errorCode: isDomainError(error) ? error.code : "elevenlabs_unavailable" };
+    }
+  }
+
+  function pastReset(snapshot: ElevenlabsAccountSnapshot, at: Date): boolean {
+    return snapshot.nextResetAt !== null && at.getTime() >= Date.parse(snapshot.nextResetAt);
+  }
+
+  /** Automatic reads happen only with the switch on, a key stored and the gateway on (contracts.ts header). */
+  async function mayReadAutomatically(settings: ElevenlabsSettings): Promise<boolean> {
+    return settings.enabled && (await deps.secret.state()) === "set" && (await deps.isGatewayEnabled());
+  }
+
+  /** Before a take or a design: a fresh read when the snapshot is missing, older than 10 minutes or past its reset date. */
+  async function ensureFreshAccount(settings: ElevenlabsSettings): Promise<void> {
+    if (!(await mayReadAutomatically(settings))) return;
+    const snapshot = await accountSnapshot();
+    const at = now();
+    if (snapshot && !pastReset(snapshot, at) && at.getTime() - Date.parse(snapshot.readAt) < ELEVENLABS_ACCOUNT_REFRESH.beforeJobMaxAgeMs) return;
+    await refreshAccount();
+  }
+
+  /** This computer's characters not yet in the account's count: active jobs plus finished ones submitted after `since`. */
+  async function localSince(since: Date, at: Date): Promise<number> {
+    const rows = await deps.store.listJobs({ createdSince: new Date(Math.min(since.getTime(), at.getTime()) - ELEVENLABS_ACCOUNT_REFRESH.jobLookbackMs), limit: 100_000 });
+    const active = await deps.store.listJobs({ statuses: ELEVENLABS_ACTIVE_STATUSES, limit: 100_000 });
+    const seen = new Set<string>();
+    let sum = 0;
+    for (const row of [...active, ...rows]) {
+      if (seen.has(row.jobId)) continue;
+      seen.add(row.jobId);
+      const isActive = (ELEVENLABS_ACTIVE_STATUSES as readonly string[]).includes(row.status);
+      if (isActive || (row.submittedAt && row.submittedAt.getTime() > since.getTime())) sum += countedChars(row);
+    }
+    return sum;
+  }
+
+  /** The monthly check's threshold and use (the plan's three states A / B / C). */
+  async function monthlyLimit(settings: ElevenlabsSettings, current: ElevenlabsUsage, at: Date = now()): Promise<ElevenlabsMonthlyLimit> {
+    const snapshot = await accountSnapshot();
+    if (!snapshot) {
+      const otherMonth = current.account.monthChars - current.monthChars;
+      return { source: "settings", limitChars: settings.maxCharsPerMonth, usedChars: current.account.monthChars, resetAt: null, ...(otherMonth > 0 ? { otherComputersChars: otherMonth } : {}) };
+    }
+    if (pastReset(snapshot, at)) {
+      return { source: "elevenlabs_account", limitChars: snapshot.characterLimit, usedChars: await localSince(new Date(snapshot.nextResetAt!), at), resetAt: null };
+    }
+    return { source: "elevenlabs_account", limitChars: snapshot.characterLimit, usedChars: snapshot.characterCount + (await localSince(new Date(snapshot.readAt), at)), resetAt: snapshot.nextResetAt };
   }
 
   // BL-236 (owner msg 3823): the stored key's fingerprint, recomputed only when the stored key changes (its version).
@@ -279,17 +367,23 @@ export function createElevenlabsSpeechServices(deps: ElevenlabsSpeechDeps) {
     };
   }
 
-  function limitRefusal(settings: ElevenlabsSettings, current: ElevenlabsUsage, chars: number): ElevenlabsRefusal | null {
+  function limitRefusal(settings: ElevenlabsSettings, current: ElevenlabsUsage, chars: number, monthly: ElevenlabsMonthlyLimit): ElevenlabsRefusal | null {
     const refuse = (limit: ElevenlabsLimitName, message: string, details: Record<string, unknown>): ElevenlabsRefusal => ({ code: "elevenlabs_limit_exceeded", message, details: { limit, ...details, chars } });
     if (chars > settings.maxCharsPerJob) return refuse("per_job", `The take is ${chars} characters, over the per-job limit of ${settings.maxCharsPerJob}.`, { limitChars: settings.maxCharsPerJob });
     // BL-236 (owner msg 3823): the daily and monthly limits hold for the key -- every computer on it -- not for this computer alone.
     const today = current.account.todayChars;
-    const month = current.account.monthChars;
     const otherToday = today - current.todayChars;
-    const otherMonth = month - current.monthChars;
     const elsewhere = (n: number) => (n > 0 ? ` (${n} of them on your other computers)` : "");
     if (today + chars > settings.maxCharsPerDay) return refuse("per_day", `${today} characters used or reserved today${elsewhere(otherToday)} + ${chars} is over the daily limit of ${settings.maxCharsPerDay}.`, { limitChars: settings.maxCharsPerDay, usedChars: today, ...(otherToday > 0 ? { otherComputersChars: otherToday } : {}) });
-    if (month + chars > settings.maxCharsPerMonth) return refuse("per_month", `${month} characters used or reserved this month${elsewhere(otherMonth)} + ${chars} is over the monthly limit of ${settings.maxCharsPerMonth}.`, { limitChars: settings.maxCharsPerMonth, usedChars: month, ...(otherMonth > 0 ? { otherComputersChars: otherMonth } : {}) });
+    // BL-250: the month against the ElevenLabs account's own threshold when one is stored for this key, else the owner's number.
+    if (monthly.usedChars + chars > monthly.limitChars) {
+      const extra = { limitChars: monthly.limitChars, usedChars: monthly.usedChars, source: monthly.source, resetAt: monthly.resetAt, ...(monthly.otherComputersChars ? { otherComputersChars: monthly.otherComputersChars } : {}) };
+      const message =
+        monthly.source === "elevenlabs_account"
+          ? `${monthly.usedChars} of the ElevenLabs account's ${monthly.limitChars} monthly characters are used or reserved + ${chars} is over it${monthly.resetAt ? ` (resets ${monthly.resetAt})` : ""}.`
+          : `${monthly.usedChars} characters used or reserved this month${elsewhere(monthly.otherComputersChars ?? 0)} + ${chars} is over the monthly limit of ${monthly.limitChars}.`;
+      return refuse("per_month", message, extra);
+    }
     if (current.activeJobs + 1 > settings.maxActiveJobs) return refuse("active_jobs", `${current.activeJobs} ElevenLabs jobs are already queued or running (limit ${settings.maxActiveJobs}).`, { maxActiveJobs: settings.maxActiveJobs, activeJobs: current.activeJobs });
     return null;
   }
@@ -310,6 +404,8 @@ export function createElevenlabsSpeechServices(deps: ElevenlabsSpeechDeps) {
     readApiKey,
     getSettings,
     usage,
+    accountSnapshot,
+    monthlyLimit,
     localUsage,
     keyFingerprint,
 
@@ -335,8 +431,27 @@ export function createElevenlabsSpeechServices(deps: ElevenlabsSpeechDeps) {
 
     async clearKey(): Promise<ElevenlabsKeyView> {
       await deps.secret.clear();
+      await deps.store.setAccountJson(null); // BL-250: the account's threshold belonged to that key
       return keyView();
     },
+
+    /**
+     * BL-250: the loop's account read -- once at server start, and once right after the stored reset date; only with the switch on, a
+     * key stored and the gateway on (msg 4207: no periodic background read).
+     */
+    async accountTick(state: { startedRead: boolean }): Promise<{ read: boolean; startedRead: boolean }> {
+      const settings = await getSettings();
+      if (!(await mayReadAutomatically(settings))) return { read: false, startedRead: state.startedRead };
+      const snapshot = await accountSnapshot();
+      const at = now();
+      const due = !state.startedRead || !snapshot || (pastReset(snapshot, at) && Date.parse(snapshot.readAt) < Date.parse(snapshot.nextResetAt!));
+      if (!due) return { read: false, startedRead: true };
+      await refreshAccount();
+      return { read: true, startedRead: true };
+    },
+
+    /** BL-250: the owner's «Обновить» (any switch state: the owner's own free read). */
+    refreshAccount,
 
     async updateSettings(raw: unknown): Promise<ElevenlabsSettings> {
       const patch = parseWithSchema(updateSettingsInputSchema, raw, "ElevenLabs settings");
@@ -355,13 +470,12 @@ export function createElevenlabsSpeechServices(deps: ElevenlabsSpeechDeps) {
       const { enabled, outputFormat, ...limits } = settings;
       let subscription: Record<string, unknown> | null = null;
       if (options.subscription && key.configured && gatewayEnabled) {
-        try {
-          const apiKey = await readApiKey();
-          subscription = apiKey ? { ...(await deps.api.getSubscription(apiKey)) } : null;
-        } catch (error) {
-          subscription = { errorCode: isDomainError(error) ? error.code : "elevenlabs_unavailable" };
-        }
+        // BL-250: the owner's «Обновить»: read, store, and show the same numbers as before.
+        const read = await refreshAccount();
+        subscription = "errorCode" in read ? { errorCode: read.errorCode } : { tier: read.tier, characterCount: read.characterCount, characterLimit: read.characterLimit, nextResetAt: read.nextResetAt };
       }
+      const accountLimit = await accountSnapshot();
+      const monthly = await monthlyLimit(settings, current);
       return {
         units: "characters",
         enabled,
@@ -373,6 +487,9 @@ export function createElevenlabsSpeechServices(deps: ElevenlabsSpeechDeps) {
         outputFormat,
         outputFormats: [...ELEVENLABS_OUTPUT_FORMATS],
         usage: current,
+        // BL-250: the stored account threshold (no ElevenLabs call here) and what the monthly check uses now.
+        accountLimit: accountLimit ? { tier: accountLimit.tier, characterLimit: accountLimit.characterLimit, characterCount: accountLimit.characterCount, nextResetAt: accountLimit.nextResetAt, readAt: accountLimit.readAt } : null,
+        monthlyLimit: monthly,
         ...(options.subscription ? { subscription } : {}),
         pricesAsOf: ELEVENLABS_PRICES_AS_OF,
         defaultModel: ELEVENLABS_DEFAULT_MODEL,
@@ -385,6 +502,7 @@ export function createElevenlabsSpeechServices(deps: ElevenlabsSpeechDeps) {
     async createJob(raw: unknown, actor: string) {
       const input = parseWithSchema(createJobInputSchema, raw, "ElevenLabs speech job");
       const model = input.model ?? ELEVENLABS_DEFAULT_MODEL;
+      await ensureFreshAccount(await getSettings()); // BL-250: outside the lock, so a slow ElevenLabs never blocks creation
       return deps.withCreateLock(async () => {
         const settings = await getSettings();
         const outputFormat = input.outputFormat ?? settings.outputFormat;
@@ -415,7 +533,7 @@ export function createElevenlabsSpeechServices(deps: ElevenlabsSpeechDeps) {
         const chars = charCount(input.text);
         const estimateUsd = listPriceUsd(model, chars);
         const current = await usage();
-        const refusal = precondition ?? voiceRefusal ?? limitRefusal(settings, current, chars);
+        const refusal = precondition ?? voiceRefusal ?? limitRefusal(settings, current, chars, await monthlyLimit(settings, current));
         if (input.dryRun) return { dryRun: true, chars, estimateUsd, allowed: refusal === null, refusal, usage: current };
         if (refusal) throw new DomainError({ code: refusal.code, message: refusal.message, details: refusal.details });
         const at = now();
@@ -460,13 +578,15 @@ export function createElevenlabsSpeechServices(deps: ElevenlabsSpeechDeps) {
       const input = parseWithSchema(designVoiceInputSchema, raw, "ElevenLabs voice design");
       const previewText = input.previewText ?? ELEVENLABS_LIMITS.defaultPreviewText;
       const count = input.count ?? ELEVENLABS_LIMITS.maxPreviews;
+      await ensureFreshAccount(await getSettings()); // BL-250
       const row = await deps.withCreateLock(async () => {
         const settings = await getSettings();
         const precondition = await preconditions(settings);
         if (precondition) throw new DomainError({ code: precondition.code, message: precondition.message });
         await connected(input.channelId);
         const chars = charCount(previewText);
-        const refusal = limitRefusal(settings, await usage(), chars);
+        const current = await usage();
+        const refusal = limitRefusal(settings, current, chars, await monthlyLimit(settings, current));
         if (refusal) throw new DomainError({ code: refusal.code, message: refusal.message, details: refusal.details });
         const at = now();
         const params: ElevenlabsDesignParams = { description: input.description, previewText, previews: count };

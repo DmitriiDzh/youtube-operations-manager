@@ -26,6 +26,9 @@ type Status = {
   outputFormats: string[];
   usage: { todayChars: number; monthChars: number; activeJobs: number; monthUsd: number; account?: { todayChars: number; monthChars: number; monthUsd: number; keyKnown: boolean; otherComputers: unknown[] } };
   subscription?: { tier?: string | null; characterCount?: number | null; characterLimit?: number | null; errorCode?: string } | null;
+  // BL-250 (owner msgs 4203/4205): the account's monthly limit as stored here, and what the monthly check uses now.
+  accountLimit?: { tier: string | null; characterLimit: number; characterCount: number; nextResetAt: string | null; readAt: string } | null;
+  monthlyLimit?: { source: "elevenlabs_account" | "settings"; limitChars: number; usedChars: number; resetAt: string | null };
 };
 
 const LIMIT_FIELDS = ["maxCharsPerJob", "maxCharsPerDay", "maxCharsPerMonth", "maxActiveJobs"] as const;
@@ -241,11 +244,14 @@ function SpeechCard({ status, onChanged, onSubscription }: { status: Status; onC
   const labels: Record<LimitField, string> = {
     maxCharsPerJob: t("speech.el.limits.perJob"),
     maxCharsPerDay: t("speech.el.limits.perDay"),
-    maxCharsPerMonth: t("speech.el.limits.perMonth"),
+    maxCharsPerMonth: status.monthlyLimit?.source === "elevenlabs_account" ? t("speech.el.limits.perMonthFallback") : t("speech.el.limits.perMonth"),
     maxActiveJobs: t("speech.el.limits.activeJobs"),
   };
   const numbers = new Intl.NumberFormat(t.language);
   const sub = status.subscription;
+  const account = status.accountLimit ?? null;
+  const dates = new Intl.DateTimeFormat(t.language, { dateStyle: "medium", timeStyle: "short" });
+  const when = (iso: string | null) => (iso ? dates.format(new Date(iso)) : t("speech.el.account.noReset"));
 
   return (
     <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
@@ -304,15 +310,24 @@ function SpeechCard({ status, onChanged, onSubscription }: { status: Status; onC
       {(status.usage.account?.otherComputers.length ?? 0) > 0 && (
         <p className="text-xs text-zinc-500">{t("speech.el.usageThisComputer", { today: numbers.format(status.usage.todayChars), month: numbers.format(status.usage.monthChars) })}</p>
       )}
-      {sub && sub.errorCode ? (
-        <p className="text-xs text-amber-400">{t("speech.el.subscriptionUnavailable", { code: sub.errorCode })}</p>
-      ) : sub && sub.characterLimit != null ? (
-        <p className="text-sm text-zinc-300">{t("speech.el.subscription", { used: numbers.format(sub.characterCount ?? 0), limit: numbers.format(sub.characterLimit), tier: sub.tier ?? "?" })}</p>
-      ) : status.keyConfigured && status.gatewayEnabled ? (
+      {/* BL-250: the monthly limit is the ElevenLabs account's own, read and stored here; the owner's number is the fallback. */}
+      {account ? (
+        <div className="space-y-1">
+          <p className="text-sm text-zinc-300">{t("speech.el.account.limit", { limit: numbers.format(account.characterLimit), tier: account.tier ?? "?", used: numbers.format(account.characterCount), reset: when(account.nextResetAt) })}</p>
+          <p className="text-xs text-zinc-500">{t("speech.el.account.readAt", { at: when(account.readAt) })}</p>
+        </div>
+      ) : (
+        <p className="text-xs text-zinc-500">{t("speech.el.account.none")}</p>
+      )}
+      {status.monthlyLimit && (
+        <p className="text-sm text-zinc-300">{t("speech.el.account.check", { used: numbers.format(status.monthlyLimit.usedChars), limit: numbers.format(status.monthlyLimit.limitChars) })}</p>
+      )}
+      {sub && sub.errorCode && <p className="text-xs text-amber-400">{t("speech.el.subscriptionUnavailable", { code: sub.errorCode })}</p>}
+      {status.keyConfigured && status.gatewayEnabled && (
         <button onClick={() => void onSubscription()} disabled={busy} className={buttonClass}>
-          {t("speech.el.subscriptionLoad")}
+          {t("speech.el.account.refresh")}
         </button>
-      ) : null}
+      )}
       {error && <p className="text-xs text-red-400">{error}</p>}
       {notice && <p className="text-xs text-emerald-400">{notice}</p>}
     </div>

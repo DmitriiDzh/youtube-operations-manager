@@ -163,6 +163,15 @@ function buildCore() {
     getSettingsSyncStatus: () => settingsSync.status(),
     peekSettingsSync: () => settingsSync.peek(),
     publishSpendShare,
+    /** BL-250: the loop's account read (at start, after the reset date; switch on only). The state lives with the one core. */
+    accountTick: (() => {
+      const state = { startedRead: false };
+      return async () => {
+        const result = await services.accountTick(state);
+        state.startedRead = result.startedRead;
+        return result;
+      };
+    })(),
     worker: createElevenlabsWorker(deps),
   };
 }

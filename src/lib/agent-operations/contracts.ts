@@ -115,7 +115,10 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // 4.17.0 (BL-243, ADR 0063): agent_get_publishing_calendar -- the package state deleted_on_youtube, items' existsOnChannel /
 // checkedAt / removedAt, missingOnChannel; channel_video_list videoIds with removed / notFound; the plan tools' statusCode
 // video_deleted_on_youtube and agent_video_list's existsOnChannel / removedAt (factory 1.43.0). Additive.
-export const AGENT_API_VERSION = "4.17.0";
+// 4.18.0 (BL-250, ADR 0057 amendment 1): agent_speech_get_status as factory_speech_get_status 1.44.0 -- elevenlabs.accountLimit (the
+// account's subscription as last read on the computer) and monthlyLimit { source, limitChars, usedChars, resetAt }; a per_month
+// elevenlabs_limit_exceeded adds source and resetAt. Additive.
+export const AGENT_API_VERSION = "4.18.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry
