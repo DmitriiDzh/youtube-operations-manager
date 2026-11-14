@@ -47,3 +47,5 @@ On this Mac with Tailscale 1.104.7, the branch's production build on port 3100 (
 switch on → MCP, keys, agent tokens, handoff 403 Mac-only, no / foreign Origin 403, the login page 200, a wrong password refused,
 the right one pinned the Tailscale login, 5 wrong passwords locked even the right one. HTTPS needs "HTTPS Certificates" enabled
 in the tailnet's DNS settings (the owner's admin console) before `remote-access.sh enable`.
+
+**Amendment 1 (2026-11-14, owner msg 4236).** The app shell reads four status routes on every page; a phone session may `GET` `/api/operation-lock`, `/api/device-sync/status`, `/api/device-sync/divergence` and `/api/cloud-connection/status` (only with a current remote session; operation-lock has no session check of its own). Every other method on those routes, and everything else in the Mac-only list, stays refused.

@@ -109,6 +109,11 @@ const REMOTE_BLOCKED_PREFIXES = [
   "/api/channel-connections/disconnect",
 ];
 
+// Status reads the app shell makes on every page (owner, Windows over Tailscale, msg 4236: «Не удалось прочитать состояние
+// блокировки (HTTP 403)»). Only GET, only with a current phone session; every action on these routes stays Mac-only.
+const REMOTE_STATUS_READS = new Set(["/api/operation-lock", "/api/device-sync/status", "/api/device-sync/divergence",
+  "/api/cloud-connection/status"]);
+
 function blocked(status: number, code: string, message: string, api: boolean) {
   return api ? NextResponse.json({ error: code, message }, { status }) : new NextResponse(message, { status, headers: { "content-type": "text/plain; charset=utf-8" } });
 }
@@ -120,8 +125,9 @@ async function remoteGate(request: NextRequest): Promise<NextResponse | null> {
   const remote = getRemoteAccess();
   const state = await remote.state();
   if (!state.enabled) return blocked(403, "remote_access_disabled", "Access from other devices is turned off on the Mac.", api);
-  const isMacOnly = REMOTE_BLOCKED_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`)) ||
-    (pathname === "/api/remote-access" && request.method !== "GET");
+  const statusRead = request.method === "GET" && REMOTE_STATUS_READS.has(pathname);
+  const isMacOnly = !statusRead && (REMOTE_BLOCKED_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`)) ||
+    (pathname === "/api/remote-access" && request.method !== "GET"));
   if (isMacOnly) return blocked(403, "remote_access_mac_only", "This works only on the Mac itself.", api);
   if (MUTATING_METHODS.has(request.method) && !isSameOriginMutation(request.headers)) {
     return blocked(403, "remote_access_bad_origin", "Refused: the request did not come from this app's own page.", api);
@@ -129,6 +135,8 @@ async function remoteGate(request: NextRequest): Promise<NextResponse | null> {
   // A phone session must still be current: the same epoch (password change / switch-off end it) and the pinned Tailscale login.
   const { getToken } = await import("next-auth/jwt");
   const token = await getToken({ req: request, secret: process.env.NEXTAUTH_SECRET }).catch(() => null);
+  // operation-lock's GET has no session check of its own (it must answer while the database is down): a phone needs one here
+  if (statusRead && !token) return blocked(401, "unauthorized", "Sign in with the password.", true);
   if (token) {
     const login = request.headers.get("tailscale-user-login");
     const valid = token.remote === true && (await remote.sessionValid(token.remoteEpoch, login));

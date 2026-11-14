@@ -579,3 +579,29 @@ test("AC-RA-6: a phone session works only with the current epoch; a stale one is
     else process.env.NEXTAUTH_SECRET = previous;
   }
 });
+
+test("BL-251 (msg 4236): the shell's status reads work from a phone session; their actions stay Mac-only", async () => {
+  const ra = await remoteOn(true);
+  const { encode } = await import("next-auth/jwt");
+  const previous = process.env.NEXTAUTH_SECRET;
+  process.env.NEXTAUTH_SECRET = "test-secret-remote-access";
+  try {
+    const { epoch } = await ra.verifyPassword("correct horse", "owner@example.com");
+    const good = `next-auth.session-token=${await encode({ token: { sub: "u1", remote: true, remoteEpoch: epoch }, secret: "test-secret-remote-access" })}`;
+    const origin = { origin: "https://mac.tail1234.ts.net", cookie: good };
+    for (const p of ["/api/operation-lock", "/api/device-sync/status", "/api/device-sync/divergence", "/api/cloud-connection/status"]) {
+      assert.equal((await proxy(remoteReq("GET", p, { cookie: good }))).status, 200, p);
+      assert.equal((await proxy(remoteReq("GET", p))).status, 401, `${p} without a session`);
+    }
+    for (const [m, p] of [["POST", "/api/operation-lock"], ["DELETE", "/api/operation-lock"], ["POST", "/api/device-sync/sync-now"],
+      ["POST", "/api/device-sync/resolve"], ["GET", "/api/cloud-connection/start"], ["POST", "/api/cloud-connection/disconnect"],
+      ["GET", "/api/agent-tokens"]]) {
+      const r = await proxy(remoteReq(m, p, origin));
+      assert.equal(r.status, 403, `${m} ${p}`);
+      assert.equal((await r.json()).error, "remote_access_mac_only", `${m} ${p}`);
+    }
+  } finally {
+    if (previous === undefined) delete process.env.NEXTAUTH_SECRET;
+    else process.env.NEXTAUTH_SECRET = previous;
+  }
+});
