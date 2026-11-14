@@ -248,3 +248,21 @@ test("AC-XP-6: a lost answer to Facebook's finish or Instagram's publish keeps t
   assert.deepEqual(ig.calls.filter((c) => c.startsWith("ig.")), ["ig.status"]);
   assert.equal(ig.jobs.get(IG)!.status, "published");
 });
+
+test("AC-XP-16: a network at its 24 h limit waits -- no job, nothing sent -- while the other posts", async () => {
+  const jobs = new Map<string, SocialJob>();
+  const calls: string[] = [];
+  const runner = createCrossPostRunner({
+    plan: { entries: async () => [entry()], stillApproved: async () => true },
+    jobs: { get: async (id) => jobs.get(id) ?? null, listActive: async () => [], insert: async (j) => (jobs.has(j.jobId) ? false : (jobs.set(j.jobId, j), true)), update: async (id, set) => void jobs.set(id, { ...jobs.get(id)!, ...set }) },
+    postingTarget: async () => ({ token: "PT", pageId: "P1", igUserId: "IG1" }),
+    meta: new Proxy({}, { get: (_t, name) => async () => (calls.push(String(name)), { containerId: "C", videoId: "V", uploadUrl: "https://rupload.facebook.com/x" }) }) as RunnerDeps["meta"],
+    files: { body: (_p, size) => ({ stream: () => new Blob(["x"]).stream(), sizeBytes: size }), sha256: async () => "f".repeat(64) },
+    enabled: async () => true,
+    now: () => T0,
+    quotaOk: async (_c, network) => network === "facebook",
+  });
+  await runner.tick();
+  assert.deepEqual([...jobs.keys()], [FB]);
+  assert.ok(!calls.some((c) => c.startsWith("ig")));
+});

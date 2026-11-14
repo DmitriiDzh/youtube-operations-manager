@@ -401,6 +401,18 @@ async function startServerSession() {
   const syncTemplatesQuietly = () => void media.syncTemplatesFromRegistry({ trigger: "auto", onlyIfChanged: true }).catch(() => undefined);
   setTimeout(syncTemplatesQuietly, 20_000).unref();
   setInterval(syncTemplatesQuietly, 60_000).unref();
+  // BL-252 stage 2 (ADR 0068 amendment 1): the cross-posting runner, once a minute. It does nothing while this computer's switch
+  // «Публикация в соцсети» is off (the default); its own failures never touch the rest of the server (AGENTS.md §M).
+  const crossPostQuietly = async () => {
+    try {
+      const { getCrossPostRunner } = await import("@/composition/cross-posting-runner");
+      await getCrossPostRunner().tick();
+    } catch (error) {
+      console.warn(`[cross-posting] tick failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+  setTimeout(() => void crossPostQuietly(), 45_000).unref();
+  setInterval(() => void crossPostQuietly(), 60_000).unref();
   const MEDIA_WATCH_MIN_MS = 15_000;
   const mediaWatchLoop = async () => {
     await mediaBootSweep; // never rejects; already settled on every tick but the first

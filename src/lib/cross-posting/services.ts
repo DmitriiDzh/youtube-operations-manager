@@ -2,6 +2,8 @@ import type { DeviceSecretSlot } from "@/lib/device-secrets";
 import type { EncryptedPayload } from "@/lib/shared-crypto";
 import type { MetaClient, MetaPage } from "@/lib/social-gateway";
 import { CONNECT_STATE_TTL_MS, DomainError, META_POSTING_SCOPES, type AccountCheck, type AccountCheckProblem, PENDING_PICK_TTL_MS, notConfigured, type MetaAppStatus, type PendingPageView, type SocialAccountRow, type SocialAccountView, type SocialNetwork } from "./contracts";
+import type { SocialJob } from "./runner";
+import { FACEBOOK_REEL, INSTAGRAM_REEL } from "./limits";
 import { disconnectInputSchema, parseWithSchema, selectPageInputSchema, setMetaAppInputSchema, startConnectInputSchema } from "./schemas";
 
 // ---------------------------------------------------------------------------
@@ -22,11 +24,17 @@ export type CrossPostingStore = {
   remove(channelId: string, network: SocialNetwork | null): Promise<number>;
 };
 
+export type PostingSettings = { enabled: boolean };
+
 export type CrossPostingDeps = {
   store: CrossPostingStore;
   appSecret: Pick<DeviceSecretSlot, "read" | "write" | "clear" | "info">;
   sealer: { seal(plaintext: string): Promise<EncryptedPayload | null>; open(payload: EncryptedPayload): Promise<string | null> };
-  meta: Pick<MetaClient, "authorizeUrl" | "exchangeCode" | "listPages" | "inspectPageToken">;
+  meta: Pick<MetaClient, "authorizeUrl" | "exchangeCode" | "listPages" | "inspectPageToken"> & Partial<Pick<MetaClient, "igPublishingUsage">>;
+  /** This computer's switch «Публикация в соцсети» (app_settings JSON; off by default). */
+  settings?: { read(): Promise<string | null>; write(json: string): Promise<void> };
+  /** This computer's cross-posting jobs (for the screen, retries and the Facebook 24 h count). */
+  jobs?: { list(channelId: string | null): Promise<SocialJob[]>; get(jobId: string): Promise<SocialJob | null>; remove(jobId: string): Promise<void> };
   now: () => number;
   randomId: () => string;
 };
@@ -76,7 +84,7 @@ export function createCrossPostingServices(deps: CrossPostingDeps) {
     if (!(await deps.store.channelExists(channelId))) throw new DomainError({ code: "not_found", message: `Channel ${channelId} is not connected here.`, details: { channelId } });
   }
 
-  return {
+  const api = {
     async getMetaApp(): Promise<MetaAppStatus> {
       const info = await deps.appSecret.info();
       return { configured: Boolean(info), appId: info?.hints.appId ?? null };
@@ -181,6 +189,68 @@ export function createCrossPostingServices(deps: CrossPostingDeps) {
       };
     },
 
+    async getPostingSettings(): Promise<PostingSettings> {
+      const raw = deps.settings ? await deps.settings.read() : null;
+      try {
+        return { enabled: raw ? (JSON.parse(raw) as { enabled?: unknown }).enabled === true : false };
+      } catch {
+        return { enabled: false };
+      }
+    },
+
+    async setPostingSettings(raw: unknown): Promise<PostingSettings> {
+      const enabled = (raw as { enabled?: unknown } | null)?.enabled;
+      if (typeof enabled !== "boolean") throw new DomainError({ code: "validation_failed", message: "enabled must be true or false" });
+      if (!deps.settings) throw new DomainError({ code: "social_not_configured", message: "The posting switch is not available here." });
+      await deps.settings.write(JSON.stringify({ enabled }));
+      return { enabled };
+    },
+
+    /**
+     * The runner's port (AC-XP-8): the channel's Page token and ids, only after Meta's live answer matches what is stored (every
+     * posting scope, the same Page and Instagram). Never leaves this module except to the gateway through the runner.
+     */
+    async postingTarget(channelId: string): Promise<{ token: string; pageId: string; igUserId: string | null }> {
+      const check = await api.checkAccounts(channelId);
+      if (!check.ok) throw new DomainError({ code: "social_account_mismatch", message: `The connected Meta accounts did not pass the check (${check.problems.join(", ")}).`, details: { channelId, problems: check.problems } });
+      const rows = await deps.store.list(channelId);
+      const fb = rows.find((r) => r.network === "facebook")!;
+      const ig = rows.find((r) => r.network === "instagram") ?? null;
+      return { token: await openToken(fb.tokenSealed), pageId: fb.pageId ?? fb.externalId, igUserId: ig?.externalId ?? null };
+    },
+
+    /**
+     * AC-XP-16: whether one more post fits the network's rolling 24 h limit -- Instagram as Meta counts it (`content_publishing_limit`),
+     * a Facebook Page by this computer's own published Reels. Unknown counts as fitting only for Facebook (our own count is exact).
+     */
+    async quota(channelId: string): Promise<{ instagram: { used: number | null; limit: number }; facebook: { used: number; limit: number } }> {
+      const since = deps.now() - 24 * 60 * 60_000;
+      const jobs = deps.jobs ? await deps.jobs.list(channelId) : [];
+      const fbUsed = jobs.filter((j) => j.network === "facebook" && j.status === "published" && j.updatedAt >= since).length;
+      let igUsed: number | null = null;
+      const ig = (await deps.store.list(channelId)).find((r) => r.network === "instagram");
+      if (ig && deps.meta.igPublishingUsage) {
+        const fb = (await deps.store.list(channelId)).find((r) => r.network === "facebook");
+        if (fb) igUsed = await deps.meta.igPublishingUsage({ igUserId: ig.externalId, token: await openToken(fb.tokenSealed) }).catch(() => null);
+      }
+      return { instagram: { used: igUsed, limit: INSTAGRAM_REEL.postsPer24h }, facebook: { used: fbUsed, limit: FACEBOOK_REEL.postsPer24h } };
+    },
+
+    async listJobs(channelId: string | null): Promise<SocialJob[]> {
+      return deps.jobs ? deps.jobs.list(channelId) : [];
+    },
+
+    /** The owner's retry of a failed job that never got a post id: the job is forgotten, the runner starts it again if still due. */
+    async retryJob(raw: unknown): Promise<{ retried: boolean }> {
+      const jobId = (raw as { jobId?: unknown } | null)?.jobId;
+      if (typeof jobId !== "string" || !jobId) throw new DomainError({ code: "validation_failed", message: "jobId is required" });
+      const job = deps.jobs ? await deps.jobs.get(jobId) : null;
+      if (!job) throw new DomainError({ code: "not_found", message: "No such job on this computer." });
+      if (job.status !== "failed" || job.remotePostId) throw new DomainError({ code: "validation_failed", message: "Only a failed job without a published post can be retried." });
+      await deps.jobs!.remove(jobId);
+      return { retried: true };
+    },
+
     async listAccounts(channelId: string | null): Promise<SocialAccountView[]> {
       return (await deps.store.list(channelId)).map(view);
     },
@@ -190,6 +260,7 @@ export function createCrossPostingServices(deps: CrossPostingDeps) {
       return { removed: await deps.store.remove(input.channelId, input.network ?? null) };
     },
   };
+  return api;
 }
 
 export type CrossPostingCore = ReturnType<typeof createCrossPostingServices>;

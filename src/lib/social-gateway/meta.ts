@@ -169,6 +169,16 @@ export function createMetaClient(args: { fetchImpl?: Fetch; postingAllowed?: () 
       return str((await getJson(u, "ig.permalink")).permalink);
     },
 
+    /** The account's API posts in the last 24 h (`content_publishing_limit`, read-only); null when Meta does not say. */
+    async igPublishingUsage(input: { igUserId: string; token: string }): Promise<number | null> {
+      const u = new URL(`${META_GRAPH_BASE}/${encodeURIComponent(input.igUserId)}/content_publishing_limit`);
+      u.searchParams.set("fields", "quota_usage");
+      u.searchParams.set("access_token", input.token);
+      const data = (await getJson(u, "ig.publishing_limit")).data;
+      const first = Array.isArray(data) ? (data[0] as Record<string, unknown> | undefined) : undefined;
+      return typeof first?.quota_usage === "number" ? first.quota_usage : null;
+    },
+
     // ----- Facebook Page Reels — developers.facebook.com/docs/video-api/guides/reels-publishing -----
 
     async fbReelStart(input: { pageId: string; token: string }): Promise<{ videoId: string; uploadUrl: string }> {

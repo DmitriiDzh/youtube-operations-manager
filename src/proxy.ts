@@ -110,6 +110,7 @@ const REMOTE_BLOCKED_PREFIXES = [
   // BL-252 (ADR 0068, CROSS_POSTING_PLAN AC-XP-12 as amended 14.11): the Meta App Secret and forgetting a social account. Connecting
   // runs on the HTTPS Tailscale address (Meta refuses http://localhost redirects for this app, owner msgs 4315/4319).
   "/api/social/meta/app",
+  "/api/social/posting",
   "/api/social/disconnect",
 ];
 

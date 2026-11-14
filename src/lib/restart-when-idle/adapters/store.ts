@@ -125,7 +125,13 @@ export function createTableReaders(client: Client) {
     geminiJobs: () => ids(`SELECT job_id AS id FROM gemini_media_jobs WHERE status IN (${marks(GEMINI_ACTIVE_STATUSES)}) ORDER BY created_at`, GEMINI_ACTIVE_STATUSES),
     // BL-236: ElevenLabs takes and voice designs (its own table; a take cut by a restart would be failed at its characters).
     elevenlabsJobs: () => ids(`SELECT job_id AS id FROM elevenlabs_speech_jobs WHERE status IN (${marks(ELEVENLABS_ACTIVE_STATUSES)}) ORDER BY created_at`, ELEVENLABS_ACTIVE_STATUSES),
-    uploads: () => ids(`SELECT id FROM publishing_uploads WHERE status IN (${marks(UPLOAD_BUSY_STATUSES)}) ORDER BY created_at`, UPLOAD_BUSY_STATUSES),
+    uploads: async () => [
+      ...(await ids(`SELECT id FROM publishing_uploads WHERE status IN (${marks(UPLOAD_BUSY_STATUSES)}) ORDER BY created_at`, UPLOAD_BUSY_STATUSES)),
+      // BL-252 (ADR 0068 amendment 1 §4): a social upload whose bytes are being sent holds a restart like a YouTube upload; once Meta
+      // is processing (`processing`) a restart is safe -- the job reads its status after it.
+      // A row left `uploading` by a crash must not hold every restart: only one touched in the last 40 minutes counts.
+      ...(await ids("SELECT job_id AS id FROM social_post_jobs WHERE status = 'uploading' AND updated_at > ? ORDER BY created_at", [String(Date.now() - 40 * 60_000)])),
+    ],
     batches: () => ids("SELECT id FROM batches WHERE status = 'RUNNING' ORDER BY id", []),
     /** `gateway_call_events.occurred_at` is unix seconds. */
     async lastMcpCallAt(): Promise<number | null> {

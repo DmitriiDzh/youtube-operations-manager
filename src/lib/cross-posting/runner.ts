@@ -70,6 +70,8 @@ export type RunnerDeps = {
   files: { body(path: string, sizeBytes: number): UploadBody; sha256(path: string): Promise<string> };
   enabled(): Promise<boolean>;
   now(): number;
+  /** AC-XP-16: false when one more post would pass the network's rolling 24 h limit -- the post waits (no job, nothing sent). */
+  quotaOk?(channelId: string, network: SocialNetwork): Promise<boolean>;
 };
 
 /** A post more than this late (the computer was off at the planned time) is not sent; the owner can retry it. */
@@ -107,6 +109,7 @@ export function createCrossPostRunner(deps: RunnerDeps) {
       return;
     }
     if (!(await deps.plan.stillApproved(entry))) return;
+    if (deps.quotaOk && !(await deps.quotaOk(entry.channelId, target.network).catch(() => false))) return;
     if (!(await deps.jobs.insert(base))) return; // another tick already started it
     report.started.push(jobId);
     try {
