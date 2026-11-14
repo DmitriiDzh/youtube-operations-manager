@@ -7,7 +7,8 @@ import test from "node:test";
 // to the provider. Every secret field of Settings → Cloud APIs (RunPod key, S3 secret, Gemini key, the key-file passwords) is a
 // MaskedSecretInput, never a password field.
 // BL-236: + the ElevenLabs key.
-const CLOUD_API_TAB_FILES = ["media-generation-settings.tsx", "gemini-media-settings.tsx", "elevenlabs-settings.tsx", "cloud-credentials-transfer.tsx"];
+const CLOUD_API_TAB_FILES = ["media-generation-settings.tsx", "gemini-media-settings.tsx", "elevenlabs-settings.tsx", "cloud-credentials-transfer.tsx", "social-accounts-settings.tsx"];
+// BL-252: + the Meta App Secret.
 
 test("no secret field of the Cloud APIs tab is type=\"password\"; each one uses MaskedSecretInput", async () => {
   for (const file of CLOUD_API_TAB_FILES) {

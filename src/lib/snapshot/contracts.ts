@@ -171,6 +171,7 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   video_metrics_daily: "accepted limitation (RISK-52, ARCHITECTURE §14.7): collected metrics stay local",
   analytics_collection_runs: "collection bookkeeping for the local metrics above",
   analytics_freshness_probes: "this device's own hourly measurement of when the Analytics API first returns a day (BL-245); kept 45 days",
+  social_accounts: "cross-posting accounts with tokens sealed by this device's key (BL-252); each computer connects its own",
   review_notify_ledger: "this device's own record of the owner decisions it wrote into the Producer's Inbox (BL-248); each writer keeps its own",
   analytics_weekly_reports: "rebuilt from the device's own local metrics",
   video_milestones: "accepted limitation (RISK-52, same as video_metrics_daily): each computer collects its own channels' milestones (BL-166)",

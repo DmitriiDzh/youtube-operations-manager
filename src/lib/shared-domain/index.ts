@@ -89,6 +89,12 @@ export type DomainErrorCode =
   | "hf_token_invalid"
   | "hf_gate_not_accepted"
   | "github_unavailable"
+  // BL-252 (ADR 0068): the social gateway (cross-posting).
+  | "social_not_configured"
+  | "social_unavailable"
+  | "social_token_invalid"
+  | "social_rate_limited"
+  | "social_request_rejected"
   | "github_token_missing"
   | "github_token_invalid"
   | "github_token_forbidden"

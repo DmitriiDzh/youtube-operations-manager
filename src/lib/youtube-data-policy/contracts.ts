@@ -137,6 +137,7 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
   reporting_jobs: authorized("Reporting API job per our channel: ids and timestamps, no content"),
   analytics_collection_runs: authorized("bookkeeping of our own analytics collection"),
   analytics_freshness_probes: authorized("bookkeeping of our own hourly Analytics freshness probes: dates and a short error text, no YouTube values (BL-245)"),
+  social_accounts: authorized("cross-posting accounts on other networks (BL-252): their own ids, names and a sealed token, no YouTube API data"),
   review_notify_ledger: authorized("bookkeeping of the review-notify writer: our own decision ids and file names, no YouTube values (BL-248)"),
   analytics_weekly_reports: authorized("reports built from our own analytics"),
   change_sets: authorized("drafts of our own videos' metadata"),

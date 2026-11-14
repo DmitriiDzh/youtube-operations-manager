@@ -107,6 +107,9 @@ const REMOTE_BLOCKED_PREFIXES = [
   "/api/logical-paths/value",
   "/api/system-topic/relay-secret",
   "/api/channel-connections/disconnect",
+  // BL-252 (ADR 0068): the Meta App Secret and forgetting a connected social account.
+  "/api/social/meta/app",
+  "/api/social/disconnect",
 ];
 
 // Status reads the app shell makes on every page (owner, Windows over Tailscale, msg 4236: «Не удалось прочитать состояние
