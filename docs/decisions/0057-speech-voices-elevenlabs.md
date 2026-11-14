@@ -96,3 +96,10 @@ file's length), music ≈ 900 credits per minute (elevenlabs.io capabilities pag
 and the account tier (for SOURCES.md). No voice and no audio input; channel workers get no tool. Unverified until the first paid
 call: the credits of an automatic-length sound effect, and whether these endpoints send `character-cost`.
 Plan and acceptance criteria: `docs/roadmap/plans/ELEVENLABS_SFX_MUSIC_PLAN.md`.
+
+Measured on the first real use (2026-11-14, the Operator's WWE pack, account creator 131 000): sound effects answered
+`character-cost` ≈ 11 credits per second (0.5 s → 6, 1.0 s → 11, 1.5 s → 17; 26 jobs = 231), far below the documented 40 — the
+header is what is counted, 40/s stays the reservation (an upper bound). Music (`music_v2_5`) sent no `character-cost`: the
+account delta (2 885 → 10 544 = 7 659 for 26 sfx + 6 × 90 s) gives ≈ 825 credits per minute, so the 900/min estimate
+over-counts music by ~8 % locally; kept on purpose (never under-counted), and the monthly check re-bases on the account's own
+count at every read (BL-250).
