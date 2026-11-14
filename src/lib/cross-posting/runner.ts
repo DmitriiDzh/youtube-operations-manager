@@ -27,6 +27,8 @@ export type PlannedCrossPost = {
   timeZone: string;
   crossPost: unknown;
   videoFile: { path: string; sizeBytes: number | null; durationSeconds: number | null; width: number | null; height: number | null } | null;
+  /** The manifest's own `sha256` of the video file (required for a social post: it binds the mp4 to the approved manifest). */
+  videoSha256: string | null;
   isAiGenerated: boolean;
 };
 
@@ -65,7 +67,7 @@ export type RunnerDeps = {
   /** The channel's Page token and ids after the identity read passed; throws `social_account_mismatch` otherwise. */
   postingTarget(channelId: string): Promise<PostingTarget>;
   meta: Pick<MetaClient, "igCreateReelContainer" | "igUploadReel" | "igContainerStatus" | "igPublish" | "igPermalink" | "fbReelStart" | "fbUploadReel" | "fbReelFinish" | "fbVideoStatus">;
-  files: { body(path: string, sizeBytes: number): UploadBody };
+  files: { body(path: string, sizeBytes: number): UploadBody; sha256(path: string): Promise<string> };
   enabled(): Promise<boolean>;
   now(): number;
 };
@@ -110,6 +112,8 @@ export function createCrossPostRunner(deps: RunnerDeps) {
     try {
       const file = entry.videoFile;
       if (!file || file.sizeBytes === null) throw new DomainError({ code: "validation_failed", message: "The package's video file is not readable." });
+      // AC-XP-10: the approval covers the manifest; the manifest's `sha256` covers the mp4 -- checked right before the upload.
+      if (!entry.videoSha256 || (await deps.files.sha256(file.path)) !== entry.videoSha256) throw new DomainError({ code: "social_approval_stale", message: "The video file does not match the approved package's sha256; nothing was published." });
       const ctx = await deps.postingTarget(entry.channelId);
       const body = deps.files.body(file.path, file.sizeBytes);
       if (target.network === "instagram") {
@@ -125,7 +129,13 @@ export function createCrossPostRunner(deps: RunnerDeps) {
         if (!(await deps.plan.stillApproved(entry))) throw new DomainError({ code: "social_approval_stale", message: "The slot's approval no longer covers this package; nothing was published." });
         // `processing` BEFORE finish: a crash after Meta accepted `finish` must never lead to a second post.
         await deps.jobs.update(jobId, { status: "processing", updatedAt: deps.now() });
-        await deps.meta.fbReelFinish({ pageId: ctx.pageId, token: ctx.token, videoId, title: target.network === "facebook" ? target.title : null, description: target.description, isAiGenerated: entry.isAiGenerated });
+        try {
+          await deps.meta.fbReelFinish({ pageId: ctx.pageId, token: ctx.token, videoId, title: target.network === "facebook" ? target.title : null, description: target.description, isAiGenerated: entry.isAiGenerated });
+        } catch (error) {
+          // A lost answer may still have published it: stay `processing` and let the status read decide (never finish twice).
+          if (error instanceof DomainError && error.code === "social_unavailable") return;
+          throw error;
+        }
       }
     } catch (error) {
       const { errorCode, errorMessage } = errorParts(error);
@@ -154,7 +164,14 @@ export function createCrossPostRunner(deps: RunnerDeps) {
             return;
           }
           if (!ctx.igUserId) throw new DomainError({ code: "social_account_mismatch", message: "No Instagram account is connected for this channel." });
-          const { mediaId } = await deps.meta.igPublish({ igUserId: ctx.igUserId, containerId: job.remoteId, token: ctx.token });
+          let mediaId: string;
+          try {
+            ({ mediaId } = await deps.meta.igPublish({ igUserId: ctx.igUserId, containerId: job.remoteId, token: ctx.token }));
+          } catch (error) {
+            // A lost answer may still have published it: the container then reads PUBLISHED on the next pass.
+            if (error instanceof DomainError && error.code === "social_unavailable") return;
+            throw error;
+          }
           await deps.jobs.update(job.jobId, { status: "published", remotePostId: mediaId, updatedAt: deps.now() });
           const permalink = await deps.meta.igPermalink({ mediaId, token: ctx.token }).catch(() => null);
           if (permalink) await deps.jobs.update(job.jobId, { permalink });
@@ -166,7 +183,7 @@ export function createCrossPostRunner(deps: RunnerDeps) {
         }
       } else {
         const s = await deps.meta.fbVideoStatus({ videoId: job.remoteId, token: ctx.token });
-        if (s.publishStatus === "published" || s.videoStatus === "ready") {
+        if (s.publishStatus === "published") {
           await deps.jobs.update(job.jobId, { status: "published", remotePostId: job.remoteId, permalink: s.permalink, updatedAt: now });
           report.advanced.push(job.jobId);
         } else if (s.videoStatus === "error" || s.videoStatus === "upload_failed" || s.publishStatus === "error") {
@@ -190,6 +207,7 @@ export function createCrossPostRunner(deps: RunnerDeps) {
       const { targets, problems } = parseCrossPostBlock(entry.crossPost);
       const video = entry.videoFile ?? { durationSeconds: null, sizeBytes: null, width: null, height: null };
       const badNetworks = new Set([...problems, ...videoProblems(targets, video)].map((p) => p.network));
+      if (targets.length > 0 && !entry.videoSha256) continue; // a package without the video's sha256 never posts (AC-XP-10)
       if (badNetworks.has(null)) continue; // the block itself is broken: nothing from it is posted
       for (const target of targets) {
         const jobId = jobIdOf(entry.channelId, entry.slotId, target.network);

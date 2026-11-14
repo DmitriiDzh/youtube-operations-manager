@@ -22,6 +22,7 @@ const entry = (over: Partial<PlannedCrossPost> = {}): PlannedCrossPost => ({
   crossPost: { instagram: { caption: "IG #x" }, facebook: { title: "T", description: "FB" } },
   videoFile: { path: "/w/V70.mp4", sizeBytes: 10_000, durationSeconds: 60, width: 1080, height: 1920 },
   isAiGenerated: true,
+  videoSha256: "f".repeat(64),
   ...over,
 });
 
@@ -48,14 +49,25 @@ function harness(opts: { entries?: PlannedCrossPost[]; enabled?: boolean; approv
         if (failNext["ig.upload"]) throw failNext["ig.upload"];
       },
       igContainerStatus: async () => (calls.push("ig.status"), igStatuses.shift() ?? "FINISHED"),
-      igPublish: async () => (calls.push("ig.publish"), { mediaId: "M1" }),
+      igPublish: async () => {
+        calls.push("ig.publish");
+        const e = failNext["ig.publish"];
+        failNext = {};
+        if (e) throw e;
+        return { mediaId: "M1" };
+      },
       igPermalink: async () => "https://instagram.com/reel/x",
       fbReelStart: async () => (calls.push("fb.start"), { videoId: "V1", uploadUrl: "https://rupload.facebook.com/video-upload/v23.0/V1" }),
       fbUploadReel: async () => void calls.push("fb.upload"),
-      fbReelFinish: async (i) => void calls.push(`fb.finish ai=${i.isAiGenerated} title=${i.title}`),
-      fbVideoStatus: async () => (calls.push("fb.status"), { videoStatus: opts.fbStatus ?? "ready", publishStatus: "published", permalink: "https://facebook.com/reel/1" }),
+      fbReelFinish: async (i) => {
+        calls.push(`fb.finish ai=${i.isAiGenerated} title=${i.title}`);
+        const e = failNext["fb.finish"];
+        failNext = {};
+        if (e) throw e;
+      },
+      fbVideoStatus: async () => (calls.push("fb.status"), { videoStatus: opts.fbStatus ?? "ready", publishStatus: opts.fbStatus === "processing" ? "not_published" : "published", permalink: "https://facebook.com/reel/1" }),
     },
-    files: { body: (_p, size) => ({ stream: () => new Blob(["x"]).stream(), sizeBytes: size }) },
+    files: { body: (_p, size) => ({ stream: () => new Blob(["x"]).stream(), sizeBytes: size }), sha256: async () => "f".repeat(64) },
     enabled: async () => opts.enabled ?? true,
     now: () => now,
   };
@@ -185,7 +197,7 @@ test("AC-XP-8: a failed identity read fails the job before any publishing call",
       throw new DomainError({ code: "social_account_mismatch", message: "The token reaches another Page." });
     },
     meta: new Proxy({}, { get: (_t, name) => async () => void calls.push(String(name)) }) as RunnerDeps["meta"],
-    files: { body: (_p, size) => ({ stream: () => new Blob(["x"]).stream(), sizeBytes: size }) },
+    files: { body: (_p, size) => ({ stream: () => new Blob(["x"]).stream(), sizeBytes: size }), sha256: async () => "f".repeat(64) },
     enabled: async () => true,
     now: () => T0,
   });
@@ -193,4 +205,46 @@ test("AC-XP-8: a failed identity read fails the job before any publishing call",
   assert.deepEqual(calls, []);
   assert.equal(jobs.get(IG)!.errorCode, "social_account_mismatch");
   assert.equal(jobs.get(FB)!.errorCode, "social_account_mismatch");
+});
+
+test("AC-XP-10: a package without the video's sha256 posts nothing; a file that no longer matches it fails before any upload", async () => {
+  const noHash = harness({ entries: [entry({ videoSha256: null })] });
+  await noHash.runner.tick();
+  assert.equal(noHash.jobs.size, 0);
+
+  const jobs = new Map<string, SocialJob>();
+  const calls: string[] = [];
+  const runner = createCrossPostRunner({
+    plan: { entries: async () => [entry()], stillApproved: async () => true },
+    jobs: { get: async (id) => jobs.get(id) ?? null, listActive: async () => [], insert: async (j) => (jobs.has(j.jobId) ? false : (jobs.set(j.jobId, j), true)), update: async (id, set) => void jobs.set(id, { ...jobs.get(id)!, ...set }) },
+    postingTarget: async () => ({ token: "PT", pageId: "P1", igUserId: "IG1" }),
+    meta: new Proxy({}, { get: (_t, name) => async () => void calls.push(String(name)) }) as RunnerDeps["meta"],
+    files: { body: (_p, size) => ({ stream: () => new Blob(["x"]).stream(), sizeBytes: size }), sha256: async () => "0".repeat(64) },
+    enabled: async () => true,
+    now: () => T0,
+  });
+  await runner.tick();
+  assert.deepEqual(calls, []);
+  assert.equal(jobs.get(IG)!.errorCode, "social_approval_stale");
+});
+
+test("AC-XP-6: a lost answer to Facebook's finish or Instagram's publish keeps the job processing; neither is sent twice", async () => {
+  const fb = harness({ fbStatus: "processing" });
+  fb.failOn("fb.finish", new DomainError({ code: "social_unavailable", message: "Meta could not be reached (fb.reels_finish): timeout" }));
+  await fb.runner.tick();
+  assert.equal(fb.jobs.get(FB)!.status, "processing");
+  fb.calls.length = 0;
+  await fb.runner.tick();
+  assert.deepEqual(fb.calls.filter((c) => c.startsWith("fb.")), ["fb.status"]);
+  assert.equal(fb.jobs.get(FB)!.status, "processing", "not published until publish_status says so");
+
+  const ig = harness({ igStatus: ["FINISHED", "PUBLISHED"] });
+  await ig.runner.tick();
+  ig.failOn("ig.publish", new DomainError({ code: "social_unavailable", message: "Meta could not be reached (ig.media_publish): timeout" }));
+  await ig.runner.tick();
+  assert.equal(ig.jobs.get(IG)!.status, "processing");
+  ig.calls.length = 0;
+  await ig.runner.tick();
+  assert.deepEqual(ig.calls.filter((c) => c.startsWith("ig.")), ["ig.status"]);
+  assert.equal(ig.jobs.get(IG)!.status, "published");
 });
