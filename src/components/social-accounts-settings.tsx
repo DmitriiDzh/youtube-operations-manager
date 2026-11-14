@@ -35,6 +35,7 @@ type Job = {
   plannedAt: number;
   status: "uploading" | "processing" | "published" | "failed";
   remotePostId: string | null;
+  publishAttempted?: boolean;
   permalink: string | null;
   errorCode: string | null;
   errorMessage: string | null;
@@ -578,7 +579,7 @@ export function SocialAccountsSettings() {
                             {j.errorMessage ?? j.errorCode}
                           </span>
                         )}
-                        {j.status === "failed" && !j.remotePostId && (
+                        {j.status === "failed" && !j.remotePostId && !j.publishAttempted && (
                           <button
                             type="button"
                             className={buttonClass}

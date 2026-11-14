@@ -15,6 +15,7 @@ const toJob = (r: StoredSocialPostJob): SocialJob => ({
   uploadUrl: r.uploadUrl,
   remotePostId: r.remotePostId,
   permalink: r.permalink,
+  publishAttempted: r.publishAttempted,
   errorCode: r.errorCode,
   errorMessage: r.errorMessage,
   createdAt: r.createdAt.getTime(),

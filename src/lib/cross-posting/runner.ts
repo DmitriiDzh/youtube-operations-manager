@@ -47,6 +47,8 @@ export type SocialJob = {
   uploadUrl: string | null;
   remotePostId: string | null;
   permalink: string | null;
+  /** A publishing call was sent (the post may be live even if its answer was lost): never retried. */
+  publishAttempted: boolean;
   errorCode: string | null;
   errorMessage: string | null;
   createdAt: number;
@@ -85,6 +87,17 @@ export function plannedAtOf(entry: PlannedCrossPost, target: CrossPostTarget): n
   return target.at ? zonedInstant({ localDate: entry.slotDate, localTime: target.at, timezone: entry.timeZone }).getTime() : entry.publishAt;
 }
 
+/**
+ * A failure that says nothing about whether Meta acted: no answer, a rate limit, or Meta's own 5xx. After a publishing call (or
+ * while reading the status of one) such a failure keeps the job `processing` -- only a definite answer or the timeout ends it.
+ */
+export function isTransient(error: unknown): boolean {
+  if (!(error instanceof DomainError)) return false;
+  if (error.code === "social_unavailable" || error.code === "social_rate_limited") return true;
+  const status = (error.details as { status?: unknown } | undefined)?.status;
+  return typeof status === "number" && status >= 500;
+}
+
 function errorParts(error: unknown): { errorCode: string; errorMessage: string } {
   if (error instanceof DomainError) return { errorCode: error.code, errorMessage: error.message.slice(0, 500) };
   return { errorCode: "internal_error", errorMessage: (error instanceof Error ? error.message : String(error)).slice(0, 500) };
@@ -103,7 +116,7 @@ export function createCrossPostRunner(deps: RunnerDeps) {
   async function start(entry: PlannedCrossPost, target: CrossPostTarget, plannedAt: number, report: TickReport) {
     const jobId = jobIdOf(entry.channelId, entry.slotId, target.network);
     const now = deps.now();
-    const base: SocialJob = { jobId, channelId: entry.channelId, slotId: entry.slotId, video: entry.video, network: target.network, manifestSha256: entry.manifestSha256, plannedAt, status: "uploading", remoteId: null, uploadUrl: null, remotePostId: null, permalink: null, errorCode: null, errorMessage: null, createdAt: now, updatedAt: now };
+    const base: SocialJob = { jobId, channelId: entry.channelId, slotId: entry.slotId, video: entry.video, network: target.network, manifestSha256: entry.manifestSha256, plannedAt, status: "uploading", remoteId: null, uploadUrl: null, remotePostId: null, permalink: null, publishAttempted: false, errorCode: null, errorMessage: null, createdAt: now, updatedAt: now };
     if (now - plannedAt > MAX_LATE_MS) {
       if (await deps.jobs.insert({ ...base, status: "failed", errorCode: "missed_window", errorMessage: "This computer was not posting at the planned time." })) report.failed.push(jobId);
       return;
@@ -130,13 +143,16 @@ export function createCrossPostRunner(deps: RunnerDeps) {
         await deps.jobs.update(jobId, { remoteId: videoId, uploadUrl, updatedAt: deps.now() });
         await deps.meta.fbUploadReel({ uploadUrl, token: ctx.token, body });
         if (!(await deps.plan.stillApproved(entry))) throw new DomainError({ code: "social_approval_stale", message: "The slot's approval no longer covers this package; nothing was published." });
-        // `processing` BEFORE finish: a crash after Meta accepted `finish` must never lead to a second post.
-        await deps.jobs.update(jobId, { status: "processing", updatedAt: deps.now() });
+        // AC-XP-8: the identity read again right before publishing (the upload may have taken minutes).
+        const fresh = await deps.postingTarget(entry.channelId);
+        // `processing` + `publishAttempted` BEFORE finish: a crash or a lost answer after Meta accepted `finish` must never lead to
+        // a second post (no retry of an attempted publish).
+        await deps.jobs.update(jobId, { status: "processing", publishAttempted: true, updatedAt: deps.now() });
         try {
-          await deps.meta.fbReelFinish({ pageId: ctx.pageId, token: ctx.token, videoId, title: target.network === "facebook" ? target.title : null, description: target.description, isAiGenerated: entry.isAiGenerated });
+          await deps.meta.fbReelFinish({ pageId: fresh.pageId, token: fresh.token, videoId, title: target.network === "facebook" ? target.title : null, description: target.description, isAiGenerated: entry.isAiGenerated });
         } catch (error) {
-          // A lost answer may still have published it: stay `processing` and let the status read decide (never finish twice).
-          if (error instanceof DomainError && error.code === "social_unavailable") return;
+          // No answer / 5xx: it may still have published -- stay `processing`, the status read decides.
+          if (isTransient(error)) return;
           throw error;
         }
       }
@@ -168,11 +184,12 @@ export function createCrossPostRunner(deps: RunnerDeps) {
           }
           if (!ctx.igUserId) throw new DomainError({ code: "social_account_mismatch", message: "No Instagram account is connected for this channel." });
           let mediaId: string;
+          await deps.jobs.update(job.jobId, { publishAttempted: true, updatedAt: deps.now() });
           try {
             ({ mediaId } = await deps.meta.igPublish({ igUserId: ctx.igUserId, containerId: job.remoteId, token: ctx.token }));
           } catch (error) {
-            // A lost answer may still have published it: the container then reads PUBLISHED on the next pass.
-            if (error instanceof DomainError && error.code === "social_unavailable") return;
+            // No answer / 5xx: it may still have published -- the container then reads PUBLISHED on the next pass.
+            if (isTransient(error)) return;
             throw error;
           }
           await deps.jobs.update(job.jobId, { status: "published", remotePostId: mediaId, updatedAt: deps.now() });
@@ -196,6 +213,9 @@ export function createCrossPostRunner(deps: RunnerDeps) {
         }
       }
     } catch (error) {
+      // A read that failed for no definite reason (network, Meta 5xx, the identity read unreachable) proves nothing: keep waiting
+      // until the processing timeout, so a live post is never marked failed (and retried) by a blip.
+      if (isTransient(error) && now - job.updatedAt <= PROCESSING_TIMEOUT_MS) return;
       const { errorCode, errorMessage } = errorParts(error);
       await fail(job.jobId, errorCode, errorMessage, report);
     }

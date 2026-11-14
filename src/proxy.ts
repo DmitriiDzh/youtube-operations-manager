@@ -111,6 +111,7 @@ const REMOTE_BLOCKED_PREFIXES = [
   // runs on the HTTPS Tailscale address (Meta refuses http://localhost redirects for this app, owner msgs 4315/4319).
   "/api/social/meta/app",
   "/api/social/posting",
+  "/api/social/jobs/retry",
   "/api/social/disconnect",
 ];
 

@@ -2122,6 +2122,8 @@ export const socialPostJobs = sqliteTable(
     uploadUrl: text("upload_url"),
     remotePostId: text("remote_post_id"),
     permalink: text("permalink"),
+    /** 1 once a publishing call (Facebook finish / Instagram media_publish) was SENT: the post may be live, so it is never retried. */
+    publishAttempted: integer("publish_attempted", { mode: "boolean" }).notNull().default(false),
     errorCode: text("error_code"),
     errorMessage: text("error_message"),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
@@ -6199,6 +6201,7 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         upload_url TEXT,
         remote_post_id TEXT,
         permalink TEXT,
+        publish_attempted INTEGER NOT NULL DEFAULT 0,
         error_code TEXT,
         error_message TEXT,
         created_at INTEGER NOT NULL,

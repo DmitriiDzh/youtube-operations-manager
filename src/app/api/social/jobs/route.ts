@@ -5,7 +5,7 @@ import { defaultSocialRouteDeps, socialHandler, type SocialRouteDeps } from "../
 export function createJobsGetHandler(deps: SocialRouteDeps = defaultSocialRouteDeps()) {
   return socialHandler(deps, async ({ core, request }) => {
     const channelId = new URL(request.url).searchParams.get("channelId")?.trim() || null;
-    const jobs = (await core.listJobs(channelId)).slice(0, 50).map((j) => ({ jobId: j.jobId, channelId: j.channelId, slotId: j.slotId, video: j.video, network: j.network, plannedAt: j.plannedAt, status: j.status, remotePostId: j.remotePostId, permalink: j.permalink, errorCode: j.errorCode, errorMessage: j.errorMessage, updatedAt: j.updatedAt }));
+    const jobs = (await core.listJobs(channelId)).slice(0, 50).map((j) => ({ jobId: j.jobId, channelId: j.channelId, slotId: j.slotId, video: j.video, network: j.network, plannedAt: j.plannedAt, status: j.status, remotePostId: j.remotePostId, publishAttempted: j.publishAttempted, permalink: j.permalink, errorCode: j.errorCode, errorMessage: j.errorMessage, updatedAt: j.updatedAt }));
     return NextResponse.json({ jobs });
   });
 }

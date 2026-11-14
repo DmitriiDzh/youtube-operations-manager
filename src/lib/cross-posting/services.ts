@@ -246,7 +246,8 @@ export function createCrossPostingServices(deps: CrossPostingDeps) {
       if (typeof jobId !== "string" || !jobId) throw new DomainError({ code: "validation_failed", message: "jobId is required" });
       const job = deps.jobs ? await deps.jobs.get(jobId) : null;
       if (!job) throw new DomainError({ code: "not_found", message: "No such job on this computer." });
-      if (job.status !== "failed" || job.remotePostId) throw new DomainError({ code: "validation_failed", message: "Only a failed job without a published post can be retried." });
+      // Review 14.11: a job whose publishing call was sent may be live even without a post id -- never retried.
+      if (job.status !== "failed" || job.remotePostId || job.publishAttempted) throw new DomainError({ code: "validation_failed", message: "Only a failed job that never sent its publishing call can be retried." });
       await deps.jobs!.remove(jobId);
       return { retried: true };
     },

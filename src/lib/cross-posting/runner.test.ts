@@ -148,7 +148,7 @@ test("AC-XP-10: an approval that no longer covers the manifest starts nothing; o
 test("AC-XP-6: a restart mid-upload fails the job without publishing; an Instagram container already PUBLISHED is not published again", async () => {
   const h = harness({ igStatus: ["PUBLISHED"] });
   const now = T0;
-  h.jobs.set(FB, { jobId: FB, channelId: "UC1", slotId: "s1", video: "V70", network: "facebook", manifestSha256: "m1", plannedAt: T0, status: "uploading", remoteId: "V1", uploadUrl: "u", remotePostId: null, permalink: null, errorCode: null, errorMessage: null, createdAt: now, updatedAt: now });
+  h.jobs.set(FB, { jobId: FB, channelId: "UC1", slotId: "s1", video: "V70", network: "facebook", manifestSha256: "m1", plannedAt: T0, status: "uploading", remoteId: "V1", uploadUrl: "u", remotePostId: null, permalink: null, publishAttempted: false, errorCode: null, errorMessage: null, createdAt: now, updatedAt: now });
   h.jobs.set(IG, { ...h.jobs.get(FB)!, jobId: IG, network: "instagram", status: "processing", remoteId: "C1" });
   await h.runner.tick();
   assert.equal(h.jobs.get(FB)!.status, "failed");
@@ -265,4 +265,36 @@ test("AC-XP-16: a network at its 24 h limit waits -- no job, nothing sent -- whi
   await runner.tick();
   assert.deepEqual([...jobs.keys()], [FB]);
   assert.ok(!calls.some((c) => c.startsWith("ig")));
+});
+
+test("review 14.11: a transient read failure after a publishing call keeps the job processing (no false 'failed', so no retry repost)", async () => {
+  const jobs = new Map<string, SocialJob>();
+  const base: SocialJob = { jobId: FB, channelId: "UC1", slotId: "s1", video: "V70", network: "facebook", manifestSha256: "m1", plannedAt: T0, status: "processing", remoteId: "V1", uploadUrl: "u", remotePostId: null, permalink: null, publishAttempted: true, errorCode: null, errorMessage: null, createdAt: T0, updatedAt: T0 };
+  jobs.set(FB, base);
+  let now = T0 + 60_000;
+  const runner = createCrossPostRunner({
+    plan: { entries: async () => [], stillApproved: async () => true },
+    jobs: { get: async (id) => jobs.get(id) ?? null, listActive: async () => [...jobs.values()].filter((j) => j.status === "processing"), insert: async () => false, update: async (id, set) => void jobs.set(id, { ...jobs.get(id)!, ...set }) },
+    postingTarget: async () => {
+      throw new DomainError({ code: "social_unavailable", message: "Meta could not be reached (debug_token): timeout" });
+    },
+    meta: new Proxy({}, { get: () => async () => undefined }) as RunnerDeps["meta"],
+    files: { body: (_p, size) => ({ stream: () => new Blob(["x"]).stream(), sizeBytes: size }), sha256: async () => "f".repeat(64) },
+    enabled: async () => true,
+    now: () => now,
+  });
+  await runner.tick();
+  assert.equal(jobs.get(FB)!.status, "processing");
+  now = T0 + 61 * 60_000; // past the processing timeout: then it fails (and publishAttempted forbids a retry)
+  await runner.tick();
+  assert.equal(jobs.get(FB)!.status, "failed");
+  assert.equal(jobs.get(FB)!.publishAttempted, true);
+});
+
+test("review 14.11: Meta's 5xx on Facebook's finish keeps the job processing and marks the publish as attempted", async () => {
+  const h = harness({ fbStatus: "processing" });
+  h.failOn("fb.finish", new DomainError({ code: "social_request_rejected", message: "Meta refused fb.reels_finish: HTTP 502", details: { status: 502 } }));
+  await h.runner.tick();
+  assert.equal(h.jobs.get(FB)!.status, "processing");
+  assert.equal(h.jobs.get(FB)!.publishAttempted, true);
 });
