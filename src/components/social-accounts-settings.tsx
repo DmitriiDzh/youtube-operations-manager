@@ -22,7 +22,7 @@ type Account = {
   externalId: string;
 };
 type Status = {
-  metaApp: { configured: boolean; appId: string | null };
+  metaApp: { configured: boolean; appId: string | null; configId?: string | null };
   accounts: Account[];
   posting?: { enabled: boolean };
   callbackPath: string;
@@ -113,6 +113,7 @@ export function SocialAccountsSettings() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [appId, setAppId] = useState("");
+  const [configId, setConfigId] = useState("");
   const [appSecret, setAppSecret] = useState("");
   const [confirmClear, setConfirmClear] = useState(false);
   const [checks, setChecks] = useState<Record<string, Check>>({});
@@ -227,6 +228,20 @@ export function SocialAccountsSettings() {
       setAppId("");
       setAppSecret("");
       setMessage(t("social.meta.saved"));
+      await load();
+    });
+
+  // Facebook Login for Business configuration (2026-11-15: Instagram uploads need it); the App Secret stays as stored.
+  const saveConfig = (value: string | null) =>
+    run(async () => {
+      await requestJson(
+        "/api/social/meta/app",
+        { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ configId: value }) },
+        t("settings.saveFailed"),
+        t,
+      );
+      setConfigId("");
+      setMessage(t("social.meta.configSaved"));
       await load();
     });
 
@@ -436,6 +451,37 @@ export function SocialAccountsSettings() {
             {(appId || appSecret) && !validMetaApp(appId, appSecret) && (
               <p className="text-xs text-amber-400">
                 {t("social.meta.invalid")}
+              </p>
+            )}
+            {status.metaApp.configured && (
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                <label className="flex flex-col gap-1 text-xs text-zinc-400">
+                  {t("social.meta.configId")}
+                  <input
+                    className={inputClass}
+                    value={configId}
+                    placeholder={status.metaApp.configId ?? ""}
+                    onChange={(e) => setConfigId(e.target.value)}
+                    inputMode="numeric"
+                    autoComplete="off"
+                    disabled={busy}
+                  />
+                </label>
+                <div className="flex gap-2">
+                  <button type="button" className={primaryClass} onClick={() => saveConfig(configId.trim())} disabled={busy || !/^\d{5,25}$/.test(configId.trim())}>
+                    {t("social.meta.configSave")}
+                  </button>
+                  {status.metaApp.configId && (
+                    <button type="button" className={buttonClass} onClick={() => saveConfig(null)} disabled={busy}>
+                      {t("social.meta.configClear")}
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+            {status.metaApp.configured && (
+              <p className="text-xs text-zinc-500">
+                {status.metaApp.configId ? t("social.meta.configOn", { configId: status.metaApp.configId }) : t("social.meta.configOff")}
               </p>
             )}
           </>

@@ -32,7 +32,7 @@ export type SocialAccountRow = SocialAccountView & { tokenSealed: string };
 /** A Page offered for the owner's pick after consent (no token). */
 export type PendingPageView = { pageId: string; pageName: string; instagram: { igUserId: string; username: string | null } | null };
 
-export type MetaAppStatus = { configured: boolean; appId: string | null };
+export type MetaAppStatus = { configured: boolean; appId: string | null; configId: string | null };
 
 /** What posting to Instagram and a Facebook Page needs from the stored Page token (AC-XP-8 identity read). */
 export const META_POSTING_SCOPES = ["pages_show_list", "pages_read_engagement", "pages_manage_posts", "instagram_basic", "instagram_content_publish"] as const;

@@ -31,6 +31,13 @@ test("authorizeUrl: Meta's OAuth dialog with the app id, redirect URI, state, re
   assert.equal(META_SCOPES.length, 6);
 });
 
+test("authorizeUrl with a Facebook Login for Business configuration: config_id instead of scope (2026-11-15)", () => {
+  const url = new URL(createMetaClient().authorizeUrl({ appId: "123456789", redirectUri: "https://mac.ts.net/api/social/meta/callback", state: "s-2", configId: "1234567890123456" }));
+  assert.equal(url.searchParams.get("config_id"), "1234567890123456");
+  assert.equal(url.searchParams.get("scope"), null);
+  assert.equal(url.searchParams.get("response_type"), "code");
+});
+
 test("exchangeCode: code -> short token -> long-lived token (two GETs to /oauth/access_token), expiry from expires_in", async () => {
   const { calls, impl } = fakeFetch([
     { status: 200, body: { access_token: "SHORT", token_type: "bearer" } },

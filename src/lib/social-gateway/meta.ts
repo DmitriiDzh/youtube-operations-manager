@@ -257,13 +257,16 @@ export function createMetaClient(args: { fetchImpl?: Fetch; postingAllowed?: () 
     },
 
     /** The consent dialog the owner's browser opens (Facebook Login for Business). */
-    authorizeUrl(input: { appId: string; redirectUri: string; state: string }): string {
+    authorizeUrl(input: { appId: string; redirectUri: string; state: string; configId?: string | null }): string {
       const u = new URL(META_DIALOG_BASE);
       u.searchParams.set("client_id", input.appId);
       u.searchParams.set("redirect_uri", input.redirectUri);
       u.searchParams.set("state", input.state);
       u.searchParams.set("response_type", "code");
-      u.searchParams.set("scope", META_SCOPES.join(","));
+      // 2026-11-15: Instagram accepts a resumable Reel upload only from an app on Facebook Login for Business; with its configuration
+      // (`config_id`) the permissions come from the configuration, so no `scope` is sent.
+      if (input.configId) u.searchParams.set("config_id", input.configId);
+      else u.searchParams.set("scope", META_SCOPES.join(","));
       return u.toString();
     },
 
@@ -282,9 +285,11 @@ export function createMetaClient(args: { fetchImpl?: Fetch; postingAllowed?: () 
       b.searchParams.set("client_id", input.appId);
       b.searchParams.set("client_secret", input.appSecret);
       b.searchParams.set("fb_exchange_token", shortToken);
-      const long = await getJson(b, "oauth.fb_exchange_token");
-      const userToken = typeof long.access_token === "string" ? long.access_token : shortToken;
-      const expiresIn = typeof long.expires_in === "number" ? long.expires_in : null;
+      // A Facebook Login for Business configuration may hand out a token that is not exchanged (a system-user token never expires):
+      // then the code's own token is kept.
+      const long = await getJson(b, "oauth.fb_exchange_token").catch(() => null);
+      const userToken = long && typeof long.access_token === "string" ? long.access_token : shortToken;
+      const expiresIn = long && typeof long.expires_in === "number" ? long.expires_in : typeof short.expires_in === "number" ? short.expires_in : null;
       return { userToken, expiresAt: expiresIn ? Date.now() + expiresIn * 1000 : null };
     },
 
