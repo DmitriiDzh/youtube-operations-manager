@@ -49,12 +49,23 @@ type Fetch = typeof fetch;
 
 function metaError(status: number, body: unknown, call: string): DomainError {
   const err = (body && typeof body === "object" && "error" in body ? (body as { error?: Record<string, unknown> }).error : null) ?? {};
-  const message = typeof err.message === "string" ? err.message.slice(0, 300) : `HTTP ${status}`;
+  // rupload.facebook.com answers `{ debug_info: { type, message } }` rather than the Graph API's `{ error }` (2026-11-15: both first
+  // uploads came back as a bare "HTTP 400").
+  const debug = body && typeof body === "object" && "debug_info" in body ? (body as { debug_info?: Record<string, unknown> }).debug_info : null;
+  const message =
+    typeof err.message === "string"
+      ? err.message.slice(0, 300)
+      : typeof debug?.message === "string"
+        ? `${typeof debug.type === "string" ? `${debug.type}: ` : ""}${debug.message}`.slice(0, 300)
+        : `HTTP ${status}`;
   const code = status === 401 || err.code === 190 ? "social_token_invalid" : status === 429 || err.code === 4 || err.code === 32 ? "social_rate_limited" : "social_request_rejected";
   return new DomainError({ code, message: `Meta refused ${call}: ${message}`, details: { network: "meta", call, status, metaCode: err.code ?? null } });
 }
 
 export type UploadBody = { stream: () => ReadableStream<Uint8Array>; sizeBytes: number };
+
+/** Meta's Reels file limit ("up to 1 GB"); a larger file is refused before any request. */
+const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024;
 
 /**
  * `postingAllowed`: the switch «Публикация в соцсети» of this computer (the cross-posting module's setting), asked immediately
@@ -94,14 +105,17 @@ export function createMetaClient(args: { fetchImpl?: Fetch; postingAllowed?: () 
   /** The file's bytes to rupload (one request from offset 0); the token in the Authorization header. */
   async function uploadTo(url: string, token: string, body: UploadBody, call: string): Promise<Record<string, unknown>> {
     await assertPostingAllowed(call);
+    // The whole file in one body with its length (2026-11-15: a streamed, chunked body without Content-Length was refused by
+    // rupload with HTTP 400 for both networks). Reels are small (Meta's limit is 1 GB); the bytes read must be the size announced.
+    if (body.sizeBytes > MAX_UPLOAD_BYTES) throw new DomainError({ code: "social_request_rejected", message: `The video is larger than Meta accepts for a Reel (${body.sizeBytes} bytes).`, details: { network: "meta", call } });
+    const bytes = new Uint8Array(await new Response(body.stream()).arrayBuffer());
+    if (bytes.byteLength !== body.sizeBytes) throw new DomainError({ code: "social_request_rejected", message: `The video file changed while it was read (${bytes.byteLength} of ${body.sizeBytes} bytes).`, details: { network: "meta", call } });
     let res: Response;
     try {
       res = await fetchImpl(url, {
         method: "POST",
         headers: { authorization: `OAuth ${token}`, offset: "0", file_size: String(body.sizeBytes), "content-type": "application/octet-stream" },
-        body: body.stream(),
-        // Node's fetch needs this for a streamed request body.
-        ...({ duplex: "half" } as Record<string, unknown>),
+        body: bytes,
         redirect: "error",
         signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
       } as RequestInit);
