@@ -4,7 +4,7 @@ import type { MetaClient, MetaPage } from "@/lib/social-gateway";
 import { CONNECT_STATE_TTL_MS, DomainError, META_POSTING_SCOPES, type AccountCheck, type AccountCheckProblem, PENDING_PICK_TTL_MS, notConfigured, type MetaAppStatus, type PendingPageView, type SocialAccountRow, type SocialAccountView, type SocialNetwork } from "./contracts";
 import type { SocialJob } from "./runner";
 import { FACEBOOK_REEL, INSTAGRAM_REEL } from "./limits";
-import { disconnectInputSchema, parseWithSchema, selectPageInputSchema, setMetaAppInputSchema, startConnectInputSchema } from "./schemas";
+import { disconnectInputSchema, parseWithSchema, selectPageInputSchema, setMetaAppInputSchema, setMetaConfigInputSchema, startConnectInputSchema } from "./schemas";
 
 // ---------------------------------------------------------------------------
 // BL-252 (ADR 0068) stage 1: the Meta app and connecting a channel's Facebook Page + Instagram professional account.
@@ -56,12 +56,14 @@ export function createCrossPostingServices(deps: CrossPostingDeps) {
     for (const [k, v] of picks) if (v.expiresAt <= now) picks.delete(k);
   }
 
-  async function readApp(): Promise<{ appId: string; appSecret: string }> {
+  async function readApp(): Promise<{ appId: string; appSecret: string; configId: string | null }> {
     const raw = await deps.appSecret.read();
     if (!raw) throw notConfigured();
     try {
-      const parsed = JSON.parse(raw) as { appId?: unknown; appSecret?: unknown };
-      if (typeof parsed.appId === "string" && typeof parsed.appSecret === "string") return { appId: parsed.appId, appSecret: parsed.appSecret };
+      const parsed = JSON.parse(raw) as { appId?: unknown; appSecret?: unknown; configId?: unknown };
+      if (typeof parsed.appId === "string" && typeof parsed.appSecret === "string") {
+        return { appId: parsed.appId, appSecret: parsed.appSecret, configId: typeof parsed.configId === "string" && parsed.configId ? parsed.configId : null };
+      }
     } catch {
       // fall through
     }
@@ -87,19 +89,34 @@ export function createCrossPostingServices(deps: CrossPostingDeps) {
   const api = {
     async getMetaApp(): Promise<MetaAppStatus> {
       const info = await deps.appSecret.info();
-      return { configured: Boolean(info), appId: info?.hints.appId ?? null };
+      return { configured: Boolean(info), appId: info?.hints.appId ?? null, configId: info?.hints.configId ?? null };
     },
 
     /** Saved as typed; Meta checks it on the first connect (a wrong secret fails the code exchange with Meta's own message). */
     async setMetaApp(raw: unknown): Promise<MetaAppStatus> {
       const input = parseWithSchema(setMetaAppInputSchema, raw, "Meta app");
-      await deps.appSecret.write(JSON.stringify({ appId: input.appId, appSecret: input.appSecret.toLowerCase() }), { hints: { appId: input.appId } });
-      return { configured: true, appId: input.appId };
+      // A configuration saved before stays (it belongs to the same app until the owner changes it).
+      const previous = await readApp().catch(() => null);
+      const configId = previous && previous.appId === input.appId ? previous.configId : null;
+      await deps.appSecret.write(JSON.stringify({ appId: input.appId, appSecret: input.appSecret.toLowerCase(), ...(configId ? { configId } : {}) }), { hints: { appId: input.appId, ...(configId ? { configId } : {}) } });
+      return { configured: true, appId: input.appId, configId };
+    },
+
+    /**
+     * 2026-11-15: the Facebook Login for Business configuration (`config_id`) the connect dialog uses -- Instagram refuses resumable
+     * Reel uploads from apps without it. Stored with the app (the secret is kept as it is); null goes back to the plain scopes.
+     */
+    async setMetaConfig(raw: unknown): Promise<MetaAppStatus> {
+      const input = parseWithSchema(setMetaConfigInputSchema, raw, "Meta configuration");
+      const app = await readApp();
+      const configId = input.configId;
+      await deps.appSecret.write(JSON.stringify({ appId: app.appId, appSecret: app.appSecret, ...(configId ? { configId } : {}) }), { hints: { appId: app.appId, ...(configId ? { configId } : {}) } });
+      return { configured: true, appId: app.appId, configId };
     },
 
     async clearMetaApp(): Promise<MetaAppStatus> {
       await deps.appSecret.clear();
-      return { configured: false, appId: null };
+      return { configured: false, appId: null, configId: null };
     },
 
     async startConnect(raw: unknown, redirectUri: string): Promise<{ authorizeUrl: string }> {
@@ -109,7 +126,7 @@ export function createCrossPostingServices(deps: CrossPostingDeps) {
       sweep();
       const state = deps.randomId();
       states.set(state, { channelId: input.channelId, redirectUri, expiresAt: deps.now() + CONNECT_STATE_TTL_MS });
-      return { authorizeUrl: deps.meta.authorizeUrl({ appId: app.appId, redirectUri, state }) };
+      return { authorizeUrl: deps.meta.authorizeUrl({ appId: app.appId, redirectUri, state, configId: app.configId }) };
     },
 
     /** The callback: the state must be one this process issued, unexpired, for this same redirect URI; it is used up either way. */

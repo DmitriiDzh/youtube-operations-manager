@@ -5,6 +5,9 @@ import { SOCIAL_NETWORKS } from "./contracts";
 export { parseWithSchema };
 
 // BL-252: the module's inputs. A Meta App ID is digits; an App Secret is 32 hex characters (Meta app dashboard → App settings → Basic).
+/** The Facebook Login for Business configuration of the Meta app (a public id, not a secret); null removes it. */
+export const setMetaConfigInputSchema = z.object({ configId: z.string().trim().regex(/^\d{5,25}$/, "a Configuration ID is 5-25 digits").nullable() }).strict();
+
 export const setMetaAppInputSchema = z
   .object({
     appId: z.string().trim().regex(/^\d{5,20}$/, "an App ID is 5-20 digits"),

@@ -11,5 +11,11 @@ export function createMetaAppDeleteHandler(deps: SocialRouteDeps = defaultSocial
   return socialHandler(deps, async ({ core }) => NextResponse.json(await core.clearMetaApp()));
 }
 
+// 2026-11-15: the Facebook Login for Business configuration id (not a secret; the stored App Secret is kept). Mac-only like PUT.
+export function createMetaAppPatchHandler(deps: SocialRouteDeps = defaultSocialRouteDeps()) {
+  return socialHandler(deps, async ({ core, request }) => NextResponse.json(await core.setMetaConfig(await readJsonBody(request))));
+}
+
 export const PUT = createMetaAppPutHandler();
+export const PATCH = createMetaAppPatchHandler();
 export const DELETE = createMetaAppDeleteHandler();

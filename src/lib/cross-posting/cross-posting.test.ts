@@ -50,7 +50,7 @@ function harness() {
     },
   };
   const meta: Pick<MetaClient, "authorizeUrl" | "exchangeCode" | "listPages" | "inspectPageToken"> = {
-    authorizeUrl: ({ appId, redirectUri, state }) => `https://meta.test/dialog?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${state}`,
+    authorizeUrl: ({ appId, redirectUri, state, configId }) => `https://meta.test/dialog?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${state}${configId ? `&config_id=${configId}` : ""}`,
     exchangeCode: async (input) => (exchanged.push(input), { userToken: "USER-TOKEN", expiresAt: null }),
     listPages: async () => PAGES,
     inspectPageToken: async (input) => (inspected.push({ pageId: input.pageId, pageToken: input.pageToken }), inspection),
@@ -82,16 +82,17 @@ const isCode = (code: string) => (e: unknown) => e instanceof DomainError && e.c
 
 test("AC-1: the App Secret goes only into the device secret; status shows the App ID only; bad shapes refused", async () => {
   const h = harness();
-  assert.deepEqual(await h.core.getMetaApp(), { configured: false, appId: null });
-  assert.deepEqual(await h.core.setMetaApp(APP), { configured: true, appId: "1234567890" });
+  // 2026-11-15 (requirement added: the FLfB configuration id is shown too; it is public, not a secret): configId in the status.
+  assert.deepEqual(await h.core.getMetaApp(), { configured: false, appId: null, configId: null });
+  assert.deepEqual(await h.core.setMetaApp(APP), { configured: true, appId: "1234567890", configId: null });
   assert.deepEqual(JSON.parse(h.getSecret()!.plaintext), { appId: "1234567890", appSecret: "0123456789abcdef0123456789abcdef" });
   const status = await h.core.getMetaApp();
-  assert.deepEqual(status, { configured: true, appId: "1234567890" });
+  assert.deepEqual(status, { configured: true, appId: "1234567890", configId: null });
   assert.ok(!JSON.stringify(status).includes("0123456789abcdef"));
   await assert.rejects(h.core.setMetaApp({ appId: "abc", appSecret: APP.appSecret }), isCode("validation_failed"));
   await assert.rejects(h.core.setMetaApp({ appId: APP.appId, appSecret: "short" }), isCode("validation_failed"));
   await assert.rejects(h.core.setMetaApp({ ...APP, extra: 1 }), isCode("validation_failed"));
-  assert.deepEqual(await h.core.clearMetaApp(), { configured: false, appId: null });
+  assert.deepEqual(await h.core.clearMetaApp(), { configured: false, appId: null, configId: null });
   assert.equal(h.getSecret(), null);
 });
 
@@ -236,4 +237,22 @@ test("AC-XP-8: no connected Page -> not_found; a token that does not open with t
   const c = await connected();
   for (const row of c.rows) row.tokenSealed = JSON.stringify({ ciphertext: Buffer.from("garbage").toString("base64"), iv: "iv", authTag: "tag" });
   await assert.rejects(c.core.checkAccounts("UC1"), isCode("device_secret_unreadable"));
+});
+
+// 2026-11-15 (Instagram refuses resumable uploads from apps without Facebook Login for Business): the owner saves the app's FLfB
+// configuration id. It is stored with the app WITHOUT re-entering or changing the secret, the connect dialog then carries
+// config_id and no scope, and removing it goes back to the scopes.
+test("FLfB configuration: saved beside the app (secret unchanged), used by the connect dialog, removable", async () => {
+  const h = harness();
+  await h.core.setMetaApp(APP);
+  const secretBefore = JSON.parse(h.getSecret()!.plaintext).appSecret;
+  assert.deepEqual(await h.core.setMetaConfig({ configId: "1234567890123456" }), { configured: true, appId: "1234567890", configId: "1234567890123456" });
+  const stored = JSON.parse(h.getSecret()!.plaintext);
+  assert.equal(stored.appSecret, secretBefore);
+  assert.equal(stored.configId, "1234567890123456");
+  assert.equal((await h.core.getMetaApp()).configId, "1234567890123456");
+  assert.equal(new URL((await h.core.startConnect({ channelId: "UC1" }, REDIRECT)).authorizeUrl).searchParams.get("config_id"), "1234567890123456");
+  await assert.rejects(h.core.setMetaConfig({ configId: "abc" }), isCode("validation_failed"));
+  assert.deepEqual(await h.core.setMetaConfig({ configId: null }), { configured: true, appId: "1234567890", configId: null });
+  assert.equal(JSON.parse(h.getSecret()!.plaintext).configId, undefined);
 });
