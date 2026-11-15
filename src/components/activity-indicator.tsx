@@ -12,6 +12,8 @@ import { useChannelNames } from "./use-channel-names";
 // BL-195 stage D (UI_FEEDBACK_CLARITY_PLAN.md §3, AC-FB-09): the header's Activity centre -- a spinning ring with the number of
 // things running in the background (hidden at 0); a click lists them grouped by kind, each with its state, its start and a link
 // to its tab. Long work never blocks a screen: it is followed here. Polled every 10 s while the page is visible.
+// BL-258 (owner msg 4385): every channel's work -- each row names its channel -- uploads in the shared queue order with their place,
+// and a progress bar where the work reports how far it is.
 
 const POLL_MS = 10_000;
 
@@ -117,7 +119,9 @@ export function ActivityIndicator() {
   const unavailable = summary ? (Object.entries(summary.sources) as Array<[ActivitySource, string]>).filter(([, s]) => s === "unavailable").map(([s]) => s) : [];
   if (items.length === 0 && !open) return null;
 
-  const row = (item: ActivityItem): { key: string; title: string; detail: string; href: string } => {
+  const row = (item: ActivityItem): { key: string; title: string; detail: string; href: string; channel: string | null; progress: number | null } => {
+    const channel = item.channelId ? nameOf(item.channelId) : null;
+    const progress = item.source === "live_streams" ? null : item.progress;
     switch (item.source) {
       case "operations":
         return {
@@ -125,6 +129,8 @@ export function ActivityIndicator() {
           title: t(OPERATION_TEXT[item.kind] ?? "activity.op.other"),
           detail: [item.status === "cancelling" ? t("common.stopping") : t("activity.state.running"), item.total > 0 ? `${item.done} / ${item.total}` : null, t("activity.since", { time: since(item.startedAt) })].filter(Boolean).join(" · "),
           href: OPERATION_HREF[item.kind] ?? SOURCE_HREF.operations,
+          channel,
+          progress,
         };
       case "media_jobs":
         return {
@@ -134,13 +140,22 @@ export function ActivityIndicator() {
           detail: [JOB_WAITING.has(item.status) ? t("activity.state.waiting") : t("activity.state.running"), item.device ? t("activity.onDevice", { device: item.device }) : null, t("activity.since", { time: since(item.createdAt) })].filter(Boolean).join(" · "),
           // A Gemini job lives on its kind's Media tab, a RunPod job under its session.
           href: item.provider === "gemini" ? "/media" : SOURCE_HREF.media_jobs,
+          channel,
+          progress,
         };
       case "uploads":
         return {
           key: `upload:${item.id}`,
           title: t("activity.upload.title", { video: item.video }),
-          detail: t(UPLOAD_TEXT[item.status] ?? "publishingUploads.status.queued", { percent: item.totalBytes > 0 ? Math.floor((item.storedBytes / item.totalBytes) * 100) : 0 }),
+          detail: [
+            t(UPLOAD_TEXT[item.status] ?? "publishingUploads.status.queued", { percent: item.progress ?? 0 }),
+            item.queuePosition !== null ? t("activity.queuePosition", { n: item.queuePosition }) : null,
+          ]
+            .filter(Boolean)
+            .join(" · "),
           href: SOURCE_HREF.uploads,
+          channel,
+          progress,
         };
       case "live_streams":
         return {
@@ -148,6 +163,8 @@ export function ActivityIndicator() {
           title: t("activity.stream.title", { channel: nameOf(item.channelId) }),
           detail: [t(STREAM_TEXT[item.state] ?? "live.state.live"), item.since ? t("activity.since", { time: since(item.since) }) : null].filter(Boolean).join(" · "),
           href: SOURCE_HREF.live_streams,
+          channel: null,
+          progress: null,
         };
     }
   };
@@ -179,7 +196,16 @@ export function ActivityIndicator() {
                   <Spinner className="mt-0.5 h-3 w-3 shrink-0" />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-xs font-medium text-zinc-100">{r.title}</span>
+                    {r.channel && <span className="block truncate text-[11px] text-sky-300/80">{r.channel}</span>}
                     <span className="block text-xs text-zinc-400">{r.detail}</span>
+                    {r.progress !== null && (
+                      <span className="mt-1.5 flex items-center gap-2" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={r.progress} aria-label={t("activity.progress", { percent: r.progress })}>
+                        <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-zinc-800">
+                          <span className="block h-full rounded-full bg-accent transition-[width] duration-500" style={{ width: `${r.progress}%` }} />
+                        </span>
+                        <span className="w-8 text-right text-[11px] tabular-nums text-zinc-400">{t("activity.percent", { percent: r.progress })}</span>
+                      </span>
+                    )}
                   </span>
                 </Link>
               ))}
