@@ -111,7 +111,7 @@ export type RestartBusyReaders = {
   geminiJobs(): Promise<string[]>;
   /** BL-236 (ADR 0057): ElevenLabs takes / voice designs queued, submitting or running. */
   elevenlabsJobs(): Promise<string[]>;
-  /** Uploads being sent or finished (uploading, processing, finishing). */
+  /** Uploads in a window a restart must not cut (owner msg 4420): the last chunk sent but not yet answered, or the finishing writes. */
   uploads(): Promise<string[]>;
   /** Live streams being started, stopped or switched (a running stream is not one). */
   liveStreams(): Promise<string[]>;

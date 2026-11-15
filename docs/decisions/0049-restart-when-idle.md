@@ -53,3 +53,11 @@ Status: Accepted
 - **Known limits.** The quiet window counts MCP calls by their start, so a single MCP call or Web request that runs longer than the
   quiet minutes and touches none of the checked sources can still be cut by the restart. The owner's own Web activity (for example
   approving a session at the same second) is not counted; the window between the last check and the stop is under 15 s.
+
+## Amendment 1 (2026-11-15, owner msg 4420): uploads hold a restart only in their short windows
+
+A YouTube upload is resumable: the runner keeps the resumable session and, after a restart, asks YouTube for the offset and goes on
+(seen live: V93 after the 01:13Z restart, V98 after the forced 12:18Z restart on 2026-11-15, each from where it was). A video
+YouTube is processing is only polled. The owner asked that uploads stop holding restarts. Since then a `publishing_uploads` row
+holds one only while `finishing` (the writes after processing) or `uploading` with `steps.finalChunkSentAt` set (the last chunk sent,
+its answer not yet recorded -- the "never twice" window; an unreadable `steps_json` counts, fail closed). Social uploads are unchanged.

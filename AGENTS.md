@@ -261,7 +261,8 @@ Established 2026-10-24 (owner, Telegram msg 3420: «перезапуск сер�
 
 **Restart only through restart-when-idle; ask nobody first.** Use the owner's button (Settings → О программе) or
 `scripts/macos/restart-when-idle.sh`. The server then waits by itself until nothing works with it: media sessions and jobs,
-Gemini jobs, uploads, a live stream starting/stopping/switching, the operation lock, active holds, and the owner's quiet minutes
+Gemini jobs, uploads only in their last-chunk or finishing window (owner msg 4420, 2026-11-15: an upload is resumable and goes on after
+a restart, so sending and YouTube's processing no longer hold one), a live stream starting/stopping/switching, the operation lock, active holds, and the owner's quiet minutes
 without MCP calls (default 3). Only then does it restart itself. Agents keep it from restarting with holds (`factory_hold_restart` /
 `agent_hold_restart`).
 

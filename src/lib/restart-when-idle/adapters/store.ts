@@ -104,7 +104,6 @@ export function createRestartStore(client: Client, settings: { get(): Promise<nu
 }
 
 const MEDIA_JOB_BUSY_STATUSES = ["queued", "submitted", "generating", "transferring"] as const;
-const UPLOAD_BUSY_STATUSES = ["uploading", "processing", "finishing"] as const;
 
 /** The table reads of AC-RI-01 (a missing table counts as none -- a database from before that module). */
 export function createTableReaders(client: Client) {
@@ -126,7 +125,14 @@ export function createTableReaders(client: Client) {
     // BL-236: ElevenLabs takes and voice designs (its own table; a take cut by a restart would be failed at its characters).
     elevenlabsJobs: () => ids(`SELECT job_id AS id FROM elevenlabs_speech_jobs WHERE status IN (${marks(ELEVENLABS_ACTIVE_STATUSES)}) ORDER BY created_at`, ELEVENLABS_ACTIVE_STATUSES),
     uploads: async () => [
-      ...(await ids(`SELECT id FROM publishing_uploads WHERE status IN (${marks(UPLOAD_BUSY_STATUSES)}) ORDER BY created_at`, UPLOAD_BUSY_STATUSES)),
+      // Owner msg 4420 (2026-11-15): a YouTube upload is resumable -- the runner keeps the session and asks YouTube for the offset
+      // after a restart (V93 on 15.11 01:13Z, V98 at 12:18Z went on from where they were) -- and a video YouTube is processing is
+      // only polled. So only the two short windows hold a restart: the last chunk was sent (`finalChunkSentAt`, the "never twice"
+      // window until the answer is recorded) and the finishing writes after processing (`finishing`).
+      ...(await ids(
+        "SELECT id FROM publishing_uploads WHERE status = 'finishing' OR (status = 'uploading' AND CASE WHEN json_valid(steps_json) THEN json_extract(steps_json, '$.finalChunkSentAt') IS NOT NULL ELSE 1 END) ORDER BY created_at",
+        []
+      )),
       // BL-252 (ADR 0068 amendment 1 §4): a social upload whose bytes are being sent holds a restart like a YouTube upload; once Meta
       // is processing (`processing`) a restart is safe -- the job reads its status after it.
       // A row left `uploading` by a crash must not hold every restart: only one touched in the last 40 minutes counts.
