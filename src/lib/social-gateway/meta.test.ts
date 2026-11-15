@@ -148,6 +148,9 @@ test("Instagram Reel: container (REELS, resumable, caption, is_ai_generated; tok
   assert.equal(h.get("authorization"), "OAuth PT");
   assert.equal(h.get("offset"), "0");
   assert.equal(h.get("file_size"), "5");
+  // 2026-11-15: the whole file goes as one body of known length (fetch then sends Content-Length), never a chunked stream.
+  assert.ok(calls[1].init?.body instanceof Uint8Array);
+  assert.equal(new TextDecoder().decode(calls[1].init?.body as Uint8Array), "12345");
   assert.deepEqual(await client.igPublish({ igUserId: "1784", containerId: "C1", token: "PT" }), { mediaId: "M1" });
   assert.equal(new URLSearchParams(String(calls[2].init?.body)).get("creation_id"), "C1");
   assert.equal(await client.igPermalink({ mediaId: "M1", token: "PT" }), "https://www.instagram.com/reel/abc/");
@@ -174,5 +177,13 @@ test("Facebook Reel: an upload address outside rupload.facebook.com is refused (
   const client = createMetaClient({ fetchImpl: impl, postingAllowed: async () => true });
   await assert.rejects(client.fbReelStart({ pageId: "P1", token: "PT" }), (e: unknown) => e instanceof DomainError && e.code === "social_request_rejected");
   await assert.rejects(client.fbUploadReel({ uploadUrl: "https://evil.example/x", token: "PT", body: body() }), (e: unknown) => e instanceof DomainError && e.code === "social_request_rejected");
+  assert.equal(calls.length, 1);
+});
+
+test("2026-11-15: a rupload refusal carries Meta's debug_info message; a file whose bytes differ from its size is refused before the request", async () => {
+  const { calls, impl } = fakeFetch([{ status: 400, body: { debug_info: { retriable: false, type: "ProcessingFailedError", message: "Request processing failed" } } }]);
+  const client = createMetaClient({ fetchImpl: impl, postingAllowed: async () => true });
+  await assert.rejects(client.igUploadReel({ containerId: "C1", token: "PT", body: body("12345") }), (e: unknown) => e instanceof DomainError && /ProcessingFailedError: Request processing failed/.test(e.message));
+  await assert.rejects(client.igUploadReel({ containerId: "C1", token: "PT", body: { stream: () => new Blob(["123"]).stream(), sizeBytes: 5 } }), (e: unknown) => e instanceof DomainError && /changed while it was read/.test(e.message));
   assert.equal(calls.length, 1);
 });
