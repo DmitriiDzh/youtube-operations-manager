@@ -143,6 +143,7 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
   }
 
   if (!channelId) return null;
+  const gateOff = data !== null && data.readable && !data.required;
   const toggle = (manifest: string) =>
     setOpen((current) => {
       const next = new Set(current);
@@ -153,7 +154,7 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
 
   const renderCard = (item: PackageReviewDto) => {
     // A waiting video is open by default (that is what the owner came for); the others fold until opened.
-    const expanded = item.state === "pending" ? !open.has(item.manifestSha256) : open.has(item.manifestSha256);
+    const expanded = item.state === "pending" && !gateOff ? !open.has(item.manifestSha256) : open.has(item.manifestSha256);
     const actions = actionsOf(item);
     const rowBusy = busy === item.manifestSha256;
     return (
@@ -165,7 +166,12 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
           title={t(expanded ? "packageReviews.collapse" : "packageReviews.expand")}
           className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-zinc-800/40"
         >
-          <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ${STATE_STYLES[item.state]}`}>{t(STATE_KEYS[item.state])}</span>
+          {/* Review M2: with the gate off a not-reviewed package waits for nobody -- a neutral label instead of «Ждёт». */}
+          {gateOff && item.state === "pending" ? (
+            <span className="shrink-0 rounded-full bg-zinc-800 px-2 py-0.5 text-[11px] font-medium text-zinc-400 ring-1 ring-zinc-700">{t("packageReviews.state.off")}</span>
+          ) : (
+            <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ${STATE_STYLES[item.state]}`}>{t(STATE_KEYS[item.state])}</span>
+          )}
           <span className="shrink-0 font-medium tabular-nums text-zinc-100">{item.video}</span>
           <span className="min-w-0 flex-1 truncate text-sm text-zinc-300">{item.title}</span>
           <span className="shrink-0 text-xs tabular-nums text-zinc-500">{durationLabel(item.durationSeconds)}</span>
@@ -284,7 +290,9 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
           {data.packages === "ok" && data.items.length === 0 && <p className="text-sm text-zinc-500">{t("packageReviews.empty")}</p>}
           {data.items.length > 0 && (
             <>
-              <p className={`text-sm font-medium ${data.waiting > 0 ? "text-amber-300" : "text-zinc-400"}`}>{data.waiting > 0 ? t("packageReviews.waiting", { count: data.waiting }) : t("packageReviews.noneWaiting")}</p>
+              <p className={`text-sm font-medium ${data.waiting > 0 ? "text-amber-300" : "text-zinc-400"}`}>
+                {gateOff ? t("packageReviews.gateOff") : data.waiting > 0 ? t("packageReviews.waiting", { count: data.waiting }) : t("packageReviews.noneWaiting")}
+              </p>
               <ul className="space-y-2">{data.items.map(renderCard)}</ul>
             </>
           )}

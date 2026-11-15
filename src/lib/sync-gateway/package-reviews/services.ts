@@ -62,12 +62,13 @@ export function createPackageReviewsCore(deps: ServiceDependencies) {
       });
     },
 
-    /** One decision, appended under its own id. */
+    /** One decision, appended under its own id, with the next `seq` of this copy (review L1). */
     addDecision(channelId: string, decision: PackageReviewDecision): Promise<void> {
       return serialized(async () => {
         const doc = await loadOrGenesis(channelId);
+        const highest = Object.values(doc.decisions ?? {}).reduce((max, d) => (typeof d.seq === "number" && d.seq > max ? d.seq : max), 0);
         const next = Automerge.change(doc, `${decision.kind} ${decision.video}`, (draft) => {
-          draft.decisions[decision.id] = clone(decision);
+          draft.decisions[decision.id] = { ...clone(decision), seq: highest + 1 };
         });
         await deps.core.save(channelId, next);
       });

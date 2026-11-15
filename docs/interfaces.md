@@ -1556,7 +1556,9 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
   `agent_get_publishing_calendar`):** for a channel whose switch is on, a package not uploaded and with no other problem gets
   `owner_review_pending` (no decision for this manifest, or the approved thumbnail file changed) or `owner_review_returned`
   (`params.comment`), so it is `not_ready`. A channel without a review document scans exactly as before; a document that cannot be read
-  holds every package (`owner_review_pending`). Stored in the sync family `package_reviews`.
+  holds every package (`owner_review_pending`). Stored in the sync family `package_reviews`; each decision carries the document's
+  `seq` (the standing decision is the highest `seq`, then `at`). A queued upload the review no longer covers is cancelled by the runner
+  before any byte with `errorCode: owner_review_withdrawn`. With the switch off the list's `waiting` is 0.
 - No WRITE, research or collection request, media session or job.
 
 ## API Route Handlers (selected)

@@ -5265,6 +5265,12 @@ from the channel's own workspace images, behind the same identity check and Live
 - **Gate:** `publishing/package-scan.ts` reads `ownerReview(channelId)` once per scan (a failing port = closed gate). Only a package with
   no upload record and no other problem is judged; the thumbnail is hashed only when an approval stands for that manifest. Wired inside
   `createPackageScanReads`, so every scan consumer sees it.
+- **Upload runner (review M1):** the port `ownerReview` is asked again before a `queued` row starts; with the gate on, a row whose
+  manifest is not approved with the current thumbnail file (returned while queued, queued before the gate, thumbnail swapped) is
+  cancelled `owner_review_withdrawn` (audited `publishing.upload_cancelled_owner_review`) before any byte. Rows already sending follow
+  BL-244.
+- **Order (review L1):** the store gives each decision `seq` = highest in the copy + 1; the standing decision is ordered by `seq`, then
+  `at`, then id (RISK-154 for the residual clock risk). With the gate off the view reports `waiting: 0` (no badge).
 - **Tried exception:** `listUploadRowsForTriedRule` + `triedExceptionsOf`: an approved manifest whose rows are all `cancelled`, without a
   video id, and created before the approval is removed from the automatic upload's tried set; a row after the approval keeps it tried
   (no re-queue loop).

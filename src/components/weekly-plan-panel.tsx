@@ -496,10 +496,11 @@ function SlotRow(props: {
   } else if (deletedOnYoutube(slot)) meta = { text: t("weekPlan.deletedOnYoutube"), tone: "text-red-300" };
   else if (slot.status === "failed") meta = { text: t("weekPlan.failed", { code: slot.statusCode ?? "?" }), tone: "text-red-300" };
   else if (slot.released) meta = { text: t("weekPlan.released"), tone: "text-zinc-500" };
-  else if (slot.approval === "approved") meta = { text: t("weekPlan.approved", { at: at(slot.approvedAt ?? slot.updatedAt) }), tone: "text-emerald-300" };
-  // BL-257 (ADR 0070, AC-PR-14): the package waits for the owner's review in Media, or he returned it -- before "waiting for its package".
+  // BL-257 (ADR 0070, AC-PR-14): the package waits for the owner's review in Media, or he returned it -- checked before "approved"
+  // (review L4: a slot approved before the gate was switched on still waits for the review) and before "waiting for its package".
   else if (ownerReviewOf(pkg).review === "pending") meta = { text: t("weekPlan.awaitingOwnerReview"), tone: "text-amber-300" };
   else if (ownerReviewOf(pkg).review === "returned") meta = { text: t("weekPlan.ownerReviewReturned", { comment: ownerReviewOf(pkg).comment ?? "" }), tone: "text-red-300/90" };
+  else if (slot.approval === "approved") meta = { text: t("weekPlan.approved", { at: at(slot.approvedAt ?? slot.updatedAt) }), tone: "text-emerald-300" };
   // BL-242: nothing to approve until the package is ready -- a short status, no button.
   else if (slot.approval === "awaiting_package") meta = { text: t("weekPlan.awaitingPackage"), tone: "text-sky-300/80" };
   else if (mode === "one") meta = { text: t("weekPlan.notApproved"), tone: "text-zinc-400" };

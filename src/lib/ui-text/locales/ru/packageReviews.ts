@@ -20,6 +20,8 @@ export const packageReviews: Record<keyof typeof en, string> = {
   "packageReviews.state.approved": "Одобрено",
   "packageReviews.state.returned": "Возвращено",
   "packageReviews.state.uploaded": "Загружено",
+  "packageReviews.state.off": "Проверка выключена",
+  "packageReviews.gateOff": "Проверка для этого канала выключена: пакеты готовы, как только фабрика их записала.",
   "packageReviews.expand": "Открыть",
   "packageReviews.collapse": "Свернуть",
   "packageReviews.duration": "{minutes}:{seconds}",

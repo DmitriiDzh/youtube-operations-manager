@@ -97,3 +97,16 @@ test("AC-PR-11: only an approved manifest whose rows are ALL cancelled, without 
   const returned = ownerReviewStateOf(snap(true, [d("d1", A, "approved", "2026-11-15T12:00:00.000Z"), d("d3", A, "returned", "2026-11-15T12:30:00.000Z")]));
   assert.deepEqual([...triedExceptionsOf(returned, [{ manifestSha256: A, status: "cancelled", videoId: null, createdAtMs: before }])], []);
 });
+
+test("review L3: the tried exception applies only while the gate is on", () => {
+  const off = ownerReviewStateOf(snap(false, [d("d1", A, "approved", "2026-11-15T12:00:00.000Z")]));
+  assert.deepEqual([...triedExceptionsOf(off, [{ manifestSha256: A, status: "cancelled", videoId: null, createdAtMs: Date.parse("2026-11-15T09:00:00.000Z") }])], []);
+});
+
+test("review L1: the document's order (seq) beats the wall clock -- a later decision from a computer whose clock is behind still stands", () => {
+  const macReturn = { ...d("m1", A, "returned", "2026-11-15T12:00:00.000Z"), seq: 1 };
+  const windowsApproveSlowClock = { ...d("w1", A, "approved", "2026-11-15T11:00:00.000Z"), seq: 2 };
+  assert.equal(latestOwnerDecision(A, [macReturn, windowsApproveSlowClock])?.id, "w1");
+  // same seq (made offline at once): the time decides
+  assert.equal(latestOwnerDecision(A, [{ ...macReturn, seq: 2 }, windowsApproveSlowClock])?.id, "m1");
+});

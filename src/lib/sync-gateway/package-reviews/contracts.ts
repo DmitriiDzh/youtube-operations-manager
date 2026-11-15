@@ -24,6 +24,12 @@ export type PackageReviewDecision = {
   /** The computer it was made on (host name), or null. */
   device: string | null;
   at: string;
+  /**
+   * Review L1: the document's own order -- one more than the highest `seq` this computer's copy held when it wrote the decision, so a
+   * decision made after seeing another one orders after it whatever the two computers' clocks say. Set by the store; two decisions
+   * made offline at once may share one (then `at`, then `id`). Absent on a decision written without it.
+   */
+  seq?: number;
 };
 
 /** The owner's switch: review the channel's final packages before they count as ready. Assigned whole. */

@@ -49,7 +49,8 @@ test("AC-PR-12: no document reads as not existing; the switch and a decision mad
   assert.deepEqual(await windows.read(CH), {
     exists: true,
     required: { value: true, updatedAt: "2026-11-15T09:00:00.000Z", by: "owner", device: "Mac" },
-    decisions: { d1: decision("d1", "returned") },
+    // review L1: the store gives each decision the copy's next seq (1 here).
+    decisions: { d1: { ...decision("d1", "returned"), seq: 1 } },
   });
 });
 
@@ -68,4 +69,16 @@ test("AC-PR-07 base: a document whose bytes cannot be loaded makes read throw (n
   const mac = computer();
   mac.bytes.set(CH, new Uint8Array([1, 2, 3, 4, 5]));
   await assert.rejects(() => mac.read(CH));
+});
+
+test("review L1: each decision gets the next seq of the copy it was written on, so one made after a sync orders after it", async () => {
+  const mac = computer();
+  const windows = computer();
+  await mac.addDecision(CH, decision("d1", "returned"));
+  await cycle(mac, windows);
+  // Windows' clock is an hour behind, but it saw d1 before deciding
+  await windows.addDecision(CH, { ...decision("d2", "approved"), at: "2026-11-15T09:00:00.000Z" });
+  await cycle(mac, windows);
+  const read = await mac.read(CH);
+  assert.deepEqual([read.decisions.d1.seq, read.decisions.d2.seq], [1, 2]);
 });

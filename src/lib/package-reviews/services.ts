@@ -119,7 +119,8 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
       items.push(await itemOf(channelId, pkg, decisions));
     }
     items.sort((a, b) => STATE_ORDER[a.state] - STATE_ORDER[b.state]);
-    return { ...base, packages: "ok", items, waiting: items.filter((i) => i.state === "pending").length };
+    // Review M2: with the gate off nothing waits for the owner (no badge); the items stay listed, neutral on the screen.
+    return { ...base, packages: "ok", items, waiting: gate.required ? items.filter((i) => i.state === "pending").length : 0 };
   }
 
   async function findPackage(channelId: string, manifestSha256: string, cached: boolean): Promise<ReviewPackage> {

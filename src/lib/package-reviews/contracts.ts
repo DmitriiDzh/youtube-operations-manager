@@ -68,7 +68,7 @@ export type PackageReviewsView = {
   /** "ok", or why the channel's packages cannot be listed on this computer. */
   packages: "ok" | "no_workspace" | "workspace_unavailable";
   items: PackageReviewItem[];
-  /** Packages waiting for the owner (pending). */
+  /** Packages waiting for the owner (pending); always 0 while the gate is off (review M2). */
   waiting: number;
 };
 

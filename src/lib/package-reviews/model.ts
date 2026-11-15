@@ -24,12 +24,14 @@ export function wellFormedDecision(value: unknown): PackageReviewDecision | null
     by: "owner",
     device: typeof d.device === "string" ? d.device : null,
     at: d.at,
+    ...(typeof d.seq === "number" && Number.isSafeInteger(d.seq) && d.seq > 0 ? { seq: d.seq } : {}),
   };
 }
 
-const byTimeThenId = (a: PackageReviewDecision, b: PackageReviewDecision) => Date.parse(a.at) - Date.parse(b.at) || a.id.localeCompare(b.id);
+/** Review L1: the document's own order first (`seq`, immune to clock skew between computers), then the time, then the id. */
+const byTimeThenId = (a: PackageReviewDecision, b: PackageReviewDecision) => (a.seq ?? 0) - (b.seq ?? 0) || Date.parse(a.at) - Date.parse(b.at) || a.id.localeCompare(b.id);
 
-/** The decision that stands for one manifest version: the LATEST owner decision (by time, then id) -- he may change his mind. */
+/** The decision that stands for one manifest version: the LATEST owner decision (by seq, time, then id) -- he may change his mind. */
 export function latestOwnerDecision(manifestSha256: string, decisions: readonly unknown[]): PackageReviewDecision | null {
   const own = decisions.map(wellFormedDecision).filter((d): d is PackageReviewDecision => d !== null && d.manifestSha256 === manifestSha256);
   return own.sort(byTimeThenId).at(-1) ?? null;
@@ -87,6 +89,8 @@ export function triedExceptionsOf(
   const byManifest = new Map<string, typeof rows[number][]>();
   for (const row of rows) byManifest.set(row.manifestSha256, [...(byManifest.get(row.manifestSha256) ?? []), row]);
   const out = new Set<string>();
+  // Review L3: only while the channel reviews its packages (an approval left from before the gate was switched off excuses nothing).
+  if (!state.required) return out;
   for (const [sha, own] of byManifest) {
     const approval = state.approved.get(sha);
     if (!approval) continue;

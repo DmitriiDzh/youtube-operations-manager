@@ -19,6 +19,9 @@ export const packageReviews = {
   "packageReviews.state.approved": "Approved",
   "packageReviews.state.returned": "Returned",
   "packageReviews.state.uploaded": "Uploaded",
+  // Review M2: the gate is off for this channel -- packages are ready without the owner's review.
+  "packageReviews.state.off": "Review off",
+  "packageReviews.gateOff": "Review is off for this channel: packages are ready as soon as the factory writes them.",
   "packageReviews.expand": "Open",
   "packageReviews.collapse": "Close",
   "packageReviews.duration": "{minutes}:{seconds}",

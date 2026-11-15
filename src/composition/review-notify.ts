@@ -1,6 +1,7 @@
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { decidingRecordOf, wellFormedAttachments } from "@/lib/clip-reviews";
+import { latestOwnerDecision } from "@/lib/package-reviews";
 import {
   deleteReviewNotifyLedgerBefore,
   getReviewNotifySettingsJson,
@@ -225,7 +226,9 @@ export function packageNoticesOf(channel: Channel, snapshot: PackageReviewsSnaps
   const out: ReviewDecisionNotice[] = [];
   for (const d of all) {
     if (d.by !== "owner" || (d.kind !== "approved" && d.kind !== "returned") || !after(d.at, sinceMs)) continue;
-    const later = all.find((o) => o.manifestSha256 === d.manifestSha256 && o.id !== d.id && (Date.parse(o.at) > Date.parse(d.at) || (o.at === d.at && o.id > d.id)));
+    // The package-reviews rule (review L1: the document's seq, then the time, then the id) says which decision stands.
+    const standing = latestOwnerDecision(d.manifestSha256, all);
+    const later = standing && standing.id !== d.id ? standing : null;
     out.push({
       kind: "package",
       channelId: channel.channelId,

@@ -117,6 +117,8 @@ test("AC-PR-04: a return needs a comment; with one it is recorded and the packag
 
 test("AC-PR-03: after approval, a changed thumbnail file reads pending again in the owner's list", async () => {
   const h = harness();
+  // review M2 (changed requirement): only a channel with the gate on counts packages as waiting, so the gate is switched on here.
+  await h.service.setRequired(CH, { required: true });
   await h.service.decide(CH, { manifestSha256: MANIFEST, kind: "approved" });
   h.hashes[`/ws/${FOLDER}/Thumbnail_V11.jpg`] = "9".repeat(64);
   const view = await h.service.view(CH);
@@ -172,4 +174,12 @@ test("uploaded packages are listed only when decided, at most the 10 latest by t
   packages.forEach((p, i) => (packages[i] = { ...p, uploaded: true }));
   const view = await h.service.view(CH);
   assert.deepEqual(view.items.map((i) => [i.video, i.state]), ["V2", "V3", "V4", "V5", "V6", "V7", "V8", "V9", "V10", "V11"].map((v) => [v, "uploaded"]));
+});
+
+test("review M2: with the gate off nothing waits for the owner (no badge), the packages stay listed", async () => {
+  const h = harness();
+  const off = await h.service.view(CH);
+  assert.deepEqual([off.required, off.waiting, off.items.map((i) => i.state)], [false, 0, ["pending"]]);
+  const on = await h.service.setRequired(CH, { required: true });
+  assert.deepEqual([on.required, on.waiting], [true, 1]);
 });
