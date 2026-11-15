@@ -452,8 +452,8 @@ Key MCP tools:
     `languageAlignments` `[{ videoId, from, to }]`.
   - BL-257 (2026-11-15, Agent API 4.19.0, additive; ADR 0070): `agent_get_publishing_calendar` package problems gain
     `owner_review_pending` (the channel's owner reviews its final packages in the Web UI and has not approved this manifest version)
-    and `owner_review_returned` (`params.comment`: what he asked to change -- re-package); such a package is `not_ready`. The plan
-    tools' slot `package` gains `reviewComment`. No agent tool decides or switches the review.
+    and `owner_review_returned` (he returned it -- re-package with his change); such a package is `not_ready`. The calendar carries
+    codes only; his comment is in the plan tools' slot `package.reviewComment` and the Producer's Inbox file. No agent tool decides or switches the review.
   - BL-250 (2026-11-14, Agent API 4.18.0, additive; ADR 0057 amendment 1): `agent_speech_get_status` gains `elevenlabs.accountLimit`
     and `monthlyLimit` as `factory_speech_get_status` 1.44.0; a per_month `elevenlabs_limit_exceeded` adds `source` and `resetAt`.
   - BL-236 (2026-10-29, Agent API 4.14.0, additive; FO-REQ-0050, ADR 0057): `agent_speech_get_status` (READ), `agent_speech_create_job`

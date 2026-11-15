@@ -418,3 +418,13 @@ test("AC-STOP-07: after its own stop the Producer may add the same manifest vers
   await owners.control.cancel({ channelId: "UC_x", uploadId: "u" }, OWNER);
   await refused(owners.control.add({ channelId: "UC_x", video: "V61" }, PRODUCER), "upload_already_tried");
 });
+
+// BL-257 (PACKAGE_REVIEW_PLAN.md AC-PR-02; ADR 0070 §2): the Producer's add refuses a package the scan holds for the owner's package
+// review (or one he returned) like any package that is not ready, and queues nothing.
+test("BL-257 AC-PR-02: the Producer cannot add a package waiting for the owner's review or returned by him", async () => {
+  for (const problem of [{ code: "owner_review_pending" }, { code: "owner_review_returned", params: { comment: "redo the intro" } }]) {
+    const h = harness([], { packages: [pkg("V61", { state: "not_ready", problems: [problem] })] });
+    await refused(h.control.add({ channelId: "UC_x", video: "V61" }, PRODUCER), "upload_package_not_ready");
+    assert.deepEqual([h.store.size, h.hashed], [0, []]);
+  }
+});

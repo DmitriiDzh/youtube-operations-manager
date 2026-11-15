@@ -111,13 +111,11 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
     };
     if (found.status !== "ok") return { ...base, packages: found.status, items: [], waiting: 0 };
     const decided = new Set(decisions.map((d) => (d as { manifestSha256?: unknown }).manifestSha256));
+    // The scan lists packages by planned date (oldest first): the decided uploads kept are the latest ones.
+    const uploadedKept = new Set(found.packages.filter((p) => p.uploaded && decided.has(p.manifestSha256)).slice(-PACKAGE_REVIEW_LIMITS.uploadedShown));
     const items: PackageReviewItem[] = [];
-    let uploadedShown = 0;
     for (const pkg of found.packages) {
-      if (pkg.uploaded) {
-        if (!decided.has(pkg.manifestSha256) || uploadedShown >= PACKAGE_REVIEW_LIMITS.uploadedShown) continue;
-        uploadedShown += 1;
-      }
+      if (pkg.uploaded && !uploadedKept.has(pkg)) continue;
       items.push(await itemOf(channelId, pkg, decisions));
     }
     items.sort((a, b) => STATE_ORDER[a.state] - STATE_ORDER[b.state]);

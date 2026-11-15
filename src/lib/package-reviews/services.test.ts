@@ -163,3 +163,13 @@ test("AC-PR-09: the media are only the package's own files, by its manifest hash
   assert.equal(await h.service.mediaFile(CH, "../../etc/passwd", "video"), null);
   assert.equal(await h.service.mediaFile(CH, null, "video"), null);
 });
+
+test("uploaded packages are listed only when decided, at most the 10 latest by the scan's order (planned date)", async () => {
+  const packages = Array.from({ length: 12 }, (_, i) => pkg({ manifestSha256: i.toString(16).padStart(64, "0"), video: `V${i + 1}` }));
+  const h = harness({ packages });
+  for (const p of packages.slice(0, 11)) await h.service.decide(CH, { manifestSha256: p.manifestSha256, kind: "returned", comment: "x" });
+  // all twelve uploaded since; V12 was never decided
+  packages.forEach((p, i) => (packages[i] = { ...p, uploaded: true }));
+  const view = await h.service.view(CH);
+  assert.deepEqual(view.items.map((i) => [i.video, i.state]), ["V2", "V3", "V4", "V5", "V6", "V7", "V8", "V9", "V10", "V11"].map((v) => [v, "uploaded"]));
+});

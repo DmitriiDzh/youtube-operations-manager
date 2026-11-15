@@ -41,8 +41,9 @@
 // producer_get_capabilities lists thumbnailTools and the permission THUMBNAIL_WRITE (additive).
 // 1.21.0 (BL-257, owner msgs 4514/4516, ADR 0070): agent_get_publishing_calendar and producer_upload_queue_add -- a package of a
 // channel whose owner reviews its final packages gains the problem owner_review_pending (not yet approved in Media → «Видео на
-// проверку») or owner_review_returned (params.comment: what to change) and is not_ready until he approves that manifest version;
-// the Inbox gains REVIEW-DECISION-package-<video>-<decisionId>.md. No tool decides. Additive; no tool added.
+// проверку») or owner_review_returned (he returned it; the calendar carries codes only -- his comment is in the Inbox file
+// REVIEW-DECISION-package-<video>-<decisionId>.md and in a refused queue add's details.problems) and is not_ready until he approves
+// that manifest version. No tool decides. Additive; no tool added.
 export const PRODUCER_API_VERSION = "1.21.0";
 
 /** The channel agent's READ tools the Producer gets; each call names its channel and runs in that channel's agent scope. */
