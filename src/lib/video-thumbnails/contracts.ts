@@ -35,6 +35,8 @@ export type ThumbnailReplaceResult = {
   backupPath: string | null;
   verified: boolean | null;
   verificationDetail: string | null;
+  /** The largest image YouTube serves after the write differs from the one backed up before it; null = not compared (an image missing). */
+  imageChanged: boolean | null;
   after: { hasCustomThumbnail: boolean | null; privacyStatus: string | null; publishAt: string | null; url: string | null } | null;
 };
 
@@ -60,4 +62,6 @@ export type VideoThumbnailsDeps = {
   /** The stored copy's thumbnails, from the read-back. */
   storeThumbnails(channelId: string, videoId: string, thumbnails: VideoThumbnailState["thumbnails"]): Promise<void>;
   newOperationId(): string;
+  /** The device mutation gate (operation lock / recovery mode): checked before the backup, so nothing is written during a handoff. */
+  assertDeviceAvailable(): Promise<void>;
 };

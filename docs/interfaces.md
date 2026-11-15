@@ -1470,12 +1470,12 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
   broadcast) is stored. Local read only.
 - **Thumbnail tool (BL-255, ADR 0069, owner msgs 4380/4383):** `producer_video_thumbnail_replace` `{ channelId, videoId (11 chars), path (workspace-
   relative, under `04 Videos/`, .jpg/.jpeg/.png), dryRun? }` → `{ channelId, videoId, path, dryRun, file: { bytes, contentType, sha256 }, before:
-  { hasCustomThumbnail, privacyStatus, publishAt, url }, after (same shape, or null), units (52), written, backupPath, verified, verificationDetail }`
+  { hasCustomThumbnail, privacyStatus, publishAt, url }, after (same shape, or null), units (52), written, backupPath, verified, verificationDetail, imageChanged }`
   plus `forChannelId`. A YouTube write (`thumbnails.set`, 50 units) on any video of a channel connected here: the image is a JPEG/PNG by its first
   bytes, at most 2 MB; dry run = every read and check, no backup, no write. Errors: `thumbnail_file_invalid`, `video_not_in_channel`,
   `thumbnail_step_pending` (this computer's upload of the video has not yet set its own thumbnail), `WRITE_CHANNEL_UNRESOLVED`,
-  `WRITE_CHANNEL_MISMATCH`, `live_writes_disabled`, `backup_item_failed`. Owner route: `GET /api/channels/{channelId}/videos/{videoId}/thumbnail` →
-  `{ folders: [{ folder, video, images, own }] }`; `POST` same path `{ path, dryRun? }` → the same result (owner session, active channel).
+  `WRITE_CHANNEL_MISMATCH`, `live_writes_disabled`, `backup_item_failed`, `operation_lock_held` / `device_in_recovery_mode`. `verified` = custom thumbnail present, privacy / `publishAt` unchanged and the served image differs from the backed-up one (`imageChanged`). Owner route: `GET /api/channels/{channelId}/videos/{videoId}/thumbnail` →
+  `{ folders: [{ folder, video, images, own }], currentUrl }`; `POST` same path `{ path, dryRun? }` → the same result (owner session, active channel).
 - **Every channel-tool answer** (success or error) carries `forChannelId`; the role's own tools do not, nor does a refusal of the MCP layer
   itself (unknown tool, input the schema rejects). **Every call**, refused or not, is logged (`GET /api/producer-agent-token/calls`, below): a
   refusal of the MCP layer as `TOOL_NOT_FOUND` / `INVALID_PARAMS`, a request the transport rejected as a whole (e.g. a wrong `Accept`

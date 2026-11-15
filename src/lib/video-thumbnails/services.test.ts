@@ -39,12 +39,17 @@ function harness(options: {
   backupFails?: boolean;
   identityFails?: boolean;
   liveWritesOff?: boolean;
+  deviceBusy?: boolean;
+  sameImageAfter?: boolean;
+  auditFailsAfterWrite?: boolean;
 } = {}): Harness {
   const calls: string[] = [];
   const writes: Harness["writes"] = [];
   const audits: Harness["audits"] = [];
   const stored: unknown[] = [];
   let reads = 0;
+  let downloads = 0;
+  let written = false;
   const credentials = { credentialRef: { userId: "u1" }, accessToken: "t", scopeSet: new Set<string>() } as ResolvedCredentials;
   const deps: VideoThumbnailsDeps = {
     async credentials() {
@@ -66,8 +71,10 @@ function harness(options: {
       return options.pending ?? false;
     },
     async downloadImage() {
+      downloads += 1;
       calls.push("downloadImage");
-      return { bytes: Buffer.from([1, 2]), contentType: "image/jpeg" };
+      // The image before the write is [1, 2]; after it YouTube serves the new one unless the test says it still serves the old.
+      return { bytes: Buffer.from(downloads === 1 || options.sameImageAfter ? [1, 2] : [9, 9]), contentType: "image/jpeg" };
     },
     backup: {
       async checkInfrastructureHealth() {
@@ -89,9 +96,11 @@ function harness(options: {
       calls.push("setThumbnail");
       if (options.liveWritesOff) throw Object.assign(new Error("Live writes are off"), { code: "live_writes_disabled" });
       writes.push({ videoId, ...image });
+      written = true;
     },
     async audit(args) {
       calls.push(`audit:${args.eventType}`);
+      if (options.auditFailsAfterWrite && written) throw new Error("database is locked");
       audits.push({ eventType: args.eventType, detail: args.detail });
     },
     async storeThumbnails(...args) {
@@ -99,6 +108,10 @@ function harness(options: {
       stored.push(args);
     },
     newOperationId: () => "op-1",
+    async assertDeviceAvailable() {
+      calls.push("device");
+      if (options.deviceBusy) throw Object.assign(new Error("operation lock held"), { code: "operation_lock_held" });
+    },
   };
   return { deps, calls, writes, audits, stored };
 }
@@ -195,7 +208,7 @@ test("AC-TH-08 dry run: reads and checks only -- no backup, no identity write pa
 test("AC-TH-09 success: order backup → identity → one write with the file's bytes → read-back → verified", async () => {
   const h = harness();
   const result = await createVideoThumbnailsServices(h.deps).replace({ channelId: CHANNEL, videoId: VIDEO, path: PATH }, producer);
-  assert.deepEqual(h.calls, ["readFile", "credentials", "readVideo1", "pending", "health", "downloadImage", "backup", "audit:BACKUP", "identity", "setThumbnail", "audit:RESULT", "readVideo2", "audit:VERIFICATION", "store"]);
+  assert.deepEqual(h.calls, ["readFile", "credentials", "readVideo1", "pending", "device", "health", "downloadImage", "backup", "audit:BACKUP", "identity", "setThumbnail", "audit:RESULT", "readVideo2", "downloadImage", "audit:VERIFICATION", "store"]);
   assert.equal(h.writes.length, 1);
   assert.equal(h.writes[0].videoId, VIDEO);
   assert.equal(h.writes[0].mimeType, "image/jpeg");
@@ -204,6 +217,7 @@ test("AC-TH-09 success: order backup → identity → one write with the file's 
   assert.equal(result.verified, true);
   assert.equal(result.verificationDetail, null);
   assert.equal(result.backupPath, "/backups/x.json");
+  assert.equal(result.imageChanged, true);
 });
 
 test("AC-TH-10 read-back without a custom thumbnail, or with privacy/publishAt changed, is not verified", async () => {
@@ -233,5 +247,32 @@ test("AC-TH-11 audit rows carry the source, the actor and the file's SHA-256", a
 
 test("AC-TH-14 the service has no dependency that touches the plan or the upload rows (only the read of the pending step)", () => {
   const keys = Object.keys(harness().deps).sort();
-  assert.deepEqual(keys, ["assertWriteChannel", "audit", "backup", "credentials", "downloadImage", "newOperationId", "readFile", "readVideo", "setThumbnail", "storeThumbnails", "uploadThumbnailStepPending"]);
+  assert.deepEqual(keys, ["assertDeviceAvailable", "assertWriteChannel", "audit", "backup", "credentials", "downloadImage", "newOperationId", "readFile", "readVideo", "setThumbnail", "storeThumbnails", "uploadThumbnailStepPending"]);
+});
+
+test("AC-TH-15 a device handoff or recovery mode refuses before any backup or write (dry run still reads)", async () => {
+  const h = harness({ deviceBusy: true });
+  await assert.rejects(createVideoThumbnailsServices(h.deps).replace({ channelId: CHANNEL, videoId: VIDEO, path: PATH }, producer), /operation lock/);
+  assert.ok(!h.calls.includes("backup"));
+  assert.ok(!h.calls.includes("setThumbnail"));
+  assert.equal(h.audits.length, 0);
+  const dry = harness({ deviceBusy: true });
+  const result = await createVideoThumbnailsServices(dry.deps).replace({ channelId: CHANNEL, videoId: VIDEO, path: PATH, dryRun: true }, producer);
+  assert.equal(result.dryRun, true);
+});
+
+test("AC-TH-16 YouTube still serving the backed-up image after the write is not verified", async () => {
+  const h = harness({ sameImageAfter: true });
+  const result = await createVideoThumbnailsServices(h.deps).replace({ channelId: CHANNEL, videoId: VIDEO, path: PATH }, owner);
+  assert.equal(result.written, true);
+  assert.equal(result.imageChanged, false);
+  assert.equal(result.verified, false);
+  assert.match(result.verificationDetail ?? "", /previous image/);
+});
+
+test("AC-TH-17 a failure after the write (audit) still reports the write as done", async () => {
+  const h = harness({ auditFailsAfterWrite: true });
+  const result = await createVideoThumbnailsServices(h.deps).replace({ channelId: CHANNEL, videoId: VIDEO, path: PATH }, owner);
+  assert.equal(result.written, true);
+  assert.equal(h.writes.length, 1);
 });

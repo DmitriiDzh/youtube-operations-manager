@@ -22,7 +22,7 @@ export async function GET(_request: Request, { params }: Params) {
   try {
     const { channelId, videoId } = await params;
     await channelAccess.assertActiveChannel({ userId: session.user.id, channelId });
-    return NextResponse.json({ folders: await createVideoThumbnailsCore().listCandidates(channelId, videoId) });
+    return NextResponse.json(await createVideoThumbnailsCore().listCandidates(channelId, videoId));
   } catch (error) {
     return errorResponse(error);
   }

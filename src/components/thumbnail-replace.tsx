@@ -48,6 +48,7 @@ function ThumbnailReplaceDialog(props: { channelId: string; videoId: string; cur
   const { t, formatNumber, language } = useUiText();
   const base = `/api/channels/${encodeURIComponent(props.channelId)}/videos/${encodeURIComponent(props.videoId)}/thumbnail`;
   const [folders, setFolders] = useState<CandidateFolder[] | null>(null);
+  const [storedUrl, setStoredUrl] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [chosen, setChosen] = useState<string | null>(null);
   const [checked, setChecked] = useState<ReplaceResult | null>(null);
@@ -60,11 +61,12 @@ function ThumbnailReplaceDialog(props: { channelId: string; videoId: string; cur
     void (async () => {
       try {
         const response = await fetch(base, { cache: "no-store" });
-        const body = (await response.json().catch(() => null)) as { folders?: CandidateFolder[] } | null;
+        const body = (await response.json().catch(() => null)) as { folders?: CandidateFolder[]; currentUrl?: string | null } | null;
         if (cancelled) return;
         if (!response.ok) return setLoadError(errorText(t, body, t("thumbReplace.loadFailed")));
         const list = body?.folders ?? [];
         setFolders(list);
+        setStoredUrl(body?.currentUrl ?? null);
         const own = list.find((folder) => folder.own && folder.images.length > 0);
         const logo = own?.images.find((image) => /logo/i.test(image));
         if (own && (logo || own.images.length === 1)) setChosen(logo ?? own.images[0]);
@@ -83,12 +85,13 @@ function ThumbnailReplaceDialog(props: { channelId: string; videoId: string; cur
     setError(null);
     try {
       const response = await fetch(base, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: chosen, dryRun }) });
-      const body = (await response.json().catch(() => null)) as ReplaceResult | null;
+      const body = (await response.json().catch(() => null)) as (ReplaceResult & { path?: string }) | null;
       if (!response.ok || !body) {
         setError(errorText(t, body, t("thumbReplace.failed")));
         return;
       }
-      if (dryRun) setChecked(body);
+      // A check counts only for the image it checked (another may have been chosen meanwhile).
+      if (dryRun) setChecked(body.path === chosen ? body : null);
       else {
         setDone(body);
         props.onReplaced?.();
@@ -102,7 +105,7 @@ function ThumbnailReplaceDialog(props: { channelId: string; videoId: string; cur
 
   const dateText = (iso: string) => new Intl.DateTimeFormat(language, { dateStyle: "medium", timeStyle: "short" }).format(new Date(iso));
   const privacyText = (value: string | null) => (value && value in PRIVACY_KEYS ? t(PRIVACY_KEYS[value as keyof typeof PRIVACY_KEYS]) : (value ?? ""));
-  const currentUrl = done?.after?.url ?? props.currentUrl;
+  const currentUrl = done?.after?.url ?? props.currentUrl ?? storedUrl;
   const anyImages = (folders ?? []).some((folder) => folder.images.length > 0);
 
   return (
@@ -158,6 +161,7 @@ function ThumbnailReplaceDialog(props: { channelId: string; videoId: string; cur
                         key={image}
                         type="button"
                         title={image}
+                        disabled={busy !== null}
                         onClick={() => {
                           setChosen(image);
                           setChecked(null);

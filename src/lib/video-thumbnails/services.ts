@@ -84,9 +84,13 @@ export function createVideoThumbnailsServices(deps: VideoThumbnailsDeps) {
       backupPath: null,
       verified: null,
       verificationDetail: null,
+      imageChanged: null,
       after: null,
     };
     if (dryRun) return result;
+
+    // Never during a device handoff or in recovery mode (a write then could be rolled back with the import, the audit lost).
+    await deps.assertDeviceAvailable();
 
     // Backup first: a backup that cannot be taken stops the write (AGENTS.md §G).
     const health = await deps.backup.checkInfrastructureHealth();
@@ -116,9 +120,18 @@ export function createVideoThumbnailsServices(deps: VideoThumbnailsDeps) {
       throw error;
     }
     result.written = true;
-    await deps.audit({ channelId, videoId, eventType: "RESULT", detail: { event: "video_thumbnails.replaced", ...base, bytes: bytes.length, contentType } });
+    // From here the video has changed on YouTube: a failure below is reported in the result, never as "not replaced".
+    const quiet = async (fn: () => Promise<unknown>) => {
+      try {
+        await fn();
+      } catch {
+        /* recorded below as a verification problem where it matters */
+      }
+    };
+    await quiet(() => deps.audit({ channelId, videoId, eventType: "RESULT", detail: { event: "video_thumbnails.replaced", ...base, bytes: bytes.length, contentType } }));
 
-    // Read-back: a custom thumbnail, and privacy / publishAt as before (thumbnails.set changes nothing else).
+    // Read-back: a custom thumbnail, privacy / publishAt as before (thumbnails.set changes nothing else), and the image YouTube serves
+    // is no longer the one backed up (YouTube keeps the same URLs, so `hasCustomThumbnail` alone proves nothing for a video that had one).
     const after = await deps.readVideo(creds.credentials, videoId).catch(() => null);
     const problems: string[] = [];
     if (!after) problems.push("video not returned on read-back");
@@ -126,12 +139,18 @@ export function createVideoThumbnailsServices(deps: VideoThumbnailsDeps) {
       if (after.hasCustomThumbnail !== true) problems.push(`hasCustomThumbnail is ${String(after.hasCustomThumbnail)}`);
       if (after.privacyStatus !== before.privacyStatus) problems.push(`privacy ${String(before.privacyStatus)} → ${String(after.privacyStatus)}`);
       if (after.publishAt !== before.publishAt) problems.push(`publishAt ${String(before.publishAt)} → ${String(after.publishAt)}`);
+      const afterLargest = largestThumbnail(after.thumbnails);
+      const afterImage = image && afterLargest ? await deps.downloadImage(afterLargest.url).catch(() => null) : null;
+      if (image && afterImage) {
+        result.imageChanged = !afterImage.bytes.equals(image.bytes);
+        if (!result.imageChanged) problems.push("YouTube still serves the previous image (it may update within a few minutes)");
+      }
     }
     result.after = after ? summary(after) : null;
     result.verified = problems.length === 0;
     result.verificationDetail = problems.length === 0 ? null : problems.join("; ");
-    await deps.audit({ channelId, videoId, eventType: "VERIFICATION", detail: { event: "video_thumbnails.verification", ...base, verified: result.verified, detail: result.verificationDetail } });
-    if (after) await deps.storeThumbnails(channelId, videoId, after.thumbnails).catch(() => undefined);
+    await quiet(() => deps.audit({ channelId, videoId, eventType: "VERIFICATION", detail: { event: "video_thumbnails.verification", ...base, verified: result.verified, imageChanged: result.imageChanged, detail: result.verificationDetail } }));
+    if (after) await quiet(() => deps.storeThumbnails(channelId, videoId, after.thumbnails));
     return result;
   }
 

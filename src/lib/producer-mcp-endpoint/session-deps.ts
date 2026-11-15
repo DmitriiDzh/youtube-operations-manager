@@ -2,7 +2,7 @@ import type { ProducerSession } from "@/mcp/server";
 import { runInAgentSession } from "@/lib/agent-session";
 import { MILESTONE_DAYS, hasFinalPublishDate, isMilestoneDue, milestoneWindow } from "@/lib/analytics";
 import { createAgentProposalSubmitCore } from "@/lib/agent-proposals";
-import { createChannelConnectionsCore } from "@/lib/channel-connections";
+import { createChannelConnectionsCore, resolveConnectedChannelUser } from "@/lib/channel-connections";
 import { createVideoThumbnailsCore } from "@/lib/video-thumbnails";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import {
@@ -32,11 +32,8 @@ async function listChannels(): Promise<Array<{ channelId: string; title: string;
   return connected.map((channel) => ({ channelId: channel.channelId, title: channel.title, workspace: pathByChannel.get(channel.channelId) ?? null }));
 }
 
-/** The Google account a channel is connected under here -- only for a channel Settings → Channels lists as connected. */
-async function resolveChannelUser(channelId: string): Promise<string | null> {
-  const connected = (await createChannelConnectionsCore().listConnectedChannels()).some((channel) => channel.channelId === channelId);
-  return connected ? ((await getStoredChannel(channelId))?.connectedUserId ?? null) : null;
-}
+/** The Google account a channel is connected under here (`resolveConnectedChannelUser`, the one definition). */
+const resolveChannelUser = resolveConnectedChannelUser;
 
 /**
  * `slotDecisions` (BL-239): the weekly plan's slot decisions, from the composition layer (the Producer route passes them), so an

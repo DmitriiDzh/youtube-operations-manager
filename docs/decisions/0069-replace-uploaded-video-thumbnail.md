@@ -34,7 +34,7 @@ file size 2 MB, `image/jpeg` or `image/png`. It changes nothing else of the vide
    `<appData>/backups/<channelId>/<operationId>/`; a backup that fails stops the write) → identity check
    (`write-context.assertWriteChannel`) → Live writes immediately before the one gateway call → read-back (`videos.list`:
    `contentDetails.hasCustomThumbnail` true, privacy and `publishAt` as before) → audit (`BACKUP`, `RESULT`, `VERIFICATION`,
-   `source: video_thumbnails`, actor owner/producer) → the stored thumbnails of the video refreshed from the read-back.
+   `source: video_thumbnails`, actor owner/producer) → the stored thumbnails of the video refreshed from the read-back. The device mutation gate (operation lock, recovery mode) is checked before the backup, on both surfaces.
 4. **Dry run.** Both surfaces have a preview that does every read and check (file, video, ownership, pending upload step) and
    no backup and no write, and reports the quota units (1 + 50 + 1).
 5. **The plan is not touched.** No manifest, slot, approval or date changes; the package keeps naming its own file. A later
@@ -67,3 +67,12 @@ No schema change. A new backup snapshot kind (`video_thumbnail`) in the existing
 - AC-TH-12 The Producer tool exists only on the Producer endpoint; agent/factory endpoints have no thumbnail tool.
 - AC-TH-13 Owner routes need the owner's session and the active channel.
 - AC-TH-14 Nothing in the publishing plan or the upload row changes.
+- AC-TH-15 (added after the independent review: the Producer's MCP path is not behind `src/proxy.ts`'s device gate, and other Producer
+  writes check it in their module) A device handoff (operation lock) or recovery mode refuses before any backup or write.
+- AC-TH-16 (added after the review: YouTube keeps the same thumbnail URLs, so `hasCustomThumbnail` alone proves nothing for a video
+  that already had one) The largest image served after the write is compared with the backed-up one; the same bytes → not verified.
+- AC-TH-17 (review) A failure after a successful write (audit, read-back) is reported in the result, never as "not replaced".
+
+**Accepted limit.** The pending-step check sees only this computer's upload rows. If the other computer is uploading the same video and
+has not yet set its own thumbnail, its runner will put the package's file over the new one afterwards. The owner and the Producer
+replace thumbnails of videos that are already done; the read-back of a later replace shows it.
