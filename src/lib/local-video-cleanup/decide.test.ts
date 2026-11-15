@@ -146,3 +146,14 @@ test("YouTube's ISO 8601 durations", () => {
   assert.equal(isoDurationSeconds("3h"), null);
   assert.equal(isoDurationSeconds(null), null);
 });
+
+// Owner rule (2026-11-15, Telegram 3514 via the Operator): a Short's final file is never deleted. A Short = at most 180 s on
+// YouTube (YouTube's own Shorts limit). Expected values by hand: 41 s and exactly 180 s are kept for good (refused), 181 s and a
+// 3-hour mix go on to the delete; no duration from YouTube -> nothing decided yet (wait).
+test("Shorts kept: ≤ 180 s refused short_kept; 181 s and longer may be deleted; no duration waits", () => {
+  assert.deepEqual(onYt(yt({ durationSeconds: 41 })), { action: "refuse", reason: "short_kept" });
+  assert.deepEqual(onYt(yt({ durationSeconds: 180 })), { action: "refuse", reason: "short_kept" });
+  assert.deepEqual(onYt(yt({ durationSeconds: 181 })), { action: "delete" });
+  assert.deepEqual(onYt(yt({ durationSeconds: 10_800 })), { action: "delete" });
+  assert.deepEqual(onYt(yt({ durationSeconds: null })), { action: "wait", reason: "cannot_verify" });
+});

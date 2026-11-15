@@ -49,6 +49,9 @@ export type CleanupWaitReason =
   | "delete_failed";
 
 /** Never -- the file is not proven to be the uploaded one, or the path is not one we may touch. Logged once, never tried again. */
+/** A video at most this long on YouTube is a Short: its local file is never deleted (owner rule, 2026-11-15). */
+export const CLEANUP_SHORT_MAX_SECONDS = 180;
+
 export type CleanupRefuseReason =
   | "path_not_allowed"
   | "symlink"
@@ -58,6 +61,9 @@ export type CleanupRefuseReason =
   | "size_mismatch_youtube"
   | "sha256_mismatch"
   | "duration_mismatch"
+  /** Owner rule (2026-11-15, Telegram 3514 via the Operator): a Short's final file is never deleted -- the owner uploads Shorts by hand
+   * to other networks, and cross-posting reads it. A Short = YouTube's duration at most 180 s. */
+  | "short_kept"
   | "youtube_rejected"
   | "tombstone_mismatch"
   /** The mp4 is already gone without this cleanup's tombstone (deleted by hand): nothing to do, logged once. */
