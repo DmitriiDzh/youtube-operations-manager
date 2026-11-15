@@ -8,8 +8,10 @@ import { createMarketIntelligenceCore } from "@/lib/market-intelligence";
 import {
   getAnalyticsReadsEnabled,
   getAutoPrivateUploadEnabled,
+  getAutoPrivateUploadPausedChannels,
   getAutoPrivateUploadWaiting,
   setAutoPrivateUploadEnabled,
+  setAutoPrivateUploadPausedChannels,
   getReportingReadsEnabled,
   getWikipediaReadsEnabled,
   getYoutubeFeedReadsEnabled,
@@ -173,6 +175,7 @@ async function getSettingsSnapshot() {
     writeLogRetentionDays: () => getWriteLogRetentionDays(),
     autoPrivateUploadEnabled: () => getAutoPrivateUploadEnabled(),
     autoPrivateUploadWaiting: () => getAutoPrivateUploadWaiting(),
+    autoPrivateUploadPausedChannels: () => getAutoPrivateUploadPausedChannels(),
   });
 }
 
@@ -340,6 +343,10 @@ export async function POST(request: Request) {
   // setter; no MCP tool, agent endpoint or CLI command reaches it (AC-AU-11).
   if (typeof body.autoPrivateUploadEnabled === "boolean") {
     await setAutoPrivateUploadEnabled(body.autoPrivateUploadEnabled);
+  }
+  // Owner TG 2298: the channels the automatic upload skips (array of channel ids), the same only setter.
+  if (Array.isArray(body.autoPrivateUploadPausedChannels) && body.autoPrivateUploadPausedChannels.every((v: unknown) => typeof v === "string" && /^UC[A-Za-z0-9_-]{22}$/.test(v))) {
+    await setAutoPrivateUploadPausedChannels(body.autoPrivateUploadPausedChannels as string[]);
   }
   if (typeof body.mcpConnectionEnabled === "boolean") {
     await setMcpConnectionEnabled(body.mcpConnectionEnabled);

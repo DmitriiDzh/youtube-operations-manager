@@ -7341,6 +7341,26 @@ export async function setAutoPrivateUploadEnabled(enabled: boolean): Promise<voi
   await setAppSetting(AUTO_PRIVATE_UPLOAD_ENABLED_SETTING_KEY, enabled ? "true" : "false");
 }
 
+const AUTO_PRIVATE_UPLOAD_PAUSED_CHANNELS_SETTING_KEY = "auto_private_upload_paused_channels";
+
+/**
+ * Owner TG 2298 (2026-11-15, WWE: «сначала на проверку»): the channels the automatic upload skips on this computer while its one
+ * switch is on (the others keep today's flow). JSON array of channel ids; unset or unreadable = none skipped. Device-local; set only
+ * by the Web UI's Settings route, like the switch itself.
+ */
+export async function getAutoPrivateUploadPausedChannels(): Promise<string[]> {
+  try {
+    const parsed = JSON.parse((await getAppSetting(AUTO_PRIVATE_UPLOAD_PAUSED_CHANNELS_SETTING_KEY)) ?? "[]") as unknown;
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function setAutoPrivateUploadPausedChannels(channelIds: readonly string[]): Promise<void> {
+  await setAppSetting(AUTO_PRIVATE_UPLOAD_PAUSED_CHANNELS_SETTING_KEY, JSON.stringify([...new Set(channelIds)]));
+}
+
 const AUTO_PRIVATE_UPLOAD_WAITING_SETTING_KEY = "auto_private_upload_waiting";
 
 /**

@@ -10,6 +10,7 @@ import { InfoTooltip } from "./info-tooltip";
 import { SettingsSectionRow } from "./settings-section-row";
 import { ToggleSwitch } from "./toggle-switch";
 import { useT } from "./ui-text-provider";
+import { useChannelNames } from "./use-channel-names";
 import type { UiTextKey } from "@/lib/ui-text";
 
 /** The reasons with their own text; any other refusal code reads as "refused" (the code in brackets). */
@@ -32,6 +33,8 @@ type Settings = {
   autoPrivateUploadEnabled?: boolean | null;
   /** BL-209 follow-up: why the automatic upload is waiting now, written by its watcher (read-only). */
   autoPrivateUploadWaiting?: Array<{ kind: "package" | "channel"; channelId: string; video?: string; reason: string }>;
+  /** Owner TG 2298: the channels the automatic upload skips. */
+  autoPrivateUploadPausedChannels?: string[];
   gatewayTraffic?: GatewayTrafficWindowView[];
   cloudQuotaStatus?: { dataApi: ServiceQuotaStatusView; tokenRefreshFailed?: boolean };
 };
@@ -67,6 +70,31 @@ export function LiveWritesSettings() {
   useEffect(() => {
     fetchSettings();
   }, [fetchSettings]);
+
+  const { channels } = useChannelNames();
+
+  // Owner TG 2298: one channel's automatic upload on/off, saved at once (the list of skipped channels).
+  async function setChannelAuto(channelId: string, on: boolean) {
+    const current = settings?.autoPrivateUploadPausedChannels ?? [];
+    const next = on ? current.filter((id) => id !== channelId) : [...new Set([...current, channelId])];
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ autoPrivateUploadPausedChannels: next }) });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(errorText(t, data, t("common.errorStatus", { status: String(res.status) })));
+        return;
+      }
+      setSettings(data);
+      setDraft((d) => (d ? { ...d, autoPrivateUploadPausedChannels: (data as Settings).autoPrivateUploadPausedChannels } : data));
+      setSavedNotice(t("common.saved"));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
 
   async function save(next: Settings) {
     setSaving(true);
@@ -139,6 +167,22 @@ export function LiveWritesSettings() {
             )}
             {/* Review M2(a): two computers that both see the factory's folder must not both upload -- one switch on one computer. */}
             {typeof draft.autoPrivateUploadEnabled === "boolean" && <p className="mt-1 text-xs text-zinc-400">{t("settingsCards.autoPrivateUpload.oneComputer")}</p>}
+            {/* Owner TG 2298: per channel -- a paused channel's packages wait for the owner instead of uploading by themselves. */}
+            {settings?.autoPrivateUploadEnabled === true && channels && channels.length > 0 && (
+              <div className="mt-2 space-y-1">
+                <p className="text-xs text-zinc-400">{t("settingsCards.autoPrivateUpload.perChannel")}</p>
+                {channels.map((channel) => {
+                  const on = !(settings.autoPrivateUploadPausedChannels ?? []).includes(channel.channelId);
+                  return (
+                    <label key={channel.channelId} className="flex items-center gap-2 text-sm text-zinc-300">
+                      <ToggleSwitch label={t("settingsCards.autoPrivateUpload.channelToggle", { channel: channel.title })} checked={on} disabled={saving} onChange={(checked) => void setChannelAuto(channel.channelId, checked)} />
+                      <span>{channel.title}</span>
+                      <span className="text-xs text-zinc-500">{on ? t("settingsCards.autoPrivateUpload.channelOn") : t("settingsCards.autoPrivateUpload.channelOff")}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
             {/* BL-209 follow-up: one line -- the first reason the automatic upload is waiting, and how many more. */}
             {settings?.autoPrivateUploadEnabled === true && (settings.autoPrivateUploadWaiting ?? []).length > 0 && (() => {
               const list = settings.autoPrivateUploadWaiting ?? [];
