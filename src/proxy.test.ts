@@ -544,7 +544,7 @@ test("AC-RA-3: switch on -- MCP and Mac-only routes 403, CSRF origin enforced, t
   const origin = { origin: "https://mac.tail1234.ts.net" };
   for (const p of ["/api/mcp", "/api/mcp/factory", "/api/agent-tokens", "/api/cloud-credentials/export", "/api/auth/signin/google",
     "/api/gemini-media/key", "/api/elevenlabs-speech/key", "/api/media-generation/credentials", "/api/logical-paths/value",
-    "/api/channel-connections/disconnect"]) {
+    "/api/channel-connections/disconnect", "/api/social/meta/app", "/api/social/posting", "/api/social/disconnect"]) {
     const r = await proxy(remoteReq("POST", p, origin));
     assert.equal(r.status, 403, p);
     assert.equal((await r.json()).error, "remote_access_mac_only", p);
@@ -555,6 +555,9 @@ test("AC-RA-3: switch on -- MCP and Mac-only routes 403, CSRF origin enforced, t
   assert.equal((await proxy(remoteReq("POST", "/api/channels/sync", { origin: "https://evil.example" }))).status, 403);
   assert.equal((await proxy(remoteReq("POST", "/api/auth/callback/remote-password", origin))).status, 200);
   assert.equal((await proxy(remoteReq("GET", "/home"))).status, 200);
+  // Owner msg 4435 (the requirement changed: retry from the phone too): the social retry is not Mac-only any more.
+  const retry = await proxy(remoteReq("POST", "/api/social/jobs/retry", origin));
+  assert.notEqual(retry.status === 403 ? (await retry.json()).error : null, "remote_access_mac_only");
 });
 
 test("AC-RA-6: a phone session works only with the current epoch; a stale one is signed out", async () => {
