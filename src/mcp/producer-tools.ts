@@ -36,7 +36,10 @@
 // sending) before its last chunk; its result gains previousStatus / storedBytes / totalBytes; refusals carry details.reason. Same tool.
 // 1.19.0 (BL-246, owner msgs 4076/4078/4079, ADR 0065): producer_clip_review_get / _list -- each clip gains `attachments` (the owner's
 // files on the deciding decision: { path (workspace-relative), name, mime, size, sha256 }; [] otherwise). Additive; no tool added.
-export const PRODUCER_API_VERSION = "1.19.0";
+// 1.20.0 (BL-255, owner msgs 4380/4383, ADR 0069): producer_video_thumbnail_replace -- replace the custom thumbnail of a video
+// already on YouTube (any video of a channel connected here) from an image under the channel's 04 Videos/, with dryRun;
+// producer_get_capabilities lists thumbnailTools and the permission THUMBNAIL_WRITE (additive).
+export const PRODUCER_API_VERSION = "1.20.0";
 
 /** The channel agent's READ tools the Producer gets; each call names its channel and runs in that channel's agent scope. */
 export const PRODUCER_CHANNEL_TOOLS: Readonly<Record<string, { capability: string }>> = Object.freeze({
@@ -113,6 +116,7 @@ export const PRODUCER_ONLY_TOOLS = [
   "producer_clip_review_list",
   "producer_clip_review_get",
   "producer_clip_review_withdraw",
+  "producer_video_thumbnail_replace",
 ] as const;
 
 /**
@@ -126,6 +130,12 @@ export const PRODUCER_UPLOAD_QUEUE_TOOLS = ["producer_upload_queue_list", "produ
  * BL-241 (CLIP_REVIEWS_PLAN.md, ADR 0061): the Producer's clip review tools -- exactly these four, the test pins the list. Submit and
  * withdraw store a request or take it back; only the owner approves or returns a clip, in the Web UI (no MCP path reaches that).
  */
+/**
+ * BL-255 (ADR 0069, owner msgs 4380/4383): the Producer's thumbnail tool -- exactly this one, the test pins the list. It writes a
+ * video's custom thumbnail through `src/lib/video-thumbnails/` (backup, identity check, Live writes, read-back, audit); nothing else.
+ */
+export const PRODUCER_THUMBNAIL_TOOLS = ["producer_video_thumbnail_replace"] as const;
+
 export const PRODUCER_CLIP_REVIEW_TOOLS = ["producer_clip_review_submit", "producer_clip_review_list", "producer_clip_review_get", "producer_clip_review_withdraw"] as const;
 
 /**

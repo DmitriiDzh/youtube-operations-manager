@@ -1392,6 +1392,16 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 
 ## 4. Статус компонентов
 
+### 2.9bl Замена обложки загруженного видео (BL-255, ADR 0069) — **IMPLEMENTED на ветке** (feature/bl-255-thumbnail-replace)
+- `src/lib/video-thumbnails/` — единственный писатель обложки уже загруженного видео (`thumbnails.set` через шлюз записи): владелец
+  (кнопка «Заменить обложку» в карточке видео «Контент» и под слотом «Плана недели» с видео) и Продюсер
+  (`producer_video_thumbnail_replace`, Producer API 1.20.0), любое видео канала. Картинка — только из `04 Videos/` (JPEG/PNG ≤ 2 МБ,
+  правило `readThumbnail`), пробный запуск, проверка принадлежности (`snippet.channelId`), отказ пока загрузка этого видео не поставила
+  свою обложку (`isUploadThumbnailStepPending`), копия старой обложки (снимок `video_thumbnail`), проверка канала, Live writes, сверка,
+  журнал (`source: video_thumbnails`), обновление `videos.thumbnails_json`. План, одобрение и пакет не трогаются.
+- Маршрут владельца `GET/POST /api/channels/[channelId]/videos/[videoId]/thumbnail`; чтения шлюза `getVideoThumbnailState`,
+  `downloadVideoThumbnailImage` (*.ytimg.com).
+
 ### 2.9bk Кросс-постинг в другие сети (BL-252, ADR 0068, `docs/roadmap/plans/CROSS_POSTING_PLAN.md`) — **этапы 1–2 IMPLEMENTED** (dev 72a9ae25, be7fecc6)
 - `src/lib/social-gateway/` — единственный шлюз к API соцсетей (сейчас `meta.ts`: окно согласия, обмен кода на долгий токен,
   `/me/accounts` с привязанным Instagram); `inventory.test.ts` не пускает другие файлы к хостам Meta.

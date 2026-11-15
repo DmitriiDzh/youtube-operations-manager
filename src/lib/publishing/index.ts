@@ -53,7 +53,7 @@ import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-
 import { createWriteContextCore } from "@/lib/write-context";
 import { createYoutubeClient, getVideoUploadState, listPlaylistItemIdsByVideo, listUploadsPlaylistFirstPage } from "@/lib/youtube-read-gateway";
 import { createWorkspaceExchangeFsForPublishing, isRealVideoFolder, resolveWorkspaceFileForPublishing, writeVideoFolderFile } from "./adapters/files";
-import { createWorkspaceVideoFiles, writeUploadRecordFile } from "@/lib/workspace-videos";
+import { createWorkspaceVideoFiles, videoNumberOfFolder, writeUploadRecordFile } from "@/lib/workspace-videos";
 import { createPackageScan, isPackageThumbnailPath, VIDEOS_FOLDER, type PackageScanDeps } from "./package-scan";
 import { imageKindOf } from "./packages";
 import { createPackageComposer } from "./package-composer";
@@ -788,3 +788,63 @@ export { checksPassed, decisionForRow, desiredDate } from "./plan-schedule";
 export { approvalNamesUpload } from "./slot-decision";
 export type { SlotPackageFingerprint } from "./slot-decision";
 export type { SlotDecision } from "./auto-upload";
+
+/**
+ * BL-255 (ADR 0069 §3): true while this computer's upload of `videoId` has not yet run its own thumbnail step -- an active row
+ * with that video id and no `steps.thumbnail` (a damaged `steps_json` counts as pending: fail closed). The thumbnail writer refuses
+ * then, since the runner would put the package's file over the new one.
+ */
+export async function isUploadThumbnailStepPending(channelId: string, videoId: string): Promise<boolean> {
+  return thumbnailStepPendingIn(await listPublishingUploads({ channelId, statuses: ACTIVE_UPLOAD_STATUSES, limit: 500 }), videoId);
+}
+
+/**
+ * The rule of `isUploadThumbnailStepPending` on given rows: an active row (queued / uploading / processing / finishing / paused) of
+ * that video id without `steps.thumbnail`; a damaged `steps_json` counts as pending. A finished, failed or cancelled row is never
+ * resumed into its finishing steps (a new upload is a new row), so it is not pending.
+ */
+export function thumbnailStepPendingIn(rows: ReadonlyArray<Pick<StoredPublishingUpload, "status" | "videoId" | "stepsJson">>, videoId: string): boolean {
+  return rows.some((row) => {
+    if (row.videoId !== videoId || !(ACTIVE_UPLOAD_STATUSES as readonly string[]).includes(row.status)) return false;
+    try {
+      const steps = JSON.parse(row.stepsJson) as { thumbnail?: unknown } | null;
+      return !steps || typeof steps !== "object" || steps.thumbnail === undefined;
+    } catch {
+      return true;
+    }
+  });
+}
+
+export type ThumbnailCandidateFolder = { folder: string; video: string | null; images: string[]; own: boolean };
+
+/**
+ * BL-255 (ADR 0069 §2): the images a thumbnail replace can choose from -- first the folders of this video's own uploads here
+ * (`dirname(manifest_path)`, kept when the local mp4 was cleaned up), then the newest other release folders (at most 8). Only
+ * direct .jpg/.jpeg/.png files under `04 Videos/`; every path is checked again when it is used (`readThumbnail`).
+ */
+export async function listThumbnailCandidates(channelId: string, videoId: string, videoNumber: string | null = null): Promise<ThumbnailCandidateFolder[]> {
+  const { deps } = createPackageScanReads();
+  const workspace = await deps.workspace(channelId);
+  if (!workspace) return [];
+  const imagesOf = async (folder: string) =>
+    (await deps.listDir(deps.join(workspace, folder)))
+      .filter((entry) => entry.kind === "file" && isPackageThumbnailPath(`${folder}/${entry.name}`))
+      .map((entry) => `${folder}/${entry.name}`)
+      .sort();
+  const rows = await listPublishingUploads({ channelId, limit: 500 });
+  const ownFolders = [...new Set(rows.filter((row) => row.videoId === videoId).map((row) => row.manifestPath.slice(0, Math.max(0, row.manifestPath.lastIndexOf("/")))))].filter((folder) =>
+    folder.startsWith(`${VIDEOS_FOLDER}/`)
+  );
+  const result: ThumbnailCandidateFolder[] = [];
+  for (const folder of ownFolders) result.push({ folder, video: videoNumberOfFolder(folder.split("/").at(-1) ?? ""), images: await imagesOf(folder), own: true });
+  const others = await createPackageComposerCore()
+    .listFolders(channelId)
+    .catch(() => []);
+  // The folders named after this video's number (`MMDD Vn`, the number the caller knows) count as its own too, first.
+  const rest = others.filter((entry) => !ownFolders.includes(entry.folder));
+  const byNumber = videoNumber ? rest.filter((entry) => entry.video === videoNumber) : [];
+  for (const entry of [...byNumber, ...rest.filter((entry) => !byNumber.includes(entry)).slice(0, 8)]) {
+    result.push({ folder: entry.folder, video: entry.video, images: entry.files.images.map((name) => `${entry.folder}/${name}`).filter(isPackageThumbnailPath).sort(), own: byNumber.includes(entry) });
+  }
+  return result;
+}

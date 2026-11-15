@@ -93,6 +93,7 @@ import {
   PRODUCER_TOOL_NAMES,
   PRODUCER_UPLOAD_QUEUE_TOOLS,
   PRODUCER_CLIP_REVIEW_TOOLS,
+  PRODUCER_THUMBNAIL_TOOLS,
 } from "./producer-tools";
 import { listProducerProposalsInputSchema, markProposalsDoneInputSchema, submitProducerProposalInputSchema } from "@/lib/agent-proposals/schemas";
 import {
@@ -525,6 +526,13 @@ export type ProducerSession = {
     list(input: Record<string, unknown>): Promise<Record<string, unknown>>;
     get(input: { channelId: string; clipId: string }): Promise<Record<string, unknown>>;
   };
+  /**
+   * BL-255 (ADR 0069): replace a video's custom thumbnail through `src/lib/video-thumbnails/` (`session-deps.ts` wires it; nothing
+   * else in src/mcp reaches the writer).
+   */
+  thumbnails: {
+    replace(input: { channelId: string; videoId: string; path: string; dryRun?: boolean }): Promise<Record<string, unknown>>;
+  };
 };
 
 /** A real calendar date as YYYY-MM-DD (`calendarDateSchema`, shared with the analytics module's tool inputs). */
@@ -600,6 +608,15 @@ export const producerUploadQueueMoveInputSchema = z
   .object({ channelId: producerQueueChannelId, uploadId: producerQueueUploadId, position: z.number().int().min(1).describe("The new place, 1 = starts next; past the end = the end.") })
   .strict();
 export const producerUploadQueueCancelInputSchema = z.object({ channelId: producerQueueChannelId, uploadId: producerQueueUploadId }).strict();
+// BL-255 (ADR 0069): the thumbnail writer's input; every rule (path under 04 Videos/, image, size) is checked again by the module.
+export const producerVideoThumbnailReplaceInputSchema = z
+  .object({
+    channelId: producerQueueChannelId,
+    videoId: z.string().regex(/^[A-Za-z0-9_-]{11}$/).describe("The YouTube video id."),
+    path: z.string().min(1).max(1000).describe("The image, relative to the channel's workspace, under 04 Videos/ (e.g. 04 Videos/11 November/1115 V91/Thumbnail_V91_logo.jpg)."),
+    dryRun: z.boolean().optional().describe("true: every read and check, no backup and no write."),
+  })
+  .strict();
 
 /** The error code of a tool error answer, or null. */
 function toolErrorCode(result: ToolResponse): string | null {
@@ -3087,19 +3104,20 @@ export function createMcpServer(
     "producer_get_capabilities",
     {
       description:
-        "The Producer role's own report: its API version, its permissions (READ; DRAFT for its proposals only; UPLOAD_QUEUE for this computer's upload queue) and the tools it can call. Every channel tool needs `channelId` -- one of producer_list_channels -- and answers with `forChannelId`. No tool here writes to YouTube or spends money by itself: the DRAFT tools (draftTools) store a proposal or mark one read, and a proposal changes nothing until the owner approves it in YT Manager; the UPLOAD_QUEUE tools (uploadQueueTools) list, order, cancel and add rows of this computer's upload queue -- the app's own uploader then uploads a queued row as private, with its identity check, and only while the owner's Live writes switch is on; a date comes only from a weekly-plan slot the owner approved. The clip review tools (clipReviewTools) submit a clip already in a channel's folder for the owner to watch, and read his answer: only the owner approves or returns a clip, in YT Manager.",
+        "The Producer role's own report: its API version, its permissions (READ; DRAFT for its proposals only; UPLOAD_QUEUE for this computer's upload queue) and the tools it can call. Every channel tool needs `channelId` -- one of producer_list_channels -- and answers with `forChannelId`. No tool here writes to YouTube or spends money by itself: the DRAFT tools (draftTools) store a proposal or mark one read, and a proposal changes nothing until the owner approves it in YT Manager; the UPLOAD_QUEUE tools (uploadQueueTools) list, order, cancel and add rows of this computer's upload queue -- the app's own uploader then uploads a queued row as private, with its identity check, and only while the owner's Live writes switch is on; a date comes only from a weekly-plan slot the owner approved. The clip review tools (clipReviewTools) submit a clip already in a channel's folder for the owner to watch, and read his answer: only the owner approves or returns a clip, in YT Manager. THUMBNAIL_WRITE (thumbnailTools, since 1.20.0): producer_video_thumbnail_replace writes a video's custom thumbnail on YouTube (owner's decision, any video of a connected channel), with backup, identity check, Live writes, read-back and audit -- the only YouTube write a Producer tool makes itself.",
       inputSchema: z.object({}).strict(),
     },
     async () =>
       toolSuccessResult({
         role: "producer",
         producerApiVersion: PRODUCER_API_VERSION,
-        permissions: ["READ", "DRAFT", "UPLOAD_QUEUE"],
+        permissions: ["READ", "DRAFT", "UPLOAD_QUEUE", "THUMBNAIL_WRITE"],
         channelRequired: true,
         tools: [...PRODUCER_TOOL_NAMES],
         draftTools: [...PRODUCER_DRAFT_TOOLS],
         uploadQueueTools: [...PRODUCER_UPLOAD_QUEUE_TOOLS],
         clipReviewTools: [...PRODUCER_CLIP_REVIEW_TOOLS],
+        thumbnailTools: [...PRODUCER_THUMBNAIL_TOOLS],
       })
   );
 
@@ -3222,6 +3240,17 @@ export function createMcpServer(
       inputSchema: producerUploadQueueCancelInputSchema,
     },
     async (args: z.infer<typeof producerUploadQueueCancelInputSchema>) => toolSuccessResult(await producerSession!.uploadQueue.cancel(args))
+  );
+
+  // BL-255 (ADR 0069, owner msgs 4380/4383): replace an uploaded video's thumbnail -- the session's `thumbnails` only.
+  registerTool(
+    "producer_video_thumbnail_replace",
+    {
+      description:
+        "Replace the custom thumbnail of a video already on YouTube (any video of a channel connected here: private, scheduled or public) with an image from the channel's workspace. Nothing else of the video changes: no title, privacy, date, plan slot, approval or package. Input: channelId, videoId, path (relative to the channel's workspace, under 04 Videos/, a .jpg/.jpeg/.png of at most 2 MB -- a JPEG or PNG by its first bytes), dryRun (optional). With dryRun: every read and check, no backup and no write. Otherwise: the current thumbnail is backed up, the channel identity is checked, the owner's Live writes switch must be on, thumbnails.set is called once (50 units; 52 with the two reads), then read back. Returns { channelId, videoId, path, dryRun, file { bytes, contentType, sha256 }, before / after { hasCustomThumbnail, privacyStatus, publishAt, url }, units, written, backupPath, verified (true when YouTube shows a custom thumbnail, privacy / publishAt are unchanged and the image it serves is no longer the backed-up one), verificationDetail, imageChanged (null when not compared) } and forChannelId. Errors: thumbnail_file_invalid (path or image not usable), video_not_in_channel (YouTube does not return the video for that channel), thumbnail_step_pending (this computer's upload of the video has not set its own thumbnail yet -- try after it finished), WRITE_CHANNEL_UNRESOLVED (channel not connected here), WRITE_CHANNEL_MISMATCH, live_writes_disabled, backup_item_failed, operation_lock_held / device_in_recovery_mode.",
+      inputSchema: producerVideoThumbnailReplaceInputSchema,
+    },
+    async (args: z.infer<typeof producerVideoThumbnailReplaceInputSchema>) => toolSuccessResult(await producerSession!.thumbnails.replace(args))
   );
 
   // BL-241 (docs/roadmap/plans/CLIP_REVIEWS_PLAN.md, ADR 0061; owner msgs 4010/4011): clips for review. These tools reach only the

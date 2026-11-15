@@ -56,7 +56,18 @@ export type ChannelBrandingBackupSnapshot = {
   localizations: Record<string, { title: string; description: string }>;
 };
 
-export type BackupSnapshot = LocalizationBackupSnapshot | VideoFieldsBackupSnapshot | ChannelLocalizationsBackupSnapshot | ChannelBrandingBackupSnapshot;
+/**
+ * BL-255 (ADR 0069 §3): the thumbnail writer backs up a video's thumbnail as read before it is replaced -- every size's URL and,
+ * when it could be fetched, the largest image's bytes (base64), so the old image can be put back by hand.
+ */
+export type VideoThumbnailBackupSnapshot = {
+  kind: "video_thumbnail";
+  thumbnails: Record<string, { url: string; width: number | null; height: number | null }>;
+  hasCustomThumbnail: boolean | null;
+  image: { size: string; url: string; contentType: string; base64: string } | null;
+};
+
+export type BackupSnapshot = LocalizationBackupSnapshot | VideoFieldsBackupSnapshot | ChannelLocalizationsBackupSnapshot | ChannelBrandingBackupSnapshot | VideoThumbnailBackupSnapshot;
 
 export type BackupRecord = {
   path: string;

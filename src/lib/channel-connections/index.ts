@@ -52,5 +52,14 @@ export function createChannelConnectionsCore() {
 
 export type ChannelConnectionsCore = ReturnType<typeof createChannelConnectionsCore>;
 
+/**
+ * The Google account a channel is connected under here -- only for a channel Settings → Channels lists as connected, else null.
+ * The one definition for agent paths that act for a channel (the Producer session, BL-255's thumbnail writer).
+ */
+export async function resolveConnectedChannelUser(channelId: string): Promise<string | null> {
+  const connected = (await createChannelConnectionsCore().listConnectedChannels()).some((channel) => channel.channelId === channelId);
+  return connected ? ((await getStoredChannel(channelId))?.connectedUserId ?? null) : null;
+}
+
 export * from "./contracts";
 export { classifyConnectionHealth } from "./connection-health";

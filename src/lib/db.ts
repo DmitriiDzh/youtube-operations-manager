@@ -9255,6 +9255,14 @@ export async function getStoredVideo(channelId: string, videoId: string): Promis
   return row ? mapStoredVideo(row) : null;
 }
 
+/** BL-255 (ADR 0069 §3): the stored copy's thumbnails of one video, from the thumbnail writer's read-back (no other column). */
+export async function updateStoredVideoThumbnails(channelId: string, videoId: string, thumbnails: Record<string, ThumbnailInfo>): Promise<void> {
+  await db
+    .update(videos)
+    .set({ thumbnailsJson: JSON.stringify(thumbnails) })
+    .where(and(eq(videos.channelId, channelId), eq(videos.id, videoId)));
+}
+
 export type ChangeField = "title" | "description";
 export type ChangeType = "add" | "modify" | "unchanged" | "delete";
 export type ChangeValidationStatus = "valid" | "invalid";

@@ -1428,7 +1428,7 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
 
 - **Transport:** as the factory endpoint, with `Authorization: Bearer ytom_pr_...` (the same checks and codes; a channel or factory token is
   401 `AGENT_TOKEN_INVALID` here, and a producer token on `/api/mcp` and `/api/mcp/factory`). Re-verified on every tool call.
-- **Producer API version:** `1.19.0` (since BL-246, ADR 0065: `producer_clip_review_get` / `_list` give each clip `attachments`, the
+- **Producer API version:** `1.20.0` (since BL-255, ADR 0069: `producer_video_thumbnail_replace`, permission `THUMBNAIL_WRITE`, `thumbnailTools` in `producer_get_capabilities` -- additive); `1.19.0` = BL-246, ADR 0065: `producer_clip_review_get` / `_list` give each clip `attachments`, the
   owner's files on the deciding answer -- additive, no tool added); `1.18.0` = BL-244, ADR 0064: `producer_upload_queue_cancel` also stops an upload being sent, or paused, before its last chunk -- refused `upload_not_cancellable` with `details.reason` `final_chunk_sent` | `video_exists` | `status` | `changed` once it may be on YouTube; its result gains `previousStatus`, `storedBytes`, `totalBytes`; same tool); `1.17.0` = BL-243 (ADR 0063: the calendar read's `deleted_on_youtube`, `existsOnChannel` / `checkedAt` / `removedAt`, `missingOnChannel`; `channel_video_list` `videoIds` -- additive); `1.16.0` = BL-242 (ADR 0062: in the packaged approval stage `producer_upload_queue_add` dates only the manifest the owner approved -- same shape; before that `1.15.0`: 1.0.0, plus the three proposal tools in 1.1.0 (BL-163), plus `agent_get_video_milestones` and
   `producer_upload_milestones` in 1.2.0 (BL-166), plus `agent_get_stored_breakdowns` in 1.3.0 (BL-168), plus `agent_get_stored_search_terms`
   in 1.4.0 (BL-169), plus `agent_get_experiment_results` and the proposal kind `experiment.link_video` in 1.5.0 (BL-170), plus
@@ -1468,6 +1468,14 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
   `Figures = { samples, onAirMs, notLiveMs, dataGaps, viewerHours, averageViewers, peakViewers, interruptions }` -- from the stream computer's
   own broadcast checks and its stored YouTube Analytics pulls; unknown is null, never 0; `analyticsCollected` = the final pull (4 days after the
   broadcast) is stored. Local read only.
+- **Thumbnail tool (BL-255, ADR 0069, owner msgs 4380/4383):** `producer_video_thumbnail_replace` `{ channelId, videoId (11 chars), path (workspace-
+  relative, under `04 Videos/`, .jpg/.jpeg/.png), dryRun? }` → `{ channelId, videoId, path, dryRun, file: { bytes, contentType, sha256 }, before:
+  { hasCustomThumbnail, privacyStatus, publishAt, url }, after (same shape, or null), units (52), written, backupPath, verified, verificationDetail, imageChanged }`
+  plus `forChannelId`. A YouTube write (`thumbnails.set`, 50 units) on any video of a channel connected here: the image is a JPEG/PNG by its first
+  bytes, at most 2 MB; dry run = every read and check, no backup, no write. Errors: `thumbnail_file_invalid`, `video_not_in_channel`,
+  `thumbnail_step_pending` (this computer's upload of the video has not yet set its own thumbnail), `WRITE_CHANNEL_UNRESOLVED`,
+  `WRITE_CHANNEL_MISMATCH`, `live_writes_disabled`, `backup_item_failed`, `operation_lock_held` / `device_in_recovery_mode`. `verified` = custom thumbnail present, privacy / `publishAt` unchanged and the served image differs from the backed-up one (`imageChanged`). Owner route: `GET /api/channels/{channelId}/videos/{videoId}/thumbnail[?vn=Vn]` (vn only orders: the folders named after that number count as the video's own) →
+  `{ folders: [{ folder, video, images, own }], currentUrl }`; `POST` same path `{ path, dryRun? }` → the same result (owner session, active channel).
 - **Every channel-tool answer** (success or error) carries `forChannelId`; the role's own tools do not, nor does a refusal of the MCP layer
   itself (unknown tool, input the schema rejects). **Every call**, refused or not, is logged (`GET /api/producer-agent-token/calls`, below): a
   refusal of the MCP layer as `TOOL_NOT_FOUND` / `INVALID_PARAMS`, a request the transport rejected as a whole (e.g. a wrong `Accept`

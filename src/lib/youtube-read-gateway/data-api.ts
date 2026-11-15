@@ -1375,3 +1375,51 @@ export async function getLiveViewerCounts(youtube: youtube_v3.Youtube, videoIds:
   }
   return result;
 }
+
+/** BL-255 (ADR 0069): what the thumbnail writer reads of one video before and after `thumbnails.set` (1 unit). */
+export type VideoThumbnailState = {
+  channelId: string | null;
+  thumbnails: Record<string, ThumbnailInfo>;
+  /** `contentDetails.hasCustomThumbnail`; null = not returned. */
+  hasCustomThumbnail: boolean | null;
+  privacyStatus: string | null;
+  publishAt: string | null;
+};
+
+/** `videos.list part=snippet,status,contentDetails` for one video; null when YouTube does not return it (deleted, or not ours). */
+export async function getVideoThumbnailState(youtube: youtube_v3.Youtube, videoId: string): Promise<VideoThumbnailState | null> {
+  const res = await youtube.videos.list({ part: ["snippet", "status", "contentDetails"], id: [videoId] });
+  const item = res.data.items?.[0];
+  if (!item) return null;
+  return {
+    channelId: item.snippet?.channelId ?? null,
+    thumbnails: toThumbnailMap(item.snippet?.thumbnails),
+    hasCustomThumbnail: item.contentDetails?.hasCustomThumbnail ?? null,
+    privacyStatus: item.status?.privacyStatus ?? null,
+    publishAt: item.status?.publishAt ?? null,
+  };
+}
+
+const THUMBNAIL_IMAGE_HOST_RE = /^(?:[a-z0-9-]+\.)*ytimg\.com$/i;
+const THUMBNAIL_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+
+/**
+ * BL-255 (ADR 0069 §3): the bytes of a video's current thumbnail image, for the backup taken before it is replaced. Only an
+ * https URL on YouTube's image host (`*.ytimg.com`, as `snippet.thumbnails` gives it), at most 10 MB, behind the Data API reads
+ * toggle. No quota (not a Data API call). Null when the image cannot be fetched.
+ */
+export async function downloadVideoThumbnailImage(url: string, fetchImpl: typeof fetch = fetch): Promise<{ bytes: Buffer; contentType: string } | null> {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "https:" || !THUMBNAIL_IMAGE_HOST_RE.test(parsed.hostname)) return null;
+  await assertDataApiReadsAuthorized();
+  const response = await fetchImpl(parsed.toString(), { redirect: "error", signal: AbortSignal.timeout(20_000) }).catch(() => null);
+  if (!response || !response.ok) return null;
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (bytes.length === 0 || bytes.length > THUMBNAIL_IMAGE_MAX_BYTES) return null;
+  return { bytes, contentType: response.headers.get("content-type") ?? "application/octet-stream" };
+}
