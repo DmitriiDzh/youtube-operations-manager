@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { canApprove, changedField, deletedOnYoutube, defaultWeek, duplicateWarningOf, stageOf, strayDateOf, lengthLabel, mondayOf, pipelineOf, replacedToPull, shiftWeek, slotsToApprove, splitVetoed, tileCounts, wallParts, weekCoverageLine, zonedParts, type PlanSlotDto } from "./weekly-plan-model";
+import { canApprove, changedField, deletedOnYoutube, defaultWeek, duplicateWarningOf, stageOf, strayDateOf, lengthLabel, mondayOf, pipelineOf, replacedToPull, shiftWeek, slotsToApprove, splitVetoed, ownerReviewOf, tileCounts, wallParts, weekCoverageLine, zonedParts, type PlanSlotDto } from "./weekly-plan-model";
 
 // BL-225 (WEEKLY_PUBLISHING_PLAN.md stage 1 item 6, AC-WP-15): the screen's pure rules. Values by hand: 2026-10-26 is a Monday,
 // 2026-11-01 its Sunday; 18:00 in Tokyo is 09:00Z, which is 10:00 in Berlin (CET, UTC+1, after 25.10); 23:30Z on 31.10 is 08:30 on Sunday 1.11 in Tokyo.
@@ -215,4 +215,14 @@ test("BL-243 AC-WP-74: the deleted slot is recognised, not approvable, not in th
   assert.equal(canApprove(deleted), false);
   assert.deepEqual(slotsToApprove({ slots: [deleted, slot({ slotId: "r", approval: "needs_approval", contentHash: "hr" })] }), [{ slotId: "r", contentHash: "hr" }]);
   assert.deepEqual(pipelineOf(deleted)?.map((step) => step.state), ["done", "done", "done", "failed", "todo"]);
+});
+
+// BL-257 (PACKAGE_REVIEW_PLAN.md AC-PR-14; ADR 0070): a slot whose package waits for the owner's package review says so, a returned
+// one shows his comment; the review's codes are not counted as the factory's problems.
+test("BL-257 AC-PR-14: the slot's package review state and the factory's problems without the review codes", () => {
+  assert.deepEqual(ownerReviewOf(null), { review: null, comment: null, factoryProblems: [] });
+  assert.deepEqual(ownerReviewOf({ problems: [] }), { review: null, comment: null, factoryProblems: [] });
+  assert.deepEqual(ownerReviewOf({ problems: ["owner_review_pending"] }), { review: "pending", comment: null, factoryProblems: [] });
+  assert.deepEqual(ownerReviewOf({ problems: ["owner_review_returned"], reviewComment: "redo the intro" }), { review: "returned", comment: "redo the intro", factoryProblems: [] });
+  assert.deepEqual(ownerReviewOf({ problems: ["thumbnail_missing"] }), { review: null, comment: null, factoryProblems: ["thumbnail_missing"] });
 });

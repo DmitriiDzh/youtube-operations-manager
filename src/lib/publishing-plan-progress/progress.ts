@@ -17,6 +17,12 @@ const RANK: Record<PlanSlotProgress["status"], number> = { built: 1, packaged: 2
  *   video id (stage 3 adds `uploading` / `failed` from the upload rows);
  * - BL-243: its video deleted on YouTube (`deleted_on_youtube`) -> `failed` with `video_deleted_on_youtube`, the video id, no date.
  */
+/** BL-257: the comment of an `owner_review_returned` problem, else null. */
+function reviewCommentOf(scanned: ScannedPackage): string | null {
+  const comment = scanned.problems.find((p) => p.code === "owner_review_returned")?.params?.comment;
+  return typeof comment === "string" ? comment : null;
+}
+
 export function progressOfPackage(scanned: ScannedPackage, channelSyntheticMedia: boolean): PlanSlotProgress | null {
   const pkg = scanned.pkg;
   if (!pkg) return null;
@@ -59,6 +65,8 @@ export function progressOfPackage(scanned: ScannedPackage, channelSyntheticMedia
       problems: scanned.problems.map((p) => p.code),
       // BL-242 (ADR 0062 §2): part of what the owner approves in the `packaged` stage.
       manifestSha256: scanned.manifestSha256,
+      // BL-257 (ADR 0070): the owner's return comment from package review, for the slot's status line (only when returned).
+      ...(reviewCommentOf(scanned) !== null ? { reviewComment: reviewCommentOf(scanned) } : {}),
     },
   };
 }

@@ -132,6 +132,10 @@ export type AppPaths = {
   clipReviewsDiscardedBackupsDir: string;
   /** BL-246 (ADR 0065): the owner's comment attachments staged on this computer before a decision (device-local, swept after 24 h). */
   clipReviewUploadsDir: string;
+  /** BL-257 (ADR 0070): the per-channel owner reviews of final release packages (sync-gateway `package-reviews`). */
+  packageReviewsDocDir: string;
+  packageReviewsSyncFallbackDir: string;
+  packageReviewsDiscardedBackupsDir: string;
   /** BL-184: the per-channel storyboards documents (sync-gateway `storyboards`). */
   storyboardsDocDir: string;
   storyboardsSyncFallbackDir: string;

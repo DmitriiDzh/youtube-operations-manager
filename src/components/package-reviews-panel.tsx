@@ -1,0 +1,352 @@
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+import type { UiTextKey } from "@/lib/ui-text";
+import { SkeletonLines } from "./busy-feedback";
+import { ConfirmDialog } from "./confirm-dialog";
+import { actionsOf, durationLabel, frameOf, mediaSrcOf, returnCommentReady, type PackageReviewDto, type PackageReviewState, type PackageReviewsDto } from "./package-reviews-model";
+import { ToggleSwitch } from "./toggle-switch";
+import { useT, useUiText } from "./ui-text-provider";
+import { useUserTimezone } from "./use-user-timezone";
+
+// BL-257 (ADR 0070, PACKAGE_REVIEW_PLAN.md stage 2; owner msgs 4514/4516/4519): Медиа → «Видео на проверку». The owner's questions in
+// order: is the gate on for this channel (the switch on top), does anything wait for me (the line and the waiting cards first), what
+// does the finished video look like (the player streams the package's own file by Range -- any length, on the phone too), what goes
+// with it (thumbnail, title, description, translations, slot). He answers on the card: «Одобрить» or «Вернуть» (a comment required),
+// each confirmed in the app's own dialog. On a phone (< 768 px) the player fills the width and the actions stay in a bar at the
+// bottom of the card while it scrolls (AC-PR-15).
+
+const STATE_STYLES: Record<PackageReviewState, string> = {
+  pending: "bg-amber-500/15 text-amber-300 ring-amber-500/30",
+  approved: "bg-emerald-500/15 text-emerald-300 ring-emerald-500/30",
+  returned: "bg-red-500/15 text-red-300 ring-red-500/30",
+  uploaded: "bg-zinc-700/40 text-zinc-300 ring-zinc-600/40",
+};
+const STATE_KEYS: Record<PackageReviewState, UiTextKey> = {
+  pending: "packageReviews.state.pending",
+  approved: "packageReviews.state.approved",
+  returned: "packageReviews.state.returned",
+  uploaded: "packageReviews.state.uploaded",
+};
+const ERROR_KEYS: Record<string, UiTextKey> = {
+  package_review_no_sha256: "packageReviews.error.package_review_no_sha256",
+  package_review_video_missing: "packageReviews.error.package_review_video_missing",
+  package_review_video_mismatch: "packageReviews.error.package_review_video_mismatch",
+  package_review_thumbnail_missing: "packageReviews.error.package_review_thumbnail_missing",
+  package_review_not_found: "packageReviews.error.package_review_not_found",
+  package_review_uploaded: "packageReviews.error.package_review_uploaded",
+};
+
+type Asking = { item: PackageReviewDto; kind: "approved" | "returned" } | null;
+
+export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channelId: string | null; visible: boolean; onWaiting?: (count: number) => void }) {
+  const t = useT();
+  const { language } = useUiText();
+  const ownerZone = useUserTimezone();
+  const [data, setData] = useState<PackageReviewsDto | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [switchError, setSwitchError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<{ manifest: string; text: string } | null>(null);
+  const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set());
+  const [asking, setAsking] = useState<Asking>(null);
+  const [comment, setComment] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const base = channelId ? `/api/channels/${encodeURIComponent(channelId)}/package-reviews` : null;
+
+  const accept = useCallback(
+    (body: PackageReviewsDto) => {
+      setData(body);
+      setError(null);
+      onWaiting?.(body.waiting);
+    },
+    [onWaiting]
+  );
+
+  const load = useCallback(async () => {
+    if (!base) return;
+    try {
+      const res = await fetch(base);
+      if (!res.ok) throw new Error(String(res.status));
+      accept((await res.json()) as PackageReviewsDto);
+    } catch {
+      setError(t("packageReviews.loadFailed"));
+    }
+  }, [base, accept, t]);
+
+  // On the channel's change, then every minute while the tab is shown (the factory's packages and the other computer's answers
+  // arrive by sync); the waiting count feeds the tab's badge.
+  useEffect(() => {
+    setData(null);
+    void load();
+  }, [load]);
+  useEffect(() => {
+    if (!visible) return;
+    const id = setInterval(() => void load(), 60_000);
+    return () => clearInterval(id);
+  }, [visible, load]);
+
+  const at = useCallback(
+    (iso: string) => {
+      try {
+        return new Intl.DateTimeFormat(language, { dateStyle: "medium", timeStyle: "short", ...(ownerZone ? { timeZone: ownerZone } : {}) }).format(new Date(iso));
+      } catch {
+        return iso;
+      }
+    },
+    [language, ownerZone]
+  );
+
+  async function setRequired(required: boolean) {
+    if (!base) return;
+    setBusy("switch");
+    setSwitchError(null);
+    try {
+      const res = await fetch(base, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ required }) });
+      const body = (await res.json().catch(() => ({}))) as PackageReviewsDto & { error?: string; message?: string };
+      if (!res.ok) throw new Error(body.message ?? body.error ?? String(res.status));
+      accept(body);
+    } catch (cause) {
+      setSwitchError(t("packageReviews.switch.failed", { message: cause instanceof Error ? cause.message : "network" }));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function decide() {
+    if (!base || !asking) return;
+    const { item, kind } = asking;
+    setBusy(item.manifestSha256);
+    setActionError(null);
+    try {
+      const res = await fetch(`${base}/decision`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ manifestSha256: item.manifestSha256, kind, comment: comment.trim() || null }),
+      });
+      const body = (await res.json().catch(() => ({}))) as { view?: PackageReviewsDto; error?: string; message?: string };
+      if (!res.ok || !body.view) {
+        const key = body.error ? ERROR_KEYS[body.error] : undefined;
+        setActionError({ manifest: item.manifestSha256, text: key ? t(key) : t("packageReviews.error.generic", { message: body.message ?? body.error ?? String(res.status) }) });
+        setAsking(null);
+        await load();
+        return;
+      }
+      accept(body.view);
+      setAsking(null);
+      setComment("");
+    } catch {
+      setActionError({ manifest: item.manifestSha256, text: t("packageReviews.error.generic", { message: "network" }) });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  if (!channelId) return null;
+  const gateOff = data !== null && data.readable && !data.required;
+  const toggle = (manifest: string) =>
+    setOpen((current) => {
+      const next = new Set(current);
+      if (next.has(manifest)) next.delete(manifest);
+      else next.add(manifest);
+      return next;
+    });
+
+  const renderCard = (item: PackageReviewDto) => {
+    // A waiting video is open by default (that is what the owner came for); the others fold until opened.
+    const expanded = item.state === "pending" && !gateOff ? !open.has(item.manifestSha256) : open.has(item.manifestSha256);
+    const actions = actionsOf(item);
+    const rowBusy = busy === item.manifestSha256;
+    return (
+      <li key={item.manifestSha256} className={`rounded-lg border ${item.state === "pending" ? "border-zinc-700 bg-zinc-900" : "border-zinc-800 bg-zinc-950/60"}`}>
+        <button
+          type="button"
+          onClick={() => toggle(item.manifestSha256)}
+          aria-expanded={expanded}
+          title={t(expanded ? "packageReviews.collapse" : "packageReviews.expand")}
+          className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-zinc-800/40"
+        >
+          {/* Review M2: with the gate off a not-reviewed package waits for nobody -- a neutral label instead of «Ждёт». */}
+          {gateOff && item.state === "pending" ? (
+            <span className="shrink-0 rounded-full bg-zinc-800 px-2 py-0.5 text-[11px] font-medium text-zinc-400 ring-1 ring-zinc-700">{t("packageReviews.state.off")}</span>
+          ) : (
+            <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ${STATE_STYLES[item.state]}`}>{t(STATE_KEYS[item.state])}</span>
+          )}
+          <span className="shrink-0 font-medium tabular-nums text-zinc-100">{item.video}</span>
+          <span className="min-w-0 flex-1 truncate text-sm text-zinc-300">{item.title}</span>
+          <span className="shrink-0 text-xs tabular-nums text-zinc-500">{durationLabel(item.durationSeconds)}</span>
+          <span aria-hidden className="shrink-0 text-zinc-500">
+            {expanded ? "▾" : "▸"}
+          </span>
+        </button>
+        {expanded && (
+          <div className="border-t border-zinc-800">
+            <div className="grid gap-4 p-3 md:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+              <PackagePlayer src={mediaSrcOf(base!, item.manifestSha256, "video")} unavailableLabel={t("packageReviews.player.unavailable")} />
+              <div className="min-w-0 space-y-3 text-sm">
+                {item.thumbnailPath ? (
+                  // eslint-disable-next-line @next/next/no-img-element -- a local file streamed by the route, not an optimisable asset
+                  <img src={mediaSrcOf(base!, item.manifestSha256, "thumbnail")} alt={t("packageReviews.thumbnail")} className="aspect-video w-full rounded-md bg-black object-contain" loading="lazy" />
+                ) : (
+                  <p className="text-orange-300">{t("packageReviews.noThumbnail")}</p>
+                )}
+                <p className="font-medium text-zinc-100">{item.title}</p>
+                <details className="group rounded-md bg-zinc-900/60 px-2 py-1">
+                  <summary className="cursor-pointer text-xs text-zinc-400">{t("packageReviews.description")}</summary>
+                  <p className="mt-1 whitespace-pre-wrap break-words text-zinc-300">{item.description}</p>
+                </details>
+                <dl className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500">
+                  <dd>{item.languages.length > 0 ? t("packageReviews.languages", { languages: item.languages.join(", ") }) : t("packageReviews.noLanguages")}</dd>
+                  {item.slotId && <dd>{t("packageReviews.slot", { slot: item.slotId })}</dd>}
+                  {item.plannedPublishDate && <dd>{t("packageReviews.planned", { date: item.plannedPublishDate })}</dd>}
+                </dl>
+                {item.otherProblems.length > 0 && <p className="text-xs text-amber-300">{t("packageReviews.otherProblems", { count: item.otherProblems.length })}</p>}
+                {!item.hasVideoSha256 && item.state !== "uploaded" && <p className="text-xs text-orange-300">{t("packageReviews.noSha256")}</p>}
+                {item.decidedAt && item.decision && (
+                  <div className="rounded-md bg-zinc-900 px-3 py-2">
+                    <p className="text-zinc-300">
+                      {t(item.decision === "returned" ? "packageReviews.decided.returned" : "packageReviews.decided.approved", { when: at(item.decidedAt) })}
+                      {item.decidedOn ? ` ${t("packageReviews.decidedOn", { device: item.decidedOn })}` : ""}
+                    </p>
+                    {item.comment && (
+                      <p className="mt-1 whitespace-pre-wrap text-zinc-400">
+                        <span className="text-zinc-500">{t("packageReviews.yourComment")}: </span>
+                        {item.comment}
+                      </p>
+                    )}
+                  </div>
+                )}
+                {actionError?.manifest === item.manifestSha256 && <p className="text-red-400">{actionError.text}</p>}
+              </div>
+            </div>
+            {(actions.approve || actions.ret) && (
+              // AC-PR-15: on a phone the actions stay at the bottom of the screen while the card scrolls -- just above the shell's fixed
+              // bottom navigation (56 px + the safe area), which overlays the scrolling main area; on a wider screen in place.
+              <div className="sticky bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-10 flex gap-2 border-t border-zinc-800 bg-zinc-900/95 px-3 py-2 backdrop-blur md:static md:bg-transparent md:backdrop-blur-none">
+                {actions.approve && (
+                  <button
+                    type="button"
+                    disabled={busy !== null}
+                    onClick={() => {
+                      setComment("");
+                      setAsking({ item, kind: "approved" });
+                    }}
+                    className="flex-1 rounded-md bg-violet-600 px-3 py-2 text-sm font-semibold text-white hover:bg-violet-500 disabled:opacity-40 md:flex-none md:py-1"
+                  >
+                    {t("packageReviews.action.approve")}
+                  </button>
+                )}
+                {actions.ret && (
+                  <button
+                    type="button"
+                    disabled={busy !== null}
+                    onClick={() => {
+                      setComment("");
+                      setAsking({ item, kind: "returned" });
+                    }}
+                    className="flex-1 rounded-md border border-zinc-600 px-3 py-2 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-40 md:flex-none md:py-1"
+                  >
+                    {t("packageReviews.action.return")}
+                  </button>
+                )}
+                {rowBusy && <span className="self-center text-xs text-zinc-400">{t("packageReviews.action.saving")}</span>}
+              </div>
+            )}
+          </div>
+        )}
+      </li>
+    );
+  };
+
+  return (
+    <section className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900/40 p-3 md:p-4">
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 space-y-1">
+          <h2 className="text-base font-semibold text-zinc-100">{t("packageReviews.title")}</h2>
+          <p className="max-w-3xl text-sm text-zinc-400">{t("packageReviews.help")}</p>
+        </div>
+        <button type="button" onClick={() => void load()} className="rounded-md border border-zinc-700 px-3 py-1 text-sm text-zinc-300 hover:bg-zinc-800">
+          {t("packageReviews.refresh")}
+        </button>
+      </header>
+      {error && <p className="text-sm text-red-400">{error}</p>}
+      {!data && !error && <SkeletonLines lines={3} />}
+      {data && (
+        <>
+          <div className="flex flex-wrap items-center gap-3 rounded-md border border-zinc-800 bg-zinc-950/40 px-3 py-2">
+            <ToggleSwitch checked={data.required} disabled={busy !== null || !data.readable} onChange={(value) => void setRequired(value)} label={t("packageReviews.switch.label")} tone="violet" />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-zinc-100">{t("packageReviews.switch.label")}</p>
+              <p className="text-xs text-zinc-500">
+                {t("packageReviews.switch.hint")}
+                {data.requiredUpdatedAt ? ` ${t("packageReviews.switch.updated", { when: at(data.requiredUpdatedAt) })}` : ""}
+              </p>
+            </div>
+          </div>
+          {switchError && <p className="text-sm text-red-400">{switchError}</p>}
+          {!data.readable && <p className="rounded-md border border-orange-900 bg-orange-950/40 px-3 py-2 text-sm text-orange-200">{t("packageReviews.unreadable")}</p>}
+          {data.packages === "no_workspace" && <p className="text-sm text-zinc-500">{t("packageReviews.noWorkspace")}</p>}
+          {data.packages === "workspace_unavailable" && <p className="text-sm text-orange-300">{t("packageReviews.workspaceUnavailable")}</p>}
+          {data.packages === "ok" && data.items.length === 0 && <p className="text-sm text-zinc-500">{t("packageReviews.empty")}</p>}
+          {data.items.length > 0 && (
+            <>
+              <p className={`text-sm font-medium ${data.waiting > 0 ? "text-amber-300" : "text-zinc-400"}`}>
+                {gateOff ? t("packageReviews.gateOff") : data.waiting > 0 ? t("packageReviews.waiting", { count: data.waiting }) : t("packageReviews.noneWaiting")}
+              </p>
+              <ul className="space-y-2">{data.items.map(renderCard)}</ul>
+            </>
+          )}
+        </>
+      )}
+      {asking && (
+        <ConfirmDialog
+          title={t(asking.kind === "approved" ? "packageReviews.approve.title" : "packageReviews.return.title", { video: asking.item.video })}
+          description={t(asking.kind === "approved" ? "packageReviews.approve.description" : "packageReviews.return.description")}
+          cancelLabel={t("packageReviews.action.cancel")}
+          confirmLabel={t(asking.kind === "approved" ? "packageReviews.approve.confirm" : "packageReviews.return.confirm")}
+          confirmVariant={asking.kind === "returned" ? "danger" : "default"}
+          confirmDisabled={busy !== null || (asking.kind === "returned" && !returnCommentReady(comment))}
+          confirmBusyLabel={busy === asking.item.manifestSha256 ? t(asking.kind === "approved" ? "packageReviews.action.checking" : "packageReviews.action.saving") : null}
+          onCancel={() => {
+            if (busy === null) setAsking(null);
+          }}
+          onConfirm={() => void decide()}
+        >
+          <textarea
+            value={comment}
+            onChange={(event) => setComment(event.target.value)}
+            maxLength={2000}
+            rows={asking.kind === "returned" ? 4 : 2}
+            aria-label={t(asking.kind === "approved" ? "packageReviews.approve.placeholder" : "packageReviews.return.placeholder")}
+            placeholder={t(asking.kind === "approved" ? "packageReviews.approve.placeholder" : "packageReviews.return.placeholder")}
+            className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-100 placeholder:text-zinc-600"
+          />
+        </ConfirmDialog>
+      )}
+    </section>
+  );
+}
+
+/**
+ * The package's own video by HTTP Range (`preload="metadata"`: only the header is read until the owner presses play, so a 20-minute
+ * episode never downloads first). The frame follows the video's own size -- 9:16 for a Short, 16:9 otherwise -- and fills the width
+ * on a phone (AC-PR-15).
+ */
+function PackagePlayer({ src, unavailableLabel }: { src: string; unavailableLabel: string }) {
+  const [frame, setFrame] = useState<"vertical" | "horizontal">("horizontal");
+  const [failed, setFailed] = useState(false);
+  if (failed) return <p className="rounded-md border border-orange-900 bg-orange-950/40 px-3 py-2 text-sm text-orange-200">{unavailableLabel}</p>;
+  return (
+    <div className={frame === "vertical" ? "mx-auto w-full max-w-sm" : "w-full"}>
+      <video
+        src={src}
+        controls
+        playsInline
+        preload="metadata"
+        onLoadedMetadata={(event) => setFrame(frameOf(event.currentTarget.videoWidth, event.currentTarget.videoHeight))}
+        onError={() => setFailed(true)}
+        className={`${frame === "vertical" ? "aspect-[9/16] max-h-[80vh]" : "aspect-video"} w-full rounded-md bg-black object-contain`}
+      />
+    </div>
+  );
+}

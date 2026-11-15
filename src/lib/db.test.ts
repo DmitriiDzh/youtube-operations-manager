@@ -1088,7 +1088,8 @@ test("getSyncFamilyStatuses: every family (nineteen since BL-225) reports a neve
       statuses.map((s) => s.family).sort(),
       // BL-236 (owner msg 3823): + elevenlabs_settings, elevenlabs_spend (shared ElevenLabs limits and spend).
       // BL-241 (ADR 0061): + clip_reviews (the Producer's clips for review and the owner's decisions, one document per channel).
-      ["agent_tokens", "ai_connections", "change_drafts", "channel_language_settings", "channel_publishing_settings", "clip_reviews", "editorial_profile", "elevenlabs_settings", "elevenlabs_spend", "gemini_settings", "gemini_spend", "generation_plans", "live_analytics", "live_streams", "media_jobs", "media_sessions", "media_settings", "publishing_plans", "publishing_uploads", "storyboards", "video_costs", "video_reservations"]
+      // BL-257 (ADR 0070): + package_reviews (the owner's review of a channel's final release packages, one document per channel).
+      ["agent_tokens", "ai_connections", "change_drafts", "channel_language_settings", "channel_publishing_settings", "clip_reviews", "editorial_profile", "elevenlabs_settings", "elevenlabs_spend", "gemini_settings", "gemini_spend", "generation_plans", "live_analytics", "live_streams", "media_jobs", "media_sessions", "media_settings", "package_reviews", "publishing_plans", "publishing_uploads", "storyboards", "video_costs", "video_reservations"]
     );
     for (const s of statuses) {
       assert.equal(s.lastSyncedAt, null);

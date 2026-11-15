@@ -671,6 +671,9 @@ export const content = {
   "weekPlan.stage.hintSlot": "On: you approve slots before they have a package; a slot changed by an agent needs you again. Approvals made with the switch off do not count here; switching it back off brings them back.",
   "weekPlan.stage.failed": "The approval setting was not saved ({code}).",
   "weekPlan.awaitingPackage": "waiting for its package",
+  // BL-257 (ADR 0070): the slot's package waits for the owner's package review in Media, or he returned it.
+  "weekPlan.awaitingOwnerReview": "waiting for your review in Media",
+  "weekPlan.ownerReviewReturned": "returned: {comment}",
   "weekPlan.deletedOnYoutube": "Video deleted on YouTube",
   "weekPlan.onYoutube": "On YouTube: {at}",
   "weekPlan.duplicateVideo": "Another package has the same video number — no date is set",
@@ -689,6 +692,9 @@ export const content = {
   "weekPlan.metaSeparator": "·",
   "publishingPackages.problem.slot_duplicate": "Another package names the same plan slot ({slotId}): give each package its own slot.",
   "publishingPackages.problem.slot_taken": "The plan slot {slotId} already has an uploaded video.",
+  // BL-257 (ADR 0070): the owner reviews this channel's final packages before they count as ready.
+  "publishingPackages.problem.owner_review_pending": "Waiting for your review in Media → «Videos for review».",
+  "publishingPackages.problem.owner_review_returned": "You returned it: {comment}",
   // BL-255 (ADR 0069): replace an uploaded video's thumbnail.
   "thumbReplace.button": "Replace thumbnail",
   "thumbReplace.title": "Replace the thumbnail on YouTube",

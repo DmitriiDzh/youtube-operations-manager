@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { PlanReviewActivity } from "@/lib/generation-plans";
-import type { ClipReviewsSnapshot, PublishingPlansSnapshot, SharedPickAction, SharedPlan, SharedVerdict, StoryboardRecord } from "@/lib/sync-gateway";
-import { clipNoticesOf, planFeedOfActivity, planFeedOfPeerPlan, planFeedsOfOutgoing, slotNoticesOf, storyboardNoticesOf } from "./review-notify";
+import type { ClipReviewsSnapshot, PackageReviewsSnapshot, PublishingPlansSnapshot, SharedPickAction, SharedPlan, SharedVerdict, StoryboardRecord } from "@/lib/sync-gateway";
+import { reviewFileName } from "@/lib/review-notify";
+import { clipNoticesOf, packageNoticesOf, planFeedOfActivity, planFeedOfPeerPlan, planFeedsOfOutgoing, slotNoticesOf, storyboardNoticesOf } from "./review-notify";
 
 // BL-248 (REVIEW_NOTIFY_PLAN.md §2): only the owner's decisions become notices -- never the Producer's withdrawal or submit, never
 // the Operator's comments or replies. Expected values written out by hand from §2 / §4.
@@ -191,4 +192,28 @@ test("N1: this computer's sent verdict and pick actions give the ids the owning 
   assert.deepEqual(feeds[0].entries.map((e) => e.entryId), ["v|plan-w|i1|a1|2026-11-08T11:00:00Z|accepted", "p|plan-w|i2|a3|2026-11-08T11:01:00Z"]);
   assert.equal(feeds[0].channelName, "Tropico Jazz");
   assert.equal(feeds[0].entries[0].groupId, "g1");
+});
+
+// BL-257 (PACKAGE_REVIEW_PLAN.md AC-PR-13; ADR 0070 §4): each owner decision on a final package gives ONE notice, named
+// REVIEW-DECISION-package-<video>-<decisionId>.md; decisions before the window give none; a decision a later one overrides says so.
+test("BL-257 AC-PR-13: package reviews -- one notice per owner decision, item = the video, the later decision counts", () => {
+  const M = "a".repeat(64);
+  const snapshot: PackageReviewsSnapshot = {
+    exists: true,
+    required: { value: true, updatedAt: "2026-11-15T08:00:00Z", by: "owner", device: "Mac" },
+    decisions: {
+      pr_old: { id: "pr_old", manifestSha256: M, video: "V9", thumbnailSha256: null, kind: "approved", comment: null, by: "owner", device: "Mac", at: "2026-11-07T10:00:00Z" },
+      pr_1: { id: "pr_1", manifestSha256: M, video: "V11", thumbnailSha256: "1".repeat(64), kind: "returned", comment: "the intro is cut", by: "owner", device: "Mac", at: "2026-11-15T10:00:00Z" },
+      pr_2: { id: "pr_2", manifestSha256: M, video: "V11", thumbnailSha256: "1".repeat(64), kind: "approved", comment: null, by: "owner", device: "Windows", at: "2026-11-15T11:00:00Z" },
+    },
+  };
+  const notices = packageNoticesOf(CH, snapshot, SINCE);
+  assert.deepEqual(notices.map((n) => [n.kind, n.itemId, n.decisionId, n.status, n.comment]), [
+    ["package", "V11", "pr_1", "returned", "the intro is cut"],
+    ["package", "V11", "pr_2", "approved", null],
+  ]);
+  assert.deepEqual(notices.map((n) => reviewFileName(n.kind, n.itemId, n.decisionId)), ["REVIEW-DECISION-package-V11-pr_1.md", "REVIEW-DECISION-package-V11-pr_2.md"]);
+  assert.ok(notices[0].context.some((l) => l.label === "Counts" && l.value.includes("pr_2")), "the return was overridden by the later approval");
+  assert.equal(notices[1].context.some((l) => l.label === "Counts"), false);
+  assert.equal(notices[1].ytmPlace, "Медиа → «Видео на проверку»");
 });

@@ -675,6 +675,9 @@ export const content: Record<keyof typeof en, string> = {
   "weekPlan.stage.hintSlot": "Включено: одобряете слоты до пакета; если агент изменит слот, он снова ждёт вас. Одобрения, сделанные при выключенном, здесь не действуют; выключите снова — вернутся.",
   "weekPlan.stage.failed": "Настройка одобрения не сохранилась ({code}).",
   "weekPlan.awaitingPackage": "ждёт пакета",
+  // BL-257 (ADR 0070): пакет слота ждёт проверки владельца в Медиа, или он его вернул.
+  "weekPlan.awaitingOwnerReview": "ждёт вашей проверки в Медиа",
+  "weekPlan.ownerReviewReturned": "возвращено: {comment}",
   "weekPlan.deletedOnYoutube": "Ролик удалён на YouTube",
   "weekPlan.onYoutube": "на YouTube: {at}",
   "weekPlan.duplicateVideo": "Ещё один пакет с тем же номером — дата не ставится",
@@ -693,6 +696,9 @@ export const content: Record<keyof typeof en, string> = {
   "weekPlan.metaSeparator": "·",
   "publishingPackages.problem.slot_duplicate": "Другой пакет указывает тот же слот плана ({slotId}): у каждого пакета должен быть свой слот.",
   "publishingPackages.problem.slot_taken": "У слота плана {slotId} уже есть загруженное видео.",
+  // BL-257 (ADR 0070): владелец проверяет итоговые пакеты канала, прежде чем они станут готовыми.
+  "publishingPackages.problem.owner_review_pending": "Ждёт вашей проверки в Медиа → «Видео на проверку».",
+  "publishingPackages.problem.owner_review_returned": "Вы вернули: {comment}",
   // BL-255 (ADR 0069): replace an uploaded video's thumbnail.
   "thumbReplace.button": "Заменить обложку",
   "thumbReplace.title": "Заменить обложку на YouTube",

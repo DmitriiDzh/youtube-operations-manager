@@ -364,3 +364,83 @@ test("BL-243 AC-WP-84: a removed list passed in replaces a failed read; V73 is d
   const v73 = withList.packages.find((p) => p.video === "V73")!;
   assert.deepEqual([v73.state, v73.existsOnChannel, v73.youtube?.removedAt], ["deleted_on_youtube", false, REMOVED]);
 });
+
+// ---- BL-257 (ADR 0070, PACKAGE_REVIEW_PLAN.md AC-PR-01/02/03/04/06/07): the owner-review gate in the scan ----
+// Expected states are written from the plan: a channel without the gate scans exactly as before; with it, a package that would be
+// ready waits (`owner_review_pending`) until the owner approved THIS manifest with THIS thumbnail file; a return keeps it out with
+// the comment; an uploaded package and one with another problem are not touched; a gate that cannot be read holds everything.
+
+const M65 = "6".repeat(64);
+const M65B = "7".repeat(64);
+const TH65 = "c".repeat(64);
+const TH65B = "d".repeat(64);
+const reviewHashes = (manifest = M65, thumb = TH65) => async (abs: string) => {
+  const name = abs.split("/").pop() ?? "";
+  if (name === "V65_release.json") return manifest;
+  if (name === "Thumbnail_V65_A.jpg") return thumb;
+  return "0".repeat(64);
+};
+const ownerDecision = (id: string, manifest: string, kind: "approved" | "returned", thumb: string | null, at = "2026-11-15T10:00:00.000Z") =>
+  ({ id, manifestSha256: manifest, video: "V65", thumbnailSha256: thumb, kind, comment: kind === "returned" ? "the intro is cut" : null, by: "owner" as const, device: "Mac", at });
+async function gate(required: boolean | null, decisions: ReturnType<typeof ownerDecision>[]) {
+  const { ownerReviewStateOf, reviewGateOf } = await import("@/lib/package-reviews/model");
+  return reviewGateOf(ownerReviewStateOf({ exists: true, required: required === null ? null : { value: required, updatedAt: "", by: "owner", device: null }, decisions: Object.fromEntries(decisions.map((d) => [d.id, d])) }));
+}
+async function scanV65(extra: Partial<PackageScanDeps>, files = packageFiles("04 Videos/10 October/1024 V65", "V65")) {
+  const result = await createPackageScan(deps(files, { sha256: reviewHashes(), ...extra })).scan("UC_t");
+  if (result.status !== "ok") return assert.fail(result.status);
+  return result.packages[0];
+}
+
+test("AC-PR-01: no gate port, a gate that is off, or no document: the same state and problems as before, and no thumbnail hashed", async () => {
+  const hashed: string[] = [];
+  const counting = async (abs: string) => {
+    hashed.push(abs.split("/").pop() ?? "");
+    return reviewHashes()(abs);
+  };
+  const before = await scanV65({ sha256: counting });
+  assert.deepEqual([before.state, before.problems], ["ready", []]);
+  const { ownerReviewStateOf, reviewGateOf } = await import("@/lib/package-reviews/model");
+  for (const g of [await gate(false, []), reviewGateOf(ownerReviewStateOf({ exists: false, required: null, decisions: {} }))]) {
+    const scanned = await scanV65({ sha256: counting, ownerReview: async () => g });
+    assert.deepEqual([scanned.state, scanned.problems], ["ready", []]);
+  }
+  assert.deepEqual([...new Set(hashed)], ["V65_release.json"], "only the manifest is hashed, as before");
+});
+
+test("AC-PR-02: gate on, no decision -> not_ready with owner_review_pending", async () => {
+  const scanned = await scanV65({ ownerReview: async () => gate(true, []) });
+  assert.deepEqual([scanned.state, scanned.problems], ["not_ready", [{ code: "owner_review_pending" }]]);
+});
+
+test("AC-PR-03: approved for this manifest + thumbnail -> ready; re-packaged manifest or changed thumbnail -> pending again", async () => {
+  const approved = [ownerDecision("d1", M65, "approved", TH65)];
+  assert.deepEqual((await scanV65({ ownerReview: async () => gate(true, approved) })).state, "ready");
+  const repackaged = await scanV65({ sha256: reviewHashes(M65B, TH65), ownerReview: async () => gate(true, approved) });
+  assert.deepEqual([repackaged.state, repackaged.problems], ["not_ready", [{ code: "owner_review_pending" }]]);
+  const newThumb = await scanV65({ sha256: reviewHashes(M65, TH65B), ownerReview: async () => gate(true, approved) });
+  assert.deepEqual([newThumb.state, newThumb.problems], ["not_ready", [{ code: "owner_review_pending" }]]);
+});
+
+test("AC-PR-04: returned -> not_ready with owner_review_returned and the comment; a later approval -> ready", async () => {
+  const returned = [ownerDecision("d1", M65, "returned", TH65)];
+  const scanned = await scanV65({ ownerReview: async () => gate(true, returned) });
+  assert.deepEqual([scanned.state, scanned.problems], ["not_ready", [{ code: "owner_review_returned", params: { comment: "the intro is cut" } }]]);
+  const later = [...returned, ownerDecision("d2", M65, "approved", TH65, "2026-11-15T11:00:00.000Z")];
+  assert.equal((await scanV65({ ownerReview: async () => gate(true, later) })).state, "ready");
+});
+
+test("AC-PR-06: an uploaded package gets no review problem; a package with another problem keeps only that problem", async () => {
+  const files = { ...packageFiles("04 Videos/10 October/1024 V65", "V65"), "04 Videos/10 October/1024 V65/V65_youtube.json": { text: JSON.stringify({ videoId: "vid65" }), bytes: 20 } };
+  const uploaded = await scanV65({ ownerReview: async () => gate(true, []), videos: async () => [{ videoId: "vid65", title: "Title V65", privacyStatus: "private", publishAt: null }] }, files);
+  assert.deepEqual([uploaded.state, uploaded.problems], ["uploaded_private", []]);
+  const noThumb = packageFiles("04 Videos/10 October/1024 V65", "V65");
+  delete noThumb["04 Videos/10 October/1024 V65/Thumbnail_V65_A.jpg"];
+  const other = await scanV65({ ownerReview: async () => gate(true, []) }, noThumb);
+  assert.deepEqual(other.problems.map((p) => p.code), ["thumbnail_missing"]);
+});
+
+test("AC-PR-07: a gate port that fails holds the package (owner_review_pending), never a failed scan", async () => {
+  const scanned = await scanV65({ ownerReview: async () => Promise.reject(new Error("document unreadable")) });
+  assert.deepEqual([scanned.state, scanned.problems], ["not_ready", [{ code: "owner_review_pending" }]]);
+});

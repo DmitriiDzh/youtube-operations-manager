@@ -5248,3 +5248,32 @@ adapter: client, `assertLiveWritesAuthorized()`, gateway `setVideoThumbnail` →
 
 Security: a new YouTube writer reachable by an agent (the Producer), as the owner decided; it can change only the thumbnail, only
 from the channel's own workspace images, behind the same identity check and Live writes switch as every other write.
+
+## BL-257 — the owner's review of final release packages (ADR 0070)
+
+- **Module:** `src/lib/package-reviews/` -- `contracts.ts` (views, problem codes), `schemas.ts` (strict decision / switch inputs),
+  `model.ts` (pure: well-formed decisions, the LATEST owner decision per manifest, the gate state -- no document off, unreadable on with
+  nothing approved -- the scan gate object `reviewGateOf`, and the narrow tried exception `triedExceptionsOf`), `services.ts` (view,
+  switch, decide, media file; every port injected), `index.ts` (production wiring; `readOwnerReviewState` for the scan,
+  `createPackageReviewsOwnerCore(ports)` for the routes). It never imports `publishing`: `src/composition/package-reviews.ts` maps the
+  scan to `ReviewPackage`s, resolves files through `createPackageScanCore().resolvePackageFile` (workspace rule + real path inside the
+  real `04 Videos/`), keeps a 30 s scan memo for the player's Range requests, and after a change drops the plan's package cache
+  (`invalidatePlanPackages`) and nudges review-notify.
+- **Store:** sync family `package_reviews` (`sync-gateway/package-reviews`, `-sync`): one Automerge document per channel, fixed genesis
+  actor; `required` assigned whole, `decisions` under fresh ids. `read` tells "no document" (`exists: false`) from a document that cannot
+  be loaded (throws).
+- **Gate:** `publishing/package-scan.ts` reads `ownerReview(channelId)` once per scan (a failing port = closed gate). Only a package with
+  no upload record and no other problem is judged; the thumbnail is hashed only when an approval stands for that manifest. Wired inside
+  `createPackageScanReads`, so every scan consumer sees it.
+- **Upload runner (review M1):** the port `ownerReview` is asked again before a `queued` row starts; with the gate on, a row whose
+  manifest is not approved with the current thumbnail file (returned while queued, queued before the gate, thumbnail swapped) is
+  cancelled `owner_review_withdrawn` (audited `publishing.upload_cancelled_owner_review`) before any byte. Rows already sending follow
+  BL-244.
+- **Order (review L1):** the store gives each decision `seq` = highest in the copy + 1; the standing decision is ordered by `seq`, then
+  `at`, then id (RISK-154 for the residual clock risk). With the gate off the view reports `waiting: 0` (no badge).
+- **Tried exception:** `listUploadRowsForTriedRule` + `triedExceptionsOf`: an approved manifest whose rows are all `cancelled`, without a
+  video id, and created before the approval is removed from the automatic upload's tried set; a row after the approval keeps it tried
+  (no re-queue loop).
+- **Surfaces:** owner routes `/api/channels/[channelId]/package-reviews` (`GET`/`PUT`, `/decision`, `/video`, `/thumbnail` via
+  `local-file-response`, `isOwnerBrowserRequest`); Media → «Видео на проверку» (`MEDIA_TABS` value `packages`); the week-plan slot line
+  from `PlanSlotPackage.reviewComment` and the problem codes; review-notify kind `package` (`packageNoticesOf`).

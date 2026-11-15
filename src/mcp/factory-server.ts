@@ -194,7 +194,10 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // BL-253 (FO-REQ-0054, docs/roadmap/plans/ELEVENLABS_SFX_MUSIC_PLAN.md): 1.45.0 -- factory_sfx_create_job and factory_music_create_job
 // (ElevenLabs sound effects and music, paid, on the speech switch and limits, counted in credits); factory_speech_get_job returns
 // their jobs (kind sfx | music). Additive.
-export const FACTORY_API_VERSION = "1.45.0";
+// BL-257 (owner msgs 4514/4516, ADR 0070): 1.46.0 -- factory_publishing_plan_get / _list: a slot's package problems gain
+// owner_review_pending / owner_review_returned (the owner reviews the channel's final packages in Media before they are ready) and
+// the package gains reviewComment (his return comment: re-package with the change). No factory tool decides. Additive.
+export const FACTORY_API_VERSION = "1.46.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [

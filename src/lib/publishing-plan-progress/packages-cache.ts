@@ -40,3 +40,11 @@ export function createPackagesReader(deps: PackagesCacheDeps) {
     }
   };
 }
+
+/**
+ * BL-257 (ADR 0070, PACKAGE_REVIEW_PLAN.md AC-PR-10): the owner's package-review decision (or switch) changes what the scan says, so
+ * the channel's kept answer is dropped -- the slot moves at the plan screen's next read instead of up to a minute later.
+ */
+export function invalidatePackagesEntry(cache: Map<string, PackagesEntry>, channelId: string): void {
+  cache.delete(channelId);
+}

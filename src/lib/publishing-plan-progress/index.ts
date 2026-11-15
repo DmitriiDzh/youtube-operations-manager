@@ -1,6 +1,6 @@
 import { createPackageScanCore, createPublishingSettingsCore, listChannelUploads, removedVideosOf } from "@/lib/publishing";
 import type { PlanProgressResult, PlanSlotProgress, PublishingPlansPorts } from "@/lib/publishing-plans";
-import { createPackagesReader, type PackagesEntry } from "./packages-cache";
+import { createPackagesReader, invalidatePackagesEntry, type PackagesEntry } from "./packages-cache";
 import { deletedVideosBySlot, progressOfSlots, progressWithUploads } from "./progress";
 
 // BL-225 stage 2 (ADR 0051, AGENTS.md §M): the plan's `progress` port from the publishing module's package scan, given to the plan's
@@ -10,12 +10,19 @@ import { deletedVideosBySlot, progressOfSlots, progressWithUploads } from "./pro
 const CACHE_KEY = Symbol.for("ytom.publishingPlanProgress.cache");
 type GlobalWithCache = typeof globalThis & { [CACHE_KEY]?: Map<string, PackagesEntry> };
 
+const packagesCache = ((globalThis as GlobalWithCache)[CACHE_KEY] ??= new Map());
+
+/** BL-257 (AC-PR-10): drop the channel's kept package scan (an owner package-review decision or switch changed it). */
+export function invalidatePlanPackages(channelId: string): void {
+  invalidatePackagesEntry(packagesCache, channelId);
+}
+
 const packagesOf = createPackagesReader({
   removedVideos: (channelId) => removedVideosOf(channelId),
   scan: (channelId, removedVideos) => createPackageScanCore().scan(channelId, { removedVideos }),
   synthetic: async (channelId) => (await createPublishingSettingsCore().read(channelId)).settings.containsSyntheticMedia,
   now: () => Date.now(),
-  cache: ((globalThis as GlobalWithCache)[CACHE_KEY] ??= new Map()),
+  cache: packagesCache,
 });
 
 /** The plan's progress port: the packages (`built`, `packaged`) and this computer's uploads (`uploading`, `failed`, `scheduled`, `published`). */

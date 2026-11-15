@@ -284,3 +284,12 @@ test("BL-243 AC-WP-81: after the re-upload path an old try of the deleted video 
   const otherManifest = uploadRow({ video: "V73", videoId: null, status: "failed", errorCode: "y", createdAt: new Date("2026-10-21T00:00:00Z") });
   assert.equal(progressWithUploads(progressOfSlots(ready, ["s1"], false), [otherManifest, removedRow], ["s1"], NOW_MS, exclusions).get("s1")?.status, "packaged");
 });
+
+// BL-257 (PACKAGE_REVIEW_PLAN.md AC-PR-02 / AC-PR-14; ADR 0070 §2): a package waiting for the owner's package review is `built`, not
+// `packaged` -- never offered for the slot's approval -- with its review code listed; a returned one carries the owner's comment.
+test("BL-257 AC-PR-02/14: waiting for review -> built with owner_review_pending; returned -> built with the comment", () => {
+  const pending = progressOfSlots([scanned("V11", "s1", { state: "not_ready", problems: [{ code: "owner_review_pending" }] })], ["s1"], false).get("s1");
+  assert.deepEqual([pending?.status, pending?.package?.problems, pending?.package?.reviewComment], ["built", ["owner_review_pending"], undefined]);
+  const returned = progressOfSlots([scanned("V11", "s1", { state: "not_ready", problems: [{ code: "owner_review_returned", params: { comment: "redo the intro" } }] })], ["s1"], false).get("s1");
+  assert.deepEqual([returned?.status, returned?.package?.problems, returned?.package?.reviewComment], ["built", ["owner_review_returned"], "redo the intro"]);
+});

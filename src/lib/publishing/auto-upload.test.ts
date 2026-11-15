@@ -651,3 +651,14 @@ test("AC-WP-56: the approved manifest gets the slot's date; another manifest of 
   await fresh.auto.tick();
   assert.equal(fresh.state.rows[0].publishAt, null);
 });
+
+// BL-257 (PACKAGE_REVIEW_PLAN.md AC-PR-02; ADR 0070 §2): a package the scan holds for the owner's review is not queued by the
+// automatic upload, and its video is not hashed -- the same as any package that is not ready.
+test("BL-257 AC-PR-02: a package waiting for the owner's review (or returned) is not queued and not hashed", async () => {
+  for (const problem of [{ code: "owner_review_pending" }, { code: "owner_review_returned", params: { comment: "redo the intro" } }]) {
+    const p: ScannedPackage = { ...scanned(release("V11"), "mf-11"), state: "not_ready", problems: [problem] };
+    const h = harness({ packages: [p], files: fileOf(p) });
+    assert.deepEqual((await h.auto.tick()).queued, []);
+    assert.deepEqual([h.state.rows.length, h.state.hashCalls.length], [0, 0]);
+  }
+});

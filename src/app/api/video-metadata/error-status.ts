@@ -257,6 +257,14 @@ const DOMAIN_ERROR_STATUS = {
   clip_review_duplicate: 409,
   clip_review_file_missing: 409,
   clip_review_file_changed: 409,
+  // BL-257 (ADR 0070): the owner's review of a final release package.
+  package_review_not_found: 404,
+  package_review_uploaded: 409,
+  package_review_no_sha256: 422,
+  package_review_video_missing: 409,
+  package_review_video_mismatch: 409,
+  package_review_thumbnail_missing: 409,
+  package_review_workspace_unavailable: 409,
   // BL-246 (ADR 0065): the owner's comment attachments.
   clip_attachment_too_many: 422,
   clip_attachment_too_large: 413,

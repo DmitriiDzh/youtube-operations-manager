@@ -117,6 +117,10 @@ test("AC-UP-01: a manifest changed since it was shown, or settings changed since
 test("AC-UP-01b: not ready, already uploaded, or already queued is refused", async () => {
   const notReady = harness([scanned("V65", { state: "not_ready", problems: [{ code: "thumbnail_missing" }] })]);
   await refusedWith(notReady.approval.approve({ channelId: "UC_t", userId: "u", items: [item("V65")], shownSettings: SETTINGS }), "upload_package_not_ready");
+  // BL-257 AC-PR-02 (ADR 0070 §2): a package waiting for the owner's package review is refused like any package that is not ready.
+  const awaitingReview = harness([scanned("V65", { state: "not_ready", problems: [{ code: "owner_review_pending" }] })]);
+  await refusedWith(awaitingReview.approval.approve({ channelId: "UC_t", userId: "u", items: [item("V65")], shownSettings: SETTINGS }), "upload_package_not_ready");
+  assert.deepEqual(awaitingReview.inserted, []);
   const uploaded = harness([scanned("V65", { state: "scheduled", youtube: { videoId: "v", privacyStatus: "private", publishAt: null } })]);
   await refusedWith(uploaded.approval.approve({ channelId: "UC_t", userId: "u", items: [item("V65")], shownSettings: SETTINGS }), "upload_already_queued");
   const queued = harness([scanned("V65")], { liveVideos: async () => new Set(["V65"]) });

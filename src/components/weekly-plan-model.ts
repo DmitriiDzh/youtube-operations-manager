@@ -39,7 +39,7 @@ export type PlanSlotDto = {
   statusCode: string | null;
   videoId: string | null;
   /** BL-225 stage 2: the release package that names the slot. */
-  package: { video: string; title: string; durationSeconds: number; languages: string[]; containsSyntheticMedia: boolean; thumbnailPath: string | null; testThumbnails: number; problems: string[]; manifestSha256?: string | null } | null;
+  package: { video: string; title: string; durationSeconds: number; languages: string[]; containsSyntheticMedia: boolean; thumbnailPath: string | null; testThumbnails: number; problems: string[]; manifestSha256?: string | null; reviewComment?: string | null } | null;
   released: boolean;
   /** BL-242 R3: the date the slot's uploaded video carries on YouTube (UTC), or null/absent. */
   youtubePublishAt?: string | null;
@@ -221,4 +221,19 @@ export function weekCoverageLine(coverage: WeekCoverageDto): { covered: number; 
     gaps: coverage.days.filter((day) => day.status === "gap").map((day) => day.date),
     missing: coverage.days.filter((day) => day.status === "missing_translations").map((day) => ({ date: day.date, languages: day.missingLanguages })),
   };
+}
+
+/** BL-257 (ADR 0070): the package-review codes the scan adds -- the owner's own step, not a problem for the factory to fix. */
+const OWNER_REVIEW_CODES = ["owner_review_pending", "owner_review_returned"];
+
+/**
+ * BL-257 (PACKAGE_REVIEW_PLAN.md AC-PR-14): where a slot's package stands in the owner's package review -- waiting for him, returned
+ * (with his comment), or not in review (null) -- and its problems for the factory without the review's own codes.
+ */
+export function ownerReviewOf(pkg: { problems: string[]; reviewComment?: string | null } | null): { review: "pending" | "returned" | null; comment: string | null; factoryProblems: string[] } {
+  if (!pkg) return { review: null, comment: null, factoryProblems: [] };
+  const factoryProblems = pkg.problems.filter((code) => !OWNER_REVIEW_CODES.includes(code));
+  if (pkg.problems.includes("owner_review_returned")) return { review: "returned", comment: pkg.reviewComment ?? null, factoryProblems };
+  if (pkg.problems.includes("owner_review_pending")) return { review: "pending", comment: null, factoryProblems };
+  return { review: null, comment: null, factoryProblems };
 }

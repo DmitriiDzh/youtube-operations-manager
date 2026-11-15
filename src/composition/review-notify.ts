@@ -1,6 +1,7 @@
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { decidingRecordOf, wellFormedAttachments } from "@/lib/clip-reviews";
+import { latestOwnerDecision } from "@/lib/package-reviews";
 import {
   deleteReviewNotifyLedgerBefore,
   getReviewNotifySettingsJson,
@@ -36,9 +37,11 @@ import { latestVersion } from "@/lib/storyboards";
 import {
   createClipReviewsCoreForProduction,
   createGenerationPlansShareCoreForProduction,
+  createPackageReviewsCoreForProduction,
   createPublishingPlansCoreForProduction,
   createStoryboardsCoreForProduction,
   type ClipReviewsSnapshot,
+  type PackageReviewsSnapshot,
   type PublishingPlansSnapshot,
   type SharedPickAction,
   type SharedPlan,
@@ -206,6 +209,46 @@ export function slotNoticesOf(channel: Channel, snapshot: PublishingPlansSnapsho
       attachments: [],
       ytmPlace: "Контент → «План недели»",
       readTool: `factory_publishing_plan_get ${json({ channelId: channel.channelId, weekStart: d.weekStart })}`,
+    });
+  }
+  return out;
+}
+
+// --- final release packages ----------------------------------------------------------------------------------------------
+
+/**
+ * BL-257 (ADR 0070, PACKAGE_REVIEW_PLAN.md AC-PR-13): every owner decision on a final package -- approved or returned -- gives one
+ * file `REVIEW-DECISION-package-<video>-<decisionId>.md`. The latest decision on a manifest is the one that counts (the owner may
+ * change his mind before the upload); an earlier one says so.
+ */
+export function packageNoticesOf(channel: Channel, snapshot: PackageReviewsSnapshot, sinceMs: number): ReviewDecisionNotice[] {
+  const all = Object.values(snapshot.decisions);
+  const out: ReviewDecisionNotice[] = [];
+  for (const d of all) {
+    if (d.by !== "owner" || (d.kind !== "approved" && d.kind !== "returned") || !after(d.at, sinceMs)) continue;
+    // The package-reviews rule (review L1: the document's seq, then the time, then the id) says which decision stands.
+    const standing = latestOwnerDecision(d.manifestSha256, all);
+    const later = standing && standing.id !== d.id ? standing : null;
+    out.push({
+      kind: "package",
+      channelId: channel.channelId,
+      channelName: channel.name,
+      itemId: d.video || d.manifestSha256.slice(0, 12),
+      decisionId: d.id,
+      status: d.kind,
+      comment: d.comment,
+      decidedAt: d.at,
+      decidedOn: d.device,
+      context: [
+        { label: "Video", value: d.video },
+        { label: "Manifest sha256", value: d.manifestSha256 },
+        ...(d.kind === "approved" ? [{ label: "Next", value: "the package is ready: the automatic upload (or producer_upload_queue_add) takes it; the owner's slot approval gives the date" }] : []),
+        ...(d.kind === "returned" ? [{ label: "Next", value: "the package stays out of the upload and the plan until the owner approves a new version (re-package it)" }] : []),
+        ...(later ? [{ label: "Counts", value: `no: a later owner decision (${later.id}) decides this manifest` }] : []),
+      ],
+      attachments: [],
+      ytmPlace: "Медиа → «Видео на проверку»",
+      readTool: `agent_get_publishing_calendar ${json({ channelId: channel.channelId })}`,
     });
   }
   return out;
@@ -444,6 +487,10 @@ function createProductionReviewNotify(): ReviewNotify {
       {
         name: "storyboards",
         list: (since) => perChannel(async (ch) => storyboardNoticesOf(ch, await readDocument(paths.storyboardsDocDir, ch.channelId, () => createStoryboardsCoreForProduction().read(ch.channelId)), Date.parse(since))),
+      },
+      {
+        name: "package reviews",
+        list: (since) => perChannel(async (ch) => packageNoticesOf(ch, await readDocument(paths.packageReviewsDocDir, ch.channelId, () => createPackageReviewsCoreForProduction().read(ch.channelId)), Date.parse(since))),
       },
       {
         name: "weekly plans",

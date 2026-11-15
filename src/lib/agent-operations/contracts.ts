@@ -118,7 +118,10 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // 4.18.0 (BL-250, ADR 0057 amendment 1): agent_speech_get_status as factory_speech_get_status 1.44.0 -- elevenlabs.accountLimit (the
 // account's subscription as last read on the computer) and monthlyLimit { source, limitChars, usedChars, resetAt }; a per_month
 // elevenlabs_limit_exceeded adds source and resetAt. Additive.
-export const AGENT_API_VERSION = "4.18.0";
+// 4.19.0 (BL-257, ADR 0070): agent_get_publishing_calendar -- a package's problems gain owner_review_pending / owner_review_returned
+// (the owner reviews the channel's final packages in the Web UI before they are ready; no agent tool decides); agent_publishing_plan_get
+// slots' package gains reviewComment (his return comment). Additive.
+export const AGENT_API_VERSION = "4.19.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry

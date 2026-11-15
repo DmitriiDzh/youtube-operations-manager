@@ -35,7 +35,8 @@ export const PRODUCER_INBOX_NAME = "Inbox";
 export const REVIEW_NOTICE_FORMAT = "ytm-review-decision/1";
 export const REVIEW_NOTICE_FILE_PREFIX = "REVIEW-DECISION";
 
-export type ReviewNoticeKind = "clip" | "storyboard" | "render" | "plan" | "slot";
+// BL-257 (ADR 0070): + "package" -- the owner approved or returned a final release package in Media → «Видео на проверку».
+export type ReviewNoticeKind = "clip" | "storyboard" | "render" | "plan" | "slot" | "package";
 export type SingleNoticeKind = Exclude<ReviewNoticeKind, "plan">;
 
 /** One line of an item's context in the file ("Scene: Tobacco Field Barn"). */

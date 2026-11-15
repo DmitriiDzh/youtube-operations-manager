@@ -47,6 +47,11 @@ export type PlanSlotPackage = {
   problems: string[];
   /** BL-242 (ADR 0062 §2): the manifest file's SHA-256 (null when it could not be read): part of what the owner approves. */
   manifestSha256: string | null;
+  /**
+   * BL-257 (ADR 0070): the owner's comment when he returned this package in package review (`owner_review_returned`), else absent or
+   * null. Shown on the slot only; not part of the package fingerprint an approval names.
+   */
+  reviewComment?: string | null;
 };
 
 // BL-243: a slot whose only package names a video deleted on YouTube is `failed` with `VIDEO_DELETED_ON_YOUTUBE`

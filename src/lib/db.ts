@@ -8896,9 +8896,9 @@ export async function getGatewayTrafficLast24h(
   }));
 }
 
-export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens" | "live_streams" | "channel_language_settings" | "channel_publishing_settings" | "publishing_uploads" | "storyboards" | "media_jobs" | "gemini_spend" | "gemini_settings" | "video_reservations" | "video_costs" | "live_analytics" | "publishing_plans" | "elevenlabs_spend" | "elevenlabs_settings" | "clip_reviews";
+export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens" | "live_streams" | "channel_language_settings" | "channel_publishing_settings" | "publishing_uploads" | "storyboards" | "media_jobs" | "gemini_spend" | "gemini_settings" | "video_reservations" | "video_costs" | "live_analytics" | "publishing_plans" | "elevenlabs_spend" | "elevenlabs_settings" | "clip_reviews" | "package_reviews";
 
-const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens", "live_streams", "channel_language_settings", "channel_publishing_settings", "publishing_uploads", "storyboards", "media_jobs", "gemini_spend", "gemini_settings", "video_reservations", "video_costs", "live_analytics", "publishing_plans", "elevenlabs_spend", "elevenlabs_settings", "clip_reviews"];
+const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens", "live_streams", "channel_language_settings", "channel_publishing_settings", "publishing_uploads", "storyboards", "media_jobs", "gemini_spend", "gemini_settings", "video_reservations", "video_costs", "live_analytics", "publishing_plans", "elevenlabs_spend", "elevenlabs_settings", "clip_reviews", "package_reviews"];
 
 export type SyncFamilyStatusRow = {
   family: SyncFamily;
@@ -12389,6 +12389,21 @@ export async function listTriedManifestHashes(channelId: string, database: AppDb
     .from(publishingUploads)
     .where(eq(publishingUploads.channelId, channelId));
   return new Set(rows.map((row) => row.manifestSha256));
+}
+
+/**
+ * BL-257 (ADR 0070 §5, AC-PR-11): every upload row of the channel on this computer, reduced to what the tried rule's narrow exception
+ * needs (`package-reviews.triedExceptionsOf`): which manifest, how it ended, whether it reached YouTube, and when it was made.
+ */
+export async function listUploadRowsForTriedRule(
+  channelId: string,
+  database: AppDb = db
+): Promise<Array<{ manifestSha256: string; status: string; videoId: string | null; createdAtMs: number }>> {
+  const rows = await database
+    .select({ manifestSha256: publishingUploads.manifestSha256, status: publishingUploads.status, videoId: publishingUploads.videoId, createdAt: publishingUploads.createdAt })
+    .from(publishingUploads)
+    .where(eq(publishingUploads.channelId, channelId));
+  return rows.map((row) => ({ manifestSha256: row.manifestSha256, status: row.status, videoId: row.videoId, createdAtMs: row.createdAt.getTime() }));
 }
 
 /**
