@@ -13,6 +13,7 @@ import { DEFAULT_SORT, nextSortState, sortVideos, type ExtraSortKey, type SortKe
 import { combineExtras, NO_EXTRAS, useVideoExtras, type VideoExtras, type VideoKind } from "./content-video-extras";
 import { costUsd } from "./video-cost-dialog";
 import { VideoDetailModal } from "./video-detail-modal";
+import { ThumbnailReplaceButton } from "./thumbnail-replace";
 import { VideoDetailsPanel } from "./video-details-panel";
 
 type SyncedChannel = {
@@ -660,6 +661,14 @@ export function ContentManager() {
           hasUnsavedChanges={detailsDirty}
         >
           <VideoSummary video={expandedVideo} extra={extrasOf(expandedVideo.videoId)} viewsThrough={extrasSources.insights?.viewsThrough ?? null} reachThrough={extrasSources.insights?.reachThrough ?? null} />
+          {/* BL-255 (ADR 0069): replace this video's thumbnail on YouTube. */}
+          <div className="mb-4 flex justify-end">
+            <ThumbnailReplaceButton
+              channelId={expandedVideo.channelId}
+              videoId={expandedVideo.videoId}
+              currentUrl={(expandedVideo.thumbnails.maxres ?? expandedVideo.thumbnails.standard ?? expandedVideo.thumbnails.high ?? expandedVideo.thumbnails.default)?.url ?? null}
+            />
+          </div>
           <VideoDetailsPanel
             channelId={expandedVideo.channelId}
             videoId={expandedVideo.videoId}

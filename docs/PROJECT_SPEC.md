@@ -840,6 +840,14 @@ untouched, never the video's own language), with identity check, backup, the Liv
 audit. The date (`status.publishAt`) is written only after the translations, thumbnail, playlist and read-back passed (BL-224); a
 veto of the slot removes an uploaded video's date (still private). Agents draft plans; only the owner approves a slot.
 
+**Thumbnail writer (added 2026-11-15, owner, Telegram msgs 4380/4383, BL-255, ADR 0069).** `src/lib/video-thumbnails/` may replace
+the custom thumbnail (`thumbnails.set`) of a video already on YouTube, any video of the channel, for the owner (Web UI) and the
+Producer (`producer_video_thumbnail_replace`): only an image under `04 Videos/` of the channel's workspace (JPEG/PNG by its first
+bytes, at most 2 MB), with a dry run, ownership check (`snippet.channelId`), refusal while this computer's upload of the video has
+not yet run its own thumbnail step, backup of the current thumbnail (URLs and image), identity check, the Live-writes check
+immediately before the call, read-back (`hasCustomThumbnail`, privacy and `publishAt` unchanged) and audit. Nothing else of the
+video, the weekly plan, the approval or the package changes. Channel worker agents and the factory get no thumbnail tool.
+
 ---
 
 # 22. Idempotent Batch Execution

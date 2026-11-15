@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ThumbnailReplaceButton } from "./thumbnail-replace";
 import { SlotSocialPreview } from "./slot-social-preview";
 import { estimateUploadUnits } from "@/lib/publishing/publish-dates";
 import type { UiTextKey } from "@/lib/ui-text";
@@ -562,6 +563,8 @@ function SlotRow(props: {
           )}
         </div>
         <div className="col-span-2 flex flex-wrap justify-end gap-2 md:col-span-1">
+          {/* BL-255 (ADR 0069): an uploaded video's thumbnail can be replaced on YouTube without touching the slot or its approval. */}
+          {slot.videoId !== null && !deletedOnYoutube(slot) && <ThumbnailReplaceButton channelId={props.channelId} videoId={slot.videoId} currentUrl={null} />}
           {canAct && slot.vetoed && (
             <ActionButton busy={props.busy === `restore:${slot.slotId}`} busyLabel={t("weekPlan.action.saving")} disabled={anyBusy} onClick={() => void props.onDecide("restore", [{ slotId: slot.slotId }], `restore:${slot.slotId}`)} className="rounded-md border border-zinc-600 px-3 py-1 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-40">
               {t("weekPlan.action.restore")}

@@ -5230,3 +5230,21 @@ On branch `feature/bl-229-music-library`. No schema change; no YouTube call; not
   newest is 5 minutes old. The ledger is pruned hourly (90 days).
 - **Limits:** see RISK-152 (a second writer through Syncthing; the other computer's plan verdicts only as its report carries them; a
   crash between a pass file and its ledger rows).
+
+## BL-255 — replacing an uploaded video's thumbnail (ADR 0069)
+
+`src/lib/video-thumbnails/` is the one writer of a custom thumbnail on a video already on YouTube (owner msgs 4380/4383): the owner's
+route `GET/POST /api/channels/[channelId]/videos/[videoId]/thumbnail` (Content card, week-plan slot) and the Producer's
+`producer_video_thumbnail_replace` (Producer endpoint only; `no-agent-upload-tool.test.ts` pins it as the one thumbnail tool).
+
+Flow (`services.ts`, deps injected, tested AC-TH-01..14): path rule (`04 Videos/`, .jpg/.jpeg/.png, no `..`) → the file through the
+package-preview rule (`createPackageScanCore().readThumbnail`: workspace rule, real path inside `04 Videos/`, type from the first
+bytes), at most 2 MB → credentials (the owner's own; for the Producer the channel's connected user) → `getVideoThumbnailState`
+(read gateway, 1 unit): exists and `snippet.channelId` matches → `isUploadThumbnailStepPending` (publishing: an active upload row of
+that video without `steps.thumbnail` would overwrite the new image) → dry run returns here → backup (`video_thumbnail` snapshot:
+URLs + the largest image as base64, fetched by `downloadVideoThumbnailImage`, `*.ytimg.com` only) → `assertWriteChannel` →
+adapter: client, `assertLiveWritesAuthorized()`, gateway `setVideoThumbnail` → read-back (`hasCustomThumbnail` true, privacy and
+`publishAt` unchanged) → audit BACKUP / RESULT / VERIFICATION → `updateStoredVideoThumbnails`. Quota context `video_thumbnail`.
+
+Security: a new YouTube writer reachable by an agent (the Producer), as the owner decided; it can change only the thumbnail, only
+from the channel's own workspace images, behind the same identity check and Live writes switch as every other write.
