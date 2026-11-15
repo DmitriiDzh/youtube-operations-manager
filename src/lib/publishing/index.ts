@@ -848,3 +848,27 @@ export async function listThumbnailCandidates(channelId: string, videoId: string
   }
   return result;
 }
+
+/**
+ * BL-255 (owner msg 4396): a thumbnail the thumbnail writer set later -- and read back (custom thumbnail, the image changed) -- is
+ * the upload's thumbnail step done: every row of that video here whose `steps.thumbnail` is "failed" records "set" (with a note),
+ * so the weekly plan may give the video its date (`checksPassed`). Nothing else of the row changes; a row that changed meanwhile is
+ * left (compare-and-set on its status). Returns how many rows were marked.
+ */
+export async function markUploadThumbnailSetLater(channelId: string, videoId: string, at: Date): Promise<number> {
+  let marked = 0;
+  for (const row of await listPublishingUploads({ channelId, limit: 500 })) {
+    if (row.videoId !== videoId) continue;
+    let steps: Record<string, unknown>;
+    try {
+      steps = JSON.parse(row.stepsJson) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (!steps || typeof steps !== "object" || steps.thumbnail !== "failed") continue;
+    const notes = Array.isArray(steps.notes) ? [...(steps.notes as unknown[])] : [];
+    notes.push(`thumbnail: set later by the thumbnail writer at ${at.toISOString()}`);
+    if (await updatePublishingUpload(row.id, row.status, { stepsJson: JSON.stringify({ ...steps, thumbnail: "set", notes }), updatedAt: at })) marked++;
+  }
+  return marked;
+}

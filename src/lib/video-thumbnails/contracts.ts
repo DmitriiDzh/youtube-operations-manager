@@ -37,6 +37,8 @@ export type ThumbnailReplaceResult = {
   verificationDetail: string | null;
   /** The largest image YouTube serves after the write differs from the one backed up before it; null = not compared (an image missing). */
   imageChanged: boolean | null;
+  /** Upload rows of this video here whose failed thumbnail step was recorded as done (only after a verified replace). */
+  uploadStepsMarked: number;
   after: { hasCustomThumbnail: boolean | null; privacyStatus: string | null; publishAt: string | null; url: string | null } | null;
 };
 
@@ -64,4 +66,6 @@ export type VideoThumbnailsDeps = {
   newOperationId(): string;
   /** The device mutation gate (operation lock / recovery mode): checked before the backup, so nothing is written during a handoff. */
   assertDeviceAvailable(): Promise<void>;
+  /** Owner msg 4396: after a verified replace, the upload's failed thumbnail step is recorded as done (the plan may then date it). */
+  markUploadThumbnailSet(channelId: string, videoId: string): Promise<number>;
 };

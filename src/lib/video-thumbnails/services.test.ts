@@ -110,6 +110,10 @@ function harness(options: {
       stored.push(args);
     },
     newOperationId: () => "op-1",
+    async markUploadThumbnailSet() {
+      calls.push("markUpload");
+      return 1;
+    },
     async assertDeviceAvailable() {
       calls.push("device");
       if (options.deviceBusy) throw Object.assign(new Error("operation lock held"), { code: "operation_lock_held" });
@@ -210,7 +214,7 @@ test("AC-TH-08 dry run: reads and checks only -- no backup, no identity write pa
 test("AC-TH-09 success: order backup → identity → one write with the file's bytes → read-back → verified", async () => {
   const h = harness();
   const result = await createVideoThumbnailsServices(h.deps).replace({ channelId: CHANNEL, videoId: VIDEO, path: PATH }, producer);
-  assert.deepEqual(h.calls, ["readFile", "credentials", "readVideo1", "pending", "device", "health", "downloadImage", "backup", "audit:BACKUP", "identity", "setThumbnail", "audit:RESULT", "readVideo2", "downloadImage", "audit:VERIFICATION", "store"]);
+  assert.deepEqual(h.calls, ["readFile", "credentials", "readVideo1", "pending", "device", "health", "downloadImage", "backup", "audit:BACKUP", "identity", "setThumbnail", "audit:RESULT", "readVideo2", "downloadImage", "audit:VERIFICATION", "store", "markUpload"]);
   assert.equal(h.writes.length, 1);
   assert.equal(h.writes[0].videoId, VIDEO);
   assert.equal(h.writes[0].mimeType, "image/jpeg");
@@ -247,9 +251,9 @@ test("AC-TH-11 audit rows carry the source, the actor and the file's SHA-256", a
   }
 });
 
-test("AC-TH-14 the service has no dependency that touches the plan or the upload rows (only the read of the pending step)", () => {
+test("AC-TH-14 (amended, owner msg 4396) the service touches no plan; of the upload rows it reads the pending step and marks a failed one done", () => {
   const keys = Object.keys(harness().deps).sort();
-  assert.deepEqual(keys, ["assertDeviceAvailable", "assertWriteChannel", "audit", "backup", "credentials", "downloadImage", "newOperationId", "readFile", "readVideo", "setThumbnail", "storeThumbnails", "uploadThumbnailStepPending"]);
+  assert.deepEqual(keys, ["assertDeviceAvailable", "assertWriteChannel", "audit", "backup", "credentials", "downloadImage", "markUploadThumbnailSet", "newOperationId", "readFile", "readVideo", "setThumbnail", "storeThumbnails", "uploadThumbnailStepPending"]);
 });
 
 test("AC-TH-15 a device handoff or recovery mode refuses before any backup or write (dry run still reads)", async () => {
@@ -289,4 +293,19 @@ test("AC-TH-05 a custom thumbnail whose image cannot be saved stops the write (i
   const result = await createVideoThumbnailsServices(auto.deps).replace({ channelId: CHANNEL, videoId: VIDEO, path: PATH }, owner);
   assert.equal(result.written, true);
   assert.equal(result.imageChanged, null);
+});
+
+test("AC-TH-18 (owner msg 4396) only a verified replace marks the upload's failed thumbnail step done", async () => {
+  const ok = harness();
+  const r1 = await createVideoThumbnailsServices(ok.deps).replace({ channelId: CHANNEL, videoId: VIDEO, path: PATH }, owner);
+  assert.equal(r1.uploadStepsMarked, 1);
+  for (const h of [harness({ sameImageAfter: true }), harness({ after: state({ hasCustomThumbnail: false }) })]) {
+    const r = await createVideoThumbnailsServices(h.deps).replace({ channelId: CHANNEL, videoId: VIDEO, path: PATH }, owner);
+    assert.equal(r.verified, false);
+    assert.equal(r.uploadStepsMarked, 0);
+    assert.ok(!h.calls.includes("markUpload"));
+  }
+  const dry = harness();
+  await createVideoThumbnailsServices(dry.deps).replace({ channelId: CHANNEL, videoId: VIDEO, path: PATH, dryRun: true }, owner);
+  assert.ok(!dry.calls.includes("markUpload"));
 });
