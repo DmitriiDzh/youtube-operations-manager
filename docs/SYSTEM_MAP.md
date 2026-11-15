@@ -1392,7 +1392,18 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 
 ## 4. Статус компонентов
 
-### 2.9bl Замена обложки загруженного видео (BL-255, ADR 0069) — **IMPLEMENTED на ветке** (feature/bl-255-thumbnail-replace)
+### 2.9bm Мелкие изменения 15.11 (без отдельного BL)
+- Автозагрузка (private): список каналов, которые она пропускает (`auto_private_upload_paused_channels`, app_settings, этот компьютер;
+  переключатели «По каналам» в карточке «Запись на YouTube»; owner TG 2298, WWE). Загрузки держат restart-when-idle только в окнах
+  «последний кусок отправлен» и `finishing` (ADR 0049 поправка 1, owner msg 4420).
+- Переводы описания канала: язык набора пишется в существующий ключ канала и сверяется по нему (`channelKeyForSetLanguage`: регистр,
+  `_`/`-`, единственный ключ языка без региона; несколько — отказ `language_key_ambiguous`).
+- Соцсети: Configuration ID Facebook Login for Business (необязательно, `config_id` вместо `scope`), файл в rupload одним телом,
+  Instagram при подключении из ответа страницы, «Повторить» доступно удалённо. Instagram этого аккаунта принимает через API только
+  короткие Reels (~≤20 с, 15.11) — Shorts в Instagram владелец пока выкладывает вручную.
+- Автоочистка mp4 не удаляет Shorts (≤ 180 с на YouTube, ADR 0058 поправка).
+
+### 2.9bl Замена обложки загруженного видео (BL-255, ADR 0069) — **IMPLEMENTED** (dev 04bf5e08, a6ea8d43)
 - `src/lib/video-thumbnails/` — единственный писатель обложки уже загруженного видео (`thumbnails.set` через шлюз записи): владелец
   (кнопка «Заменить обложку» в карточке видео «Контент» и под слотом «Плана недели» с видео) и Продюсер
   (`producer_video_thumbnail_replace`, Producer API 1.20.0), любое видео канала. Картинка — только из `04 Videos/` (JPEG/PNG ≤ 2 МБ,
