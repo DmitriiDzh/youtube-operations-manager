@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { frameOf } from "./package-reviews-model";
 import { useT } from "./ui-text-provider";
 import { VideoDetailModal } from "./video-detail-modal";
@@ -88,7 +89,8 @@ export function VideoPlayButton({ channelId, target, className = "" }: { channel
       >
         ▶
       </button>
-      {open && <VideoPopup channelId={channelId} target={target} onClose={() => setOpen(false)} />}
+      {/* Review: in a portal, so the popup never inherits the row's styles (a truncated, nowrap title would clip its texts). */}
+      {open && typeof document !== "undefined" && createPortal(<VideoPopup channelId={channelId} target={target} onClose={() => setOpen(false)} />, document.body)}
     </>
   );
 }

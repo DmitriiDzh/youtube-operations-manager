@@ -79,6 +79,11 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
   // BL-260: the package manifest of each entry (by manifest path or video id), for the popup player.
   const [manifestOf, setManifestOf] = useState<Map<string, string>>(new Map());
   const packagesReadAt = useRef(0);
+  // Review (BL-260): another channel -- its packages are read again at once, never the previous channel's manifests.
+  useEffect(() => {
+    packagesReadAt.current = 0;
+    setManifestOf(new Map());
+  }, [channelId]);
   const [detailsDirty, setDetailsDirty] = useState(false);
 
   const load = useCallback(async () => {
