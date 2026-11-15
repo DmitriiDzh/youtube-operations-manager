@@ -35,6 +35,7 @@ const PROBLEM_KEYS: Record<ChannelLocalizationsPreviewProblem, UiTextKey> = {
   default_language_mismatch: "channelTranslations.problem.default_language_mismatch",
   own_language_in_live: "channelTranslations.problem.own_language_in_live",
   own_language_in_set: "channelTranslations.problem.own_language_in_set",
+  language_key_ambiguous: "channelTranslations.problem.language_key_ambiguous",
   empty_set: "channelTranslations.problem.empty_set",
 };
 

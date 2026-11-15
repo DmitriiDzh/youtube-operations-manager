@@ -3,7 +3,7 @@ import { YOUTUBE_READ_SCOPE, YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
 import { sameLanguage } from "@/lib/shared-language-baseline";
 import { buildSafeLocalizationsPayload, localeKeyFor } from "@/lib/shared-localization-merge";
 import { DomainError, isDomainError, type ChannelLocalizationsActor, type ChannelLocalizationsDependencies, type ChannelLocalizationsLastApply, type ChannelLocalizationsPreviewView, type ChannelLocalizationsView } from "./contracts";
-import { channelDefaultLanguage, ownLanguageEntry, previewChannelLocalizations, readStoredChannelLocalizations, validateChannelLocalizations, type ChannelLocalizationSet, type LiveChannelLocalizations } from "./set";
+import { channelDefaultLanguage, ownLanguageEntry, previewChannelLocalizations, setUnderChannelKeys, readStoredChannelLocalizations, validateChannelLocalizations, type ChannelLocalizationSet, type LiveChannelLocalizations } from "./set";
 
 /** Up to 4 reads, 5 s apart, while the channel does not yet show what was written. */
 export const CHANNEL_LOCALIZATIONS_READ_BACK = { attempts: 4, delayMs: 5_000 };
@@ -20,6 +20,10 @@ const PROBLEM_ERRORS = {
     message: "YouTube lists a translation in the channel's own language that differs from the channel's name or description: fix it in YouTube Studio first. Nothing was written",
   },
   own_language_in_set: { code: "validation_failed", message: "The translations hold the channel's own language (its text is the base title and description): remove it" },
+  language_key_ambiguous: {
+    code: "validation_failed",
+    message: "A language of the translations matches two or more of the channel's translations on YouTube (for example es: es_ES and es_419): remove the extra one in YouTube Studio or name the region (es-419). Nothing was written",
+  },
 } as const;
 
 /** The version of a stored set the owner previewed: the SHA-256 of the stored column ("" = none stored). */
@@ -198,7 +202,8 @@ export function createChannelLocalizationsService(deps: ChannelLocalizationsDepe
         const preview = previewChannelLocalizations(set, fresh);
         const first = preview.problems[0];
         if (first) throw new DomainError({ ...PROBLEM_ERRORS[first], details: { channelId, problems: preview.problems } });
-        const stored = set as ChannelLocalizationSet;
+        // Owner msg 4387: each language under the channel's existing key for it (de -> de_DE), never as a second key.
+        const stored = setUnderChannelKeys(set as ChannelLocalizationSet, fresh.localizations);
         const ownLanguage = preview.ownLanguage as string;
         languages = preview.languages.filter((l) => l.status !== "unchanged").map((l) => l.language);
         if (preview.quota.writes === 0) {

@@ -412,6 +412,7 @@ export const languages: Record<keyof typeof en, string> = {
   "channelTranslations.problem.default_language_not_set": "У канала на YouTube не задан язык по умолчанию, поэтому записать ничего нельзя. Один раз задайте язык канала в YouTube Studio (Настройки → Канал → Основная информация → Язык), затем проверьте снова.",
   "channelTranslations.problem.own_language_in_live": "На YouTube есть перевод на собственном языке канала, название или описание которого отличается от собственного текста канала. Сначала исправьте или удалите его в YouTube Studio; ничего не записывается.",
   "channelTranslations.problem.own_language_in_set": "В переводах есть собственный язык канала на YouTube: уберите его.",
+  "channelTranslations.problem.language_key_ambiguous": "Язык совпадает с двумя и более переводами канала на YouTube (например es: es_ES и es_419): удалите лишний в YouTube Studio или укажите регион (es-419).",
   "channelTranslations.problem.empty_set": "Переводы не сохранены: применять нечего.",
   "channelTranslations.nothingToWrite": "На YouTube уже всё совпадает: записывать нечего.",
   "channelTranslations.quota": "Стоимость: {units} единиц квоты за {writes} запись(и), плюс не меньше {reads} на чтение.",

@@ -407,6 +407,7 @@ export const languages = {
   "channelTranslations.problem.default_language_not_set": "The channel has no default language on YouTube, so nothing can be written. Set the channel's default language once in YouTube Studio (Settings → Channel → Basic info → Language), then check again.",
   "channelTranslations.problem.own_language_in_live": "YouTube lists a translation in the channel's own language whose name or description differs from the channel's own text. Fix or remove it in YouTube Studio first; nothing is written.",
   "channelTranslations.problem.own_language_in_set": "The translations hold the channel's own language on YouTube: remove it.",
+  "channelTranslations.problem.language_key_ambiguous": "A language matches two or more of the channel's translations on YouTube (for example es: es_ES and es_419): remove the extra one in YouTube Studio or name the region (es-419).",
   "channelTranslations.problem.empty_set": "No translations are saved: nothing to apply.",
   "channelTranslations.nothingToWrite": "Everything on YouTube already matches: nothing to write.",
   "channelTranslations.quota": "Cost: {units} quota units for {writes} write(s), plus at least {reads} for reads.",
