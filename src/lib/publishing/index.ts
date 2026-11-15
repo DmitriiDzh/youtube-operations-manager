@@ -22,6 +22,7 @@ import {
   getLiveWritesEnabled,
   getDataApiReadsEnabled,
   listTriedManifestHashes,
+  listUploadRowsForTriedRule,
   listStoredChannels,
   getPublishingG1Probe,
   insertVideoEditAuditEvent,
@@ -42,6 +43,7 @@ import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
 import { createChannelSyncCore } from "@/lib/channel-sync";
 import { getProductionAppPaths } from "@/lib/platform-paths/runtime";
 import type { ResolvedCredentials } from "@/lib/shared-domain";
+import { readOwnerReviewState, reviewGateOf, triedExceptionsOf } from "@/lib/package-reviews";
 import { createVideoDetailsCore } from "@/lib/video-details";
 import { createVideoLocalizationsWriterCore } from "@/lib/shared-video-localizations";
 import { createQuotaGuardCore } from "@/lib/quota-guard";
@@ -199,7 +201,20 @@ const PROBE_CACHE_KEY = Symbol.for("ytom.publishing.probeCache");
 export function createPackageScanCore() {
   const scan = createPackageScanReads();
   const files = createWorkspaceVideoFiles();
+  /** A file under `04 Videos/` of the channel's workspace by the workspace rule, whose REAL path is inside the real `04 Videos/`. */
+  async function packageFile(channelId: string, relativePath: string): Promise<{ path: string; bytes: number } | null> {
+    if (!relativePath.startsWith(`${VIDEOS_FOLDER}/`)) return null;
+    const workspace = await scan.workspace(channelId);
+    if (!workspace) return null;
+    const file = await scan.resolveFile(workspace, relativePath);
+    if (!file) return null;
+    // The file's real path must be inside the real `04 Videos/`: a symlink there must not serve another workspace file (review).
+    const videosRoot = await realpath(path.join(workspace, VIDEOS_FOLDER)).catch(() => null);
+    return videosRoot && isPathInsideOrEqual(videosRoot, file.path) ? file : null;
+  }
   return {
+    /** BL-257 (ADR 0070 §6): a package's own file (its video or thumbnail) for the owner's review player; null when it is none. */
+    resolvePackageFile: (channelId: string, relativePath: string) => packageFile(channelId, relativePath),
     scan: (channelId: string, options?: { checkedAt?: string | null; removedVideos?: Array<{ videoId: string; removedAt: string }> }) => scan.reads.scan(channelId, options),
     /**
      * A package's thumbnail for the preview: only an image under `04 Videos/` of the channel's workspace, reached through the
@@ -207,13 +222,8 @@ export function createPackageScanCore() {
      */
     async readThumbnail(channelId: string, relativePath: string): Promise<{ bytes: Uint8Array; contentType: string } | null> {
       if (!isPackageThumbnailPath(relativePath)) return null;
-      const workspace = await scan.workspace(channelId);
-      if (!workspace) return null;
-      const file = await scan.resolveFile(workspace, relativePath);
+      const file = await packageFile(channelId, relativePath);
       if (!file || file.bytes > 10 * 1024 * 1024) return null;
-      // The file's real path must be inside the real `04 Videos/`: a symlink there must not serve another workspace image (review).
-      const videosRoot = await realpath(path.join(workspace, VIDEOS_FOLDER)).catch(() => null);
-      if (!videosRoot || !isPathInsideOrEqual(videosRoot, file.path)) return null;
       const bytes = await files.readHead(file.path, file.bytes);
       const kind = imageKindOf(bytes);
       return kind === "other" ? null : { bytes, contentType: kind === "png" ? "image/png" : "image/jpeg" };
@@ -283,6 +293,9 @@ function createPackageScanReads() {
     },
     join: (...parts) => path.join(...parts),
     clock: { now: () => new Date() },
+    // BL-257 (ADR 0070 §2): the owner's review of the channel's final packages -- every consumer of the scan (the weekly plan, the
+    // automatic upload, the Producer's queue add, the owner's upload approval) sees the same gate. No document: no gate.
+    ownerReview: async (channelId) => reviewGateOf(await readOwnerReviewState(channelId)),
   };
   return { reads: createPackageScan(deps), workspace: deps.workspace, resolveFile: deps.resolveFile, deps };
 }
@@ -602,7 +615,14 @@ export function createAutoPrivateUploadCore(options: { slotDecisions?: (channelI
     scan: (channelId) => scan.scan(channelId),
     liveVideos: (channelId) => localHeldVideos(channelId),
     peerUploads: (channelId) => peerUploadsOf(channelId),
-    triedHashes: (channelId) => listTriedManifestHashes(channelId),
+    async triedHashes(channelId) {
+      const tried = await listTriedManifestHashes(channelId);
+      // BL-257 (ADR 0070 §5, AC-PR-11): a manifest the owner approved in package review whose rows here were all cancelled before
+      // reaching YouTube, before that approval, is not "tried" (the cancelled WWE V6-V11); any other row keeps it the owner's.
+      const excused = triedExceptionsOf(await readOwnerReviewState(channelId), await listUploadRowsForTriedRule(channelId));
+      for (const sha of excused) tried.delete(sha);
+      return tried;
+    },
     async videoFile(channelId, relativePath) {
       const workspace = await files.workspace(channelId);
       if (!workspace) return null;

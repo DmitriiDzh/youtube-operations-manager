@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { drizzle } from "drizzle-orm/libsql";
 import { createLibsqlClient } from "@/lib/libsql-client";
-import { getPublishingUpload, initializeDatabaseSchema, insertPublishingUploads, listPublishingUploads, listTriedManifestHashes, reorderQueuedPublishingUploads, SCHEMA_MIGRATIONS, type AppDb, type StoredPublishingUpload } from "@/lib/db";
+import { getPublishingUpload, initializeDatabaseSchema, insertPublishingUploads, listPublishingUploads, listTriedManifestHashes, listUploadRowsForTriedRule, reorderQueuedPublishingUploads, SCHEMA_MIGRATIONS, type AppDb, type StoredPublishingUpload } from "@/lib/db";
 
 // BL-209 (AUTO_PRIVATE_UPLOAD_PLAN.md §2 item 6, ADR 0046; ADR 0001: additive only) on a real migrated temporary database: schema
 // v103 adds `publishing_uploads.automatic` (NOT NULL DEFAULT 0, so every older row reads as an approval), converges when run again,
@@ -151,4 +151,19 @@ test("AC-UQ-03/04: reorderQueuedPublishingUploads renumbers the queued rows; one
     await insertPublishingUploads([row({ id: "s", video: "V4", manifestSha256: "s", status: "uploading" })], database);
     assert.equal(await reorderQueuedPublishingUploads(["s", "c", "a", "b"], database), false, "a row that is uploading cannot be ordered");
     assert.deepEqual([await rank("c"), await rank("a"), await rank("b")], [1, 2, 3], "nothing renumbered");
+  }));
+
+// BL-257 (ADR 0070 §5, PACKAGE_REVIEW_PLAN.md AC-PR-11): the rows the tried rule's narrow exception reads -- every row of the
+// channel (and only that channel) with its manifest, status, video id and creation time.
+test("BL-257 AC-PR-11: the upload rows for the tried rule, per channel, with status, video id and creation time", () =>
+  withDb(async (database) => {
+    const later = new Date("2026-10-22T08:00:00.000Z");
+    assert.equal(await insertPublishingUploads([row({ id: "c1", manifestSha256: "mf-1", status: "cancelled" })], database), true);
+    assert.equal(await insertPublishingUploads([row({ id: "d1", manifestSha256: "mf-2", status: "done", videoId: "vid2", video: "V66", createdAt: later })], database), true);
+    assert.equal(await insertPublishingUploads([row({ id: "o1", channelId: "UC2", manifestSha256: "mf-other" })], database), true);
+    const rows = (await listUploadRowsForTriedRule("UC1", database)).sort((a, b) => a.manifestSha256.localeCompare(b.manifestSha256));
+    assert.deepEqual(rows, [
+      { manifestSha256: "mf-1", status: "cancelled", videoId: null, createdAtMs: Date.parse("2026-10-21T12:00:00.000Z") },
+      { manifestSha256: "mf-2", status: "done", videoId: "vid2", createdAtMs: Date.parse("2026-10-22T08:00:00.000Z") },
+    ]);
   }));

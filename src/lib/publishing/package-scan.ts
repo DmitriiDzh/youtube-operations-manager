@@ -71,6 +71,20 @@ export type PackageScanResult =
       packages: ScannedPackage[];
     };
 
+/**
+ * BL-257 (ADR 0070 §2): the owner's review of the channel's final packages, as the package-reviews module answers it (the rule is
+ * that module's; the scan only applies it). `needsThumbnailHash`: an approval stands for this manifest, so the thumbnail file's hash
+ * decides; `problemOf`: the problem to add (`owner_review_pending` / `owner_review_returned`), or null when the package may be ready.
+ */
+export type OwnerReviewGate = {
+  required: boolean;
+  needsThumbnailHash(manifestSha256: string): boolean;
+  problemOf(manifestSha256: string | null, thumbnailSha256: string | null): PackageProblem | null;
+};
+
+/** A gate that could not be read: every package that would be ready waits for the owner (fail closed, AC-PR-07). */
+export const CLOSED_OWNER_REVIEW_GATE: OwnerReviewGate = { required: true, needsThumbnailHash: () => false, problemOf: () => ({ code: "owner_review_pending" }) };
+
 export type PackageScanDeps = {
   /** The channel's workspace path on this computer, or null when not set (`channel-workspaces`). */
   workspace(channelId: string): Promise<string | null>;
@@ -97,6 +111,8 @@ export type PackageScanDeps = {
   validateWorkspace(workspace: string): Promise<{ ok: true } | { ok: false; reason: string }>;
   join(...parts: string[]): string;
   clock: { now(): Date };
+  /** BL-257 (ADR 0070): the channel's owner-review gate, read once per scan. Absent: no gate (the scan is exactly as before). */
+  ownerReview?(channelId: string): Promise<OwnerReviewGate>;
 };
 
 /** `04 Videos/<MM Month>/<MMDD Vn>/Vn_release.json` (the shared `workspace-videos` walk). */
@@ -146,7 +162,7 @@ export function createPackageScan(deps: PackageScanDeps) {
     return JSON.parse(stripBom(await deps.readText(path, MANIFEST_MAX_BYTES)));
   }
 
-  type Copy = { videos: Awaited<ReturnType<PackageScanDeps["videos"]>>; removed: Map<string, string>; checkedAt: string | null };
+  type Copy = { videos: Awaited<ReturnType<PackageScanDeps["videos"]>>; removed: Map<string, string>; checkedAt: string | null; review: OwnerReviewGate | null };
 
   async function scanOne(workspace: string, manifestPath: string, channel: ChannelExpectations, copy: Copy): Promise<ScannedPackage | null> {
     const { videos } = copy;
@@ -212,6 +228,14 @@ export function createPackageScan(deps: PackageScanDeps) {
       channel
     );
     if (recordFile && !record) problems.push({ code: "youtube_record_invalid" });
+    // BL-257 (ADR 0070 §2-§3): a channel that reviews its final packages -- a package not uploaded, with no other problem, is ready
+    // only once the owner approved this manifest version with this thumbnail file. No gate: nothing is read or hashed here.
+    if (copy.review?.required && !recordFile && problems.length === 0) {
+      const thumbnailSha256 =
+        base.manifestSha256 && thumbnailFile && copy.review.needsThumbnailHash(base.manifestSha256) ? await deps.sha256(thumbnailFile.path).catch(() => null) : null;
+      const reviewProblem = copy.review.problemOf(base.manifestSha256, thumbnailSha256);
+      if (reviewProblem) problems.push(reviewProblem);
+    }
     const uploaded = record ? videos.find((video) => video.videoId === record.videoId) : undefined;
     // BL-243: the sync's removed mark wins (the stale row's privacy and date say nothing any more).
     const removedAt = record ? copy.removed.get(record.videoId) : undefined;
@@ -246,7 +270,7 @@ export function createPackageScan(deps: PackageScanDeps) {
       if (!workspace) return { status: "no_workspace" };
       const validation = await deps.validateWorkspace(workspace);
       if (!validation.ok) return { status: "workspace_unavailable", reason: validation.reason };
-      const [channel, videos, removed, checkedAt, manifests] = await Promise.all([
+      const [channel, videos, removed, checkedAt, manifests, review] = await Promise.all([
         deps.channel(channelId),
         deps.videos(channelId),
         // BL-243 (ADR 0063): an unreadable mark is "none known" (such packages read as before) and an unreadable sync time null --
@@ -256,8 +280,10 @@ export function createPackageScan(deps: PackageScanDeps) {
         // BL-243: a caller that already read the check time (the calendar) passes it, so its own and the items' agree.
         options.checkedAt !== undefined ? Promise.resolve(options.checkedAt) : deps.videosCheckedAt ? deps.videosCheckedAt(channelId).catch(() => null) : Promise.resolve(null),
         findManifests(deps, workspace),
+        // BL-257: a gate that cannot be read holds every package (fail closed), never a failed scan.
+        deps.ownerReview ? deps.ownerReview(channelId).catch(() => CLOSED_OWNER_REVIEW_GATE) : Promise.resolve(null),
       ]);
-      const copy: Copy = { videos, removed: new Map((removed ?? []).map((video) => [video.videoId, video.removedAt])), checkedAt };
+      const copy: Copy = { videos, removed: new Map((removed ?? []).map((video) => [video.videoId, video.removedAt])), checkedAt, review };
       const packages: ScannedPackage[] = [];
       for (const manifestPath of manifests) {
         const scanned = await scanOne(workspace, manifestPath, channel, copy);

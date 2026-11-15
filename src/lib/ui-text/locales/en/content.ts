@@ -689,6 +689,9 @@ export const content = {
   "weekPlan.metaSeparator": "·",
   "publishingPackages.problem.slot_duplicate": "Another package names the same plan slot ({slotId}): give each package its own slot.",
   "publishingPackages.problem.slot_taken": "The plan slot {slotId} already has an uploaded video.",
+  // BL-257 (ADR 0070): the owner reviews this channel's final packages before they count as ready.
+  "publishingPackages.problem.owner_review_pending": "Waiting for your review in Media → «Videos for review».",
+  "publishingPackages.problem.owner_review_returned": "You returned it: {comment}",
   // BL-255 (ADR 0069): replace an uploaded video's thumbnail.
   "thumbReplace.button": "Replace thumbnail",
   "thumbReplace.title": "Replace the thumbnail on YouTube",

@@ -344,6 +344,17 @@ export type DomainErrorCode =
   | "clip_review_duplicate"
   | "clip_review_file_missing"
   | "clip_review_file_changed"
+  // BL-257 (ADR 0070, PACKAGE_REVIEW_PLAN.md) -- the owner's review of a final release package. NOT_FOUND: no package of the channel
+  // with this manifest SHA-256 here; UPLOADED: already on YouTube (nothing to review); NO_SHA256: the manifest states no video
+  // `sha256`; VIDEO_MISSING / VIDEO_MISMATCH: this computer's mp4 is not there or does not hash to it; THUMBNAIL_MISSING: no default
+  // thumbnail file to approve with; WORKSPACE_UNAVAILABLE: the channel's packages cannot be read here.
+  | "package_review_not_found"
+  | "package_review_uploaded"
+  | "package_review_no_sha256"
+  | "package_review_video_missing"
+  | "package_review_video_mismatch"
+  | "package_review_thumbnail_missing"
+  | "package_review_workspace_unavailable"
   // BL-246 (ADR 0065, CLIP_REVIEWS_PLAN.md items 11-16): the owner's comment attachments. TOO_MANY: more than 10 in a decision;
   // TOO_LARGE: over 50 MiB; TYPE_NOT_ALLOWED: an extension not on the list; TYPE_MISMATCH: the declared type or the first bytes are
   // not the extension's kind; UPLOAD_*: a staged upload unknown here / of another clip, a piece not continuing it, the arrived file not

@@ -693,6 +693,9 @@ export const content: Record<keyof typeof en, string> = {
   "weekPlan.metaSeparator": "·",
   "publishingPackages.problem.slot_duplicate": "Другой пакет указывает тот же слот плана ({slotId}): у каждого пакета должен быть свой слот.",
   "publishingPackages.problem.slot_taken": "У слота плана {slotId} уже есть загруженное видео.",
+  // BL-257 (ADR 0070): владелец проверяет итоговые пакеты канала, прежде чем они станут готовыми.
+  "publishingPackages.problem.owner_review_pending": "Ждёт вашей проверки в Медиа → «Видео на проверку».",
+  "publishingPackages.problem.owner_review_returned": "Вы вернули: {comment}",
   // BL-255 (ADR 0069): replace an uploaded video's thumbnail.
   "thumbReplace.button": "Заменить обложку",
   "thumbReplace.title": "Заменить обложку на YouTube",
