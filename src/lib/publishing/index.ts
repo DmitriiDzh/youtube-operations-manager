@@ -281,7 +281,9 @@ function createPackageScanReads() {
       const probe = await probeMedia(tools, absolutePath).catch(() => null);
       probeCache.set(key, probe?.durationSeconds ?? null);
       // BL-259: the same ffprobe call gives the frame (no second run).
-      frameCache.set(key, probe?.video?.width && probe.video.height ? { width: probe.video.width, height: probe.video.height } : null);
+      // A phone's 90/270-degree flag shows the stored frame turned: its width and height swap on screen (review).
+      const quarter = Math.abs(Math.round((probe?.video?.rotation ?? 0) / 90)) % 2 === 1;
+      frameCache.set(key, probe?.video?.width && probe.video.height ? (quarter ? { width: probe.video.height, height: probe.video.width } : { width: probe.video.width, height: probe.video.height }) : null);
       return probe?.durationSeconds ?? null;
     },
     // BL-259 (owner msg 4397): the frame from the duration's ffprobe run (the scan probes the duration first).

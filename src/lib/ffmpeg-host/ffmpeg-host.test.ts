@@ -145,3 +145,10 @@ test("real ffmpeg: probe a generated clip and find the keyframe at or before an 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("BL-259: parseProbe reads the display rotation -- the rotate tag, else the display matrix; absent when none", () => {
+  const video = (extra: Record<string, unknown>) => parseProbe(JSON.stringify({ streams: [{ codec_type: "video", codec_name: "h264", width: 1920, height: 1080, ...extra }], format: {} })).video?.rotation;
+  assert.equal(video({ tags: { rotate: "90" } }), 90);
+  assert.equal(video({ side_data_list: [{ side_data_type: "Display Matrix", rotation: -90 }] }), -90);
+  assert.equal(video({}), undefined);
+});

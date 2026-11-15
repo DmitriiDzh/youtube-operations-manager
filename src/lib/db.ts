@@ -7378,7 +7378,16 @@ export async function getVideoOrientations(channelId: string): Promise<Record<st
   }
 }
 
-export async function rememberVideoOrientation(channelId: string, video: string, orientation: VideoOrientation): Promise<void> {
+/** Review: one memo write at a time in this process (read-merge-write), so two scans never drop each other's entry. */
+let videoOrientationWrites: Promise<unknown> = Promise.resolve();
+
+export function rememberVideoOrientation(channelId: string, video: string, orientation: VideoOrientation): Promise<void> {
+  const run = videoOrientationWrites.then(() => writeVideoOrientation(channelId, video, orientation));
+  videoOrientationWrites = run.catch(() => undefined);
+  return run;
+}
+
+async function writeVideoOrientation(channelId: string, video: string, orientation: VideoOrientation): Promise<void> {
   let all: Record<string, Record<string, VideoOrientation>> = {};
   try {
     const parsed = JSON.parse((await getAppSetting(VIDEO_ORIENTATIONS_SETTING_KEY)) ?? "{}") as unknown;
