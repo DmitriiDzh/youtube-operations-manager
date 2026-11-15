@@ -17,4 +17,3 @@ export type OwnerReviewGate = {
 
 /** A gate that could not be read: every package that would be ready waits for the owner (fail closed, AC-PR-07). */
 export const CLOSED_OWNER_REVIEW_GATE: OwnerReviewGate = { required: true, needsThumbnailHash: () => false, problemOf: () => ({ code: "owner_review_pending" }) };
-
