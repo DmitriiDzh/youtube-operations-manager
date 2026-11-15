@@ -8,7 +8,7 @@
 // writes off pauses a job (never fails it); quota and the channel's upload cap pause it until they reset.
 
 import type { StoredPublishingUpload } from "@/lib/db";
-import { CLOSED_OWNER_REVIEW_GATE, type OwnerReviewGate } from "./package-scan";
+import { CLOSED_OWNER_REVIEW_GATE, type OwnerReviewGate } from "./owner-review-gate";
 import { removedMarkFreesSlot, uploadTimeOf } from "@/lib/shared-video-presence";
 import { READ_BACK_RETRIES, READ_BACK_RETRY_DELAY_MS } from "@/lib/video-details/read-back";
 import type { PublishingSettings } from "./settings";
