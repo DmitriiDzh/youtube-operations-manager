@@ -3,7 +3,7 @@
 
 import { isAllowedReleaseVideo } from "./allowlist";
 import type { CleanupDecision, CleanupRefuseReason, CleanupWaitReason, VideoTombstone } from "./contracts";
-import { CLEANUP_DELETED_BY, CLEANUP_DURATION_TOLERANCE_SECONDS } from "./contracts";
+import { CLEANUP_DELETED_BY, CLEANUP_DURATION_TOLERANCE_SECONDS, CLEANUP_SHORT_MAX_SECONDS } from "./contracts";
 
 export type CleanupUploadFacts = {
   video: string;
@@ -69,6 +69,9 @@ export function decideOnYoutube(args: { localBytes: number; youtube: YoutubeVide
   if (yt.uploadStatus && REJECTED_UPLOAD.has(yt.uploadStatus)) return refuse("youtube_rejected");
   if (yt.processingStatus === "failed" || yt.processingStatus === "terminated") return refuse("youtube_rejected");
   if (yt.processingStatus !== "succeeded" && yt.uploadStatus !== "processed") return wait("processing");
+  // Owner rule (2026-11-15): a Short is kept for good; without YouTube's duration nothing is decided yet.
+  if (yt.durationSeconds === null) return wait("cannot_verify");
+  if (yt.durationSeconds <= CLEANUP_SHORT_MAX_SECONDS) return refuse("short_kept");
   const scheduled = yt.privacyStatus === "private" && !!yt.publishAt;
   if (yt.privacyStatus !== "public" && !scheduled) return wait("not_public_or_scheduled");
   if (yt.fileSize !== null && yt.fileSize !== args.localBytes) return refuse("size_mismatch_youtube");

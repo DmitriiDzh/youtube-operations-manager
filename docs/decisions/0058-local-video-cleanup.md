@@ -96,3 +96,8 @@ right after YouTube has finished processing it. He set a HARD rule: never touch 
 - AC-5: Tombstone + mp4 after a crash: the delete completes only when the tombstone matches (bytes, videoId); otherwise it is refused.
   Tombstone without mp4: logged once as a recovered delete.
 - AC-6: Every delete and refusal is logged once (DB + CSV line). A refused upload is not checked again.
+
+## Amendment (2026-11-15, owner rule Telegram 3514 via the Operator): Shorts are never deleted
+
+The owner uploads Shorts by hand to other networks, and cross-posting reads the file. A video YouTube reports at most 180 s long is a
+Short: the sweep refuses it for good (`short_kept`, logged once). Without YouTube's duration nothing is decided (`cannot_verify`).

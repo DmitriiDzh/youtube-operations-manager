@@ -41,6 +41,7 @@ const REASON_TEXT: Record<string, UiTextKey> = {
   size_mismatch_youtube: "cleanup.reason.sizeMismatchYoutube",
   sha256_mismatch: "cleanup.reason.sha256Mismatch",
   duration_mismatch: "cleanup.reason.durationMismatch",
+  short_kept: "cleanup.reason.shortKept",
   video_not_on_youtube: "cleanup.reason.videoNotOnYoutube",
   youtube_rejected: "cleanup.reason.youtubeRejected",
   tombstone_mismatch: "cleanup.reason.tombstoneMismatch",

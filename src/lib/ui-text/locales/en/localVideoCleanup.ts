@@ -35,6 +35,7 @@ export const localVideoCleanup = {
   "cleanup.reason.sizeMismatchYoutube": "YouTube's file size differs from the local one",
   "cleanup.reason.sha256Mismatch": "the file's hash differs from the package's",
   "cleanup.reason.durationMismatch": "the duration differs from YouTube's",
+  "cleanup.reason.shortKept": "a Short (up to 3 minutes): its file is always kept",
   "cleanup.reason.videoNotOnYoutube": "YouTube does not return the video",
   "cleanup.reason.youtubeRejected": "YouTube rejected or failed the upload",
   "cleanup.reason.tombstoneMismatch": "a different \".deleted.json\" is already there",
