@@ -374,3 +374,17 @@ test("CL-KEY-04: preview reads de against de_DE: same text unchanged, other text
   const ambiguous = previewChannelLocalizations({ es: { title: "Es", description: "x" } }, liveChannel({ localizations: { es_ES: { title: "A", description: "a" }, es_419: { title: "B", description: "b" } } }));
   assert.ok(ambiguous.problems.includes("language_key_ambiguous"));
 });
+
+test("CL-KEY-05 (Rural Japan 13:13Z): YouTube stores new languages under its own keys (de -> de_DE, ko -> ko_KR, zh-CN -> zh_CN) -> read-back ok", async () => {
+  const h = harness({
+    live: liveChannel({ localizations: { fr_FR: { title: "Fr", description: "Fr desc" } } }),
+    stored: { de: { title: "De", description: "De desc" }, ko: { title: "Ko", description: "Ko desc" }, "zh-CN": { title: "Zh", description: "Zh desc" } },
+    tamper: (state) => {
+      const map: Record<string, string> = { de: "de_DE", ko: "ko_KR", "zh-CN": "zh_CN" };
+      state.localizations = Object.fromEntries(Object.entries(state.localizations).map(([key, value]) => [map[key] ?? key, value]));
+    },
+  });
+  const result = await h.apply();
+  assert.deepEqual(h.localizationWrites, [{ fr_FR: { title: "Fr", description: "Fr desc" }, de: { title: "De", description: "De desc" }, ko: { title: "Ko", description: "Ko desc" }, "zh-CN": { title: "Zh", description: "Zh desc" } }]);
+  assert.equal(result.ok, true);
+});

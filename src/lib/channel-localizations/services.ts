@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { YOUTUBE_READ_SCOPE, YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
 import { sameLanguage } from "@/lib/shared-language-baseline";
-import { buildSafeLocalizationsPayload, localeKeyFor } from "@/lib/shared-localization-merge";
+import { buildSafeLocalizationsPayload } from "@/lib/shared-localization-merge";
 import { DomainError, isDomainError, type ChannelLocalizationsActor, type ChannelLocalizationsDependencies, type ChannelLocalizationsLastApply, type ChannelLocalizationsPreviewView, type ChannelLocalizationsView } from "./contracts";
-import { channelDefaultLanguage, ownLanguageEntry, previewChannelLocalizations, setUnderChannelKeys, readStoredChannelLocalizations, validateChannelLocalizations, type ChannelLocalizationSet, type LiveChannelLocalizations } from "./set";
+import { channelDefaultLanguage, channelKeyForSetLanguage, ownLanguageEntry, previewChannelLocalizations, setUnderChannelKeys, readStoredChannelLocalizations, validateChannelLocalizations, type ChannelLocalizationSet, type LiveChannelLocalizations } from "./set";
 
 /** Up to 4 reads, 5 s apart, while the channel does not yet show what was written. */
 export const CHANNEL_LOCALIZATIONS_READ_BACK = { attempts: 4, delayMs: 5_000 };
@@ -63,7 +63,9 @@ function localizationsProblem(after: LiveChannelLocalizations, before: LiveChann
   const missing: string[] = [];
   const differs: string[] = [];
   for (const [language, value] of Object.entries(set)) {
-    const key = localeKeyFor(after.localizations, language);
+    // YouTube stores a new channel translation under its own key form (de -> de_DE, ko -> ko_KR, zh-CN -> zh_CN: Rural Japan,
+    // 2026-11-15 13:13Z): the read-back finds the language by the same rule as the write.
+    const key = channelKeyForSetLanguage(after.localizations, language).key;
     if (key === null) missing.push(language);
     else if (after.localizations[key].title !== value.title || after.localizations[key].description !== value.description) differs.push(language);
   }
@@ -71,7 +73,7 @@ function localizationsProblem(after: LiveChannelLocalizations, before: LiveChann
   const otherChanged: string[] = [];
   for (const [language, value] of Object.entries(before.localizations)) {
     if (Object.keys(set).some((written) => sameLanguage(written, language))) continue;
-    const key = localeKeyFor(after.localizations, language);
+    const key = channelKeyForSetLanguage(after.localizations, language).key;
     if (key === null) lost.push(language);
     else if (after.localizations[key].title !== value.title || after.localizations[key].description !== value.description) otherChanged.push(language);
   }
