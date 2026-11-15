@@ -113,7 +113,8 @@ run in parallel with the code. I prepare the texts and the demo video each revie
   contains no token.
 - AC-XP-12 The App Secret route refuses remote (phone) requests; connecting runs only on the owner's HTTPS Tailscale address
   (amended 2026-11-14: the Meta app enforces HTTPS and its validator refused http://localhost, owner msgs 4315/4319); an OAuth callback with a missing, reused
-  or foreign `state` is refused.
+  or foreign `state` is refused. (Owner msg 4435, 2026-11-15: «Повторить» of a failed job works remotely too; the App Secret, the
+  posting switch and disconnecting stay Mac-only.)
 - AC-XP-13 A channel only ever posts to the networks it connected; the per-channel list is the user's setting.
 - AC-XP-15 Scheduling in one place (owner msg 4339): a post to any network is planned like a YouTube upload, in the same
   interface -- one file, one day, several networks (YouTube + Instagram + Facebook...) from one entry; each network's own

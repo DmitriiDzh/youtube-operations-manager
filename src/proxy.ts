@@ -111,7 +111,8 @@ const REMOTE_BLOCKED_PREFIXES = [
   // runs on the HTTPS Tailscale address (Meta refuses http://localhost redirects for this app, owner msgs 4315/4319).
   "/api/social/meta/app",
   "/api/social/posting",
-  "/api/social/jobs/retry",
+  // "/api/social/jobs/retry" is reachable remotely since owner msg 4435 (2026-11-15): a retry only restarts a failed job of a slot
+  // he already approved, behind the posting switch, which stays Mac-only.
   "/api/social/disconnect",
 ];
 
