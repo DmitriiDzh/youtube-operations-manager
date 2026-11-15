@@ -242,3 +242,15 @@ test("BL-256: canRetime -- not vetoed, not released, at least 15 minutes away; w
   assert.equal(parseClock("12.05"), null);
   assert.equal(parseClock("7:5"), null);
 });
+
+test("BL-256 review 1: canRetime counts the date on YouTube and the approved time an agent's change stands on", async () => {
+  const { canRetime } = await import("./weekly-plan-model");
+  const now = Date.parse("2026-10-26T05:50:00Z");
+  const base = { vetoed: null, released: false, publishAtUtc: "2026-10-26T14:00:00.000Z" };
+  assert.equal(canRetime(base, now), true);
+  assert.equal(canRetime({ ...base, youtubePublishAt: "2026-10-26T06:00:00.000Z" }, now), false);
+  // 15:00 in Tokyo (UTC+9) is 06:00Z: 10 minutes away.
+  const changed = { previous: { date: "2026-10-26", publishAt: "2026-10-26T15:00", lengthHint: null, note: null, timeZone: "Asia/Tokyo" }, approvedAt: "2026-10-25T00:00:00Z", changedAt: "2026-10-25T01:00:00Z", changedBy: "worker" as const };
+  assert.equal(canRetime({ ...base, changedAfterApproval: changed }, now), false);
+  assert.equal(canRetime({ ...base, changedAfterApproval: { ...changed, previous: { ...changed.previous, publishAt: "2026-10-26T16:00" } } }, now), true);
+});

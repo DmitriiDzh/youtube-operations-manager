@@ -485,6 +485,10 @@ ADR 0051 Amendment 1.
 - AC-RT-09 / AC-RT-11 An agent saving the old time back after the owner's move (also after an agent's earlier change of an approved
   slot) does not restore the old approval.
 - AC-RT-10 No agent surface or MCP file has the retime path.
+- Independent review (2026-11-16) added: AC-RT-12 the 15-minute margin counts an approved time an agent's change stands on and the
+  date on YouTube; AC-RT-13 with approve the new time is ≥ 30 minutes away; AC-RT-14 re-approving a moved replacing slot does not
+  veto the replaced slot again; AC-RT-15 every earlier approval is revoked, not only the latest; the editor sends the hash it opened
+  with.
 - UI: «Изменить время» on a slot (not vetoed/released, ≥ 15 min away) opens a row: the day (the week's seven), the time typed as
   `HH:MM` (never a native picker), «Сохранить и одобрить» / «Сохранить без одобрения» (only «Сохранить» while the package is not
   ready), with a line on what happens to the YouTube date.

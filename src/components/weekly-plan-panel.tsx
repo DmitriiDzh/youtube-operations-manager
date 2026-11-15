@@ -216,7 +216,7 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
   }
 
   /** BL-256 (owner msgs 4380/4383): the owner moves a slot; `approve` approves the new time in the same step. */
-  async function retime(slot: PlanSlotDto, date: string, time: string, approve: boolean) {
+  async function retime(slot: PlanSlotDto, shownHash: string, date: string, time: string, approve: boolean) {
     if (!base || !week) return;
     const busyKey = `${approve ? "retimeApprove" : "retime"}:${slot.slotId}`;
     setBusy(busyKey);
@@ -225,7 +225,7 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
       const res = await fetch(`${base}/${week}/retime`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ slotId: slot.slotId, contentHash: slot.contentHash, date, publishAt: `${date}T${time}`, approve }),
+        body: JSON.stringify({ slotId: slot.slotId, contentHash: shownHash, date, publishAt: `${date}T${time}`, approve }),
       });
       const body = (await res.json().catch(() => ({}))) as { plan?: PlanDto; error?: string; details?: { refused?: Array<{ reason: string }> } };
       if (!res.ok) {
@@ -296,7 +296,7 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
           setEditing(slot.slotId);
         }}
         onCancelEdit={() => setEditing(null)}
-        onRetime={(date, time, approve) => retime(slot, date, time, approve)}
+        onRetime={(shownHash, date, time, approve) => retime(slot, shownHash, date, time, approve)}
       />
     ) : null;
 
@@ -499,7 +499,7 @@ function SlotRow(props: {
   editing: boolean;
   onAskEdit: () => void;
   onCancelEdit: () => void;
-  onRetime: (date: string, time: string, approve: boolean) => Promise<void>;
+  onRetime: (shownHash: string, date: string, time: string, approve: boolean) => Promise<void>;
 }) {
   const t = useT();
   const { slot, plan, mode, at } = props;
@@ -689,9 +689,11 @@ function SlotRow(props: {
  * native picker). An approved slot keeps its approval only through «Сохранить и одобрить» (then the plan moves an uploaded video's
  * date on YouTube); «Сохранить без одобрения» leaves it waiting for the owner. A slot still waiting for its package only saves.
  */
-function RetimeEditor(props: { slot: PlanSlotDto; plan: PlanDto; afterUpload: boolean; busy: string | null; onCancel: () => void; onSave: (date: string, time: string, approve: boolean) => Promise<void> }) {
+function RetimeEditor(props: { slot: PlanSlotDto; plan: PlanDto; afterUpload: boolean; busy: string | null; onCancel: () => void; onSave: (shownHash: string, date: string, time: string, approve: boolean) => Promise<void> }) {
   const t = useT();
   const { slot, plan } = props;
+  // Review 3: the slot as it was when the editor opened -- a change by an agent meanwhile is refused (publishing_plan_changed).
+  const [shownHash] = useState(slot.contentHash);
   const [date, setDate] = useState(slot.date);
   const [time, setTime] = useState(slot.publishAt.slice(11, 16));
   const clock = parseClock(time);
@@ -699,7 +701,8 @@ function RetimeEditor(props: { slot: PlanSlotDto; plan: PlanDto; afterUpload: bo
   const canApproveNew = slot.approval !== "awaiting_package";
   const anyBusy = props.busy !== null;
   const wasApproved = slot.approval === "approved";
-  const hint = !canApproveNew ? "weekPlan.retime.hintAwaitingPackage" : wasApproved ? (props.afterUpload ? "weekPlan.retime.hintApprovedUploaded" : "weekPlan.retime.hintApproved") : "weekPlan.retime.hintNotApproved";
+  const hadApproval = wasApproved || slot.changedAfterApproval !== null;
+  const hint = !canApproveNew ? "weekPlan.retime.hintAwaitingPackage" : hadApproval ? (props.afterUpload ? "weekPlan.retime.hintApprovedUploaded" : "weekPlan.retime.hintApproved") : "weekPlan.retime.hintNotApproved";
   return (
     <div className="space-y-2 border-t border-zinc-700 bg-zinc-950/60 px-4 py-3 text-sm">
       <div className="flex flex-wrap items-end gap-3">
@@ -735,7 +738,7 @@ function RetimeEditor(props: { slot: PlanSlotDto; plan: PlanDto; afterUpload: bo
               busy={props.busy === `retimeApprove:${slot.slotId}`}
               busyLabel={t("weekPlan.action.saving")}
               disabled={anyBusy || clock === null || (unchanged && wasApproved)}
-              onClick={() => void props.onSave(date, clock!, true)}
+              onClick={() => void props.onSave(shownHash, date, clock!, true)}
               className="rounded-md bg-violet-600 px-3 py-1 font-semibold text-white hover:bg-violet-500 disabled:opacity-40"
             >
               {t("weekPlan.retime.saveApprove")}
@@ -745,7 +748,7 @@ function RetimeEditor(props: { slot: PlanSlotDto; plan: PlanDto; afterUpload: bo
             busy={props.busy === `retime:${slot.slotId}`}
             busyLabel={t("weekPlan.action.saving")}
             disabled={anyBusy || clock === null || unchanged}
-            onClick={() => void props.onSave(date, clock!, false)}
+            onClick={() => void props.onSave(shownHash, date, clock!, false)}
             className="rounded-md border border-zinc-600 px-3 py-1 text-zinc-200 hover:bg-zinc-800 disabled:opacity-40"
           >
             {t(canApproveNew ? "weekPlan.retime.saveOnly" : "weekPlan.retime.save")}

@@ -223,3 +223,53 @@ test("AC-RT-11: an agent changed an approved slot, then the owner moves it -- th
   assert.equal(slotOf(await get(h), "s1").approval, "needs_approval");
   assert.deepEqual((await h.service.slotDecisions(CH)).get("s1"), { kind: "pending" });
 });
+
+test("AC-RT-12 (review 1): the margin counts the soonest date the video may carry -- an approved time an agent's change still stands on, and the date on YouTube", async () => {
+  // Approved 15:00 JST (06:00Z), an agent moved the slot to 23:00; at 05:50Z the 06:00Z approval still stands for the uploaded video.
+  const h = await setup("vid1");
+  await approve(h, "s1");
+  await h.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s1", "2026-10-26", "23:00")] }, "worker");
+  h.clock.now = new Date("2026-10-26T05:50:00Z");
+  assert.equal(codeOf(await refusal(retime(h, "s1", "2026-10-27", "20:00", true))), "publishing_plan_slot_too_soon");
+  // A slot at 23:00 whose uploaded video carries 06:00Z on YouTube (no approval left): also too soon.
+  const g = await setup("vid2");
+  g.progress.set("s1", { status: "scheduled", code: null, videoId: "vid2", package: pkg(), publishAt: "2026-10-26T06:00:00.000Z" });
+  await g.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s1", "2026-10-26", "23:00")] }, "worker");
+  g.clock.now = new Date("2026-10-26T05:50:00Z");
+  assert.equal(codeOf(await refusal(retime(g, "s1", "2026-10-27", "20:00", false))), "publishing_plan_slot_too_soon");
+});
+
+test("AC-RT-13 (review 4): a new time approved in the same step is at least 30 minutes away; without approve 15 is enough", async () => {
+  const h = await setup();
+  h.clock.now = new Date("2026-10-26T04:00:00Z");
+  // s1 15:00 JST = 06:00Z; 13:20 JST = 04:20Z is 20 minutes away.
+  assert.deepEqual(reasonsOf(await refusal(retime(h, "s1", "2026-10-26", "13:20", true))), ["in_past"]);
+  assert.equal(slotOf((await retime(h, "s1", "2026-10-26", "13:30", true)).plan, "s1").approval, "approved");
+  assert.equal(slotOf((await retime(h, "s1", "2026-10-26", "13:20", false)).plan, "s1").publishAt, "2026-10-26T13:20");
+});
+
+test("AC-RT-14 (review 2): re-approving a moved slot that replaces another does not veto the replaced slot again after the owner restored it", async () => {
+  const h = await setup();
+  await h.service.save({ channelId: CH, weekStart: WEEK, slots: [{ ...slot("s3", "2026-10-28", "18:00"), replacesSlotId: "s2" }] }, "factory");
+  h.progress.set("s3", { status: "packaged", code: null, videoId: null, package: pkg({ video: "V65", manifestSha256: "c".repeat(64) }) });
+  await approve(h, "s3");
+  assert.ok(slotOf(await get(h), "s2").vetoed);
+  await h.owner.decide(CH, WEEK, { action: "restore", slots: [{ slotId: "s2" }] }, "u1");
+  await retime(h, "s3", "2026-10-28", "19:00", true);
+  const plan = await get(h);
+  assert.equal(slotOf(plan, "s3").approval, "approved");
+  assert.equal(slotOf(plan, "s2").vetoed, null);
+});
+
+test("AC-RT-15 (review 6): every earlier approval of the slot is revoked by the owner's move, not only the latest", async () => {
+  const h = await setup("vid1");
+  await approve(h, "s1"); // A = 15:00
+  await h.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s1", "2026-10-26", "16:00")] }, "worker");
+  await approve(h, "s1"); // B = 16:00 (A never revoked)
+  await retime(h, "s1", "2026-10-26", "17:30", false);
+  for (const time of ["15:00", "16:00"]) {
+    await h.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s1", "2026-10-26", time)] }, "worker");
+    assert.equal(slotOf(await get(h), "s1").approval, "needs_approval", time);
+    assert.deepEqual((await h.service.slotDecisions(CH)).get("s1"), { kind: "pending" }, time);
+  }
+});

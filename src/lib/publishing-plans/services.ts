@@ -12,6 +12,8 @@ import { approvalStageInputSchema, getPlanInputSchema, listPlansInputSchema, own
 
 /** BL-256: video-details' and plan-schedule's margin -- a date within 15 minutes is neither written nor removed. */
 const RETIME_MARGIN_MS = 15 * 60_000;
+/** BL-256 review 4: a new time approved in the same step is at least this far ahead. */
+const RETIME_APPROVE_MARGIN_MS = 30 * 60_000;
 
 const refusedError = (refused: PlanSaveRefusal[], weekStart: string) =>
   new DomainError({ code: "validation_failed", message: `The plan was not saved: ${refused.map((r) => `${r.slotId ? `${r.slotId} ` : ""}${r.field}: ${r.reason}`).join("; ")}`, details: { weekStart, refused } });
@@ -329,7 +331,7 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
   }
 
   /** decide() inside the write lock (BL-256: retime() approves the moved slot under the same lock). */
-  async function decideLocked(channelId: string, weekStart: string, action: OwnerDecisionInput["action"], slots: OwnerDecisionInput["slots"], userId: string): Promise<{ plan: PlanView; decided: string[]; replacedVetoed: string[] }> {
+  async function decideLocked(channelId: string, weekStart: string, action: OwnerDecisionInput["action"], slots: OwnerDecisionInput["slots"], userId: string, options: { skipImpliedVeto?: boolean } = {}): Promise<{ plan: PlanView; decided: string[]; replacedVetoed: string[] }> {
     {
       const { snapshot, meta } = await requirePlan(channelId, weekStart);
       const state = await channelState(channelId, snapshot, slotsOf(snapshot, meta.weekStart).map((s) => s.slotId));
@@ -393,7 +395,8 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
         // BL-240 (ADR 0060): approving a slot that replaces another vetoes that one in the same decision -- unless it is already
         // vetoed, released or gone. It is the owner's own veto (restorable), recorded with the slot that replaced it.
         const implied: Array<{ record: PublishingPlanDecision; publishAtUtc: string }> = [];
-        if (action === "approve") {
+        // BL-256 review 2: re-approving a slot the owner moved does not veto its replaced slot again (he may have restored it).
+        if (action === "approve" && !options.skipImpliedVeto) {
           for (const slot of effective) {
             const target = slot.replaces;
             if (!target?.found || target.vetoed || target.released || implied.some((i) => i.record.slotId === target.slotId)) continue;
@@ -467,7 +470,11 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
       if (slot.vetoed) throw new DomainError({ code: "publishing_plan_slot_vetoed", message: `Slot ${parsed.slotId} is vetoed; restore it first`, details });
       if (parsed.contentHash !== slot.contentHash) throw new DomainError({ code: "publishing_plan_changed", message: `Slot ${parsed.slotId} changed since it was shown; reload the plan`, details });
       const now = ports.now().getTime();
-      if (Date.parse(slot.publishAtUtc) - now < RETIME_MARGIN_MS) {
+      // Review 1: the latest time the video may come out -- the slot's, the approved time an agent's change still stands on, and the
+      // date the uploaded video carries (the terms `released` uses): plan-schedule cannot change a date within 15 minutes.
+      const previousAt = slot.changedAfterApproval ? instantOf(slot.changedAfterApproval.previous.publishAt, slot.changedAfterApproval.previous.timeZone)?.getTime() ?? Infinity : Infinity;
+      const soonest = Math.min(Date.parse(slot.publishAtUtc), previousAt, slot.youtubePublishAt ? Date.parse(slot.youtubePublishAt) || Infinity : Infinity);
+      if (soonest - now < RETIME_MARGIN_MS) {
         throw new DomainError({ code: "publishing_plan_slot_too_soon", message: `Slot ${parsed.slotId} comes out in less than 15 minutes; it can no longer be moved`, details });
       }
       const refused: PlanSaveRefusal[] = [];
@@ -477,7 +484,9 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
       else if (parsed.date < meta.weekStart || parsed.date > weekEnd) refused.push({ slotId: parsed.slotId, field: "date", reason: "outside_week" });
       else if (!instant) refused.push({ slotId: parsed.slotId, field: "publishAt", reason: "publish_at_invalid" });
       else if (parsed.publishAt.slice(0, 10) !== parsed.date) refused.push({ slotId: parsed.slotId, field: "publishAt", reason: "date_mismatch" });
-      else if (instant.getTime() - now < RETIME_MARGIN_MS) refused.push({ slotId: parsed.slotId, field: "publishAt", reason: "in_past" });
+      // Review 4: an approved new time must still be ahead when the decision reaches the uploading computer (sync, the one-minute
+      // pass): 30 minutes with approve, 15 without.
+      else if (instant.getTime() - now < (parsed.approve ? RETIME_APPROVE_MARGIN_MS : RETIME_MARGIN_MS)) refused.push({ slotId: parsed.slotId, field: "publishAt", reason: "in_past" });
       if (refused.length > 0) throw refusedError(refused, weekStart);
       // BL-242: in the `packaged` stage a slot without a ready or uploaded package has nothing to approve -- refused before writing.
       if (parsed.approve && slot.approval === "awaiting_package") {
@@ -493,10 +502,17 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
         // agent's change left standing ("changed after approval").
         const device = await ports.deviceLabel();
         const seq = Math.max(0, ...Object.values(snapshot.decisions).map((d) => d.seq ?? 0)) + 1;
+        // Every approval of the slot that no later revocation of the same content cancelled (whatever stage it counts in): any of
+        // them would count again if the slot's content came back to it.
+        const ordered = Object.values(snapshot.decisions).filter((d) => d.slotId === stored.slotId).sort(decisionOrder);
         const revoke: Array<{ contentHash: string; content: ReturnType<typeof contentOf>; timeZone: string; package: PublishingPlanPackageFingerprint | null }> = [];
-        if (slot.approval === "approved") revoke.push({ contentHash: slot.contentHash, content: contentOf(slot), timeZone: meta.timeZone, package: slot.fingerprint });
-        const previous = slot.changedAfterApproval?.previous;
-        if (previous) revoke.push({ contentHash: contentHashOf(previous.timeZone, contentOf(previous), previous.package ?? null), content: contentOf(previous), timeZone: previous.timeZone, package: previous.package ?? null });
+        const seenHashes = new Set<string>();
+        for (const record of [...ordered].reverse()) {
+          if (record.kind !== "approved" && record.kind !== "revoked") continue;
+          if (seenHashes.has(record.contentHash)) continue;
+          seenHashes.add(record.contentHash);
+          if (record.kind === "approved") revoke.push({ contentHash: record.contentHash, content: contentOf(record.snapshot), timeZone: record.snapshot.timeZone, package: record.package ?? null });
+        }
         const revocations: PublishingPlanDecision[] = revoke.map((r) => ({
           seq,
           id: `pd_${ports.randomId()}`.slice(0, 40),
@@ -510,18 +526,20 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
           at,
           ...(r.package ? { package: { ...r.package } } : {}),
         }));
-        if (revocations.length > 0) await ports.store.addDecisions(channelId, revocations);
+        // The move first: should the revocations then fail, the old approvals no longer match the slot's content (nothing is dated by
+        // them), rather than an unmoved slot losing its approval.
         await ports.store.savePlan(channelId, { weekStart, create: null, updatedAt: at, updatedBy: "owner", upserts: [{ ...content, weekStart, slotId: stored.slotId, createdAt: stored.createdAt, updatedAt: at, updatedBy: "owner" }], removes: [] });
+        if (revocations.length > 0) await ports.store.addDecisions(channelId, revocations);
         await ports.audit({
           channelId,
           weekStart,
           slotId: stored.slotId,
-          detail: { event: "publishing_plan.retimed", at, weekStart, slotId: stored.slotId, from: { date: stored.date, publishAt: stored.publishAt }, to: { date: content.date, publishAt: content.publishAt }, timeZone: meta.timeZone, wasApproved: slot.approval === "approved", revoked: revocations.map((r) => r.id), approve: parsed.approve, by: userId, device },
+          detail: { event: "publishing_plan.retimed", at, weekStart, slotId: stored.slotId, from: { date: stored.date, publishAt: stored.publishAt }, to: { date: content.date, publishAt: content.publishAt }, timeZone: meta.timeZone, wasApproved: slot.approval === "approved", changedAfterApproval: slot.changedAfterApproval !== null, revoked: revocations.map((r) => r.id), approve: parsed.approve, by: userId, device },
         });
       }
       if (!parsed.approve) {
         // BL-248: the revocations are owner decisions too -- the Producer's Inbox writer runs soon (never throws, never awaited).
-        if (moved && (slot.approval === "approved" || slot.changedAfterApproval)) ports.notifyOwnerDecision?.();
+        if (moved) ports.notifyOwnerDecision?.();
         const after = await requirePlan(channelId, weekStart);
         return { plan: await viewOf(channelId, after.snapshot, after.meta), changed: moved, approved: false };
       }
@@ -529,7 +547,8 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
       const fresh = await requirePlan(channelId, weekStart);
       const freshView = await viewOf(channelId, fresh.snapshot, fresh.meta);
       const target = freshView.slots.find((s) => s.slotId === parsed.slotId)!;
-      const decided = await decideLocked(channelId, weekStart, "approve", [{ slotId: target.slotId, contentHash: target.contentHash }], userId);
+      const hadApproval = slot.approval === "approved" || slot.changedAfterApproval !== null;
+      const decided = await decideLocked(channelId, weekStart, "approve", [{ slotId: target.slotId, contentHash: target.contentHash }], userId, { skipImpliedVeto: hadApproval });
       return { plan: decided.plan, changed: moved, approved: decided.plan.slots.find((s) => s.slotId === parsed.slotId)?.approval === "approved" };
     });
   }

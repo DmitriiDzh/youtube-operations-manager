@@ -126,11 +126,16 @@ what is published?
   /api/channels/[channelId]/publishing-plans/[weekStart]/retime`, `{ slotId, contentHash, date, publishAt, approve }`); no MCP path.
   The slot keeps its length, note and replaced slot; the plan and the slot record `updatedBy: owner` (a third actor next to the
   agents).
-- Refused: a slot not found, vetoed, released, changed since shown (`publishing_plan_changed`), or coming out within 15 minutes
-  (`publishing_plan_slot_too_soon`); a new time outside the week, non-existent in the zone, or under 15 minutes away
-  (`validation_failed`, the agents' reasons). 15 minutes is video-details' and plan-schedule's margin.
-- His move **revokes** his approval of the old content (the standing one and one an agent's change left standing): an approval stands
-  while its hash matches the slot, so without the revocation an agent saving the old time back would restore it.
+- Refused: a slot not found, vetoed, released, changed since the editor opened (`publishing_plan_changed`), or whose video may come
+  out within 15 minutes -- its time, an approved time an agent's change still stands on, or the date on YouTube
+  (`publishing_plan_slot_too_soon`); a new time outside the week, non-existent in the zone, or under 15 minutes away (30 with
+  `approve`, so it is still ahead when the decision reaches the uploading computer) (`validation_failed`, the agents' reasons).
+  15 minutes is video-details' and plan-schedule's margin.
+- His move **revokes** every approval of the slot no revocation of the same content cancelled: an approval stands while its hash
+  matches the slot, so without it an agent saving an old time back would restore it. The move is written first, then the
+  revocations.
+- Re-approving a moved slot that replaces another (it had an approval before) does not veto the replaced slot again: the owner may
+  have restored it on purpose.
 - `approve: true` approves the new content in the same step (one ordinary approval decision). The uploaded video's date on YouTube
   then moves through the plan-schedule pass (§7) -- this call writes nothing to YouTube. Without it the slot waits for the owner and
   the video keeps its date. A slot still waiting for its package (`packaged` stage) can be moved, not approved.
