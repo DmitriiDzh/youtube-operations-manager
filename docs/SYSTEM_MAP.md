@@ -1025,6 +1025,11 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
     (`failed` + `video_deleted_on_youtube`, «Ролик удалён на YouTube»), одобрять нечего, прежнее одобрение не считается;
     план-расписание не трогает удалённые видео. Агентам: `missingOnChannel` в календаре, `videoIds` в `channel_video_list`.
     Factory API 1.43.0, Agent API 4.17.0, Producer API 1.17.0.
+  - BL-261 (owner TG 3521 через Оператора): `factory_release_folder_rename` (Factory API 1.47.0) — переименование папки пакета в
+    `04 Videos/<месяц>/` (`src/lib/publishing/release-folder-rename.ts`, подключение `src/composition/release-folder-rename.ts`): имя
+    должно содержать номер видео; папка переезжает целиком, строки загрузок этого компьютера (очередь и законченные) переписываются
+    одной транзакцией (`manifest_path` и пути в `package_json`), при сбое папка возвращается; отказ, пока видео отправляется /
+    обрабатывается / завершается / на паузе здесь, не закончено на другом компьютере или кросс-пост грузит файл; сверка и аудит.
   - Этап 3: автозагрузка (BL-209) ставит пакет одобренного и не снятого слота с его временем, снятый пропускает (решения слотов —
     `src/composition/publishing-plan-slots.ts`); загрузчик пишет переводы пакета первым шагом после обработки общим писателем
     `src/lib/shared-video-localizations/` (вынесен из live-localizations) и ИИ-метку пакета; дата — только после переводов, обложки,

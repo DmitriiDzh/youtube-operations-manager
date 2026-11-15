@@ -12360,6 +12360,31 @@ export async function getPublishingUpload(id: string, database: AppDb = db): Pro
 }
 
 /** Newest first; optional channel and status filters. */
+/**
+ * BL-261 (owner TG 3521 via the Operator): after a release folder was renamed, its upload rows name the new folder -- each row
+ * changes only while it still names the old manifest path and is not being sent (queued, or finished), all in one transaction.
+ * Returns how many rows changed; throws (nothing changed) when a row moved meanwhile.
+ */
+export async function rewritePublishingUploadPaths(
+  updates: ReadonlyArray<{ id: string; fromManifestPath: string; manifestPath: string; packageJson: string }>,
+  database: AppDb = db
+): Promise<number> {
+  if (updates.length === 0) return 0;
+  return database.transaction(async (tx) => {
+    let changed = 0;
+    for (const update of updates) {
+      const result = await tx
+        .update(publishingUploads)
+        .set({ manifestPath: update.manifestPath, packageJson: update.packageJson, updatedAt: new Date() })
+        .where(and(eq(publishingUploads.id, update.id), eq(publishingUploads.manifestPath, update.fromManifestPath), inArray(publishingUploads.status, ["queued", "done", "failed", "cancelled"])))
+        .returning({ id: publishingUploads.id });
+      if (result.length !== 1) throw new Error(`upload ${update.id} changed while the folder was renamed`);
+      changed += 1;
+    }
+    return changed;
+  });
+}
+
 export async function listPublishingUploads(
   /** Review #6 (BL-225): `withSlot` -- only rows that name a weekly-plan slot, filtered before the limit. */
   filter: { channelId?: string; statuses?: readonly PublishingUploadStatus[]; limit: number; withSlot?: boolean },

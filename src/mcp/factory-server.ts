@@ -197,7 +197,9 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // BL-257 (owner msgs 4514/4516, ADR 0070): 1.46.0 -- factory_publishing_plan_get / _list: a slot's package problems gain
 // owner_review_pending / owner_review_returned (the owner reviews the channel's final packages in Media before they are ready) and
 // the package gains reviewComment (his return comment: re-package with the change). No factory tool decides. Additive.
-export const FACTORY_API_VERSION = "1.46.0";
+// BL-261 (owner TG 3521 via the Operator): 1.47.0 -- factory_release_folder_rename (WRITE, local: a release package's folder and this
+// computer's upload rows that name it; no YouTube call). Additive.
+export const FACTORY_API_VERSION = "1.47.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -287,6 +289,8 @@ export const FACTORY_TOOL_NAMES = [
   "factory_publishing_plan_list",
   // BL-235: which days ahead are covered on YouTube (a video published or scheduled with every tracked translation), a read.
   "factory_publishing_coverage",
+  // BL-261: rename a release package's folder under 04 Videos/ (local files and this computer's upload rows; no YouTube call).
+  "factory_release_folder_rename",
   "factory_localization_report_checks",
   "factory_localization_requests_list",
   "factory_localization_request_claim",
@@ -368,6 +372,8 @@ export const FACTORY_WRITE_TOOL_NAMES = [
   "factory_channel_save_branding",
   // BL-225: a channel's weekly plan (synced to the other computers; only the owner approves it, in the Web UI).
   "factory_publishing_plan_save",
+  // BL-261: a release folder's name (the folder moves; this computer's upload rows follow it).
+  "factory_release_folder_rename",
   // BL-227: a check report on a change set (synced with the set; only the owner approves or rejects, in the Web UI), and taking,
   // completing or failing the owner's translation request (synced; the sets it produces still wait for the owner).
   "factory_localization_report_checks",
@@ -523,6 +529,10 @@ export type FactoryToolDeps = {
    */
   publishingCoverage: {
     get(input: { channelId: string; days?: number }): Promise<Record<string, unknown>>;
+  };
+  /** BL-261: rename a release package's folder (`@/lib/publishing` createReleaseFolderRenameCore; the module checks every rule). */
+  releaseFolders: {
+    rename(input: { channelId: string; video: string; newName: string; dryRun?: boolean }): Promise<Record<string, unknown>>;
   };
   /** BL-227 (ADR 0052): check reports on change sets (the localization-review module validates every input itself). `by`: the Operator or a worker. */
   localizationChecks: {
@@ -1728,6 +1738,23 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       const input = parseInput(planSaveInput, args);
       await deps.assertMutationAllowed();
       return successResult(await deps.publishingPlans.save(input));
+    }
+  );
+
+  const releaseFolderRenameInput = z
+    .object({ channelId: z.string().min(1).max(64), video: z.string().regex(/^V\d{1,6}$/), newName: z.string().min(1).max(120), dryRun: z.boolean().optional() })
+    .strict();
+  registerTool(
+    "factory_release_folder_rename",
+    {
+      description:
+        "Rename one release package's folder under 04 Videos/ (1.47.0): { channelId (connected here), video ('V65'), newName (the new folder name only, e.g. '1115 V1 Short': at most 120 characters, none of \\ / : * ? \" < > |, no leading/trailing space or trailing dot, must contain the video number as a word), dryRun? } -> { dryRun, video, from, to (folders relative to the workspace), uploads (this computer's upload rows naming the folder: rewritten, or to rewrite), changed (false: already that name), readBack: verified | mismatch | null }. The whole folder moves within its month folder (manifest, video, thumbnails, the upload record); this computer's upload rows that name it -- queued or finished -- are rewritten to the new folder in one transaction, and if that fails the folder is moved back. The manifest and its SHA-256 do not change, so reviews, approvals and plan slots stay as they are. Refusals: release_folder_not_found (no package of that video, or not under 04 Videos/, or not a real folder), release_folder_ambiguous (packages of that video in several folders), release_folder_name_invalid (details.reason: video | length | characters | edges | missing_video), release_folder_target_exists, release_folder_busy (details.reason: upload_here -- being sent, processed, finished or paused on this computer; upload_elsewhere -- another computer reports an unfinished upload of it; cross_post -- a cross-post is uploading its file). No YouTube call. Passes the device mutation gate. Run dryRun first.",
+      inputSchema: releaseFolderRenameInput,
+    },
+    async (args) => {
+      const input = parseInput(releaseFolderRenameInput, args);
+      if (!input.dryRun) await deps.assertMutationAllowed();
+      return successResult(await deps.releaseFolders.rename(input));
     }
   );
 
