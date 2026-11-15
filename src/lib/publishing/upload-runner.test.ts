@@ -1433,3 +1433,73 @@ test("AC-STOP-11: a stopped row holds neither its package nor its slot", () => {
   assert.equal(holdsSlot(stopped, new Set(), null), false);
   assert.equal(holdsPackage({ ...stopped, errorCode: null }), false, "the owner's stop too");
 });
+
+// ---- BL-257 review M1 (ADR 0070 §2-§3; PACKAGE_REVIEW_PLAN.md AC-PR-02/03/04): the runner asks the owner's package review again
+// before a queued row starts. A channel whose gate is on uploads only a manifest version he approved with the thumbnail file as it
+// was then; a row returned while queued, queued before the gate was switched on, or whose thumbnail changed since is cancelled
+// (`owner_review_withdrawn`, audited) before anything reaches YouTube.
+const REVIEW_MANIFEST = "a".repeat(64);
+const THUMB_APPROVED = "1".repeat(64);
+function withHashes(over: Partial<UploadRunnerDeps>, manifest: string, thumb: string): Partial<UploadRunnerDeps> {
+  return {
+    ...over,
+    files: {
+      resolve: async (_c, relativePath) => ({ path: `/ws/${relativePath}`, bytes: relativePath.endsWith(".mp4") ? 10 : 100 }),
+      readChunk: async (_p, start, length) => VIDEO_BYTES.subarray(start, start + length),
+      sha256: async (p) => (p.endsWith(".json") ? manifest : /\.(jpe?g|png)$/i.test(p) ? thumb : "sha-approved"),
+      writeRecord: async () => undefined,
+    },
+  };
+}
+async function runReview(decisions: Array<{ id: string; kind: "approved" | "returned"; at: string }> | null, thumbOnDisk = THUMB_APPROVED) {
+  const { ownerReviewStateOf, reviewGateOf } = await import("@/lib/package-reviews/model");
+  const audits: Array<Record<string, unknown>> = [];
+  const state = ownerReviewStateOf(
+    decisions === null
+      ? { exists: true, required: { value: true, updatedAt: "2026-10-13T08:00:00.000Z", by: "owner", device: "Mac" }, decisions: {} }
+      : {
+          exists: true,
+          required: { value: true, updatedAt: "2026-10-13T08:00:00.000Z", by: "owner", device: "Mac" },
+          decisions: Object.fromEntries(
+            decisions.map((d) => [d.id, { id: d.id, manifestSha256: REVIEW_MANIFEST, video: "V65", thumbnailSha256: THUMB_APPROVED, kind: d.kind, comment: d.kind === "returned" ? "redo" : null, by: "owner" as const, device: "Mac", at: d.at }])
+          ),
+        }
+  );
+  const h = harness([job({ manifestSha256: REVIEW_MANIFEST })], withHashes({ ownerReview: async () => reviewGateOf(state), audit: async ({ detail }) => void audits.push(detail as Record<string, unknown>) }, REVIEW_MANIFEST, thumbOnDisk));
+  await h.runAll();
+  return { h, audits };
+}
+
+test("BL-257 M1: returned while queued -> cancelled owner_review_withdrawn, audited, nothing sent", async () => {
+  const { h, audits } = await runReview([
+    { id: "d1", kind: "approved", at: "2026-10-13T09:00:00.000Z" },
+    { id: "d2", kind: "returned", at: "2026-10-13T10:00:00.000Z" },
+  ]);
+  assert.deepEqual([h.row().status, h.row().errorCode, h.yt.log], ["cancelled", "owner_review_withdrawn", []]);
+  assert.ok(audits.some((a) => a.event === "publishing.upload_cancelled_owner_review" && a.reason === "owner_review_returned"));
+});
+
+test("BL-257 M1: the gate switched on with a queued, never-reviewed row -> cancelled, nothing sent", async () => {
+  const { h, audits } = await runReview(null);
+  assert.deepEqual([h.row().status, h.row().errorCode, h.yt.log], ["cancelled", "owner_review_withdrawn", []]);
+  assert.ok(audits.some((a) => a.reason === "owner_review_pending"));
+});
+
+test("BL-257 M1: approved with the same thumbnail file -> the upload proceeds", async () => {
+  const { h } = await runReview([{ id: "d1", kind: "approved", at: "2026-10-13T09:00:00.000Z" }]);
+  assert.notEqual(h.row().status, "cancelled");
+  assert.ok(h.yt.log.length > 0, "the upload reached the (fake) YouTube");
+});
+
+test("BL-257 M1: thumbnail swapped after the approval -> cancelled, nothing sent", async () => {
+  const { h } = await runReview([{ id: "d1", kind: "approved", at: "2026-10-13T09:00:00.000Z" }], "9".repeat(64));
+  assert.deepEqual([h.row().status, h.row().errorCode, h.yt.log], ["cancelled", "owner_review_withdrawn", []]);
+});
+
+test("BL-257 M1: a channel without the gate (no document) uploads as before", async () => {
+  const { ownerReviewStateOf, reviewGateOf } = await import("@/lib/package-reviews/model");
+  const h = harness([job()], { ownerReview: async () => reviewGateOf(ownerReviewStateOf({ exists: false, required: null, decisions: {} })) });
+  await h.runAll();
+  assert.notEqual(h.row().status, "cancelled");
+  assert.ok(h.yt.log.length > 0);
+});

@@ -397,6 +397,8 @@ export function createUploadRunnerCore(options: { slotDecisions?: (channelId: st
     async setPublishAt({ channelId, videoId, publishAt, containsSyntheticMedia, credentialRef }) {
       await videoDetails.applyFieldsUpdate({ credentialRef, expectedChannelId: channelId, videoId, patch: { privacyStatus: "private", publishAt, containsSyntheticMedia } });
     },
+    // BL-257 (review M1): the owner's package review now -- a queued row he no longer covers is cancelled before any byte.
+    ownerReview: async (channelId) => reviewGateOf(await readOwnerReviewState(channelId)),
     // Review #1 (BL-225): the plan's decision on a row's slot now, from the composition layer (absent: the row's own date stands).
     ...(options.slotDecisions
       ? { slotDecision: async (channelId: string, slotId: string) => (await options.slotDecisions!(channelId)).get(slotId) ?? null }

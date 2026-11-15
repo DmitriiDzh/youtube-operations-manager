@@ -8,12 +8,16 @@
 // writes off pauses a job (never fails it); quota and the channel's upload cap pause it until they reset.
 
 import type { StoredPublishingUpload } from "@/lib/db";
+import { CLOSED_OWNER_REVIEW_GATE, type OwnerReviewGate } from "./package-scan";
 import { removedMarkFreesSlot, uploadTimeOf } from "@/lib/shared-video-presence";
 import { READ_BACK_RETRIES, READ_BACK_RETRY_DELAY_MS } from "@/lib/video-details/read-back";
 import type { PublishingSettings } from "./settings";
 import { approvalNamesUpload, type SlotDecision } from "./slot-decision";
 
 /** The package as the owner approved it (frozen in `package_json`). Paths are relative to the channel workspace. */
+/** BL-257 (review M1): the code of a queued row the runner cancelled because the owner's package review no longer covers it. */
+export const OWNER_REVIEW_WITHDRAWN = "owner_review_withdrawn";
+
 export type ApprovedPackage = {
   video: string;
   title: string;
@@ -131,6 +135,12 @@ export type UploadRunnerDeps = {
    * asked before a queued row starts and right before the date step; absent (the plan module off): the row's own date stands.
    */
   slotDecision?(channelId: string, slotId: string): Promise<SlotDecision | null>;
+  /**
+   * BL-257 (ADR 0070 §2-§3, review M1): the channel's owner-review gate NOW (the package-reviews rule, read-only), asked before a
+   * queued row starts: a row queued before the gate was switched on, returned since, or whose thumbnail changed after the approval
+   * is cancelled before any byte is sent. Absent: no gate.
+   */
+  ownerReview?(channelId: string): Promise<OwnerReviewGate>;
   writeLocalizations?(args: {
     channelId: string;
     videoId: string;
@@ -430,6 +440,26 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
           await deps.audit({ channelId: job.channelId, videoId: null, detail: { event: "publishing.upload_cancelled_slot_vetoed", uploadId: job.id, video: job.video, slotId: job.slotId } });
         }
         return;
+      }
+      // BL-257 (review M1): the owner's package review NOW -- a channel whose gate is on uploads only a manifest he approved with
+      // this thumbnail file; otherwise the row stops here, before anything is sent (like a vetoed slot, also while uploads are held).
+      if (current.status === "queued" && deps.ownerReview) {
+        const gate = await deps.ownerReview(job.channelId).catch(() => CLOSED_OWNER_REVIEW_GATE);
+        if (gate.required) {
+          let thumbnailSha256: string | null = null;
+          if (gate.needsThumbnailHash(job.manifestSha256)) {
+            const thumbnail = await deps.files.resolve(job.channelId, pkg.thumbnailFile).catch(() => null);
+            thumbnailSha256 = thumbnail ? await deps.files.sha256(thumbnail.path).catch(() => null) : null;
+          }
+          const problem = gate.problemOf(job.manifestSha256, thumbnailSha256);
+          if (problem) {
+            const message = "The owner has not approved this package version in package review (or returned it, or its thumbnail changed since), so the upload stopped before anything was sent.";
+            if (await deps.store.update(job.id, "queued", { status: "cancelled", errorCode: OWNER_REVIEW_WITHDRAWN, errorMessage: message, finishedAt: now(), updatedAt: now() })) {
+              await deps.audit({ channelId: job.channelId, videoId: null, detail: { event: "publishing.upload_cancelled_owner_review", uploadId: job.id, video: job.video, manifestSha256: job.manifestSha256, reason: problem.code } });
+            }
+            return;
+          }
+        }
       }
       // BL-233: held while a live stream here starves -- before anything is read, hashed or asked (the next tick asks again).
       if (deps.bandwidth && !(await deps.bandwidth.mayStart())) return;
