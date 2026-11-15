@@ -20,6 +20,7 @@ import {
   shiftWeek,
   slotsToApprove,
   splitVetoed,
+  ownerReviewOf,
   duplicateWarningOf,
   stageOf,
   strayDateOf,
@@ -455,7 +456,8 @@ function SlotRow(props: {
         t("weekPlan.package.languages", { count: pkg.languages.length }),
         ...(pkg.containsSyntheticMedia ? [t("weekPlan.package.ai")] : []),
         ...(pkg.thumbnailPath ? [pkg.testThumbnails > 0 ? t("weekPlan.package.thumbnailTests", { count: pkg.testThumbnails }) : t("weekPlan.package.thumbnail")] : []),
-        ...(pkg.problems.length > 0 ? [t("weekPlan.package.problems", { count: pkg.problems.length })] : []),
+        // BL-257: the owner's own package review is not a problem for the factory (shown as the status line instead).
+        ...(ownerReviewOf(pkg).factoryProblems.length > 0 ? [t("weekPlan.package.problems", { count: ownerReviewOf(pkg).factoryProblems.length })] : []),
       ]
     : [];
   const title = pkg
@@ -495,6 +497,9 @@ function SlotRow(props: {
   else if (slot.status === "failed") meta = { text: t("weekPlan.failed", { code: slot.statusCode ?? "?" }), tone: "text-red-300" };
   else if (slot.released) meta = { text: t("weekPlan.released"), tone: "text-zinc-500" };
   else if (slot.approval === "approved") meta = { text: t("weekPlan.approved", { at: at(slot.approvedAt ?? slot.updatedAt) }), tone: "text-emerald-300" };
+  // BL-257 (ADR 0070, AC-PR-14): the package waits for the owner's review in Media, or he returned it -- before "waiting for its package".
+  else if (ownerReviewOf(pkg).review === "pending") meta = { text: t("weekPlan.awaitingOwnerReview"), tone: "text-amber-300" };
+  else if (ownerReviewOf(pkg).review === "returned") meta = { text: t("weekPlan.ownerReviewReturned", { comment: ownerReviewOf(pkg).comment ?? "" }), tone: "text-red-300/90" };
   // BL-242: nothing to approve until the package is ready -- a short status, no button.
   else if (slot.approval === "awaiting_package") meta = { text: t("weekPlan.awaitingPackage"), tone: "text-sky-300/80" };
   else if (mode === "one") meta = { text: t("weekPlan.notApproved"), tone: "text-zinc-400" };

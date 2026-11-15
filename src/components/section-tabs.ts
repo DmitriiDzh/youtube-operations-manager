@@ -24,6 +24,8 @@ export const MEDIA_TABS = [
   // BL-241 (CLIP_REVIEWS_PLAN.md item 5, owner msgs 4010/4011; moved from Content, owner msg 4025): the Producer's clips for
   // review, approved or returned by the owner.
   { value: "clips", labelKey: "tabs.media.clips", kind: null },
+  // BL-257 (ADR 0070, owner msgs 4514/4516): the channel's final release packages, approved or returned by the owner before upload.
+  { value: "packages", labelKey: "tabs.media.review", kind: null },
 ] as const;
 
 /** Where `/media` and the former Plans / Jobs addresses lead. */

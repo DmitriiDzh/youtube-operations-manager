@@ -675,6 +675,9 @@ export const content: Record<keyof typeof en, string> = {
   "weekPlan.stage.hintSlot": "Включено: одобряете слоты до пакета; если агент изменит слот, он снова ждёт вас. Одобрения, сделанные при выключенном, здесь не действуют; выключите снова — вернутся.",
   "weekPlan.stage.failed": "Настройка одобрения не сохранилась ({code}).",
   "weekPlan.awaitingPackage": "ждёт пакета",
+  // BL-257 (ADR 0070): пакет слота ждёт проверки владельца в Медиа, или он его вернул.
+  "weekPlan.awaitingOwnerReview": "ждёт вашей проверки в Медиа",
+  "weekPlan.ownerReviewReturned": "возвращено: {comment}",
   "weekPlan.deletedOnYoutube": "Ролик удалён на YouTube",
   "weekPlan.onYoutube": "на YouTube: {at}",
   "weekPlan.duplicateVideo": "Ещё один пакет с тем же номером — дата не ставится",

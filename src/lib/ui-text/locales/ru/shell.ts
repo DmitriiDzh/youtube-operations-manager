@@ -23,6 +23,7 @@ export const shell: Record<keyof typeof en, string> = {
   "tabs.media.storyboards": "Раскадровка",
   "tabs.media.video": "Видео",
   "tabs.media.clips": "Клипы",
+  "tabs.media.review": "Видео на проверку",
   "tabs.research.inbox": "Входящие",
   "tabs.research.channels": "Каналы",
   "tabs.research.videos": "Видео",

@@ -45,6 +45,7 @@ import { FeatureErrorBoundary } from "./feature-error-boundary";
 import { MusicLibraryCard } from "./music-library-card";
 import { ChannelVoicesPanel } from "./channel-voices-panel";
 import { ClipReviewsPanel } from "./clip-reviews-panel";
+import { PackageReviewsPanel } from "./package-reviews-panel";
 import { useClipsWaiting } from "./clip-reviews-badge";
 export { MEDIA_TABS, SERVERS_TABS };
 
@@ -315,7 +316,9 @@ export function MediaPanel({
   const [plansWaiting, setPlansWaiting] = useState<Partial<Record<PlanMediaKind, number>>>({});
   const [storyboardsWaiting, setStoryboardsWaiting] = useState(0);
   const clipsWaiting = useClipsWaiting(activeChannelId);
-  const badges: Partial<Record<MediaTab, number>> = { music: plansWaiting.audio ?? 0, images: plansWaiting.image ?? 0, video: plansWaiting.video ?? 0, storyboards: storyboardsWaiting, clips: clipsWaiting };
+  // BL-257: final videos waiting for the owner's review (reported by the panel itself).
+  const [packagesWaiting, setPackagesWaiting] = useState(0);
+  const badges: Partial<Record<MediaTab, number>> = { music: plansWaiting.audio ?? 0, images: plansWaiting.image ?? 0, video: plansWaiting.video ?? 0, storyboards: storyboardsWaiting, clips: clipsWaiting, packages: packagesWaiting };
   return (
     <div className="max-w-5xl space-y-6">
       <NowRunningLine activeChannelId={activeChannelId} sessionsHref={sessionsHref} />
@@ -328,6 +331,12 @@ export function MediaPanel({
       <div className={tab === "clips" ? "space-y-6" : "hidden"}>
         <FeatureErrorBoundary label={`${t("nav.media")} — ${t("tabs.media.clips")}`}>
           <ClipReviewsPanel channelId={activeChannelId} visible={tab === "clips" && !paused} />
+        </FeatureErrorBoundary>
+      </div>
+      {/* BL-257 (ADR 0070, AGENTS.md §M): the owner's review of the channel's final release packages, in its own boundary. */}
+      <div className={tab === "packages" ? "space-y-6" : "hidden"}>
+        <FeatureErrorBoundary label={`${t("nav.media")} — ${t("tabs.media.review")}`}>
+          <PackageReviewsPanel channelId={activeChannelId} visible={tab === "packages" && !paused} onWaiting={setPackagesWaiting} />
         </FeatureErrorBoundary>
       </div>
       <div className={kindTab ? "space-y-6" : "hidden"}>

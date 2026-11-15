@@ -88,6 +88,7 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
       durationSeconds: pkg.durationSeconds,
       thumbnailPath: pkg.thumbnailPath,
       state,
+      decision: latest?.kind ?? null,
       comment: latest?.comment ?? null,
       decidedAt: latest?.at ?? null,
       decidedOn: latest?.device ?? null,

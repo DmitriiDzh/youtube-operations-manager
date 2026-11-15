@@ -29,8 +29,9 @@ test("AC-SM-01: Servers' tabs are Sessions, Models, Workflow templates (work, le
     MEDIA_TABS.map((tab) => translate("en", tab.labelKey)),
     // BL-184 stage 3 (FO-REQ-0024 §4 A): the owner's layout (Telegram msgs 2741/2743) replaces Plans / Jobs with the four kind tabs;
     // plans and jobs are their content. Changed requirement (owner msg 4025, 2026-11-04): «Клипы на проверку» moves from Content
-    // to Media, as the last tab.
-    ["Music", "Images", "Storyboards", "Video", "Clips"]
+    // to Media, as the last tab. Changed requirement (ADR 0070, owner msgs 4514/4516, 2026-11-15): the final videos come to Media
+    // for the owner's review first -- «Видео на проверку» after «Клипы».
+    ["Music", "Images", "Storyboards", "Video", "Clips", "Videos for review"]
   );
 });
 

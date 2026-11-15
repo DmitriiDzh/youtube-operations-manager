@@ -47,6 +47,8 @@ export type PackageReviewItem = {
   /** Relative to the workspace (the package's default thumbnail), or null when the file is missing. */
   thumbnailPath: string | null;
   state: PackageReviewItemState;
+  /** The latest owner decision for this manifest, or null. */
+  decision: "approved" | "returned" | null;
   /** The latest owner decision's comment for this manifest (a return always has one), else null. */
   comment: string | null;
   decidedAt: string | null;

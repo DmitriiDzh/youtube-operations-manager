@@ -671,6 +671,9 @@ export const content = {
   "weekPlan.stage.hintSlot": "On: you approve slots before they have a package; a slot changed by an agent needs you again. Approvals made with the switch off do not count here; switching it back off brings them back.",
   "weekPlan.stage.failed": "The approval setting was not saved ({code}).",
   "weekPlan.awaitingPackage": "waiting for its package",
+  // BL-257 (ADR 0070): the slot's package waits for the owner's package review in Media, or he returned it.
+  "weekPlan.awaitingOwnerReview": "waiting for your review in Media",
+  "weekPlan.ownerReviewReturned": "returned: {comment}",
   "weekPlan.deletedOnYoutube": "Video deleted on YouTube",
   "weekPlan.onYoutube": "On YouTube: {at}",
   "weekPlan.duplicateVideo": "Another package has the same video number — no date is set",
