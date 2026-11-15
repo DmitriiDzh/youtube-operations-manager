@@ -41,6 +41,7 @@ function harness(options: {
   liveWritesOff?: boolean;
   deviceBusy?: boolean;
   sameImageAfter?: boolean;
+  noImage?: boolean;
   auditFailsAfterWrite?: boolean;
 } = {}): Harness {
   const calls: string[] = [];
@@ -73,6 +74,7 @@ function harness(options: {
     async downloadImage() {
       downloads += 1;
       calls.push("downloadImage");
+      if (options.noImage) return null;
       // The image before the write is [1, 2]; after it YouTube serves the new one unless the test says it still serves the old.
       return { bytes: Buffer.from(downloads === 1 || options.sameImageAfter ? [1, 2] : [9, 9]), contentType: "image/jpeg" };
     },
@@ -275,4 +277,16 @@ test("AC-TH-17 a failure after the write (audit) still reports the write as done
   const result = await createVideoThumbnailsServices(h.deps).replace({ channelId: CHANNEL, videoId: VIDEO, path: PATH }, owner);
   assert.equal(result.written, true);
   assert.equal(h.writes.length, 1);
+});
+
+test("AC-TH-05 a custom thumbnail whose image cannot be saved stops the write (its URLs would serve the new image)", async () => {
+  const h = harness({ noImage: true });
+  await rejectsWith(createVideoThumbnailsServices(h.deps).replace({ channelId: CHANNEL, videoId: VIDEO, path: PATH }, owner), "backup_item_failed");
+  assert.ok(!h.calls.includes("backup"));
+  assert.ok(!h.calls.includes("setThumbnail"));
+  // Without a custom thumbnail (YouTube's own frame) the URLs are backed up and the write goes on.
+  const auto = harness({ noImage: true, before: state({ hasCustomThumbnail: false }) });
+  const result = await createVideoThumbnailsServices(auto.deps).replace({ channelId: CHANNEL, videoId: VIDEO, path: PATH }, owner);
+  assert.equal(result.written, true);
+  assert.equal(result.imageChanged, null);
 });

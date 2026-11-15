@@ -95,7 +95,11 @@ export function createVideoThumbnailsServices(deps: VideoThumbnailsDeps) {
     // Backup first: a backup that cannot be taken stops the write (AGENTS.md §G).
     const health = await deps.backup.checkInfrastructureHealth();
     if (!health.healthy) throw new DomainError({ code: "backup_item_failed", message: `Backup storage is unavailable: ${health.error}`, details: { videoId } });
-    const image = largest ? await deps.downloadImage(largest.url) : null;
+    const image = largest ? await deps.downloadImage(largest.url).catch(() => null) : null;
+    // A custom thumbnail whose image could not be saved would be lost: its URLs serve the new image once replaced.
+    if (before.hasCustomThumbnail === true && !image) {
+      throw new DomainError({ code: "backup_item_failed", message: "The current custom thumbnail image could not be downloaded for the backup; nothing was written.", details: { videoId } });
+    }
     const operationId = deps.newOperationId();
     const record = await deps.backup.captureBackup({
       channelId,

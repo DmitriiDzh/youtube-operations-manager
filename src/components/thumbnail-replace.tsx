@@ -67,9 +67,9 @@ function ThumbnailReplaceDialog(props: { channelId: string; videoId: string; cur
         const list = body?.folders ?? [];
         setFolders(list);
         setStoredUrl(body?.currentUrl ?? null);
+        // Preselected only when this video's own folder offers exactly one image.
         const own = list.find((folder) => folder.own && folder.images.length > 0);
-        const logo = own?.images.find((image) => /logo/i.test(image));
-        if (own && (logo || own.images.length === 1)) setChosen(logo ?? own.images[0]);
+        if (own && own.images.length === 1) setChosen(own.images[0]);
       } catch {
         if (!cancelled) setLoadError(t("thumbReplace.loadFailed"));
       }

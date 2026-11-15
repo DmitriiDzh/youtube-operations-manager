@@ -795,9 +795,17 @@ export type { SlotDecision } from "./auto-upload";
  * then, since the runner would put the package's file over the new one.
  */
 export async function isUploadThumbnailStepPending(channelId: string, videoId: string): Promise<boolean> {
-  const rows = await listPublishingUploads({ channelId, statuses: ACTIVE_UPLOAD_STATUSES, limit: 500 });
+  return thumbnailStepPendingIn(await listPublishingUploads({ channelId, statuses: ACTIVE_UPLOAD_STATUSES, limit: 500 }), videoId);
+}
+
+/**
+ * The rule of `isUploadThumbnailStepPending` on given rows: an active row (queued / uploading / processing / finishing / paused) of
+ * that video id without `steps.thumbnail`; a damaged `steps_json` counts as pending. A finished, failed or cancelled row is never
+ * resumed into its finishing steps (a new upload is a new row), so it is not pending.
+ */
+export function thumbnailStepPendingIn(rows: ReadonlyArray<Pick<StoredPublishingUpload, "status" | "videoId" | "stepsJson">>, videoId: string): boolean {
   return rows.some((row) => {
-    if (row.videoId !== videoId) return false;
+    if (row.videoId !== videoId || !(ACTIVE_UPLOAD_STATUSES as readonly string[]).includes(row.status)) return false;
     try {
       const steps = JSON.parse(row.stepsJson) as { thumbnail?: unknown } | null;
       return !steps || typeof steps !== "object" || steps.thumbnail === undefined;

@@ -667,6 +667,18 @@ export function ContentManager() {
               channelId={expandedVideo.channelId}
               videoId={expandedVideo.videoId}
               currentUrl={(expandedVideo.thumbnails.maxres ?? expandedVideo.thumbnails.standard ?? expandedVideo.thumbnails.high ?? expandedVideo.thumbnails.default)?.url ?? null}
+              onReplaced={() => {
+                // YouTube keeps the same thumbnail URLs: a cache-busting mark makes the list load the new image.
+                const id = expandedVideo.videoId;
+                const mark = `ytm=${Date.now()}`;
+                setVideos((list) =>
+                  list.map((v) =>
+                    v.videoId !== id
+                      ? v
+                      : { ...v, thumbnails: Object.fromEntries(Object.entries(v.thumbnails).map(([size, info]) => [size, info ? { ...info, url: `${info.url.split(/[?&]ytm=/)[0]}${info.url.includes("?") ? "&" : "?"}${mark}` } : info])) }
+                  )
+                );
+              }}
             />
           </div>
           <VideoDetailsPanel

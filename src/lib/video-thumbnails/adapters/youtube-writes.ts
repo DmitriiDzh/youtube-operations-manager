@@ -11,12 +11,25 @@ export function authorizedOAuth(credentials: ResolvedCredentials) {
   return oauth2;
 }
 
-export function createVideoThumbnailWrites() {
+/**
+ * The client, the Live writes check and the gateway call are injectable for the order test (AC-TH-07); the defaults are the real
+ * ones. Order: client → Live writes → `thumbnails.set`, nothing in between.
+ */
+export function createVideoThumbnailWrites(
+  deps: {
+    client?: (credentials: ResolvedCredentials) => Promise<unknown>;
+    assertLiveWrites?: () => Promise<void>;
+    write?: (youtube: never, videoId: string, image: { mimeType: "image/jpeg" | "image/png"; bytes: Buffer }) => Promise<void>;
+  } = {}
+) {
+  const client = deps.client ?? ((credentials: ResolvedCredentials) => createYoutubeClient(authorizedOAuth(credentials)));
+  const gate = deps.assertLiveWrites ?? (() => assertLiveWritesAuthorized());
+  const write = deps.write ?? (setVideoThumbnail as unknown as NonNullable<typeof deps.write>);
   return {
     async setThumbnail(credentials: ResolvedCredentials, videoId: string, image: { mimeType: "image/jpeg" | "image/png"; bytes: Buffer }) {
-      const youtube = await createYoutubeClient(authorizedOAuth(credentials));
-      await assertLiveWritesAuthorized();
-      await setVideoThumbnail(youtube, videoId, image);
+      const youtube = await client(credentials);
+      await gate();
+      await write(youtube as never, videoId, image);
     },
   };
 }

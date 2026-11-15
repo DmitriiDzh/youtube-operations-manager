@@ -57,9 +57,10 @@ No schema change. A new backup snapshot kind (`video_thumbnail`) in the existing
 - AC-TH-02 A file over 2 MB (2 097 152 bytes) → refused `thumbnail_file_invalid`; exactly 2 097 152 bytes is accepted.
 - AC-TH-03 A video YouTube does not return, or whose `snippet.channelId` differs → `video_not_in_channel`; no write.
 - AC-TH-04 An active upload row for that video id without `steps.thumbnail` → `thumbnail_step_pending`, no write; with `steps.thumbnail` set/failed, or a finished row → allowed.
-- AC-TH-05 Backup is captured before the write; if it fails, no write and the error is returned.
+- AC-TH-05 Backup is captured before the write; if it fails, no write and the error is returned. A video with a custom thumbnail whose
+  image cannot be downloaded for the backup is refused `backup_item_failed` (its URLs would serve the new image afterwards).
 - AC-TH-06 Identity check runs before the write; a wrong channel → fails closed, no write.
-- AC-TH-07 Live writes off → refused, no `thumbnails.set` call (checked immediately before the call).
+- AC-TH-07 Live writes off → refused, no `thumbnails.set` call; the adapter's order is client → Live writes → the call (adapter test).
 - AC-TH-08 Dry run → every read and check, no backup, no write, no audit RESULT; reports units 52.
 - AC-TH-09 Success → exactly one `thumbnails.set` with the file's bytes and type; read-back `hasCustomThumbnail` true and privacy/`publishAt` unchanged → `verified: true`.
 - AC-TH-10 Read-back differs (no custom thumbnail, or privacy/`publishAt` changed) → `verified: false` with the detail; audited.
