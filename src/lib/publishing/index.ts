@@ -38,6 +38,8 @@ import {
   stopPublishingUploadBeforeYoutube,
   updatePublishingUpload,
   type StoredPublishingUpload,
+  getVideoOrientations,
+  rememberVideoOrientation,
 } from "@/lib/db";
 import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
 import { createChannelSyncCore } from "@/lib/channel-sync";
@@ -196,6 +198,7 @@ export type PublishingCalendarCore = ReturnType<typeof createPublishingCalendarC
 const scanHolder = globalThis as typeof globalThis & { [key: symbol]: unknown };
 const FFMPEG_KEY = Symbol.for("ytom.publishing.ffmpeg");
 const PROBE_CACHE_KEY = Symbol.for("ytom.publishing.probeCache");
+const FRAME_CACHE_KEY = Symbol.for("ytom.publishing.frameCache");
 
 /** BL-182 stage 2: the channel's release packages under `04 Videos/`, checked again (Content → «Публикация»). Read-only. */
 export function createPackageScanCore() {
@@ -236,6 +239,7 @@ function createPackageScanReads() {
   const files = createWorkspaceVideoFiles();
   const videoStore = createChannelVideoStoreAdapter();
   const probeCache = (scanHolder[PROBE_CACHE_KEY] ??= new Map<string, number | null>()) as Map<string, number | null>;
+  const frameCache = (scanHolder[FRAME_CACHE_KEY] ??= new Map<string, { width: number; height: number } | null>()) as Map<string, { width: number; height: number } | null>;
   const ffmpeg = async () => {
     const found = await ((scanHolder[FFMPEG_KEY] ??= detectFfmpeg()) as Promise<FfmpegTools | null>);
     if (!found) scanHolder[FFMPEG_KEY] = undefined; // look again next time (ffmpeg may be installed meanwhile)
@@ -274,10 +278,17 @@ function createPackageScanReads() {
       if (probeCache.has(key)) return probeCache.get(key) ?? null;
       const tools = await ffmpeg();
       if (!tools) return "no_ffprobe";
-      const duration = await probeMedia(tools, absolutePath).then((probe) => probe.durationSeconds).catch(() => null);
-      probeCache.set(key, duration);
-      return duration;
+      const probe = await probeMedia(tools, absolutePath).catch(() => null);
+      probeCache.set(key, probe?.durationSeconds ?? null);
+      // BL-259: the same ffprobe call gives the frame (no second run).
+      frameCache.set(key, probe?.video?.width && probe.video.height ? { width: probe.video.width, height: probe.video.height } : null);
+      return probe?.durationSeconds ?? null;
     },
+    // BL-259 (owner msg 4397): the frame from the duration's ffprobe run (the scan probes the duration first).
+    async probeFrame(absolutePath, bytes) {
+      return frameCache.get(`${absolutePath}|${bytes}`) ?? null;
+    },
+    orientations: { get: (channelId) => getVideoOrientations(channelId), remember: (channelId, video, orientation) => rememberVideoOrientation(channelId, video, orientation) },
     async channel(channelId) {
       const baseline = await getChannelExpectedLanguages(channelId);
       return { channelId, defaultLanguage: baseline.defaultLanguage, defaultAudioLanguage: baseline.defaultAudioLanguage };

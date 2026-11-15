@@ -58,6 +58,8 @@ export function progressOfPackage(scanned: ScannedPackage, channelSyntheticMedia
       video: pkg.video,
       title: pkg.title,
       durationSeconds: pkg.durationSeconds,
+      // BL-259: the frame, only when known (the package's shape is unchanged otherwise).
+      ...(scanned.orientation ? { orientation: scanned.orientation } : {}),
       languages: Object.keys(pkg.localizations ?? {}).sort(),
       containsSyntheticMedia: pkg.containsSyntheticMedia ?? channelSyntheticMedia,
       thumbnailPath: scanned.thumbnailPath,

@@ -7361,6 +7361,36 @@ export async function setAutoPrivateUploadPausedChannels(channelIds: readonly st
   await setAppSetting(AUTO_PRIVATE_UPLOAD_PAUSED_CHANNELS_SETTING_KEY, JSON.stringify([...new Set(channelIds)]));
 }
 
+/**
+ * BL-259 (owner msg 4397): each package video's frame (vertical / horizontal) as ffprobe last read it on this computer, kept per
+ * channel and video number -- so the icon stays after the local mp4 is deleted (BL-238). Device-local; a memo, never a decision.
+ */
+const VIDEO_ORIENTATIONS_SETTING_KEY = "video_orientations";
+export type VideoOrientation = "vertical" | "horizontal";
+
+export async function getVideoOrientations(channelId: string): Promise<Record<string, VideoOrientation>> {
+  try {
+    const all = JSON.parse((await getAppSetting(VIDEO_ORIENTATIONS_SETTING_KEY)) ?? "{}") as Record<string, Record<string, unknown>>;
+    const own = all[channelId] ?? {};
+    return Object.fromEntries(Object.entries(own).filter((entry): entry is [string, VideoOrientation] => entry[1] === "vertical" || entry[1] === "horizontal"));
+  } catch {
+    return {};
+  }
+}
+
+export async function rememberVideoOrientation(channelId: string, video: string, orientation: VideoOrientation): Promise<void> {
+  let all: Record<string, Record<string, VideoOrientation>> = {};
+  try {
+    const parsed = JSON.parse((await getAppSetting(VIDEO_ORIENTATIONS_SETTING_KEY)) ?? "{}") as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) all = parsed as typeof all;
+  } catch {
+    all = {};
+  }
+  if (all[channelId]?.[video] === orientation) return;
+  all[channelId] = { ...(all[channelId] ?? {}), [video]: orientation };
+  await setAppSetting(VIDEO_ORIENTATIONS_SETTING_KEY, JSON.stringify(all));
+}
+
 const AUTO_PRIVATE_UPLOAD_WAITING_SETTING_KEY = "auto_private_upload_waiting";
 
 /**

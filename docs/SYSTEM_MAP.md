@@ -1025,6 +1025,10 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
     (`failed` + `video_deleted_on_youtube`, «Ролик удалён на YouTube»), одобрять нечего, прежнее одобрение не считается;
     план-расписание не трогает удалённые видео. Агентам: `missingOnChannel` в календаре, `videoIds` в `channel_video_list`.
     Factory API 1.43.0, Agent API 4.17.0, Producer API 1.17.0.
+  - BL-259 (owner msg 4397): значок формата видео (вертикальное / горизонтальное) на «Роликах и релизах» (доска и пакеты), в «Плане
+    недели» и календаре (`src/components/orientation-icon.tsx`). Источник — ширина и высота из того же вызова ffprobe, что и длительность
+    при сканировании пакета (`probeFrame`, поле `orientation` пакета и `PlanSlotPackage`); прочитанное запоминается на этом компьютере
+    по номеру видео (`app_settings.video_orientations`), так что значок остаётся после удаления mp4. Неизвестно — значка нет.
   - Этап 3: автозагрузка (BL-209) ставит пакет одобренного и не снятого слота с его временем, снятый пропускает (решения слотов —
     `src/composition/publishing-plan-slots.ts`); загрузчик пишет переводы пакета первым шагом после обработки общим писателем
     `src/lib/shared-video-localizations/` (вынесен из live-localizations) и ИИ-метку пакета; дата — только после переводов, обложки,
