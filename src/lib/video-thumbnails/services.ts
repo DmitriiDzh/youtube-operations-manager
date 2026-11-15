@@ -85,6 +85,7 @@ export function createVideoThumbnailsServices(deps: VideoThumbnailsDeps) {
       verified: null,
       verificationDetail: null,
       imageChanged: null,
+      uploadStepsMarked: 0,
       after: null,
     };
     if (dryRun) return result;
@@ -155,6 +156,12 @@ export function createVideoThumbnailsServices(deps: VideoThumbnailsDeps) {
     result.verificationDetail = problems.length === 0 ? null : problems.join("; ");
     await quiet(() => deps.audit({ channelId, videoId, eventType: "VERIFICATION", detail: { event: "video_thumbnails.verification", ...base, verified: result.verified, imageChanged: result.imageChanged, detail: result.verificationDetail } }));
     if (after) await quiet(() => deps.storeThumbnails(channelId, videoId, after.thumbnails));
+    // Owner msg 4396: a verified thumbnail completes the upload's failed thumbnail step, so the weekly plan may date the video.
+    if (result.verified) {
+      await quiet(async () => {
+        result.uploadStepsMarked = await deps.markUploadThumbnailSet(channelId, videoId);
+      });
+    }
     return result;
   }
 

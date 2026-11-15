@@ -67,12 +67,17 @@ No schema change. A new backup snapshot kind (`video_thumbnail`) in the existing
 - AC-TH-11 Audit rows BACKUP, RESULT, VERIFICATION with actor and SHA-256.
 - AC-TH-12 The Producer tool exists only on the Producer endpoint; agent/factory endpoints have no thumbnail tool.
 - AC-TH-13 Owner routes need the owner's session and the active channel.
-- AC-TH-14 Nothing in the publishing plan or the upload row changes.
+- AC-TH-14 Nothing in the publishing plan changes. (Amended, owner msg 4396: the upload row's failed thumbnail step may be marked done, AC-TH-18.)
 - AC-TH-15 (added after the independent review: the Producer's MCP path is not behind `src/proxy.ts`'s device gate, and other Producer
   writes check it in their module) A device handoff (operation lock) or recovery mode refuses before any backup or write.
 - AC-TH-16 (added after the review: YouTube keeps the same thumbnail URLs, so `hasCustomThumbnail` alone proves nothing for a video
   that already had one) The largest image served after the write is compared with the backed-up one; the same bytes → not verified.
 - AC-TH-17 (review) A failure after a successful write (audit, read-back) is reported in the result, never as "not replaced".
+
+- AC-TH-18 (owner msg 4396, 2026-11-15: WWE's first uploads failed their thumbnail step -- the channel was not phone-verified -- so the
+  plan withheld their dates) After a verified replace (custom thumbnail, image changed, privacy and date unchanged) every upload row of
+  that video here whose `steps.thumbnail` is "failed" records "set" with a note, so the plan's `checksPassed` may date it. Not on a
+  dry run, not when unverified.
 
 **Accepted limit.** The pending-step check sees only this computer's upload rows. If the other computer is uploading the same video and
 has not yet set its own thumbnail, its runner will put the package's file over the new one afterwards. The owner and the Producer

@@ -6,7 +6,7 @@ import { getStoredVideo, insertVideoEditAuditEvent, rawSqlClient, updateStoredVi
 import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 import { resolveConnectedChannelUser } from "@/lib/channel-connections";
 import { resolveGoogleCredentials } from "@/lib/google-credentials";
-import { createPackageScanCore, isUploadThumbnailStepPending, listThumbnailCandidates, type ThumbnailCandidateFolder } from "@/lib/publishing";
+import { createPackageScanCore, isUploadThumbnailStepPending, listThumbnailCandidates, markUploadThumbnailSetLater, type ThumbnailCandidateFolder } from "@/lib/publishing";
 import { createIdGenerator, DomainError, type ResolvedCredentials } from "@/lib/shared-domain";
 import { createWriteContextCore } from "@/lib/write-context";
 import { createYoutubeClient, downloadVideoThumbnailImage, getVideoThumbnailState } from "@/lib/youtube-read-gateway";
@@ -49,6 +49,7 @@ export function createVideoThumbnailsCore() {
     storeThumbnails: (channelId, videoId, thumbnails) => updateStoredVideoThumbnails(channelId, videoId, thumbnails),
     newOperationId: () => `thumbnail-${newId()}`,
     assertDeviceAvailable: () => assertDeviceAvailableForMutation(rawSqlClient),
+    markUploadThumbnailSet: (channelId, videoId) => markUploadThumbnailSetLater(channelId, videoId, new Date()),
   });
   return {
     /** The images under `04 Videos/` to choose from: this video's own upload folders first (ADR 0069 §2). */
