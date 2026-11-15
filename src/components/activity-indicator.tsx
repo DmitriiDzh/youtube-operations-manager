@@ -203,7 +203,8 @@ export function ActivityIndicator() {
                         <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-zinc-800">
                           <span className="block h-full rounded-full bg-accent transition-[width] duration-500" style={{ width: `${r.progress}%` }} />
                         </span>
-                        <span className="w-8 text-right text-[11px] tabular-nums text-zinc-400">{t("activity.percent", { percent: r.progress })}</span>
+                        {/* An upload's status text already says its percent. */}
+                        {!r.key.startsWith("upload:") && <span className="w-8 text-right text-[11px] tabular-nums text-zinc-400">{t("activity.percent", { percent: r.progress })}</span>}
                       </span>
                     )}
                   </span>

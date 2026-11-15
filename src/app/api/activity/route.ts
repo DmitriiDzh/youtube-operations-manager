@@ -35,7 +35,7 @@ function activitySummaryCore() {
         progress: j.progress ? { percent: j.progress.percent, step: j.progress.step } : null,
       })),
     uploads: async () =>
-      (await listActiveUploadsWithQueue()).map((u) => ({ id: u.id, channelId: u.channelId, video: u.video, status: u.status, storedBytes: u.storedBytes, totalBytes: u.totalBytes, createdAt: u.createdAt, queuePosition: u.queuePosition })),
+      (await listActiveUploadsWithQueue()).map((u) => ({ id: u.id, channelId: u.channelId, video: u.video, status: u.status, resumeStatus: u.resumeStatus ?? null, storedBytes: u.storedBytes, totalBytes: u.totalBytes, createdAt: u.createdAt, queuePosition: u.queuePosition })),
     streams: async () => (await collectLiveStreamEntries()).map((s) => ({ channelId: s.channelId, state: s.state, since: s.since })),
     now: () => new Date(),
   });

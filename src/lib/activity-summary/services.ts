@@ -19,7 +19,8 @@ export type ActivityMediaJob = {
   /** The job's own progress report (RunPod/ComfyUI), or null. */
   progress: { percent: number | null; step: { value: number; max: number } | null } | null;
 };
-export type ActivityUpload = { id: string; channelId: string; video: string; status: string; storedBytes: number; totalBytes: number; createdAt: Date; queuePosition: number | null };
+/** `resumeStatus`: what a paused row goes back to (`uploading` when it was paused mid-send). */
+export type ActivityUpload = { id: string; channelId: string; video: string; status: string; resumeStatus?: string | null; storedBytes: number; totalBytes: number; createdAt: Date; queuePosition: number | null };
 export type ActivityStream = { channelId: string; state: string; since: string | null };
 
 export type ActivityDeps = {
@@ -46,24 +47,30 @@ export function operationProgress(done: number, total: number): number | null {
   return total > 0 ? clampPercent((done / total) * 100) : null;
 }
 
-/** How far an upload is: bytes sent while uploading (or paused mid-way); null while queued or while YouTube processes it. */
-export function uploadProgress(status: string, storedBytes: number, totalBytes: number): number | null {
-  if ((status === "uploading" || status === "paused") && totalBytes > 0) return clampPercent((storedBytes / totalBytes) * 100);
+/** The upload is sending bytes, or was paused while sending (the runner's `isSending`). */
+const sending = (status: string, resumeStatus: string | null | undefined) => status === "uploading" || (status === "paused" && resumeStatus === "uploading");
+
+/** How far an upload is: bytes sent while sending (or paused mid-send); null while queued, paused before sending, or processing. */
+export function uploadProgress(status: string, storedBytes: number, totalBytes: number, resumeStatus: string | null = null): number | null {
+  if (sending(status, resumeStatus) && totalBytes > 0) return clampPercent((storedBytes / totalBytes) * 100);
   return null;
 }
 
-/** How far a media job is: its own percent, else its step; null when it reports neither (Gemini, or not started). */
+/**
+ * How far a media job is: its own whole-job percent; null when it reports none (Gemini, or not started). Review: the sampler `step`
+ * is one node's, not the job's -- a bar from it would refill once per node, so it is not used.
+ */
 export function jobProgress(progress: ActivityMediaJob["progress"]): number | null {
   if (!progress) return null;
   if (progress.percent !== null && Number.isFinite(progress.percent)) return clampPercent(progress.percent);
-  if (progress.step && progress.step.max > 0) return clampPercent((progress.step.value / progress.step.max) * 100);
   return null;
 }
 
 /** The shared queue as the owner reads it: what is being sent or finished first (oldest first), then the queued ones by place. */
 function uploadOrder(a: ActivityUpload, b: ActivityUpload): number {
-  const queuedA = a.status === "queued";
-  const queuedB = b.status === "queued";
+  // A row paused before it was sent waits like a queued one (after the queue's places).
+  const queuedA = a.status === "queued" || (a.status === "paused" && a.resumeStatus === "queued");
+  const queuedB = b.status === "queued" || (b.status === "paused" && b.resumeStatus === "queued");
   if (queuedA !== queuedB) return queuedA ? 1 : -1;
   if (queuedA && queuedB) return (a.queuePosition ?? Number.MAX_SAFE_INTEGER) - (b.queuePosition ?? Number.MAX_SAFE_INTEGER) || a.createdAt.getTime() - b.createdAt.getTime();
   return a.createdAt.getTime() - b.createdAt.getTime();
@@ -111,7 +118,7 @@ export function createActivitySummary(deps: ActivityDeps) {
               totalBytes: u.totalBytes,
               createdAt: u.createdAt.toISOString(),
               queuePosition: u.status === "queued" ? u.queuePosition : null,
-              progress: uploadProgress(u.status, u.storedBytes, u.totalBytes),
+              progress: uploadProgress(u.status, u.storedBytes, u.totalBytes, u.resumeStatus ?? null),
             }))
         ),
         read("live_streams", () => deps.streams(), (streams) =>

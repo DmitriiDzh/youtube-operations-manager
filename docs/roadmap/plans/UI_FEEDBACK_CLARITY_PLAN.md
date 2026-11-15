@@ -115,3 +115,7 @@ Each gets a window text of its own ("Starting the streamâ€¦", "Renting the podâ€
 queued by place, with `queuePosition`); media jobs running first, then waiting; `progress` 0-100 where the work reports it
 (operation done/total, upload bytes sent while uploading or paused, job percent else step) drawn as a bar. Tests:
 `activity-summary/services.test.ts` (values by hand).
+Review (2026-11-16): a row paused before sending waits with the queue and has no bar; a job's bar is its whole-job percent only
+(a node's sampler step refills per node); known limit -- the media-job read takes the newest 500 jobs of every computer (finished
+in the last 7 days count too), so a very old open job behind 500 newer ones is not listed; place 1 is the runner's order, a channel
+held by its cap or not yet due is skipped.

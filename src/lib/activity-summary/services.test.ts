@@ -7,7 +7,7 @@ import { createActivitySummary, jobProgress, operationProgress, uploadProgress, 
 // changed: the channel's sources were read for the ACTIVE channel only (`no_channel` without one); now every channel's work is
 // listed, each item naming its channel, read with or without an active channel. Unchanged: only unfinished work is listed; a failing
 // source is `unavailable` and the others are still listed; a peer's job names its computer; a stale computer's job is not listed.
-// Expected values by hand: progress = floor(done / total * 100); 50 of 200 bytes = 25; step 3 of 12 = 25.
+// Expected values by hand: progress = floor(done / total * 100); 50 of 200 bytes = 25.
 
 const NOW = new Date("2026-10-17T10:00:00.000Z");
 
@@ -21,7 +21,7 @@ function deps(overrides: Partial<ActivityDeps> = {}): ActivityDeps {
     ],
     mediaJobs: async () => [
       { jobId: "j0", channelId: "UC3", source: "runpod", status: "queued", label: "loop v3", hostName: "mac", own: true, createdAt: "2026-10-17T09:40:00.000Z", finished: false, stale: false, progress: null },
-      { jobId: "j1", channelId: "UC1", source: "runpod", status: "running", label: "loop v3", hostName: "mac", own: true, createdAt: "2026-10-17T09:50:00.000Z", finished: false, stale: false, progress: { percent: null, step: { value: 3, max: 12 } } },
+      { jobId: "j1", channelId: "UC1", source: "runpod", status: "running", label: "loop v3", hostName: "mac", own: true, createdAt: "2026-10-17T09:50:00.000Z", finished: false, stale: false, progress: { percent: 25, step: { value: 3, max: 12 } } },
       { jobId: "j2", channelId: "UC2", source: "gemini", status: "running", label: "gemini-omni-1.1-flash", hostName: "win-pc", own: false, createdAt: "2026-10-17T09:55:00.000Z", finished: false, stale: false, progress: null },
       { jobId: "j3", channelId: "UC1", source: "gemini", status: "done", label: "gemini-omni-1.1-flash", hostName: "mac", own: true, createdAt: "2026-10-17T08:00:00.000Z", finished: true, stale: false, progress: null },
       // The PC went to sleep with a job still running in its last report, older than the pool's stale limit: not listed.
@@ -105,12 +105,16 @@ test("BL-258: progress -- operations done/total, uploads sent bytes while upload
   assert.equal(operationProgress(0, 0), null);
   assert.equal(operationProgress(12, 10), 100);
   assert.equal(uploadProgress("uploading", 50, 200), 25);
-  assert.equal(uploadProgress("paused", 199, 200), 99);
+  assert.equal(uploadProgress("paused", 199, 200, "uploading"), 99);
   assert.equal(uploadProgress("queued", 0, 200), null);
   assert.equal(uploadProgress("processing", 200, 200), null);
   assert.equal(uploadProgress("uploading", 10, 0), null);
   assert.equal(jobProgress(null), null);
   assert.equal(jobProgress({ percent: 42.7, step: null }), 42);
-  assert.equal(jobProgress({ percent: null, step: { value: 3, max: 12 } }), 25);
-  assert.equal(jobProgress({ percent: null, step: { value: 1, max: 0 } }), null);
+  // Review: a node's sampler step is not the job's progress.
+  assert.equal(jobProgress({ percent: null, step: { value: 3, max: 12 } }), null);
+  // Paused mid-send keeps its bytes bar; paused before sending or during processing has none.
+  assert.equal(uploadProgress("paused", 50, 200, "uploading"), 25);
+  assert.equal(uploadProgress("paused", 0, 200, "queued"), null);
+  assert.equal(uploadProgress("paused", 200, 200, "processing"), null);
 });
