@@ -33,6 +33,8 @@ type Readers = {
   autoPrivateUploadEnabled: () => Promise<boolean>;
   /** BL-209 follow-up: why the automatic upload is waiting now ([] = nothing), written by its watcher. Read-only here. */
   autoPrivateUploadWaiting: () => Promise<unknown[]>;
+  /** Owner TG 2298: the channels the automatic upload skips on this computer. */
+  autoPrivateUploadPausedChannels: () => Promise<string[]>;
 };
 
 export async function buildSettingsSnapshot(readers: Readers) {
@@ -74,6 +76,7 @@ export async function buildSettingsSnapshot(readers: Readers) {
     writeLogRetentionDays: values.writeLogRetentionDays as number | null,
     autoPrivateUploadEnabled: values.autoPrivateUploadEnabled as boolean | null,
     autoPrivateUploadWaiting: (values.autoPrivateUploadWaiting as unknown[] | null) ?? [],
+    autoPrivateUploadPausedChannels: (values.autoPrivateUploadPausedChannels as string[] | null) ?? [],
     /** Names of the reads that failed this time (their fields are `null`). Empty when all succeeded. */
     unavailable,
   };

@@ -16,6 +16,7 @@ import {
 import {
   clearPublishingG1Probe,
   getAutoPrivateUploadEnabled,
+  getAutoPrivateUploadPausedChannels,
   setAutoPrivateUploadWaiting,
   getChannelExpectedLanguages,
   getLiveWritesEnabled,
@@ -594,7 +595,9 @@ export function createAutoPrivateUploadCore(options: { slotDecisions?: (channelI
   return createAutoPrivateUpload({
     enabled: () => getAutoPrivateUploadEnabled(),
     async channels() {
-      return (await listStoredChannels()).map((channel) => ({ channelId: channel.channelId, userId: channel.connectedUserId }));
+      // Owner TG 2298: a channel paused for the automatic upload is skipped (its packages wait for the owner).
+      const paused = new Set(await getAutoPrivateUploadPausedChannels());
+      return (await listStoredChannels()).filter((channel) => !paused.has(channel.channelId)).map((channel) => ({ channelId: channel.channelId, userId: channel.connectedUserId }));
     },
     scan: (channelId) => scan.scan(channelId),
     liveVideos: (channelId) => localHeldVideos(channelId),
