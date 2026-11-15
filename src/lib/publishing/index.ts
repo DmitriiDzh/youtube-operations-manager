@@ -788,3 +788,21 @@ export { checksPassed, decisionForRow, desiredDate } from "./plan-schedule";
 export { approvalNamesUpload } from "./slot-decision";
 export type { SlotPackageFingerprint } from "./slot-decision";
 export type { SlotDecision } from "./auto-upload";
+
+/**
+ * BL-255 (ADR 0069 §3): true while this computer's upload of `videoId` has not yet run its own thumbnail step -- an active row
+ * with that video id and no `steps.thumbnail` (a damaged `steps_json` counts as pending: fail closed). The thumbnail writer refuses
+ * then, since the runner would put the package's file over the new one.
+ */
+export async function isUploadThumbnailStepPending(channelId: string, videoId: string): Promise<boolean> {
+  const rows = await listPublishingUploads({ channelId, statuses: ACTIVE_UPLOAD_STATUSES, limit: 500 });
+  return rows.some((row) => {
+    if (row.videoId !== videoId) return false;
+    try {
+      const steps = JSON.parse(row.stepsJson) as { thumbnail?: unknown } | null;
+      return !steps || typeof steps !== "object" || steps.thumbnail === undefined;
+    } catch {
+      return true;
+    }
+  });
+}

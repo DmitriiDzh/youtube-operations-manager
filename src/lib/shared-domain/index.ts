@@ -384,6 +384,11 @@ export type DomainErrorCode =
   // losing computer takes another. WORKSPACE_UNAVAILABLE: the channel is not connected here, or its workspace folder (where the
   // factory's `MMDD Vn` folders are) cannot be read, so no number is given.
   | "video_not_found"
+  // BL-255 (ADR 0069): replacing an uploaded video's thumbnail -- the file is not a JPEG/PNG under `04 Videos/` of at most 2 MB;
+  // the video is another channel's; this computer's upload of the video has not yet run its own thumbnail step.
+  | "thumbnail_file_invalid"
+  | "video_not_in_channel"
+  | "thumbnail_step_pending"
   | "video_in_dispute"
   // BL-221: «Привязать к видео» -- the number already has its YouTube video, or that video is already another number's.
   | "video_already_linked"
