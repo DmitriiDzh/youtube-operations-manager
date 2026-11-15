@@ -27,7 +27,7 @@ function previewSrc(channelId: string, path: string): string {
   return `/api/channels/${encodeURIComponent(channelId)}/publishing/packages/thumbnail?path=${encodeURIComponent(path)}`;
 }
 
-export function ThumbnailReplaceButton(props: { channelId: string; videoId: string; currentUrl: string | null; className?: string; onReplaced?: () => void }) {
+export function ThumbnailReplaceButton(props: { channelId: string; videoId: string; videoNumber?: string | null; currentUrl: string | null; className?: string; onReplaced?: () => void }) {
   const { t } = useUiText();
   const [open, setOpen] = useState(false);
   return (
@@ -44,7 +44,7 @@ export function ThumbnailReplaceButton(props: { channelId: string; videoId: stri
   );
 }
 
-function ThumbnailReplaceDialog(props: { channelId: string; videoId: string; currentUrl: string | null; onClose: () => void; onReplaced?: () => void }) {
+function ThumbnailReplaceDialog(props: { channelId: string; videoId: string; videoNumber?: string | null; currentUrl: string | null; onClose: () => void; onReplaced?: () => void }) {
   const { t, formatNumber, language } = useUiText();
   const base = `/api/channels/${encodeURIComponent(props.channelId)}/videos/${encodeURIComponent(props.videoId)}/thumbnail`;
   const [folders, setFolders] = useState<CandidateFolder[] | null>(null);
@@ -60,7 +60,7 @@ function ThumbnailReplaceDialog(props: { channelId: string; videoId: string; cur
     let cancelled = false;
     void (async () => {
       try {
-        const response = await fetch(base, { cache: "no-store" });
+        const response = await fetch(props.videoNumber ? `${base}?vn=${encodeURIComponent(props.videoNumber)}` : base, { cache: "no-store" });
         const body = (await response.json().catch(() => null)) as { folders?: CandidateFolder[]; currentUrl?: string | null } | null;
         if (cancelled) return;
         if (!response.ok) return setLoadError(errorText(t, body, t("thumbReplace.loadFailed")));
@@ -77,7 +77,7 @@ function ThumbnailReplaceDialog(props: { channelId: string; videoId: string; cur
     return () => {
       cancelled = true;
     };
-  }, [base, t]);
+  }, [base, props.videoNumber, t]);
 
   async function send(dryRun: boolean) {
     if (!chosen) return;

@@ -16,13 +16,15 @@ function errorResponse(error: unknown) {
 }
 
 /** BL-255 (ADR 0069): the images the owner can choose from for this video's new thumbnail. Read-only. */
-export async function GET(_request: Request, { params }: Params) {
+export async function GET(request: Request, { params }: Params) {
   const session = await getServerSession(authOptions);
   if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
     const { channelId, videoId } = await params;
     await channelAccess.assertActiveChannel({ userId: session.user.id, channelId });
-    return NextResponse.json(await createVideoThumbnailsCore().listCandidates(channelId, videoId));
+    // `vn` (optional, e.g. V4): the video's number as the screen knows it -- only orders the folders, never widens what is read.
+    const vn = new URL(request.url).searchParams.get("vn");
+    return NextResponse.json(await createVideoThumbnailsCore().listCandidates(channelId, videoId, vn && /^V\d{1,6}$/.test(vn) ? vn : null));
   } catch (error) {
     return errorResponse(error);
   }

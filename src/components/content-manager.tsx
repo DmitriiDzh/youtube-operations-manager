@@ -666,6 +666,7 @@ export function ContentManager() {
             <ThumbnailReplaceButton
               channelId={expandedVideo.channelId}
               videoId={expandedVideo.videoId}
+              videoNumber={extrasOf(expandedVideo.videoId).vn ?? null}
               currentUrl={(expandedVideo.thumbnails.maxres ?? expandedVideo.thumbnails.standard ?? expandedVideo.thumbnails.high ?? expandedVideo.thumbnails.default)?.url ?? null}
               onReplaced={() => {
                 // YouTube keeps the same thumbnail URLs: a cache-busting mark makes the list load the new image.

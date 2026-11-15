@@ -1474,7 +1474,7 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
   plus `forChannelId`. A YouTube write (`thumbnails.set`, 50 units) on any video of a channel connected here: the image is a JPEG/PNG by its first
   bytes, at most 2 MB; dry run = every read and check, no backup, no write. Errors: `thumbnail_file_invalid`, `video_not_in_channel`,
   `thumbnail_step_pending` (this computer's upload of the video has not yet set its own thumbnail), `WRITE_CHANNEL_UNRESOLVED`,
-  `WRITE_CHANNEL_MISMATCH`, `live_writes_disabled`, `backup_item_failed`, `operation_lock_held` / `device_in_recovery_mode`. `verified` = custom thumbnail present, privacy / `publishAt` unchanged and the served image differs from the backed-up one (`imageChanged`). Owner route: `GET /api/channels/{channelId}/videos/{videoId}/thumbnail` →
+  `WRITE_CHANNEL_MISMATCH`, `live_writes_disabled`, `backup_item_failed`, `operation_lock_held` / `device_in_recovery_mode`. `verified` = custom thumbnail present, privacy / `publishAt` unchanged and the served image differs from the backed-up one (`imageChanged`). Owner route: `GET /api/channels/{channelId}/videos/{videoId}/thumbnail[?vn=Vn]` (vn only orders: the folders named after that number count as the video's own) →
   `{ folders: [{ folder, video, images, own }], currentUrl }`; `POST` same path `{ path, dryRun? }` → the same result (owner session, active channel).
 - **Every channel-tool answer** (success or error) carries `forChannelId`; the role's own tools do not, nor does a refusal of the MCP layer
   itself (unknown tool, input the schema rejects). **Every call**, refused or not, is logged (`GET /api/producer-agent-token/calls`, below): a

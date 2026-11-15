@@ -822,7 +822,7 @@ export type ThumbnailCandidateFolder = { folder: string; video: string | null; i
  * (`dirname(manifest_path)`, kept when the local mp4 was cleaned up), then the newest other release folders (at most 8). Only
  * direct .jpg/.jpeg/.png files under `04 Videos/`; every path is checked again when it is used (`readThumbnail`).
  */
-export async function listThumbnailCandidates(channelId: string, videoId: string): Promise<ThumbnailCandidateFolder[]> {
+export async function listThumbnailCandidates(channelId: string, videoId: string, videoNumber: string | null = null): Promise<ThumbnailCandidateFolder[]> {
   const { deps } = createPackageScanReads();
   const workspace = await deps.workspace(channelId);
   if (!workspace) return [];
@@ -840,8 +840,11 @@ export async function listThumbnailCandidates(channelId: string, videoId: string
   const others = await createPackageComposerCore()
     .listFolders(channelId)
     .catch(() => []);
-  for (const entry of others.filter((entry) => !ownFolders.includes(entry.folder)).slice(0, 8)) {
-    result.push({ folder: entry.folder, video: entry.video, images: entry.files.images.map((name) => `${entry.folder}/${name}`).filter(isPackageThumbnailPath).sort(), own: false });
+  // The folders named after this video's number (`MMDD Vn`, the number the caller knows) count as its own too, first.
+  const rest = others.filter((entry) => !ownFolders.includes(entry.folder));
+  const byNumber = videoNumber ? rest.filter((entry) => entry.video === videoNumber) : [];
+  for (const entry of [...byNumber, ...rest.filter((entry) => !byNumber.includes(entry)).slice(0, 8)]) {
+    result.push({ folder: entry.folder, video: entry.video, images: entry.files.images.map((name) => `${entry.folder}/${name}`).filter(isPackageThumbnailPath).sort(), own: byNumber.includes(entry) });
   }
   return result;
 }

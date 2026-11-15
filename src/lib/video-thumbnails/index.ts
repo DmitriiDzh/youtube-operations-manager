@@ -52,8 +52,8 @@ export function createVideoThumbnailsCore() {
   });
   return {
     /** The images under `04 Videos/` to choose from: this video's own upload folders first (ADR 0069 §2). */
-    async listCandidates(channelId: string, videoId: string): Promise<{ folders: ThumbnailCandidateFolder[]; currentUrl: string | null }> {
-      const [folders, stored] = await Promise.all([listThumbnailCandidates(channelId, videoId), getStoredVideo(channelId, videoId)]);
+    async listCandidates(channelId: string, videoId: string, videoNumber: string | null = null): Promise<{ folders: ThumbnailCandidateFolder[]; currentUrl: string | null }> {
+      const [folders, stored] = await Promise.all([listThumbnailCandidates(channelId, videoId, videoNumber), getStoredVideo(channelId, videoId)]);
       return { folders, currentUrl: stored ? (largestThumbnail(stored.thumbnails)?.url ?? null) : null };
     },
     /** Validates the input, then runs the replace (or its dry run) under its own quota context. */
