@@ -65,3 +65,19 @@ export type OwnerDecisionInput = z.infer<typeof ownerDecisionInputSchema>;
 /** BL-242 (ADR 0062 §1): the owner's approval stage of a channel (Web UI only; no agent tool takes it). */
 export const approvalStageInputSchema = z.object({ stage: z.enum(["packaged", "slot"]) }).strict();
 export type ApprovalStageInput = z.infer<typeof approvalStageInputSchema>;
+
+/**
+ * BL-256 (owner msgs 4380/4383): the owner moves one slot to another day of its week and/or another time (Web UI only). `contentHash`
+ * is the hash the screen showed (a slot changed meanwhile is refused); `approve` -- the new time is approved in the same step (the
+ * plan-schedule pass then moves an uploaded video's date on YouTube).
+ */
+export const ownerRetimeInputSchema = z
+  .object({
+    slotId,
+    contentHash: z.string().regex(/^[0-9a-f]{64}$/),
+    date: day,
+    publishAt: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/),
+    approve: z.boolean(),
+  })
+  .strict();
+export type OwnerRetimeInput = z.infer<typeof ownerRetimeInputSchema>;

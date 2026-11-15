@@ -462,3 +462,29 @@ channel yet.
 - Interpretations (one rule, ADR 0063 §4; round 2: only dating fails closed, un-dating always asks YouTube): an unreadable removed list is "none known" for display and holds (the scan, the
   approval's slot holds, the progress -- which reuses the shown scan's ids plus every deleted package's own video id); only the
   plan schedule's writes fail closed (the channel's rows are skipped that pass).
+
+## BL-256 -- the owner moves a slot's day or time (owner, Telegram msgs 4380/4383, 2026-11-15)
+
+Both stages in one branch (msg 4383): (1) an unapproved slot is moved in the plan, then approved as usual; (2) an approved slot,
+also one whose video is uploaded, is moved and approved in one step -- the plan-schedule pass moves the video's date on YouTube.
+ADR 0051 Amendment 1.
+
+### Acceptance (written before the code; values by hand: Asia/Tokyo UTC+9, `packaged` stage)
+
+- AC-RT-01 An unapproved slot moved to Tuesday 20:00 JST: date/publishAt changed, `publishAtUtc` 11:00Z, still needs approval,
+  `updatedBy` owner, the hash over the new fields + fingerprint, audit `publishing_plan.retimed` with from/to; other slots untouched.
+- AC-RT-02 An approved uploaded slot moved to 17:30 with approve: approved, `slotDecisions` give 08:30Z with the video's fingerprint,
+  and plan-schedule's `decisionForRow` for that video gives the same (the YouTube date moves).
+- AC-RT-03 Moved without approve: the old approval revoked, the slot needs the owner, the uploads see `pending` (date left).
+- AC-RT-04 A stale content hash: `publishing_plan_changed`, nothing written.
+- AC-RT-05 Outside the week, a non-existent time, a date/time mismatch: `validation_failed` with the reason, nothing written.
+- AC-RT-06 The 15-minute margin: a new time under 15 minutes away is `in_past` (exactly 15 is allowed); a slot coming out within 15
+  minutes is `publishing_plan_slot_too_soon`.
+- AC-RT-07 A vetoed slot and a released slot are refused.
+- AC-RT-08 Approve on a slot waiting for its package: `publishing_plan_slot_not_packaged` before writing; without approve it saves.
+- AC-RT-09 / AC-RT-11 An agent saving the old time back after the owner's move (also after an agent's earlier change of an approved
+  slot) does not restore the old approval.
+- AC-RT-10 No agent surface or MCP file has the retime path.
+- UI: «Изменить время» on a slot (not vetoed/released, ≥ 15 min away) opens a row: the day (the week's seven), the time typed as
+  `HH:MM` (never a native picker), «Сохранить и одобрить» / «Сохранить без одобрения» (only «Сохранить» while the package is not
+  ready), with a line on what happens to the YouTube date.

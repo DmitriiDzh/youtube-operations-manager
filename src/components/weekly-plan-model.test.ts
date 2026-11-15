@@ -226,3 +226,19 @@ test("BL-257 AC-PR-14: the slot's package review state and the factory's problem
   assert.deepEqual(ownerReviewOf({ problems: ["owner_review_returned"], reviewComment: "redo the intro" }), { review: "returned", comment: "redo the intro", factoryProblems: [] });
   assert.deepEqual(ownerReviewOf({ problems: ["thumbnail_missing"] }), { review: null, comment: null, factoryProblems: ["thumbnail_missing"] });
 });
+
+test("BL-256: canRetime -- not vetoed, not released, at least 15 minutes away; weekDays Mon..Sun; parseClock 24 h HH:MM", async () => {
+  const { canRetime, weekDays, parseClock } = await import("./weekly-plan-model");
+  const now = Date.parse("2026-10-26T05:00:00Z");
+  const base = { vetoed: null, released: false, publishAtUtc: "2026-10-26T05:15:00.000Z" };
+  assert.equal(canRetime(base, now), true);
+  assert.equal(canRetime({ ...base, publishAtUtc: "2026-10-26T05:14:00.000Z" }, now), false);
+  assert.equal(canRetime({ ...base, released: true }, now), false);
+  assert.equal(canRetime({ ...base, vetoed: { at: "2026-10-25T00:00:00Z", device: null } }, now), false);
+  assert.deepEqual(weekDays("2026-10-26"), ["2026-10-26", "2026-10-27", "2026-10-28", "2026-10-29", "2026-10-30", "2026-10-31", "2026-11-01"]);
+  assert.equal(parseClock("17:30"), "17:30");
+  assert.equal(parseClock(" 9:05 "), "09:05");
+  assert.equal(parseClock("24:00"), null);
+  assert.equal(parseClock("12.05"), null);
+  assert.equal(parseClock("7:5"), null);
+});

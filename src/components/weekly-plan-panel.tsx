@@ -11,6 +11,7 @@ import { useT, useUiText } from "./ui-text-provider";
 import { useUserTimezone } from "./use-user-timezone";
 import {
   canApprove,
+  canRetime,
   deletedOnYoutube,
   changedField,
   defaultWeek,
@@ -27,6 +28,8 @@ import {
   tileCounts,
   wallParts,
   weekCoverageLine,
+  weekDays,
+  parseClock,
   zonedParts,
   type ApprovalStage,
   type PipelineStep,
@@ -80,6 +83,15 @@ const ERROR_KEYS: Record<string, UiTextKey> = {
   publishing_plan_slot_past: "weekPlan.error.past",
   publishing_plan_slot_vetoed: "weekPlan.error.vetoed",
   publishing_plan_slot_not_packaged: "weekPlan.error.notPackaged",
+  publishing_plan_slot_too_soon: "weekPlan.retime.error.tooSoon",
+};
+// BL-256: why a new day/time was refused (`validation_failed`, `details.refused[].reason`).
+const RETIME_REASON_KEYS: Record<string, UiTextKey> = {
+  outside_week: "weekPlan.retime.error.outsideWeek",
+  in_past: "weekPlan.retime.error.tooSoon",
+  publish_at_invalid: "weekPlan.retime.error.noSuchTime",
+  date_invalid: "weekPlan.retime.error.noSuchTime",
+  date_mismatch: "weekPlan.retime.error.noSuchTime",
 };
 
 /** The slot's channel time reads the same on the owner's clock (same date and time). */
@@ -89,7 +101,7 @@ function sameClock(slot: Pick<PlanSlotDto, "date" | "publishAt" | "publishAtUtc"
 }
 
 const weekdayKey = (n: number) => `weekPlan.weekday.${n}` as UiTextKey;
-const actorKey = (actor: "factory" | "worker", capital = false) => (capital ? `weekPlan.actorCap.${actor}` : `weekPlan.actor.${actor}`) as UiTextKey;
+const actorKey = (actor: "factory" | "worker" | "owner", capital = false) => (capital ? `weekPlan.actorCap.${actor}` : `weekPlan.actor.${actor}`) as UiTextKey;
 
 export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | null; visible: boolean }) {
   const t = useT();
@@ -106,6 +118,15 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
   const [actionError, setActionError] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>("week");
   const [confirmVeto, setConfirmVeto] = useState<string | null>(null);
+  // BL-256: the slot whose day/time editor is open (one at a time).
+  const [editing, setEditing] = useState<string | null>(null);
+  // BL-256: the clock «Изменить время» is offered by (read outside render, refreshed every 30 s and with each plan read).
+  const [nowMs, setNowMs] = useState(0);
+  useEffect(() => {
+    setNowMs(Date.now());
+    const id = setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, [plan]);
   // BL-240 (A): pulled slots sit under one closed row; opening it is for this visit only.
   const [showVetoed, setShowVetoed] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
@@ -194,6 +215,36 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
     }
   }
 
+  /** BL-256 (owner msgs 4380/4383): the owner moves a slot; `approve` approves the new time in the same step. */
+  async function retime(slot: PlanSlotDto, date: string, time: string, approve: boolean) {
+    if (!base || !week) return;
+    const busyKey = `${approve ? "retimeApprove" : "retime"}:${slot.slotId}`;
+    setBusy(busyKey);
+    setActionError(null);
+    try {
+      const res = await fetch(`${base}/${week}/retime`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ slotId: slot.slotId, contentHash: slot.contentHash, date, publishAt: `${date}T${time}`, approve }),
+      });
+      const body = (await res.json().catch(() => ({}))) as { plan?: PlanDto; error?: string; details?: { refused?: Array<{ reason: string }> } };
+      if (!res.ok) {
+        const reason = body.details?.refused?.[0]?.reason;
+        const key = (reason ? RETIME_REASON_KEYS[reason] : undefined) ?? (body.error ? ERROR_KEYS[body.error] : undefined);
+        setActionError(key ? t(key) : t("weekPlan.error.generic", { code: reason ?? body.error ?? String(res.status) }));
+        await loadPlan();
+        return;
+      }
+      if (body.plan) setPlan(body.plan);
+      setEditing(null);
+      void loadList();
+    } catch {
+      setActionError(t("weekPlan.error.generic", { code: "network" }));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   /** BL-242: the owner switches the channel's approval stage; both the list and the shown week are read again. */
   async function chooseStage(next: ApprovalStage) {
     if (!base) return;
@@ -238,6 +289,14 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
         onAskVeto={() => setConfirmVeto(slot.slotId)}
         onCancelVeto={() => setConfirmVeto(null)}
         onDecide={decide}
+        nowMs={nowMs}
+        editing={editing === slot.slotId}
+        onAskEdit={() => {
+          setConfirmVeto(null);
+          setEditing(slot.slotId);
+        }}
+        onCancelEdit={() => setEditing(null)}
+        onRetime={(date, time, approve) => retime(slot, date, time, approve)}
       />
     ) : null;
 
@@ -436,6 +495,11 @@ function SlotRow(props: {
   onAskVeto: () => void;
   onCancelVeto: () => void;
   onDecide: (action: "approve" | "revoke" | "veto" | "restore", slots: Array<{ slotId: string; contentHash?: string }>, busyKey: string) => Promise<void>;
+  nowMs: number;
+  editing: boolean;
+  onAskEdit: () => void;
+  onCancelEdit: () => void;
+  onRetime: (date: string, time: string, approve: boolean) => Promise<void>;
 }) {
   const t = useT();
   const { slot, plan, mode, at } = props;
@@ -586,6 +650,12 @@ function SlotRow(props: {
               {t("weekPlan.action.approve")}
             </ActionButton>
           )}
+          {/* BL-256: move the slot to another day of the week or another time (not within 15 minutes of its time). */}
+          {props.nowMs > 0 && canRetime(slot, props.nowMs) && !props.editing && (
+            <button type="button" disabled={anyBusy} onClick={props.onAskEdit} className="rounded-md border border-zinc-600 px-3 py-1 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-40">
+              {t("weekPlan.action.retime")}
+            </button>
+          )}
           {canAct && !slot.vetoed && (
             <button type="button" disabled={anyBusy || busyHere} onClick={props.onAskVeto} className="rounded-md border border-red-900 px-3 py-1 text-sm text-red-300 hover:bg-red-950/50 disabled:opacity-40">
               {t(mode === "one" ? "weekPlan.action.vetoShort" : "weekPlan.action.veto")}
@@ -606,7 +676,87 @@ function SlotRow(props: {
           </button>
         </div>
       )}
+      {props.editing && !slot.vetoed && (
+        <RetimeEditor slot={slot} plan={plan} afterUpload={afterUpload} busy={props.busy} onCancel={props.onCancelEdit} onSave={props.onRetime} />
+      )}
       {pkg && <SlotSocialPreview channelId={props.channelId} video={pkg.video} manifestSha256={pkg.manifestSha256 ?? null} slotTime={wall.time} />}
     </li>
+  );
+}
+
+/**
+ * BL-256 (owner msgs 4380/4383): the slot's day (one of the plan's seven) and time (typed `HH:MM`, the channel's zone -- never a
+ * native picker). An approved slot keeps its approval only through «Сохранить и одобрить» (then the plan moves an uploaded video's
+ * date on YouTube); «Сохранить без одобрения» leaves it waiting for the owner. A slot still waiting for its package only saves.
+ */
+function RetimeEditor(props: { slot: PlanSlotDto; plan: PlanDto; afterUpload: boolean; busy: string | null; onCancel: () => void; onSave: (date: string, time: string, approve: boolean) => Promise<void> }) {
+  const t = useT();
+  const { slot, plan } = props;
+  const [date, setDate] = useState(slot.date);
+  const [time, setTime] = useState(slot.publishAt.slice(11, 16));
+  const clock = parseClock(time);
+  const unchanged = clock !== null && date === slot.date && clock === slot.publishAt.slice(11, 16);
+  const canApproveNew = slot.approval !== "awaiting_package";
+  const anyBusy = props.busy !== null;
+  const wasApproved = slot.approval === "approved";
+  const hint = !canApproveNew ? "weekPlan.retime.hintAwaitingPackage" : wasApproved ? (props.afterUpload ? "weekPlan.retime.hintApprovedUploaded" : "weekPlan.retime.hintApproved") : "weekPlan.retime.hintNotApproved";
+  return (
+    <div className="space-y-2 border-t border-zinc-700 bg-zinc-950/60 px-4 py-3 text-sm">
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="flex flex-col gap-1 text-xs text-zinc-400">
+          {t("weekPlan.retime.day")}
+          <select value={date} onChange={(e) => setDate(e.target.value)} disabled={anyBusy} className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-100">
+            {weekDays(plan.weekStart).map((day) => {
+              const wall = wallParts(`${day}T00:00`);
+              return (
+                <option key={day} value={day}>
+                  {t("weekPlan.slotDay", { weekday: t(weekdayKey(wall.weekday)), day: wall.day })}
+                </option>
+              );
+            })}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-zinc-400">
+          {t("weekPlan.retime.time", { zone: plan.timeZone })}
+          <input
+            type="text"
+            inputMode="numeric"
+            value={time}
+            onChange={(e) => setTime(e.target.value)}
+            disabled={anyBusy}
+            placeholder="18:00"
+            aria-invalid={clock === null}
+            className={`w-24 rounded-md border bg-zinc-900 px-2 py-1 text-sm text-zinc-100 ${clock === null ? "border-red-700" : "border-zinc-700"}`}
+          />
+        </label>
+        <div className="flex flex-wrap gap-2">
+          {canApproveNew && (
+            <ActionButton
+              busy={props.busy === `retimeApprove:${slot.slotId}`}
+              busyLabel={t("weekPlan.action.saving")}
+              disabled={anyBusy || clock === null || (unchanged && wasApproved)}
+              onClick={() => void props.onSave(date, clock!, true)}
+              className="rounded-md bg-violet-600 px-3 py-1 font-semibold text-white hover:bg-violet-500 disabled:opacity-40"
+            >
+              {t("weekPlan.retime.saveApprove")}
+            </ActionButton>
+          )}
+          <ActionButton
+            busy={props.busy === `retime:${slot.slotId}`}
+            busyLabel={t("weekPlan.action.saving")}
+            disabled={anyBusy || clock === null || unchanged}
+            onClick={() => void props.onSave(date, clock!, false)}
+            className="rounded-md border border-zinc-600 px-3 py-1 text-zinc-200 hover:bg-zinc-800 disabled:opacity-40"
+          >
+            {t(canApproveNew ? "weekPlan.retime.saveOnly" : "weekPlan.retime.save")}
+          </ActionButton>
+          <button type="button" onClick={props.onCancel} disabled={anyBusy} className="rounded-md px-3 py-1 text-zinc-400 hover:text-zinc-100 disabled:opacity-40">
+            {t("weekPlan.confirm.cancel")}
+          </button>
+        </div>
+      </div>
+      {clock === null && <p className="text-xs text-red-300">{t("weekPlan.retime.badTime")}</p>}
+      <p className="text-xs text-zinc-500">{t(hint)}</p>
+    </div>
   );
 }
