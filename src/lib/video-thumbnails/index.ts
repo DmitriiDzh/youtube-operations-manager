@@ -5,7 +5,7 @@ import { createBackupCore } from "@/lib/backup";
 import { getStoredChannel, insertVideoEditAuditEvent, updateStoredVideoThumbnails } from "@/lib/db";
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { resolveGoogleCredentials } from "@/lib/google-credentials";
-import { createPackageScanCore, isUploadThumbnailStepPending } from "@/lib/publishing";
+import { createPackageScanCore, isUploadThumbnailStepPending, listThumbnailCandidates, type ThumbnailCandidateFolder } from "@/lib/publishing";
 import { createIdGenerator, DomainError, type ResolvedCredentials } from "@/lib/shared-domain";
 import { createWriteContextCore } from "@/lib/write-context";
 import { createYoutubeClient, downloadVideoThumbnailImage, getVideoThumbnailState } from "@/lib/youtube-read-gateway";
@@ -54,6 +54,10 @@ export function createVideoThumbnailsCore() {
     newOperationId: () => `thumbnail-${newId()}`,
   });
   return {
+    /** The images under `04 Videos/` to choose from: this video's own upload folders first (ADR 0069 §2). */
+    async listCandidates(channelId: string, videoId: string): Promise<ThumbnailCandidateFolder[]> {
+      return listThumbnailCandidates(channelId, videoId);
+    },
     /** Validates the input, then runs the replace (or its dry run) under its own quota context. */
     async replace(payload: unknown, actor: ThumbnailActor): Promise<ThumbnailReplaceResult> {
       const input = parseThumbnailReplaceInput(payload);

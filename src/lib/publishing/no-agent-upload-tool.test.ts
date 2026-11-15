@@ -5,7 +5,7 @@ import test from "node:test";
 import { MCP_TOOL_CLASSIFICATION } from "@/mcp/tool-classification";
 import { FACTORY_TOOL_NAMES } from "@/mcp/factory-server";
 import { WORKER_FACTORY_TOOLS } from "@/mcp/worker-factory-tools";
-import { PRODUCER_UPLOAD_QUEUE_TOOLS } from "@/mcp/producer-tools";
+import { PRODUCER_THUMBNAIL_TOOLS, PRODUCER_UPLOAD_QUEUE_TOOLS } from "@/mcp/producer-tools";
 
 // AC-UP-14 (FO-REQ-0023 §4 B9; ADR 0037 §1: "uploads or scheduling by an agent or the Producer, who get read-only tools" are out of
 // scope): no MCP tool uploads, schedules or cancels an upload, and no MCP or agent endpoint code reaches the upload approval, the
@@ -62,10 +62,34 @@ const KNOWN_READS = new Set(["agent_get_publishing_calendar", "producer_upload_m
 const KNOWN_PLAN_DRAFTS = new Set(["agent_publishing_plan_save", "agent_publishing_plan_get", "agent_publishing_plan_list"]);
 /** BL-239 (owner msgs 3928/3930, ADR 0059): the Producer's upload queue tools -- the one exception, on its endpoint only. */
 const PRODUCER_QUEUE_TOOLS = new Set<string>(PRODUCER_UPLOAD_QUEUE_TOOLS);
+/**
+ * BL-255 (owner msgs 4380/4383, ADR 0069 -- a new requirement, not a relaxation of this one): the Producer replaces an uploaded
+ * video's thumbnail. It neither uploads, schedules nor publishes a video; the next tests pin it to exactly one producer-only tool.
+ */
+const PRODUCER_THUMBNAIL_TOOL_SET = new Set<string>(PRODUCER_THUMBNAIL_TOOLS);
 
 test("AC-UP-14: no MCP tool name uploads, schedules or publishes a video; the matching names are known reads, plan drafts or the Producer's queue", () => {
   const publishingTools = Object.keys(MCP_TOOL_CLASSIFICATION).filter((name) => /upload|schedul|publish|insert_video|thumbnail/i.test(name));
-  assert.deepEqual(publishingTools.filter((name) => !KNOWN_READS.has(name) && !KNOWN_PLAN_DRAFTS.has(name) && !PRODUCER_QUEUE_TOOLS.has(name)), []);
+  assert.deepEqual(publishingTools.filter((name) => !KNOWN_READS.has(name) && !KNOWN_PLAN_DRAFTS.has(name) && !PRODUCER_QUEUE_TOOLS.has(name) && !PRODUCER_THUMBNAIL_TOOL_SET.has(name)), []);
+});
+
+// BL-255 AC-TH-12: exactly one thumbnail tool, producer-only; the factory and the channel workers have none.
+test("BL-255 AC-TH-12: the Producer's thumbnail tool is exactly one, producer-only; the factory and workers have no thumbnail tool", () => {
+  assert.deepEqual([...PRODUCER_THUMBNAIL_TOOL_SET], ["producer_video_thumbnail_replace"]);
+  assert.equal(MCP_TOOL_CLASSIFICATION.producer_video_thumbnail_replace, "producer-only");
+  const thumbnailLike = (name: string) => /thumbnail/i.test(name);
+  assert.deepEqual(Object.keys(MCP_TOOL_CLASSIFICATION).filter(thumbnailLike), ["producer_video_thumbnail_replace"]);
+  assert.deepEqual((FACTORY_TOOL_NAMES as readonly string[]).filter(thumbnailLike), []);
+  assert.deepEqual(Object.keys(WORKER_FACTORY_TOOLS).filter(thumbnailLike), []);
+});
+
+// BL-255 AC-TH-12/13: the thumbnail writer is reached only by the Producer session wiring and the owner's route.
+test("BL-255 AC-TH-12/13: createVideoThumbnailsCore is used only by the Producer session wiring and the owner's thumbnail route", async () => {
+  const callers: string[] = [];
+  for (const file of await files(SRC)) {
+    if (/\bcreateVideoThumbnailsCore\b/.test(await readFile(file, "utf8"))) callers.push(path.relative(SRC, file));
+  }
+  assert.deepEqual(callers.sort(), ["app/api/channels/[channelId]/videos/[videoId]/thumbnail/route.ts", "lib/producer-mcp-endpoint/session-deps.ts", "lib/video-thumbnails/index.ts"]);
 });
 
 // BL-239 AC-UQ-11: the exception is exactly four tools, all `producer-only` (never registered for a channel worker), none on the

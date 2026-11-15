@@ -53,7 +53,7 @@ import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-
 import { createWriteContextCore } from "@/lib/write-context";
 import { createYoutubeClient, getVideoUploadState, listPlaylistItemIdsByVideo, listUploadsPlaylistFirstPage } from "@/lib/youtube-read-gateway";
 import { createWorkspaceExchangeFsForPublishing, isRealVideoFolder, resolveWorkspaceFileForPublishing, writeVideoFolderFile } from "./adapters/files";
-import { createWorkspaceVideoFiles, writeUploadRecordFile } from "@/lib/workspace-videos";
+import { createWorkspaceVideoFiles, videoNumberOfFolder, writeUploadRecordFile } from "@/lib/workspace-videos";
 import { createPackageScan, isPackageThumbnailPath, VIDEOS_FOLDER, type PackageScanDeps } from "./package-scan";
 import { imageKindOf } from "./packages";
 import { createPackageComposer } from "./package-composer";
@@ -805,4 +805,35 @@ export async function isUploadThumbnailStepPending(channelId: string, videoId: s
       return true;
     }
   });
+}
+
+export type ThumbnailCandidateFolder = { folder: string; video: string | null; images: string[]; own: boolean };
+
+/**
+ * BL-255 (ADR 0069 §2): the images a thumbnail replace can choose from -- first the folders of this video's own uploads here
+ * (`dirname(manifest_path)`, kept when the local mp4 was cleaned up), then the newest other release folders (at most 8). Only
+ * direct .jpg/.jpeg/.png files under `04 Videos/`; every path is checked again when it is used (`readThumbnail`).
+ */
+export async function listThumbnailCandidates(channelId: string, videoId: string): Promise<ThumbnailCandidateFolder[]> {
+  const { deps } = createPackageScanReads();
+  const workspace = await deps.workspace(channelId);
+  if (!workspace) return [];
+  const imagesOf = async (folder: string) =>
+    (await deps.listDir(deps.join(workspace, folder)))
+      .filter((entry) => entry.kind === "file" && isPackageThumbnailPath(`${folder}/${entry.name}`))
+      .map((entry) => `${folder}/${entry.name}`)
+      .sort();
+  const rows = await listPublishingUploads({ channelId, limit: 500 });
+  const ownFolders = [...new Set(rows.filter((row) => row.videoId === videoId).map((row) => row.manifestPath.slice(0, Math.max(0, row.manifestPath.lastIndexOf("/")))))].filter((folder) =>
+    folder.startsWith(`${VIDEOS_FOLDER}/`)
+  );
+  const result: ThumbnailCandidateFolder[] = [];
+  for (const folder of ownFolders) result.push({ folder, video: videoNumberOfFolder(folder.split("/").at(-1) ?? ""), images: await imagesOf(folder), own: true });
+  const others = await createPackageComposerCore()
+    .listFolders(channelId)
+    .catch(() => []);
+  for (const entry of others.filter((entry) => !ownFolders.includes(entry.folder)).slice(0, 8)) {
+    result.push({ folder: entry.folder, video: entry.video, images: entry.files.images.map((name) => `${entry.folder}/${name}`).filter(isPackageThumbnailPath).sort(), own: false });
+  }
+  return result;
 }

@@ -3,6 +3,7 @@ import { runInAgentSession } from "@/lib/agent-session";
 import { MILESTONE_DAYS, hasFinalPublishDate, isMilestoneDue, milestoneWindow } from "@/lib/analytics";
 import { createAgentProposalSubmitCore } from "@/lib/agent-proposals";
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
+import { createVideoThumbnailsCore } from "@/lib/video-thumbnails";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import {
   getLatestChannelMetricCollectedAt,
@@ -130,6 +131,10 @@ export function createProducerSessionDeps(
       add: async (input) => ({ ...(await queue().add(input, producer)) }),
       move: async (input) => ({ ...(await queue().move(input, producer)) }),
       cancel: async (input) => ({ ...(await queue().cancel(input, producer)) }),
+    },
+    // BL-255 (ADR 0069, owner msgs 4380/4383): the thumbnail writer -- the only wiring of it to an MCP endpoint.
+    thumbnails: {
+      replace: async (input) => ({ ...(await createVideoThumbnailsCore().replace(input, producer)) }),
     },
     // BL-241 (ADR 0061): the clips for review -- the module's Producer surface only (submit, withdraw, list, get); the owner's
     // decision is reachable only from the Web UI's clip-review routes (clip-reviews/boundaries.test.ts).
