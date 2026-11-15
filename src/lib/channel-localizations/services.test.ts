@@ -320,3 +320,57 @@ test("AC-CL-10 (shape): the Operator's surface has view, live and save -- no app
   await surface.save("UC1", {});
   assert.deepEqual(saved, [{ channelId: "UC1", input: {}, by: "factory" }]);
 });
+
+// ---------------------------------------------------------------------------
+// Locale keys (owner msg 4387, 2026-11-15, Tropico): a channel's translations made in YouTube Studio are keyed like `de_DE`,
+// `zh_CN`, `pt_BR`. Sending the set's `de` next to an existing `de_DE` left the old German text on YouTube (YouTube folded the two
+// keys and kept the old one) and the read-back reported "language missing". Requirement (PROJECT_SPEC §21: replace the set's
+// languages, keep every other, nothing deleted): a set language is written INTO the channel's existing key for that language --
+// the same key in any case; the same code with `_` for `-` (zh-CN = zh_CN); or, for a language without a region (de), the one key
+// of that language (de_DE) -- and never as a second key. Two or more candidates (es_ES and es_419 for `es`): refused, nothing
+// written. Expected values written by hand.
+// ---------------------------------------------------------------------------
+
+test("CL-KEY-01: the channel holds de_DE (old) and zh_CN; the set de and zh-CN -> written into de_DE and zh_CN, no de / zh-CN key; read-back ok", async () => {
+  const h = harness({
+    live: liveChannel({ localizations: { de_DE: { title: "Base", description: "Base" }, zh_CN: { title: "Zh old", description: "Zh old desc" }, fr_FR: { title: "Fr", description: "Fr desc" } } }),
+    stored: { de: { title: "De", description: "De new desc" }, "zh-CN": { title: "Zh", description: "Zh new desc" } },
+  });
+  const result = await h.apply();
+  assert.deepEqual(h.localizationWrites, [
+    { de_DE: { title: "De", description: "De new desc" }, zh_CN: { title: "Zh", description: "Zh new desc" }, fr_FR: { title: "Fr", description: "Fr desc" } },
+  ]);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.languages, ["de", "zh-CN"]);
+});
+
+test("CL-KEY-02: an exact key wins over a regional one (es and es_ES both on YouTube, the set es -> es)", async () => {
+  const h = harness({
+    live: liveChannel({ localizations: { es: { title: "Es old", description: "x" }, es_ES: { title: "EsES", description: "y" } } }),
+    stored: { es: { title: "Es", description: "Es desc" } },
+  });
+  await h.apply();
+  assert.deepEqual(h.localizationWrites, [{ es: { title: "Es", description: "Es desc" }, es_ES: { title: "EsES", description: "y" } }]);
+});
+
+test("CL-KEY-03: two keys for one language (es_ES and es_419, the set es) -> refused, no backup and no write", async () => {
+  const h = harness({
+    live: liveChannel({ localizations: { es_ES: { title: "A", description: "a" }, es_419: { title: "B", description: "b" } } }),
+    stored: { es: { title: "Es", description: "Es desc" } },
+  });
+  await assert.rejects(h.apply(), (error: unknown) => error instanceof DomainError && error.code === "validation_failed" && /es/.test(error.message));
+  assert.equal(writeCalls(h.calls).length, 0);
+  assert.ok(!h.calls.includes("backup"));
+});
+
+test("CL-KEY-04: preview reads de against de_DE: same text unchanged, other text changed; de_DE is not listed as untouched", () => {
+  const live = liveChannel({ localizations: { de_DE: { title: "De", description: "De desc" }, ja_JP: { title: "Ja", description: "Ja desc" } } });
+  const same = previewChannelLocalizations({ de: { title: "De", description: "De desc" } }, live);
+  assert.deepEqual(same.languages, [{ language: "de", status: "unchanged" }]);
+  assert.deepEqual(same.untouched, ["ja_JP"]);
+  assert.equal(same.quota.writes, 0);
+  const other = previewChannelLocalizations({ de: { title: "De", description: "New" } }, live);
+  assert.deepEqual(other.languages, [{ language: "de", status: "changed" }]);
+  const ambiguous = previewChannelLocalizations({ es: { title: "Es", description: "x" } }, liveChannel({ localizations: { es_ES: { title: "A", description: "a" }, es_419: { title: "B", description: "b" } } }));
+  assert.ok(ambiguous.problems.includes("language_key_ambiguous"));
+});

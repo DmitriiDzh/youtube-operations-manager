@@ -70,6 +70,37 @@ function keyFor(localizations: Record<string, unknown>, language: string): strin
   return Object.keys(localizations).find((key) => sameLanguage(key, language)) ?? null;
 }
 
+/**
+ * Owner msg 4387 (2026-11-15): the channel's existing key a set language is written into -- the same key in any case; else the same
+ * code with `_` for `-` (zh-CN = zh_CN, pt-BR = pt_BR: YouTube Studio's keys); else, for a language without a region (de), the one
+ * key of that language (de_DE). Two or more candidates at a step: `ambiguous` (YouTube would fold them unpredictably). No candidate:
+ * null (a new key, as the set names it).
+ */
+export function channelKeyForSetLanguage(localizations: Record<string, unknown>, language: string): { key: string | null; ambiguous: string[] | null } {
+  const keys = Object.keys(localizations);
+  const exact = keys.filter((key) => sameLanguage(key, language));
+  if (exact.length === 1) return { key: exact[0], ambiguous: null };
+  if (exact.length > 1) return { key: null, ambiguous: exact };
+  const norm = (value: string) => value.trim().replace(/_/g, "-").toLowerCase();
+  const target = norm(language);
+  const normalized = keys.filter((key) => norm(key) === target);
+  if (normalized.length === 1) return { key: normalized[0], ambiguous: null };
+  if (normalized.length > 1) return { key: null, ambiguous: normalized };
+  if (!target.includes("-")) {
+    const sameBase = keys.filter((key) => norm(key).split("-")[0] === target);
+    if (sameBase.length === 1) return { key: sameBase[0], ambiguous: null };
+    if (sameBase.length > 1) return { key: null, ambiguous: sameBase };
+  }
+  return { key: null, ambiguous: null };
+}
+
+/** The set with each language under the channel's existing key for it (`channelKeyForSetLanguage`); a new language keeps its name. */
+export function setUnderChannelKeys(set: ChannelLocalizationSet, localizations: Record<string, unknown>): ChannelLocalizationSet {
+  const out: ChannelLocalizationSet = {};
+  for (const [language, value] of Object.entries(set)) out[channelKeyForSetLanguage(localizations, language).key ?? language] = value;
+  return out;
+}
+
 const text = (value: unknown): string | null => (typeof value === "string" && value.trim().length > 0 ? value : null);
 
 /**
@@ -103,7 +134,9 @@ export type ChannelLocalizationsPreviewProblem =
   /** The set holds the channel's own (default) language. */
   | "own_language_in_set"
   /** Nothing is stored. */
-  | "empty_set";
+  | "empty_set"
+  /** Owner msg 4387: a set language matches two or more of the channel's keys (es -> es_ES and es_419): nothing is written. */
+  | "language_key_ambiguous";
 
 export type ChannelLocalizationsPreview = {
   languages: Array<{ language: string; status: ChannelLocalizationLanguageStatus }>;
@@ -134,13 +167,15 @@ export function previewChannelLocalizations(set: ChannelLocalizationSet | null, 
   if (entries.length === 0) problems.push("empty_set");
   if (own !== null && entries.some(([language]) => sameLanguage(language, own))) problems.push("own_language_in_set");
 
+  if (entries.some(([language]) => channelKeyForSetLanguage(live.localizations, language).ambiguous !== null)) problems.push("language_key_ambiguous");
+  const matched = new Set(entries.map(([language]) => channelKeyForSetLanguage(live.localizations, language).key).filter((key): key is string => key !== null));
   const languages = entries.map(([language, value]) => {
-    const key = keyFor(live.localizations, language);
+    const key = channelKeyForSetLanguage(live.localizations, language).key;
     const status: ChannelLocalizationLanguageStatus =
       key === null ? "new" : live.localizations[key].title === value.title && live.localizations[key].description === value.description ? "unchanged" : "changed";
     return { language, status };
   });
-  const untouched = Object.keys(live.localizations).filter((key) => !entries.some(([language]) => sameLanguage(language, key)));
+  const untouched = Object.keys(live.localizations).filter((key) => !matched.has(key));
 
   const writes = problems.length === 0 && languages.some((l) => l.status !== "unchanged") ? 1 : 0;
   return {
