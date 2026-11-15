@@ -67,7 +67,14 @@ test("AC-RI-01 (real database): the table readers name exactly the busy rows of 
       await client.execute({ sql: `INSERT INTO publishing_uploads (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`, args: [id, status, "UC", id, ...others.map(() => 0)] });
     };
     for (const status of ["queued", "uploading", "processing", "finishing", "paused", "done", "failed"]) await upload(`u-${status}`, status);
-    assert.deepEqual((await readers.uploads()).sort(), ["u-finishing", "u-processing", "u-uploading"]);
+    // Owner msg 4420 (the requirement changed: uploads are resumable, so sending and YouTube's processing no longer hold a restart):
+    // only `finishing`, and an `uploading` row whose last chunk was sent (or whose steps cannot be read: fail closed).
+    await client.execute({ sql: "UPDATE publishing_uploads SET steps_json = ? WHERE id = 'u-uploading'", args: ['{"retries":0}'] });
+    await upload("u-last-chunk", "uploading");
+    await client.execute({ sql: "UPDATE publishing_uploads SET steps_json = ? WHERE id = 'u-last-chunk'", args: ['{"finalChunkSentAt":"2026-11-15T12:00:00.000Z"}'] });
+    await upload("u-damaged", "uploading");
+    await client.execute({ sql: "UPDATE publishing_uploads SET steps_json = ? WHERE id = 'u-damaged'", args: ["{not json"] });
+    assert.deepEqual((await readers.uploads()).sort(), ["u-damaged", "u-finishing", "u-last-chunk"]);
 
     await client.execute("INSERT INTO gateway_call_events (category, outcome, occurred_at) VALUES ('mcp_tool_calls', 'allowed', 1761300000), ('mcp_tool_calls', 'blocked', 1761300100), ('data_api_reads', 'allowed', 1761309999)");
     assert.equal(await readers.lastMcpCallAt(), 1761300100 * 1000);
