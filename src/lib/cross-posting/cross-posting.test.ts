@@ -256,3 +256,21 @@ test("FLfB configuration: saved beside the app (secret unchanged), used by the c
   assert.deepEqual(await h.core.setMetaConfig({ configId: null }), { configured: true, appId: "1234567890", configId: null });
   assert.equal(JSON.parse(h.getSecret()!.plaintext).configId, undefined);
 });
+
+// 2026-11-15 (WWE): Meta's page list gave the Page without its Instagram while the Page token reached it. Requirement: the connect
+// stores the Instagram the Page's own answer names (same Page id); a Page that really has none stays without (AC-4b above).
+test("connect: a Page listed without Instagram gets the one its Page token reaches (same Page), else none", async () => {
+  const h = harness();
+  await h.core.setMetaApp(APP);
+  h.setInspection({ valid: true, scopes: [], expiresAt: null, page: { pageId: "222", pageName: "Plain" }, instagram: { igUserId: "9999", username: "plain_ig" } });
+  const state = stateOf((await h.core.startConnect({ channelId: "UC1" }, REDIRECT)).authorizeUrl);
+  const { pickId } = await h.core.completeConnect({ state, code: "C", redirectUri: REDIRECT });
+  await h.core.selectPage({ pickId, pageId: "222" });
+  assert.deepEqual((await h.core.listAccounts("UC1")).map((a) => [a.network, a.externalId]).sort(), [["facebook", "222"], ["instagram", "9999"]]);
+  // The Page token reaching another Page's Instagram does not count.
+  h.setInspection({ valid: true, scopes: [], expiresAt: null, page: { pageId: "333", pageName: "Other" }, instagram: { igUserId: "8888", username: "x" } });
+  const s2 = stateOf((await h.core.startConnect({ channelId: "UC1" }, REDIRECT)).authorizeUrl);
+  const p2 = (await h.core.completeConnect({ state: s2, code: "C", redirectUri: REDIRECT })).pickId;
+  await h.core.selectPage({ pickId: p2, pageId: "222" });
+  assert.deepEqual((await h.core.listAccounts("UC1")).map((a) => [a.network, a.externalId]), [["facebook", "222"]]);
+});
