@@ -166,8 +166,16 @@ export function createCrossPostingServices(deps: CrossPostingDeps) {
       const now = deps.now();
       const tokenSealed = JSON.stringify(sealed);
       const base = { channelId: pick.channelId, pageId: page.pageId, tokenSealed, tokenExpiresAt: null, connectedAt: now };
+      // 2026-11-15 (WWE): `/me/accounts` returned the Page without its Instagram although the Page token reaches it (the same read
+      // the check makes). Without a linked account in the list, the Page's own answer decides; a failed read keeps the list's answer.
+      let instagram = page.instagram;
+      if (!instagram) {
+        const app = await readApp().catch(() => null);
+        const live = app ? await deps.meta.inspectPageToken({ appId: app.appId, appSecret: app.appSecret, pageId: page.pageId, pageToken: page.pageToken }).catch(() => null) : null;
+        if (live?.valid && live.page?.pageId === page.pageId && live.instagram) instagram = { igUserId: live.instagram.igUserId, username: live.instagram.username, pictureUrl: null };
+      }
       await deps.store.upsert({ ...base, network: "facebook", externalId: page.pageId, displayName: page.pageName, username: null });
-      if (page.instagram) await deps.store.upsert({ ...base, network: "instagram", externalId: page.instagram.igUserId, displayName: page.instagram.username ?? page.pageName, username: page.instagram.username });
+      if (instagram) await deps.store.upsert({ ...base, network: "instagram", externalId: instagram.igUserId, displayName: instagram.username ?? page.pageName, username: instagram.username });
       else await deps.store.remove(pick.channelId, "instagram");
       return (await deps.store.list(pick.channelId)).map(view);
     },
