@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ThumbnailReplaceButton } from "./thumbnail-replace";
 import { SlotSocialPreview } from "./slot-social-preview";
+import { VideoPlayButton } from "./video-popup";
 import { estimateUploadUnits } from "@/lib/publishing/publish-dates";
 import type { UiTextKey } from "@/lib/ui-text";
 import { ActionButton, SkeletonLines } from "./busy-feedback";
@@ -532,7 +533,11 @@ function SlotRow(props: {
           <div className="hidden h-[54px] w-24 items-center justify-center rounded-md border border-dashed border-zinc-700 text-[10px] text-zinc-500 md:flex">{t("weekPlan.noThumbnail")}</div>
         )}
         <div className="col-span-2 min-w-0 md:col-span-1">
-          <div className={`truncate text-sm font-medium ${slot.vetoed ? "text-zinc-500" : "text-zinc-100"}`}>{title}</div>
+          <div className={`flex items-center gap-1.5 truncate text-sm font-medium ${slot.vetoed ? "text-zinc-500" : "text-zinc-100"}`}>
+            {/* BL-260 (owner msg 4421): the video in a popup player -- the package's file here, else YouTube's player. */}
+            <VideoPlayButton channelId={props.channelId} target={{ title, manifestSha256: pkg?.manifestSha256 ?? null, videoId: deletedOnYoutube(slot) ? null : slot.videoId }} />
+            <span className="truncate">{title}</span>
+          </div>
           {facts.length > 0 && (
             <div className="flex flex-wrap gap-x-1.5 text-xs text-zinc-400">
               {facts.map((fact, i) => (

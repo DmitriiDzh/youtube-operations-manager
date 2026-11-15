@@ -10,6 +10,7 @@ import { formatZonedDateAndTime } from "@/lib/zoned-time";
 import { useT } from "./ui-text-provider";
 import { VideoDetailModal } from "./video-detail-modal";
 import { VideoDetailsPanel } from "./video-details-panel";
+import { VideoPlayButton } from "./video-popup";
 
 // BL-182 stage 1 (FO-REQ-0023 §4 C; PUBLISHING_PLAN.md §2 stage 1): Content → «Календарь». The questions the owner asks of it, in
 // order: until when is the channel covered (and is that soon), which days of the next two weeks have no video, what is waiting
@@ -75,6 +76,8 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
   // BL-221: the day the owner clicked (its videos with their views below the grid) and the synced views (a local read).
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const [views, setViews] = useState<Map<string, number | null>>(new Map());
+  // BL-260: the package manifest of each entry (by manifest path or video id), for the popup player.
+  const [manifestOf, setManifestOf] = useState<Map<string, string>>(new Map());
   const packagesReadAt = useRef(0);
   const [detailsDirty, setDetailsDirty] = useState(false);
 
@@ -93,7 +96,16 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
         const base = `/api/channels/${encodeURIComponent(channelId)}`;
         const [packagesRes, settingsRes] = await Promise.all([fetch(`${base}/publishing/packages`), fetch(`${base}/publishing-settings`)]);
         if (packagesRes.ok && settingsRes.ok) {
-          const scanned = (await packagesRes.json()) as { status: string; packages?: Array<{ manifestPath: string; video: string | null; title: string | null; plannedPublishDate: string | null; state: string }> };
+          const scanned = (await packagesRes.json()) as { status: string; packages?: Array<{ manifestPath: string; video: string | null; title: string | null; plannedPublishDate: string | null; state: string; manifestSha256?: string | null; youtube?: { videoId: string } | null }> };
+          // BL-260: each package's manifest, by its manifest path (a planned package) and its uploaded video id (a YouTube entry) -- the
+          // popup plays the package's own file when it is here.
+          const manifests = new Map<string, string>();
+          for (const p of scanned.packages ?? []) {
+            if (!p.manifestSha256) continue;
+            manifests.set(p.manifestPath, p.manifestSha256);
+            if (p.youtube?.videoId) manifests.set(p.youtube.videoId, p.manifestSha256);
+          }
+          setManifestOf(manifests);
           const time = ((await settingsRes.json()) as { settings?: { publishTimeUtc?: string } }).settings?.publishTimeUtc ?? "12:00";
           setPackageEntries(
             (scanned.packages ?? [])
@@ -403,6 +415,8 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
                         {entry.title}
                       </button>
                     )}
+                    {/* BL-260 (owner msg 4421): play it in a popup -- a package by its file, a YouTube video by its id. */}
+                    {channelId && <VideoPlayButton channelId={channelId} target={{ title: entry.title, manifestSha256: manifestOf.get(entry.videoId) ?? null, videoId: entry.kind === "package" ? null : entry.videoId }} />}
                     {entry.at && <span className="shrink-0 text-xs text-zinc-500">{cellTime(entry.at)}</span>}
                     {entry.kind !== "package" && views.get(entry.videoId) != null && (
                       <span className="shrink-0 text-xs tabular-nums text-zinc-400">{t("pipeline.views", { count: views.get(entry.videoId)! })}</span>

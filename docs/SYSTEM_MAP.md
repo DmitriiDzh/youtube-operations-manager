@@ -1025,6 +1025,9 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
     (`failed` + `video_deleted_on_youtube`, «Ролик удалён на YouTube»), одобрять нечего, прежнее одобрение не считается;
     план-расписание не трогает удалённые видео. Агентам: `missingOnChannel` в календаре, `videoIds` в `channel_video_list`.
     Factory API 1.43.0, Agent API 4.17.0, Producer API 1.17.0.
+  - BL-260 (owner msg 4421): всплывающий плеер «▶» в «Плане недели», календаре (список дня) и на «Роликах и релизах» (доска и
+    пакеты) — `src/components/video-popup.tsx`: сначала mp4 пакета с этого компьютера через маршрут `package-reviews/video` (по SHA-256
+    манифеста, HTTP Range, только браузер владельца), если файла нет — плеер YouTube (youtube-nocookie) по video id и ссылка на ролик.
   - Этап 3: автозагрузка (BL-209) ставит пакет одобренного и не снятого слота с его временем, снятый пропускает (решения слотов —
     `src/composition/publishing-plan-slots.ts`); загрузчик пишет переводы пакета первым шагом после обработки общим писателем
     `src/lib/shared-video-localizations/` (вынесен из live-localizations) и ИИ-метку пакета; дата — только после переводов, обложки,

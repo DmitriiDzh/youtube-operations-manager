@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { VideoPlayButton } from "./video-popup";
 import { assignPublishDates, estimateUploadUnits, isDeferredPublishAt, publishInstant } from "@/lib/publishing/publish-dates";
 import { uploadTagsSummary, type PublishingSettings } from "@/lib/publishing/settings";
 import { formatDisplayDateUtc, parseDisplayDate } from "@/lib/shared-formatting";
@@ -265,6 +266,7 @@ export function PublishingPackages({ channelId, visible }: { channelId: string |
                   </div>
                   <div className="min-w-0 flex-1 space-y-1">
                     <div className="flex flex-wrap items-center gap-2">
+                      <VideoPlayButton channelId={channelId ?? ""} target={{ title: `${p.video ?? ""} ${p.title ?? ""}`.trim(), manifestSha256: p.manifestSha256, videoId: p.state === "deleted_on_youtube" ? null : (p.youtube?.videoId ?? null) }} />
                       <span className="font-mono text-xs text-zinc-500">{p.video ?? p.manifestPath}</span>
                       <span className={`rounded px-1.5 py-0.5 text-[11px] ${STATE_STYLE[p.state]}`}>{t(`publishingPackages.state.${p.state}` as UiTextKey)}</span>
                       {p.youtube && p.state !== "deleted_on_youtube" && (
