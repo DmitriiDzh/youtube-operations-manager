@@ -33,3 +33,6 @@ Owner: TG 2298 (via the Producer), msgs 4514/4516 (2026-11-15). WWE only for now
 - AC-PR-12 The decision syncs to the other computer (family document).
 - AC-PR-13 The Producer gets `REVIEW-DECISION-package-<video>-<decisionId>.md` once per decision.
 - AC-PR-14 The weekly plan slot of a pending / returned package shows the review state.
+- AC-PR-15 (owner msg 4519) The review screen works on a phone (remote access, < 768 px): the player fills the width with native
+  controls, `playsInline`, the 16:9 or 9:16 frame kept, streaming by Range (no full download first); the actions stay reachable
+  (sticky bar), the texts fold.
