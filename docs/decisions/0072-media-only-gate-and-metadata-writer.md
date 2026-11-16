@@ -83,8 +83,11 @@ read-merge-write, read-back and audit. What is missing is a package-driven path 
 - AGENTS.md §F gains the «Package metadata after upload» entry (draft in the plan §4) and the «Owner package review» bullet is
   amended. PROJECT_SPEC §21 follows. RISK-154 is amended.
 - The `packaged` slot approval (ADR 0062) still names the manifest; the owner leaves it to part A of PRD-REQ-0195 (week template),
-  where slot approvals go away entirely (TG 4569). Until then a metadata-only re-package after a slot approval uploads but waits for
-  one slot re-approval for its date. The date stays withheld when the thumbnail or translations step fails (BL-224, kept).
+  where slot approvals go away entirely (TG 4569). Until then a metadata-only re-package after a slot approval uploads, and an
+  automatic or Producer row's date waits for one slot re-approval (its date comes only from the slot's approval). An **owner's**
+  upload-approval row keeps the `publishAt` he chose himself in that approval when it takes the refreshed manifest: the date is his
+  own decision and the media is unchanged (only the packaging differs), so the runner does not withhold it (`upload-runner.ts`, the
+  date step). The date stays withheld when the thumbnail or translations step fails (BL-224, kept).
 - APIs (additive): Factory 1.51.0, Agent 4.22.0, Producer 1.24.0. BL-263 merged first (1.49.0 / 4.21.0 / 1.23.0) and its review-carry
   fix took Factory 1.50.0.
 - The BL-263 review carry (`carryReviewDecisionForRecode`) stays only as the fallback for decisions made before BL-265 (manifest-keyed);

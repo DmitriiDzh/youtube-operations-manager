@@ -2310,6 +2310,10 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
   once share a `seq` and fall back to the clocks, so a skewed clock can pick the "wrong" one. The tried-hash exception compares the
   upload rows' local creation time with the approval's `at` from the deciding computer: a skewed clock there can excuse a row made
   just after the approval, or keep one made just before it tried.
+  (3) BL-265 (ADR 0072): the standing decision is now chosen across every decision that covers the same video -- other manifests of
+  the same mp4 included -- so the `seq`/clock ordering above now spans manifests, not one manifest; and a return written by an older
+  build carries no media key, so it holds only its own manifest: after a re-package of the same mp4, an earlier media approval
+  covers the new manifest again. Both computers update together (the Mac uploads), which keeps this window short.
 - **Mitigation:** decisions are owner-only Web UI actions (no MCP path, boundaries test); the screen shows the standing decision and
   the computer it was made on; the upload runner re-checks the review before a queued row starts; the tried exception applies only
   while the gate is on and only to rows cancelled before reaching YouTube.

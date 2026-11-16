@@ -163,6 +163,9 @@ as automatic rows today), and only a row with a frozen identity can take a refre
 
 Two consequences go to the owner with Q9:
 - An owner upload-approval row keeps the `publishAt` he chose when it takes a refreshed manifest whose packaging he has not seen.
+  As built (review fix 3): this applies to the owner's rows only -- the date came from his own approval and the media is unchanged, so
+  the date step does not ask the slot approval again for them; an automatic or Producer row's date still comes only from a slot
+  approval naming its current manifest (ADR 0062), so after a refresh it waits for one slot re-approval.
   The texts change, the date does not. This is "packaging never blocks" applied to his own approvals.
 - §3.2 applies on every channel, including channels without the review gate (Japan, Tropico today). There a queued automatic or
   Producer row of a re-packaged video now uploads the new texts instead of failing `package_changed`.
@@ -310,6 +313,10 @@ drops a bump, renumber at merge time.
    *As built:* the entry point is the uploaded package's row in «Ролики и релизы» (`package-packaging-actions.tsx`); its week-plan slot
    has no button yet (AC-MG-38 names the row only). The row's «Упаковка отличается от YouTube» compares title and description with the
    synced copy (tags are not synced); the dialog's preview compares all three with a fresh read.
+   *Deploy notes (review):* `video-details` now records its BACKUP audit row before the Live-writes check, so a refusal with Live
+   writes off leaves a BACKUP row (and a backup file) with no RESULT -- the write itself never happens. Rows already queued when this
+   build starts take a re-package of only their packaging immediately, if they froze `videoSha256` (automatic and Producer rows did
+   already; older owner rows did not and still fail `package_changed`).
 6. **Docs + review.** Rebase on dev after BL-263; API bumps (§5); AGENTS §F (§4 text), PROJECT_SPEC §21, SYSTEM_MAP, ARCHITECTURE,
    `docs/interfaces.md`, TECHNICAL_DEBT (RISK-154 amended: an approval no longer covers the thumbnail); independent review before
    the merge request; ADR 0072 → Accepted only at the merge.
