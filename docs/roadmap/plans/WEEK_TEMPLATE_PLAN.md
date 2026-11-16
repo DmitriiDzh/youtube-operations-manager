@@ -209,9 +209,12 @@ in Studio. The Producer's move takes effect immediately; it never waits for the 
   nor `video-details`). Order: (1) read YouTube for the slot's upload row and refuse before anything is written — video not
   private (`publishing_plan_already_published`), its date within 15 minutes (`publishing_plan_slot_too_soon`), Live writes or
   reads off, no finished upload row of the video on this computer (`publishing_plan_move_not_here`: move it on the computer that
-  uploaded it); (2) the plan change; (3) the YouTube write + read-back; (4) the row's `publishAt` = the new date (so the next
-  automatic pass sees its own date, never a foreign one). A failed write after (2) leaves the plan moved and reports
-  `youtube.result: "failed"`; moving the slot again to the same place retries the write (a no-op plan change).
+  uploaded it), and (review 2026-11-16 #10) an upload of the slot or its video still under way on this computer
+  (`publishing_plan_move_upload_active`); (2) the YouTube write + read-back and the row's `publishAt` = the new date (so the next
+  automatic pass sees its own date, never a foreign one); (3) only after a verified write, the plan change. **Review #2:** a write not
+  read back verified leaves the plan unchanged and is refused (`publishing_plan_move_youtube_failed`); a move to the same place retries
+  a YouTube date that differs from the slot's time. The dry run and the answer list `displaces` — template positions the move takes
+  from other slots (review #7; a moved slot keeps its `createdAt`, so it can take a position from a newer slot).
   An explicit move may change a foreign date (§3.5 binds automatic changes only).
 - **Undated videos and slots without a video.** The move changes the plan only; the template rule then decides (a move into a
   template position of a media-approved package is dated by the next pass; elsewhere it stays «не по шаблону»). **A move never
@@ -236,6 +239,12 @@ in Studio. The Producer's move takes effect immediately; it never waits for the 
   slots; `unlocked` lists explicit approvals a save dropped.
 - **`approvalStage`** is retired: the switch disappears, the field is ignored; only fingerprinted (packaged) explicit approvals
   count, as in the default stage today. Slot-stage approvals (no fingerprint) stop counting for new dates; dates on YouTube stay.
+- **Review 2026-11-16 (#1, #3, #4, #5).** A template date is only ever a FIRST date: the pass writes it only for a video with no
+  date of this computer (`row.publishAt` null) -- a video already dated keeps its date (moving it is a move or the owner's own date).
+  A template date never outranks the owner's standing veto (or his own date) of the same video (it orders before every decision
+  naming the video). After a read-back mismatch only the date that write SENT counts as this computer's own, never the one the
+  read-back saw. A `foreign_date` mark is re-read hourly even when the plan wants nothing: cleared once YouTube is back at the
+  row's own date or has none, renewed otherwise.
 - **Social posts follow the plan (O10, amends ADR 0068 Am. 1; owner msg 4640: «соц сети дублируют»).** Also a slot whose video
   carries this computer's own YouTube date at the slot's time posts (a move outside the template, a date kept after its template entry
   went) — the social networks duplicate what YouTube publishes; a foreign date never posts. One plan for YouTube and the social networks: a slot authorizes

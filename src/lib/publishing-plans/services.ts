@@ -2,7 +2,7 @@ import { parseWithSchema } from "@/lib/shared-domain";
 import type { PublishingPlanDecision, PublishingPlanMeta, PublishingPlanPackageFingerprint, PublishingPlanSlot, PublishingPlansSnapshot } from "@/lib/sync-gateway";
 import { isValidIanaTimezone } from "@/lib/zoned-time";
 import { isDeletedOnYoutube } from "@/lib/shared-video-presence";
-import { DEFAULT_APPROVAL_STAGE, DomainError, PUBLISHING_PLAN_LIMITS, type PlanMoveResult, type PlanSaveRefusal, type PlanSlotDecision, type PlanProgressResult, type PlanSlotProgress, type PlanSummary, type PlanView, type PublishingPlanActor, type PublishingPlanApprovalStage, type PublishingPlansPorts, type ReplacedSlot, type SocialSlotState, type TemplateEffectSlot, SOCIAL_LOOKBACK_MS } from "./contracts";
+import { DEFAULT_APPROVAL_STAGE, DomainError, PUBLISHING_PLAN_LIMITS, type PlanMoveDisplaced, type PlanMoveResult, type PlanSaveRefusal, type PlanSlotDecision, type PlanProgressResult, type PlanSlotProgress, type PlanSummary, type PlanView, type PublishingPlanActor, type PublishingPlanApprovalStage, type PublishingPlansPorts, type ReplacedSlot, type SocialSlotState, type TemplateEffectSlot, SOCIAL_LOOKBACK_MS } from "./contracts";
 import { addDays, approvalStandsOn, contentHashOf, contentOf, decisionsForStage, decisionStateOf, fingerprintOf, instantOf, isCalendarDate, isMonday, mediaOfProgress, planViewOf, slotViewOf, standingPackageApprovalOf, standingVetoOf, decisionOrder, lastApprovedPackageOf } from "./model";
 import { matchSlots, templateHashOf, templateInForce, validateTemplate, type MatchSlot, type SlotMatch } from "./template";
 import { createTemplateServices } from "./template-services";
@@ -738,9 +738,39 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
   }
 
   /**
+   * Review #7: the slots a move would push off their template position -- matched now, `position_taken` by the moved slot after it (the
+   * first created takes a position, and a moved slot keeps its `createdAt`). Read only.
+   */
+  function displacedBy(snapshot: PublishingPlansSnapshot, stored: PublishingPlanSlot, target: { weekStart: string; date: string; publishAt: string; timeZone: string; createdAt: string | null }, progress: Map<string, PlanSlotProgress>): PlanMoveDisplaced[] {
+    const before = matchesOf(snapshot, progress);
+    if (!before) return [];
+    const key = Object.entries(snapshot.slots).find(([, s]) => s.slotId === stored.slotId)?.[0] ?? stored.slotId;
+    const plans = { ...snapshot.plans };
+    if (!plans[target.weekStart] && target.createdAt) plans[target.weekStart] = { weekStart: target.weekStart, timeZone: target.timeZone, createdAt: target.createdAt, createdBy: "owner", updatedAt: target.createdAt, updatedBy: "owner" } as PublishingPlansSnapshot["plans"][string];
+    const candidate: PublishingPlansSnapshot = { ...snapshot, plans, slots: { ...snapshot.slots, [key]: { ...stored, weekStart: target.weekStart, date: target.date, publishAt: target.publishAt } } };
+    const after = matchesOf(candidate, progress);
+    if (!after) return [];
+    const out: PlanMoveDisplaced[] = [];
+    for (const [slotId, was] of before) {
+      if (slotId === stored.slotId || was.state !== "match") continue;
+      const now = after.get(slotId);
+      if (now?.state === "position_taken" && now.heldBy === stored.slotId) {
+        const slot = findSlot(snapshot, slotId);
+        const meta = slot ? snapshot.plans[slot.weekStart] : undefined;
+        const instant = slot && meta ? instantOf(slot.publishAt, meta.timeZone) : null;
+        out.push({ slotId, weekStart: slot?.weekStart ?? "", publishAtUtc: instant ? instant.toISOString() : "", video: progress.get(slotId)?.package?.video ?? null });
+      }
+    }
+    return out;
+  }
+
+  /**
    * BL-267 (ADR 0073 §5, plan §3.7; owner TG 4630/4636): the owner or the Producer moves a live slot anywhere -- another day, time or
    * week, on or off the template -- keeping its id. When its video has a date on YouTube, the new date is written at once through
    * the `moveYoutube` port (every refusal before the plan changes). A move never gives a first date. `dryRun`: checked, nothing written.
+   * Review 2026-11-16: the YouTube write comes FIRST (#2) -- a write that is not read back verified leaves the plan unchanged and is
+   * refused (`publishing_plan_move_youtube_failed`); a move while this computer still uploads the slot's video is refused (#10,
+   * `publishing_plan_move_upload_active`); the dry run and the answer list the template positions the move takes from other slots (#7).
    */
   async function move(channelId: string, input: unknown, by: "owner" | "producer", userId: string): Promise<PlanMoveResult> {
     const parsed = parseWithSchema(moveSlotInputSchema, input, "slot move");
@@ -777,6 +807,10 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
 
       // The YouTube side, read before anything is written (plan §3.7 order).
       const progress = state.progress.get(stored.slotId) ?? null;
+      // Review #10: an upload of this slot or its video still under way here would write its own date after the move.
+      if (ports.moveYoutube?.uploadActive && (await ports.moveYoutube.uploadActive(channelId, stored.slotId, progress?.package?.video ?? null))) {
+        throw new DomainError({ code: "publishing_plan_move_upload_active", message: `Slot ${parsed.slotId}'s video is still being uploaded on this computer; move it once the upload is done`, details });
+      }
       const videoId = progress && !isDeletedOnYoutube(progress) ? progress.videoId : null;
       let effect: PlanMoveResult["youtube"]["effect"] = "none";
       let previous: string | null = youtubeAt ?? null;
@@ -799,7 +833,18 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
       const to = { weekStart: parsed.toWeekStart, date: parsed.date, publishAt: parsed.publishAt, publishAtUtc: targetUtc, timeZone };
       const samePlace = stored.weekStart === parsed.toWeekStart && stored.publishAt === parsed.publishAt && timeZone === sourceMeta.timeZone;
       const youtubeWouldChange = effect === "moves" && (previous === null || Date.parse(previous) !== Date.parse(targetUtc));
-      if (parsed.dryRun) return { plan: null, moved: false, dryRun: true, from, to, youtube: { effect: effect === "moves" && !youtubeWouldChange ? "none" : effect, previous } };
+      const displaces = samePlace ? [] : displacedBy(snapshot, stored, { weekStart: parsed.toWeekStart, date: parsed.date, publishAt: parsed.publishAt, timeZone, createdAt: targetMeta ? null : stamp() }, state.progress);
+      if (parsed.dryRun) return { plan: null, moved: false, dryRun: true, from, to, youtube: { effect: effect === "moves" && !youtubeWouldChange ? "none" : effect, previous }, displaces };
+
+      // Review #2: YouTube first. Only a verified write lets the plan change; anything else leaves the plan as it was.
+      let youtube: PlanMoveResult["youtube"] = { effect, previous };
+      if (effect === "moves" && youtubeWouldChange && videoId && ports.moveYoutube) {
+        const written = await ports.moveYoutube.write(channelId, videoId, stored.slotId, targetUtc, by).catch((error: unknown) => ({ result: "refused", reason: error instanceof Error ? error.message : String(error), publishAt: null }));
+        if (written.result !== "verified") {
+          throw new DomainError({ code: "publishing_plan_move_youtube_failed", message: `YouTube did not take the new date (${written.result}${written.reason ? `: ${written.reason}` : ""}); the plan was not changed`, details: { ...details, result: written.result, ...(written.reason ? { reason: written.reason } : {}), previous } });
+        }
+        youtube = { effect, previous, result: "verified", publishAt: targetUtc };
+      }
 
       const at = stamp();
       if (!samePlace) {
@@ -817,17 +862,12 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
         await ports.store.moveSlot(channelId, { fromWeekStart: stored.weekStart, slot, createTarget: targetMeta ? null : { weekStart: parsed.toWeekStart, timeZone, createdAt: at, createdBy: by, updatedAt: at, updatedBy: by } });
         const revocations = revocationsFor(snapshot, stored.slotId, parsed.toWeekStart, device, at, seq);
         if (revocations.length > 0) await ports.store.addDecisions(channelId, revocations);
-        await ports.audit({ channelId, weekStart: parsed.toWeekStart, slotId: stored.slotId, detail: { event: "publishing_plan.moved", at, from, to, revoked: revocations.map((r) => r.id), youtube: effect, by: by === "owner" ? userId : "producer", actor: by, device } });
+        await ports.audit({ channelId, weekStart: parsed.toWeekStart, slotId: stored.slotId, detail: { event: "publishing_plan.moved", at, from, to, revoked: revocations.map((r) => r.id), youtube: effect, ...(youtube.result ? { youtubeResult: youtube.result } : {}), ...(displaces.length > 0 ? { displaces: displaces.map((d) => d.slotId) } : {}), by: by === "owner" ? userId : "producer", actor: by, device } });
         if (by === "owner") ports.notifyOwnerDecision?.();
-      }
-      let youtube: PlanMoveResult["youtube"] = { effect, previous };
-      if (effect === "moves" && youtubeWouldChange && videoId && ports.moveYoutube) {
-        const written = await ports.moveYoutube.write(channelId, videoId, stored.slotId, targetUtc, by).catch((error: unknown) => ({ result: "refused", reason: error instanceof Error ? error.message : String(error), publishAt: null }));
-        youtube = { effect, previous, result: written.result === "verified" ? "verified" : "failed", ...(written.reason ? { reason: written.reason } : {}), publishAt: written.result === "verified" ? targetUtc : previous };
       }
       const after = await ports.store.read(channelId);
       const meta = after.plans[parsed.toWeekStart];
-      return { plan: meta ? await viewOf(channelId, after, meta) : null, moved: !samePlace, dryRun: false, from, to, youtube };
+      return { plan: meta ? await viewOf(channelId, after, meta) : null, moved: !samePlace, dryRun: false, from, to, youtube, displaces };
     });
   }
 

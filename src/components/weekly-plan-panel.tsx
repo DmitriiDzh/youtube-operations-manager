@@ -96,6 +96,8 @@ type MoveAnswer = {
   from: { weekStart: string; date: string; publishAt: string; publishAtUtc: string; timeZone: string };
   to: { weekStart: string; date: string; publishAt: string; publishAtUtc: string; timeZone: string };
   youtube: { effect: "moves" | "plan_only" | "none"; previous: string | null; result?: string; reason?: string; publishAt?: string | null };
+  /** Review #7: template positions this move takes from other slots (absent from an older server). */
+  displaces?: Array<{ slotId: string; weekStart: string; publishAtUtc: string; video: string | null }>;
 };
 
 const STEP_KEYS: Record<PipelineStep, UiTextKey> = {
@@ -128,6 +130,8 @@ const ERROR_KEYS: Record<string, UiTextKey> = {
   publishing_plan_already_published: "weekTemplate.move.error.published",
   publishing_plan_move_not_here: "weekTemplate.move.error.notHere",
   publishing_plan_move_youtube_unavailable: "weekTemplate.move.error.switches",
+  publishing_plan_move_youtube_failed: "weekTemplate.move.error.youtubeFailed",
+  publishing_plan_move_upload_active: "weekTemplate.move.error.uploadActive",
 };
 // BL-256: why a new day/time was refused (`validation_failed`, `details.refused[].reason`).
 const RETIME_REASON_KEYS: Record<string, UiTextKey> = {
@@ -323,6 +327,7 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
         plan={shown}
         mode={mode}
         ownerZone={ownerZone}
+        zoneOf={(week) => (week === shown.weekStart ? shown.timeZone : summaries?.find((p) => p.weekStart === week)?.timeZone ?? null)}
         at={at}
         busy={busy}
         confirming={confirmVeto === slot.slotId}
@@ -534,6 +539,8 @@ function SlotRow(props: {
   plan: PlanDto;
   mode: Mode;
   ownerZone: string | null;
+  /** Review #9: an existing week's zone (a move's time is read in the TARGET week's zone; a new week takes the source plan's). */
+  zoneOf: (weekStart: string) => string | null;
   at: (iso: string) => string;
   busy: string | null;
   confirming: boolean;
@@ -742,7 +749,7 @@ function SlotRow(props: {
         </div>
       )}
       {props.editing && !slot.vetoed && (
-        <MoveEditor slot={slot} plan={plan} ownerZone={props.ownerZone} busy={props.busy} onCancel={props.onCancelEdit} onMove={props.onMove} />
+        <MoveEditor slot={slot} plan={plan} ownerZone={props.ownerZone} zoneOf={props.zoneOf} busy={props.busy} onCancel={props.onCancelEdit} onMove={props.onMove} />
       )}
       {pkg && <SlotSocialPreview channelId={props.channelId} video={pkg.video} manifestSha256={pkg.manifestSha256 ?? null} slotTime={wall.time} />}
     </li>
@@ -754,7 +761,7 @@ function SlotRow(props: {
  * (typed `HH:MM` in the plan's zone, never a native picker). «Проверить» asks the server what would change (dry run, also on YouTube);
  * the dialog then names from -> to in his own time and UTC and the YouTube effect, and only its button moves the slot.
  */
-function MoveEditor(props: { slot: PlanSlotDto; plan: PlanDto; ownerZone: string | null; busy: string | null; onCancel: () => void; onMove: (shownHash: string, toWeekStart: string, date: string, time: string, dryRun: boolean) => Promise<MoveAnswer | null> }) {
+function MoveEditor(props: { slot: PlanSlotDto; plan: PlanDto; ownerZone: string | null; zoneOf: (weekStart: string) => string | null; busy: string | null; onCancel: () => void; onMove: (shownHash: string, toWeekStart: string, date: string, time: string, dryRun: boolean) => Promise<MoveAnswer | null> }) {
   const t = useT();
   const { slot, plan } = props;
   const [shownHash] = useState(slot.contentHash);
@@ -765,7 +772,12 @@ function MoveEditor(props: { slot: PlanSlotDto; plan: PlanDto; ownerZone: string
   const clock = parseClock(time);
   const days = weekDays(weekStart);
   const day = days.includes(date) ? date : days[0];
-  const unchanged = clock !== null && day === slot.date && clock === slot.publishAt.slice(11, 16) && weekStart === plan.weekStart;
+  const samePlace = clock !== null && day === slot.date && clock === slot.publishAt.slice(11, 16) && weekStart === plan.weekStart;
+  // Review #2: the same place again retries the YouTube write when the video's date differs from the slot's time.
+  const youtubeDiffers = typeof slot.youtubePublishAt === "string" && Date.parse(slot.youtubePublishAt) !== Date.parse(slot.publishAtUtc);
+  const unchanged = samePlace && !youtubeDiffers;
+  // Review #9: the server reads the time in the target week's zone (an existing week's own, else this plan's).
+  const targetZone = props.zoneOf(weekStart) ?? plan.timeZone;
   const anyBusy = props.busy !== null;
   const shift = (n: number) => {
     const next = shiftWeek(weekStart, n);
@@ -802,7 +814,7 @@ function MoveEditor(props: { slot: PlanSlotDto; plan: PlanDto; ownerZone: string
           </select>
         </label>
         <label className="flex flex-col gap-1 text-xs text-zinc-400">
-          {t("weekPlan.retime.time", { zone: plan.timeZone })}
+          {t("weekPlan.retime.time", { zone: targetZone })}
           <input type="text" inputMode="numeric" value={time} onChange={(e) => setTime(e.target.value)} disabled={anyBusy} placeholder="18:00" aria-invalid={clock === null} className={`w-24 rounded-md border bg-zinc-900 px-2 py-1 text-sm text-zinc-100 ${clock === null ? "border-red-700" : "border-zinc-700"}`} />
         </label>
         <div className="flex flex-wrap gap-2">
@@ -838,6 +850,11 @@ function MoveEditor(props: { slot: PlanSlotDto; plan: PlanDto; ownerZone: string
                 ? t("weekTemplate.move.effect.planOnly")
                 : t("weekTemplate.move.effect.none")}
           </p>
+          {(preview.displaces ?? []).map((d) => (
+            <p key={d.slotId} className="text-sm text-amber-300">
+              {t("weekTemplate.move.displaces", { video: d.video ?? d.slotId, when: both(d.publishAtUtc) })}
+            </p>
+          ))}
         </ConfirmDialog>
       )}
     </div>

@@ -9,7 +9,11 @@ import { planSlotDecisions } from "./publishing-plan-slots";
  */
 export function publishingPlanMoveYoutube(): PlanMoveYoutubePort {
   const core = createPlanMoveYoutubeCore({ slotDecisions: planSlotDecisions });
-  return { precheck: (channelId, videoId) => core.precheck(channelId, videoId), write: (channelId, videoId, slotId, at, by) => core.write(channelId, videoId, slotId, at, by) };
+  return {
+    precheck: (channelId, videoId) => core.precheck(channelId, videoId),
+    write: (channelId, videoId, slotId, at, by) => core.write(channelId, videoId, slotId, at, by),
+    uploadActive: (channelId, slotId, video) => core.uploadActive(channelId, slotId, video),
+  };
 }
 
 /** BL-267 (ADR 0073 §5, plan §3.10): the Producer's plan surface -- reads, its template proposal and its immediate move. */

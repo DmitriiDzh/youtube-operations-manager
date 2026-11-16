@@ -50,7 +50,8 @@ video is refused anyway). Template matches and Producer moves add new time sourc
 4. **Owned-date rule, automatic changes only (stage 1; live with the merge, plan §7 O11).** The plan-schedule pass moves or
    removes a YouTube date only when it equals the date this computer's upload row itself set; any other date is foreign — never
    moved or removed by the pass, shown as «дата задана вручную». A template change only gives first dates; it never moves or removes
-   one. Explicit moves (item 5) may change any date.
+   one -- review 2026-11-16: a template date is written only for a video without this computer's date, and it never outranks a
+   standing owner veto (or owner date) of the same video. Explicit moves (item 5) may change any date.
 5. **Moving a slot, anywhere and at once**, keeps its id: one Automerge change (delete the old key, put the new one, `movedFrom`);
    decisions are read by slot id; explicit approvals are revoked; a vetoed slot cannot be moved. The owner (Web UI, confirm dialog
    with the exact change) and the **Producer** (`producer_publishing_plan_move_slot`, permission `PLAN_MOVE`, `dryRun`) move any
@@ -58,7 +59,10 @@ video is refused anyway). Template matches and Producer moves add new time sourc
    video has a date on YouTube, the move writes the new date at once through video-details' write path (identity check, backup,
    Live writes immediately before, read-back, audit), via plan-schedule's one change function in explicit mode, composed outside
    both modules; every refusal (public video, date within 15 min, switches off, no finished upload row here) comes before the
-   Automerge change; the row's `publishAt` takes the new date. A move never gives a first date (an undated slot only changes
+   Automerge change; the row's `publishAt` takes the new date. Review 2026-11-16: the YouTube write comes before the Automerge
+   change -- a write not read back verified leaves the plan unchanged (`publishing_plan_move_youtube_failed`); a move while this
+   computer still uploads the slot's video is refused (`publishing_plan_move_upload_active`); a move reports the template positions it
+   takes from other slots (`displaces`). A move never gives a first date (an undated slot only changes
    position; the template rule then decides). A dated video moved off the template keeps its date (`pending` never removes one).
    The Operator / worker saves keep `slot_id_in_other_week` and gain `slot_dated`; they have no move tool.
 6. **No replacement** (owner O4): every slot has its own id; `replacesSlotId` is still accepted and hashed (older saves and

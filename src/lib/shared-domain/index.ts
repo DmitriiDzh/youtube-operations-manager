@@ -341,6 +341,10 @@ export type DomainErrorCode =
   | "publishing_plan_move_not_here"
   | "publishing_plan_video_missing"
   | "publishing_plan_move_youtube_unavailable"
+  // BL-267 review 2026-11-16: MOVE_YOUTUBE_FAILED: the new date was not read back verified on YouTube -- the plan was not changed (#2);
+  // MOVE_UPLOAD_ACTIVE: this computer still uploads the slot's video (#10).
+  | "publishing_plan_move_youtube_failed"
+  | "publishing_plan_move_upload_active"
   | "release_folder_not_found"
   | "release_folder_ambiguous"
   | "release_folder_name_invalid"

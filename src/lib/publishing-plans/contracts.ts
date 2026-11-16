@@ -276,13 +276,21 @@ export type PublishingPlansPorts = {
 /** BL-267 (plan §3.3): a slot a template change would start or stop dating (the owner's apply dialog). */
 export type TemplateEffectSlot = { slotId: string; weekStart: string; publishAtUtc: string; video: string | null; youtubePublishAt: string | null };
 
-/** BL-267: what a move may do to a slot's video on YouTube (read first, write after the plan change). */
+/** BL-267: what a move may do to a slot's video on YouTube (read first; review #2: the write before the plan change). */
 export type PlanMoveYoutubePort = {
   /** Read only: `moves` -- private and dated (the move writes the new date); `plan_only` -- private, no date; else refused with a code. */
   precheck(channelId: string, videoId: string): Promise<{ outcome: "moves" | "plan_only"; youtubePublishAt: string | null } | { outcome: "refused"; code: string; reason: string }>;
   /** The write + read-back for this computer's upload row of the video; never a first date. */
   write(channelId: string, videoId: string, slotId: string, publishAtUtc: string, by: "owner" | "producer"): Promise<{ result: string; reason?: string; publishAt: string | null }>;
+  /**
+   * Review #10: whether this computer still has an upload under way (not finished, failed or cancelled) for the slot or its video
+   * number -- a move is refused then (`publishing_plan_move_upload_active`). Absent: not checked.
+   */
+  uploadActive?(channelId: string, slotId: string, video: string | null): Promise<boolean>;
 };
+
+/** Review #7: a slot a move pushes off its template position (it becomes `position_taken`, held by the moved slot). */
+export type PlanMoveDisplaced = { slotId: string; weekStart: string; publishAtUtc: string; video: string | null };
 
 /** BL-267: a move's answer -- the plan of the target week, what moved, and what happened on YouTube. */
 export type PlanMoveResult = {
@@ -292,6 +300,8 @@ export type PlanMoveResult = {
   from: { weekStart: string; date: string; publishAt: string; publishAtUtc: string; timeZone: string };
   to: { weekStart: string; date: string; publishAt: string; publishAtUtc: string; timeZone: string };
   youtube: { effect: "moves" | "plan_only" | "none"; previous: string | null; result?: string; reason?: string; publishAt?: string | null };
+  /** Review #7: the slots this move takes a template position from (dry run and real move alike). */
+  displaces: PlanMoveDisplaced[];
 };
 
 /**

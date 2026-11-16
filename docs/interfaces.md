@@ -1557,9 +1557,11 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
   `foreignPublishAt`, `movedFrom`); `producer_publishing_plan_move_slot { channelId, slotId, contentHash, toWeekStart, date, publishAt,
   dryRun? }` (`PLAN_MOVE`): moves the slot anywhere at once keeping its id; a dated video's new date is written immediately through
   video-details (identity check, backup, Live writes right before, read-back, audit `publishing.plan_moved` with `by: producer`); never
-  a first date; → `{ plan, moved, dryRun, from, to, youtube: { effect: moves | plan_only | none, previous, result?, reason?, publishAt? } }`.
+  a first date; the YouTube write comes before the plan change (a write not verified: refused, plan unchanged); → `{ plan, moved,
+  dryRun, from, to, youtube: { effect: moves | plan_only | none, previous, result?, publishAt? }, displaces: [{ slotId, weekStart,
+  publishAtUtc, video }] }`.
   Refusals: `publishing_plan_slot_not_found`, `_slot_vetoed`, `_slot_past`, `_changed`, `_already_published`, `_slot_too_soon`,
-  `_move_not_here`, `_move_youtube_unavailable`, `validation_failed` (`toWeekStart` / `date` / `publishAt`: `week_start_not_monday`,
+  `_move_not_here`, `_move_youtube_unavailable`, `_move_youtube_failed`, `_move_upload_active`, `validation_failed` (`toWeekStart` / `date` / `publishAt`: `week_start_not_monday`,
   `date_invalid`, `outside_week`, `publish_at_invalid`, `date_mismatch`, `in_past` (< 30 min), `beyond_horizon` (> 52 weeks),
   `too_many_slots`).
 - **Metadata tool (BL-265, ADR 0072, owner TG 4578/4581; Producer 1.24.0):** `producer_video_metadata_update` `{ channelId, video, dryRun? }`

@@ -16,7 +16,7 @@ const WEEK = "2026-11-23";
 const NEXT = "2026-11-30";
 const SHA = (c: string) => c.repeat(64);
 
-function harness(youtube: { privacy?: string; publishAt?: string | null; row?: boolean } = {}) {
+function harness(youtube: { privacy?: string; publishAt?: string | null; row?: boolean; writeResult?: string; uploadActive?: boolean } = {}) {
   const bytes = new Map<string, Uint8Array>();
   const store: DocumentByteStore = { loadDocumentBytes: async (k) => bytes.get(k) ?? null, saveDocumentBytes: async (k, b) => void bytes.set(k, b) };
   const core = createPublishingPlansCore({ core: createAutomergeCore<PublishingPlansDocument>({ store, discardedBackupStore: { backup: async () => ({ path: "/b", capturedAt: "" }) } as DiscardedDocumentBackupStore, emptyDocument }), store });
@@ -32,9 +32,11 @@ function harness(youtube: { privacy?: string; publishAt?: string | null; row?: b
     },
     write: async (_c, _v, _s, at) => {
       yt.writes.push(at);
+      if (youtube.writeResult && youtube.writeResult !== "verified") return { result: youtube.writeResult, reason: "read back as another date", publishAt: null };
       yt.publishAt = at;
       return { result: "verified", publishAt: at };
     },
+    uploadActive: async () => youtube.uploadActive ?? false,
   };
   const audits: Array<Record<string, unknown>> = [];
   let n = 0;
@@ -183,4 +185,51 @@ test("a move to the same place with YouTube on another date retries the write (n
   const result = await h.service.move(CH, { slotId: "L", contentHash: shown.contentHash, toWeekStart: WEEK, date: "2026-11-24", publishAt: "2026-11-24T00:00" }, "owner", "u1");
   assert.equal(result.moved, false);
   assert.deepEqual(h.yt.writes, ["2026-11-23T15:00:00.000Z"]);
+});
+
+// Review 2026-11-16 #2: the YouTube write comes first -- a write not read back verified leaves the plan as it was (no move, no
+// revocation, no audit of a move) and is refused; a same-place move retries it.
+test("review #2: a failed YouTube write refuses the move and leaves the plan unchanged", async () => {
+  const h = harness({ writeResult: "mismatch" });
+  const shown = await setup(h);
+  const before = JSON.stringify(await h.core.read(CH));
+  const error = await h.service.move(CH, moveInput(shown.contentHash), "producer", "producer").then(() => null, (e: unknown) => e);
+  assert.ok(isDomainError(error) && error.code === "publishing_plan_move_youtube_failed");
+  assert.equal((error.details as { result: string }).result, "mismatch");
+  assert.deepEqual(h.yt.writes, ["2026-12-02T15:00:00.000Z"], "the write was tried");
+  assert.equal(JSON.stringify(await h.core.read(CH)), before, "plan unchanged");
+  assert.equal(h.audits.some((a) => a.event === "publishing_plan.moved"), false);
+});
+
+test("review #10: a move while this computer still uploads the slot's video is refused before anything is read or written", async () => {
+  const h = harness({ uploadActive: true });
+  const shown = await setup(h);
+  const error = await h.service.move(CH, moveInput(shown.contentHash), "owner", "u1").then(() => null, (e: unknown) => e);
+  assert.ok(isDomainError(error) && error.code === "publishing_plan_move_upload_active");
+  assert.deepEqual([h.yt.reads, h.yt.writes], [0, []]);
+  assert.deepEqual(Object.keys((await h.core.read(CH)).slots), [`${WEEK}:L`]);
+});
+
+test("review #7: the dry run and the move list a template position the moved (older) slot takes from another slot", async () => {
+  const h = harness({ publishAt: null });
+  // WWE-like template: long Mon 15:00Z. L (created first, undated, V1) is off the position (Tue 2026-11-24 18:00 JST = 09:00Z); B
+  // (created later, V2) holds Mon 2026-11-23 15:00Z = Tue 00:00 JST.
+  await h.service.save({ channelId: CH, weekStart: WEEK, timeZone: "Asia/Tokyo", slots: [{ slotId: "L", date: "2026-11-24", publishAt: "2026-11-24T18:00" }] }, "factory");
+  h.clock.now = new Date("2026-11-16T12:01:00Z");
+  await h.service.save({ channelId: CH, weekStart: WEEK, timeZone: "Asia/Tokyo", slots: [{ slotId: "L", date: "2026-11-24", publishAt: "2026-11-24T18:00" }, { slotId: "B", date: "2026-11-24", publishAt: "2026-11-24T00:00" }] }, "factory");
+  await h.service.templateOwnerSave(CH, { template: { format: "week-template/1", channelId: CH, horizonWeeks: 2, days: { mon: [{ kind: "long", publishTimeUtc: "15:00" }] } } }, "u1");
+  h.progress.set("L", uploaded(null));
+  h.progress.set("B", { ...uploaded(null), videoId: "vid2", package: { ...uploaded(null).package!, video: "V2", manifestSha256: SHA("b") }, media: { videoSha256: SHA("2"), sizeBytes: 1000, review: "approved" } });
+  const plan = (await h.service.get({ channelId: CH, weekStart: WEEK })).plan;
+  assert.equal(slotOf(plan, "B").dating.state, "will_date");
+  const input = { slotId: "L", contentHash: slotOf(plan, "L").contentHash, toWeekStart: WEEK, date: "2026-11-24", publishAt: "2026-11-24T00:00" };
+  const dry = await h.service.move(CH, { ...input, dryRun: true }, "producer", "producer");
+  assert.deepEqual(dry.displaces, [{ slotId: "B", weekStart: WEEK, publishAtUtc: "2026-11-23T15:00:00.000Z", video: "V2" }]);
+  const real = await h.service.move(CH, input, "producer", "producer");
+  assert.deepEqual(real.displaces.map((d) => d.slotId), ["B"]);
+  assert.deepEqual(h.audits.find((a) => a.event === "publishing_plan.moved")?.displaces, ["B"]);
+  // A move onto a free spot displaces nothing.
+  const after = slotOf((await h.service.get({ channelId: CH, weekStart: WEEK })).plan, "B");
+  const none = await h.service.move(CH, { slotId: "B", contentHash: after.contentHash, toWeekStart: WEEK, date: "2026-11-25", publishAt: "2026-11-25T18:00", dryRun: true }, "producer", "producer");
+  assert.deepEqual(none.displaces, []);
 });

@@ -922,6 +922,11 @@ export function createPlanMoveYoutubeCore(options: { slotDecisions: (channelId: 
       if (!row) return { outcome: "refused" as const, code: "publishing_plan_move_not_here", reason: "no finished upload of this video on this computer" };
       return schedule.explicitPrecheck(row);
     },
+    /** Review #10: an upload of this slot or this video number still under way on this computer (queued … paused). */
+    async uploadActive(channelId: string, slotId: string, video: string | null) {
+      const active = await listPublishingUploads({ channelId, statuses: ACTIVE_UPLOAD_STATUSES, limit: 500 });
+      return active.some((row) => row.slotId === slotId || (video !== null && row.video === video));
+    },
     async write(channelId: string, videoId: string, slotId: string, publishAtUtc: string, by: "owner" | "producer") {
       const row = await rowOf(channelId, videoId);
       if (!row) return { result: "refused", reason: "no finished upload of this video on this computer", publishAt: null };

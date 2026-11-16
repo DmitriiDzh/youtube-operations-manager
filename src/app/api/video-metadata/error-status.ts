@@ -254,6 +254,8 @@ const DOMAIN_ERROR_STATUS = {
   publishing_plan_move_not_here: 409,
   publishing_plan_video_missing: 409,
   publishing_plan_move_youtube_unavailable: 409,
+  publishing_plan_move_youtube_failed: 502,
+  publishing_plan_move_upload_active: 409,
   // BL-261: renaming a release folder.
   release_folder_not_found: 404,
   release_folder_ambiguous: 409,
