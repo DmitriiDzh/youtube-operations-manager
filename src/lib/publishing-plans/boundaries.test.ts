@@ -11,7 +11,9 @@ import { WORKER_FACTORY_TOOLS } from "@/mcp/worker-factory-tools";
 // call) -- and no MCP path can reach a decision: the owner's surface is used only by the Web UI's publishing-plans routes.
 
 const SRC = path.resolve(process.cwd(), "src");
-const FEATURE_MODULES = ["media-generation", "generation-plans", "gemini-media", "live-streams", "publishing", "batches", "changesets", "video-details", "playlist-management", "video-comments", "storyboards", "channel-branding", "channel-localizations"];
+const FEATURE_MODULES = ["media-generation", "generation-plans", "gemini-media", "live-streams", "publishing", "batches", "changesets", "video-details", "playlist-management", "video-comments", "storyboards", "channel-branding", "channel-localizations", "package-reviews", "cross-posting"];
+// BL-267 (AC-WT-41): `package-reviews` and `cross-posting` joined the list -- the media review reaches the plan only through the
+// `progress` port (publishing-plan-progress), and cross-posting reads the plan, never the other way round.
 
 async function files(dir: string): Promise<string[]> {
   const out: string[] = [];
@@ -56,7 +58,10 @@ test("AC-WP-05: the owner's surface is used only by the Web UI's publishing-plan
 test("AC-WP-05 / AC-WP-17: the plan tools are exactly save/get/list for the Operator and the worker; only save writes", () => {
   assert.deepEqual(FACTORY_TOOL_NAMES.filter((name) => /plan_(save|get|list)$/.test(name) && name.includes("publishing")).sort(), ["factory_publishing_plan_get", "factory_publishing_plan_list", "factory_publishing_plan_save"]);
   assert.deepEqual((FACTORY_WRITE_TOOL_NAMES as readonly string[]).filter((name) => name.includes("publishing_plan")), ["factory_publishing_plan_save"]);
-  assert.deepEqual(Object.keys(MCP_TOOL_CLASSIFICATION).filter((name) => name.includes("publishing_plan")).sort(), ["agent_publishing_plan_get", "agent_publishing_plan_list", "agent_publishing_plan_save"]);
+  // BL-267 (owner TG 4630/4636, ADR 0073 §5 -- a new requirement): the Producer reads the plan and moves slots on its own endpoint
+  // (producer-only); the Operator and the workers still have exactly save/get/list (AC-WT-35/40).
+  assert.deepEqual(Object.keys(MCP_TOOL_CLASSIFICATION).filter((name) => name.includes("publishing_plan")).sort(), ["agent_publishing_plan_get", "agent_publishing_plan_list", "agent_publishing_plan_save", "producer_publishing_plan_get", "producer_publishing_plan_list", "producer_publishing_plan_move_slot"]);
+  for (const name of ["producer_publishing_plan_get", "producer_publishing_plan_list", "producer_publishing_plan_move_slot", "producer_week_template_get", "producer_week_template_propose"]) assert.equal(MCP_TOOL_CLASSIFICATION[name], "producer-only", name);
   assert.deepEqual(
     Object.entries(WORKER_FACTORY_TOOLS).filter(([name]) => name.includes("publishing_plan")).map(([name, t]) => [name, t.agentName, t.writes]).sort(),
     [
@@ -107,4 +112,20 @@ test("AC-WP-50: no MCP path names the approval-stage setter; only publishing-pla
     if (/\.setApprovalStage\(/.test(await readFile(file, "utf8"))) callers.push(path.relative(SRC, file));
   }
   assert.deepEqual(callers.sort(), ["app/api/channels/[channelId]/publishing-plans/handlers.ts", "lib/publishing-plans/services.ts"]);
+});
+
+// BL-267 (WEEK_TEMPLATE_PLAN.md AC-WT-06, ADR 0073 §1): no MCP path reaches the owner's template decisions (approve / edit, accept or
+// reject a proposal, withdraw) or the template effect; the Producer's surface has the propose and the move, never a decision.
+test("AC-WT-06: no MCP server, agent endpoint or MCP route names a template decision; the Producer surface has none", async () => {
+  const { producerSurface } = await import("./services");
+  const roots = ["mcp", "app/api/mcp", "lib/agent-mcp-endpoint", "lib/producer-mcp-endpoint", "lib/factory-mcp-endpoint", "lib/agent-operations", "composition"];
+  const offenders: string[] = [];
+  for (const root of roots) {
+    for (const file of await files(path.join(SRC, root))) {
+      if (/\b(templateOwnerSave|templateOwnerDecide|templateOwnerWithdraw|templateEffect|addTemplateRecords)\b/.test(await readFile(file, "utf8"))) offenders.push(path.relative(SRC, file));
+    }
+  }
+  assert.deepEqual(offenders, []);
+  const fake = new Proxy({}, { get: () => async () => ({}) }) as never;
+  assert.deepEqual(Object.keys(producerSurface(fake)).sort(), ["get", "list", "move", "templateGet", "templatePropose"]);
 });

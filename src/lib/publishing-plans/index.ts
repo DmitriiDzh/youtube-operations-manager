@@ -22,7 +22,7 @@ function hostLabel(): string | null {
   }
 }
 
-function service(progress?: PublishingPlansPorts["progress"]): PublishingPlansService {
+function service(progress?: PublishingPlansPorts["progress"], moveYoutube?: PublishingPlansPorts["moveYoutube"]): PublishingPlansService {
   const holder = globalThis as GlobalWithLock;
   const lock = (holder[LOCK_KEY] ??= { queue: Promise.resolve() });
   return createPublishingPlansService({
@@ -39,8 +39,9 @@ function service(progress?: PublishingPlansPorts["progress"]): PublishingPlansSe
     // The owner's decisions are audited on the computer they were made on (the synced record names the device for the others).
     // BL-242: the approval stage names no week or slot (`plan:approval_stage`).
     audit: ({ channelId, weekStart, slotId, detail }) =>
-      insertVideoEditAuditEvent({ channelId, videoId: weekStart && slotId ? `plan:${weekStart}:${slotId}` : "plan:approval_stage", eventType: "RESULT", detail }),
+      insertVideoEditAuditEvent({ channelId, videoId: weekStart && slotId ? `plan:${weekStart}:${slotId}` : String(detail.event ?? "").startsWith("publishing_plan.template") ? "plan:template" : "plan:approval_stage", eventType: "RESULT", detail }),
     ...(progress ? { progress } : {}),
+    ...(moveYoutube ? { moveYoutube } : {}),
     // BL-248 (ADR 0066): the owner's slot decisions nudge the Producer's Inbox writer (review-notify).
     notifyOwnerDecision: () => nudgeReviewNotify(),
   });
@@ -52,8 +53,8 @@ export function createPublishingPlansAgentCore(progress?: PublishingPlansPorts["
 }
 
 /** The owner's surface: used only by the Web UI's publishing-plans routes (AC-WP-05 source scan). */
-export function createPublishingPlansOwnerCore(progress?: PublishingPlansPorts["progress"]): PublishingPlansOwnerSurface {
-  return ownerSurface(service(progress));
+export function createPublishingPlansOwnerCore(progress?: PublishingPlansPorts["progress"], moveYoutube?: PublishingPlansPorts["moveYoutube"]): PublishingPlansOwnerSurface {
+  return ownerSurface(service(progress, moveYoutube));
 }
 
 /**
@@ -64,9 +65,17 @@ export function createPublishingPlansUploadCore(progress?: PublishingPlansPorts[
   return uploadSurface(service(progress));
 }
 
-export { createPublishingPlansService, agentSurface, ownerSurface, uploadSurface, socialSurface } from "./services";
-import { socialSurface as socialSurfaceOf } from "./services";
-export type { PublishingPlansService, PublishingPlansAgentSurface, PublishingPlansOwnerSurface, PublishingPlansUploadSurface, PublishingPlansSocialSurface } from "./services";
+export { createPublishingPlansService, agentSurface, ownerSurface, uploadSurface, socialSurface, producerSurface } from "./services";
+import { producerSurface as producerSurfaceOf, socialSurface as socialSurfaceOf } from "./services";
+export type { PublishingPlansService, PublishingPlansAgentSurface, PublishingPlansOwnerSurface, PublishingPlansUploadSurface, PublishingPlansSocialSurface, PublishingPlansProducerSurface } from "./services";
+export { TEMPLATE_MATCH_RULES, WEEK_TEMPLATE_FORMAT, isMusicTemplate, matchSlots, positionsBetween, templateDayOf, templateHashOf, templateInForce, templateViewOf, utcTimeOf, validateTemplate, kindOf, fitsEntry } from "./template";
+export type { MatchSlot, SlotMatch, TemplatePosition, WeekTemplateView, WeekTemplateContent } from "./template";
+export type { TemplateAnswer } from "./template-services";
+
+/** BL-267 (ADR 0073 §5): the Producer's surface (its own endpoint): plan reads, the template read and its proposal. */
+export function createPublishingPlansProducerCore(progress?: PublishingPlansPorts["progress"], moveYoutube?: PublishingPlansPorts["moveYoutube"]): import("./services").PublishingPlansProducerSurface {
+  return producerSurfaceOf(service(progress, moveYoutube));
+}
 export { contentHashOf, instantOf, isMonday, weekEndOf, addDays, planViewOf, slotViewOf, decisionStateOf, needsOwner, fingerprintOf, packageReady, lastApprovedPackageOf } from "./model";
 export * from "./contracts";
 export * from "./schemas";

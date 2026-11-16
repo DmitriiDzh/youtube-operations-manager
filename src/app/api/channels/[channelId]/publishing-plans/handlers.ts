@@ -4,6 +4,7 @@ import { authOptions } from "@/lib/auth";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { createPublishingPlansOwnerCore, type PublishingPlansOwnerSurface } from "@/lib/publishing-plans";
 import { weekPublishingCoverage } from "@/composition/publishing-coverage";
+import { publishingPlanMoveYoutube } from "@/composition/publishing-plan-moves";
 import type { PublishingCoverageResult } from "@/lib/publishing-coverage";
 import { publishingPlanProgress } from "@/lib/publishing-plan-progress";
 import { DomainError } from "@/lib/shared-domain";
@@ -31,7 +32,8 @@ const defaultDeps = (): PublishingPlanRouteDeps => ({
     await createChannelAccessCore().assertActiveChannel(args);
   },
   // BL-225 stage 2: the slots' package progress from the publishing scan (the composition module; §M).
-  service: () => createPublishingPlansOwnerCore(publishingPlanProgress),
+  // BL-267: the move's YouTube side (plan-schedule's explicit change through video-details), composed outside the plan module.
+  service: () => createPublishingPlansOwnerCore(publishingPlanProgress, publishingPlanMoveYoutube()),
   coverage: weekPublishingCoverage,
 });
 
@@ -93,10 +95,41 @@ export function createPublishingPlanRouteHandlers(deps: PublishingPlanRouteDeps 
      * BL-256 (owner msgs 4380/4383): POST `{ slotId, contentHash, date, publishAt, approve }` -- the owner moves a slot to another day
      * of its week and/or another time, approving the new time in the same step when `approve`. Remote access allowed (a session).
      */
-    retime: (request: Request, context: Params<Base & { weekStart: string }>) =>
-      guarded(context, async ({ channelId, weekStart }, userId) => {
+    /**
+     * BL-267 (ADR 0073 §5): POST `{ slotId, contentHash, toWeekStart, date, publishAt, dryRun? }` -- the owner moves a slot anywhere
+     * (any week, on or off the template); a dated video's date moves on YouTube at once. `dryRun` describes the change only.
+     */
+    move: (request: Request, context: Params<Base>) =>
+      guarded(context, async ({ channelId }, userId) => {
         const input = await request.json().catch(() => null);
-        return NextResponse.json(await deps.service().retime(channelId, weekStart, input, userId));
+        return NextResponse.json(await deps.service().move(channelId, input, userId));
       }),
+
+    /** BL-267 (ADR 0073 §1): the template in force, the pending proposal and the match rules. */
+    templateGet: (_request: Request, context: Params<Base>) => guarded(context, async ({ channelId }) => NextResponse.json(await deps.service().templateGet(channelId))),
+
+    /** BL-267: POST `{ template, basedOn? }` -- the owner's edit: a new version approved in the same change. */
+    templateSave: (request: Request, context: Params<Base>) =>
+      guarded(context, async ({ channelId }, userId) => {
+        const input = await request.json().catch(() => null);
+        return NextResponse.json(await deps.service().templateOwnerSave(channelId, input, userId));
+      }),
+
+    /** BL-267: POST `{ action: accept | reject, versionId, contentHash }` -- the owner decides a proposal. */
+    templateDecide: (request: Request, context: Params<Base>) =>
+      guarded(context, async ({ channelId }, userId) => {
+        const input = await request.json().catch(() => null);
+        return NextResponse.json(await deps.service().templateOwnerDecide(channelId, input, userId));
+      }),
+
+    /** BL-267 (AC-WT-28): POST `{ template }` -- which slots a template would start or stop dating (read-only, for the dialog). */
+    templateEffect: (request: Request, context: Params<Base>) =>
+      guarded(context, async ({ channelId }) => {
+        const input = await request.json().catch(() => null);
+        return NextResponse.json(await deps.service().templateEffect(channelId, input));
+      }),
+
+    /** BL-267: POST -- «Даты по шаблону» off. */
+    templateWithdraw: (_request: Request, context: Params<Base>) => guarded(context, async ({ channelId }, userId) => NextResponse.json(await deps.service().templateOwnerWithdraw(channelId, userId))),
   };
 }

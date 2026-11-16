@@ -5,7 +5,7 @@ import * as Automerge from "@automerge/automerge";
 import { createPublishingPlansCore, emptyDocument, genesisDocument } from "@/lib/sync-gateway/publishing-plans";
 import type { PublishingPlansDocument } from "@/lib/sync-gateway";
 import { agentSurface, createPublishingPlansService } from "./services";
-import { isDomainError, type PlanAuditEntry, type PlanView } from "./contracts";
+import { isDomainError, type PlanAuditEntry, type PlanSlotProgress, type PlanView } from "./contracts";
 
 // BL-225 stage 1 acceptance (docs/roadmap/plans/WEEKLY_PUBLISHING_PLAN.md AC-WP-01..14; ADR 0051). Expected values are computed by
 // hand from the plan: Asia/Tokyo is UTC+9 all year; Europe/Berlin leaves summer time (UTC+2 -> UTC+1) at 01:00Z on Sunday
@@ -13,6 +13,9 @@ import { isDomainError, type PlanAuditEntry, type PlanView } from "./contracts";
 
 const CH = "UC-IdugmwWRvRo9-j0yK5AbA";
 const WEEK = "2026-10-26";
+
+/** BL-267: a ready package for a slot. */
+const READY = (id: string): PlanSlotProgress => ({ status: "packaged", code: null, videoId: null, package: { video: `V-${id}`, title: id, durationSeconds: 600, languages: [], containsSyntheticMedia: false, thumbnailPath: null, testThumbnails: 0, problems: [], manifestSha256: "f".repeat(64) } });
 
 function harness(startAt = "2026-10-25T07:00:00Z", connected = [CH]) {
   const bytes = new Map<string, Uint8Array>();
@@ -33,6 +36,8 @@ function harness(startAt = "2026-10-25T07:00:00Z", connected = [CH]) {
     randomId: () => `id${++n}`,
     withLock: (fn) => fn(),
     audit: async (entry) => void audits.push(entry),
+    // BL-267 (ADR 0073, AC-WT-38): the slot stage these tests ran in is retired -- every slot of the connected channel has a ready package.
+    progress: async (_c: string, _w: string, ids: string[]) => ({ progress: new Map(ids.map((id) => [id, READY(id)] as const)), packagesUnavailable: false }),
   });
   const tick = (iso: string) => (clock.now = new Date(iso));
   return { service, audits, tick, core };
@@ -56,7 +61,8 @@ test("AC-WP-01: a new Tokyo plan -- the slot is planned, needs approval, 18:00 J
   assert.equal(plan.updatedBy, "factory");
   const s1 = slotOf(plan, "s1");
   assert.equal(s1.publishAtUtc, "2026-10-26T09:00:00.000Z");
-  assert.equal(s1.status, "planned");
+  // BL-267 (AC-WT-38): the slot stage is retired; this harness gives every slot a ready package (status packaged).
+  assert.equal(s1.status, "packaged");
   assert.equal(s1.approval, "needs_approval");
   assert.equal(s1.lengthHint, "≈ 3 ч");
   assert.deepEqual(plan.counts, { slots: 1, approved: 0, needsApproval: 1, vetoed: 0 });
@@ -117,29 +123,27 @@ test("AC-WP-05: an agent's save cannot carry an approval or a veto; the agents' 
   ];
   for (const input of bad) await assert.rejects(h.service.save(input, "factory"), rejectsWith("validation_failed"), JSON.stringify(input));
   await assert.rejects(h.service.get({ channelId: CH, weekStart: WEEK }), rejectsWith("publishing_plan_not_found"));
-  assert.deepEqual(Object.keys(agentSurface(h.service)).sort(), ["get", "list", "save"]);
+  // BL-267 (ADR 0073 §1, plan §3.10): agents also READ the week template (agent_publishing_template_get) -- still no decision.
+  assert.deepEqual(Object.keys(agentSurface(h.service)).sort(), ["get", "list", "save", "templateGet"]);
 });
 
-test("AC-WP-06: approving the week with the hashes shown approves every slot, audited; one stale hash approves nothing", async () => {
+// BL-267 (owner msgs 4569/4575 «Одобрение слота вообще не нужно», ADR 0073 §3, AC-WT-26): the week approval is gone -- an explicit date
+// is one slot at a time. AC-WP-06 asserted the week approval; the requirement changed, so it now asserts the refusal and the one-slot
+// path (stale hash refused, audited once per slot, idempotent).
+test("AC-WT-26 (was AC-WP-06): approving several slots at once is refused; one slot with the hash shown is approved and audited", async () => {
   const h = harness();
   const { plan } = await weekOfThree(h);
   const shown = plan.slots.map((s) => ({ slotId: s.slotId, contentHash: s.contentHash }));
-  const stale = shown.map((s) => (s.slotId === "s2" ? { ...s, contentHash: "0".repeat(64) } : s));
-  await assert.rejects(h.service.decide(CH, WEEK, { action: "approve", slots: stale }, "u1"), rejectsWith("publishing_plan_changed"));
+  await assert.rejects(h.service.decide(CH, WEEK, { action: "approve", slots: shown }, "u1"), rejectsWith("validation_failed"));
+  await assert.rejects(h.service.decide(CH, WEEK, { action: "approve", slots: [{ slotId: "s2", contentHash: "0".repeat(64) }] }, "u1"), rejectsWith("publishing_plan_changed"));
   assert.equal((await h.service.ownerGet(CH, WEEK)).plan.counts.approved, 0);
   assert.equal(h.audits.length, 0);
-  const result = await h.service.decide(CH, WEEK, { action: "approve", slots: shown }, "u1");
-  assert.deepEqual(result.decided.sort(), ["s1", "s2", "s3"]);
-  assert.equal(result.plan.state, "approved");
-  for (const s of result.plan.slots) {
-    assert.equal(s.approval, "approved");
-    assert.equal(s.approvedAt, "2026-10-25T07:00:00.000Z");
-  }
+  for (const one of shown) assert.deepEqual((await h.service.decide(CH, WEEK, { action: "approve", slots: [one] }, "u1")).decided, [one.slotId]);
+  const after = (await h.service.ownerGet(CH, WEEK)).plan;
+  assert.equal(after.state, "approved");
   assert.deepEqual(h.audits.map((a) => [a.slotId, a.detail.event, a.detail.by]).sort(), [["s1", "publishing_plan.approved", "u1"], ["s2", "publishing_plan.approved", "u1"], ["s3", "publishing_plan.approved", "u1"]]);
-  // Approving again changes nothing and audits nothing.
-  assert.deepEqual((await h.service.decide(CH, WEEK, { action: "approve", slots: shown }, "u1")).decided, []);
+  assert.deepEqual((await h.service.decide(CH, WEEK, { action: "approve", slots: [shown[0]] }, "u1")).decided, []);
   assert.equal(h.audits.length, 3);
-  assert.deepEqual((await h.service.ownerList(CH)).waiting, 0);
 });
 
 test("AC-WP-07: an agent moving an approved slot from 15:00 to 18:00 needs the owner again, showing «было 15:00»; moving it back is approved", async () => {
@@ -164,7 +168,8 @@ test("AC-WP-07: an agent moving an approved slot from 15:00 to 18:00 needs the o
 test("AC-WP-08: changing only the note or only the length of an approved slot unlocks it; identical content keeps it approved", async () => {
   const h = harness();
   const { plan } = await weekOfThree(h);
-  await h.service.decide(CH, WEEK, { action: "approve", slots: plan.slots.map((s) => ({ slotId: s.slotId, contentHash: s.contentHash })) }, "u1");
+  // BL-267 (AC-WT-26): one slot at a time.
+  for (const sl of plan.slots) await h.service.decide(CH, WEEK, { action: "approve", slots: [{ slotId: sl.slotId, contentHash: sl.contentHash }] }, "u1");
   const same = await h.service.save({ channelId: CH, weekStart: WEEK, slots: [tokyoSlot("s1", "2026-10-26", "15:00"), tokyoSlot("s2", "2026-10-27", "18:00")] }, "factory");
   assert.deepEqual(same.unlocked, []);
   assert.equal(same.plan.state, "approved");
@@ -198,7 +203,7 @@ test("AC-WP-09: veto -- status vetoed even when approved, no approval, kept thro
   assert.equal(slotOf(edited.plan, "s2").status, "vetoed");
   await h.service.save({ channelId: CH, weekStart: WEEK, slots: [tokyoSlot("s2", "2026-10-27", "18:00")] }, "worker");
   const restored = await h.service.decide(CH, WEEK, { action: "restore", slots: [{ slotId: "s2" }] }, "u1");
-  assert.equal(slotOf(restored.plan, "s2").status, "planned");
+  assert.equal(slotOf(restored.plan, "s2").status, "packaged", "BL-267: the harness's ready package");
   assert.equal(slotOf(restored.plan, "s2").approval, "approved", "restore returns the slot to its approval state");
   h.tick("2026-10-27T09:00:00Z"); // 18:00 Tokyo: s2's time
   await assert.rejects(h.service.decide(CH, WEEK, { action: "veto", slots: [{ slotId: "s2" }] }, "u1"), rejectsWith("publishing_plan_slot_past"));
@@ -302,17 +307,20 @@ test("AC-WP-23: the slot shows its package progress; vetoed wins", async () => {
 test("AC-WP-30/31: slot decisions for the uploads", async () => {
   const h = harness();
   const { plan } = await weekOfThree(h);
-  await h.service.decide(CH, WEEK, { action: "approve", slots: [{ slotId: "s1", contentHash: slotOf(plan, "s1").contentHash }, { slotId: "s2", contentHash: slotOf(plan, "s2").contentHash }] }, "u1");
+  // BL-267 (AC-WT-26/38): one slot at a time; packaged stage -- the decisions name the package (V-s1, its manifest).
+  await h.service.decide(CH, WEEK, { action: "approve", slots: [{ slotId: "s1", contentHash: slotOf(plan, "s1").contentHash }] }, "u1");
+  await h.service.decide(CH, WEEK, { action: "approve", slots: [{ slotId: "s2", contentHash: slotOf(plan, "s2").contentHash }] }, "u1");
   await h.service.decide(CH, WEEK, { action: "veto", slots: [{ slotId: "s2" }] }, "u1");
   const decisions = await h.service.slotDecisions(CH);
-  assert.deepEqual(decisions.get("s1"), { kind: "approved", publishAt: "2026-10-26T06:00:00.000Z" }); // 15:00 JST
-  assert.deepEqual(decisions.get("s2"), { kind: "vetoed" });
+  const F = "f".repeat(64);
+  assert.deepEqual(decisions.get("s1"), { kind: "approved", publishAt: "2026-10-26T06:00:00.000Z", package: { video: "V-s1", manifestSha256: F, videoId: null }, source: "owner" }); // 15:00 JST
+  assert.deepEqual(decisions.get("s2"), { kind: "vetoed", package: { video: "V-s2", manifestSha256: F, videoId: null } });
   // Review #2 changed this case: an id can no longer be saved in two weeks (see the review #2 tests); s3 is simply not approved.
   assert.deepEqual(decisions.get("s3"), { kind: "pending" }, "s3 is not approved");
   await h.service.save({ channelId: CH, weekStart: WEEK, slots: [tokyoSlot("s1", "2026-10-26", "16:00")] }, "worker");
   assert.deepEqual((await h.service.slotDecisions(CH)).get("s1"), { kind: "pending" }, "changed after approval");
   h.tick("2026-10-26T06:00:00Z");
-  assert.deepEqual((await h.service.slotDecisions(CH)).get("s2"), { kind: "vetoed" }, "s2 (27.10) is still ahead");
+  assert.deepEqual((await h.service.slotDecisions(CH)).get("s2"), { kind: "vetoed", package: { video: "V-s2", manifestSha256: F, videoId: null } }, "s2 (27.10) is still ahead");
   h.tick("2026-10-27T09:00:00Z");
   assert.deepEqual((await h.service.slotDecisions(CH)).get("s2"), { kind: "pending" }, "released");
 });

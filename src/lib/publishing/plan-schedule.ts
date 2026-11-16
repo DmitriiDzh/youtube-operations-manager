@@ -6,7 +6,7 @@
 // (identity, backup, Live writes right before the write, read-back) and is read back again here before it is recorded.
 
 import type { StoredPublishingUpload } from "@/lib/db";
-import { approvalNamesUpload, type SlotDecision } from "./slot-decision";
+import { approvalNamesUpload, mediaOfPackageJson, type SlotDecision } from "./slot-decision";
 import type { UploadSteps } from "./upload-runner";
 
 /** video-details' rule: a date within 15 minutes is neither written nor removed (the video could publish meanwhile). */
@@ -51,7 +51,7 @@ const stepsOf = (row: Pick<StoredPublishingUpload, "stepsJson">): UploadSteps =>
   }
 };
 
-const sameInstant = (a: string | null, b: string | null) => (a === null || b === null ? a === b : Date.parse(a) === Date.parse(b));
+export const sameInstant = (a: string | null, b: string | null) => (a === null || b === null ? a === b : Date.parse(a) === Date.parse(b));
 
 /** The upload's own checks passed, so the plan may give the video a date (the runner's rule for the date step). */
 export function checksPassed(steps: UploadSteps): boolean {
@@ -66,7 +66,7 @@ export function checksPassed(steps: UploadSteps): boolean {
  * decides -- an approval naming a package (`packaged` stage) only when it names this upload: its video id, or (none named) its
  * manifest. Pure.
  */
-export function decisionForRow(row: Pick<StoredPublishingUpload, "slotId" | "videoId" | "manifestSha256">, decisions: ReadonlyMap<string, SlotDecision>): SlotDecision | undefined {
+export function decisionForRow(row: Pick<StoredPublishingUpload, "slotId" | "videoId" | "manifestSha256"> & { packageJson?: string }, decisions: ReadonlyMap<string, SlotDecision>): SlotDecision | undefined {
   if (row.videoId) {
     const naming = [...decisions.values()].filter((d) => d.kind !== "pending" && d.package?.videoId === row.videoId);
     const approved = naming.filter((d) => d.kind === "approved");
@@ -75,7 +75,7 @@ export function decisionForRow(row: Pick<StoredPublishingUpload, "slotId" | "vid
     if (naming.length > 0) return { kind: "vetoed" };
   }
   const own = row.slotId ? decisions.get(row.slotId) : undefined;
-  if (own?.kind === "approved" && !approvalNamesUpload(own, { manifestSha256: row.manifestSha256, videoId: row.videoId })) return { kind: "pending" };
+  if (own?.kind === "approved" && !approvalNamesUpload(own, { manifestSha256: row.manifestSha256, videoId: row.videoId, media: row.packageJson ? mediaOfPackageJson(row.packageJson) : null })) return { kind: "pending" };
   return own;
 }
 
@@ -96,6 +96,9 @@ export function desiredDate(row: Pick<StoredPublishingUpload, "publishAt" | "ste
   if (current !== null && Date.parse(current) <= nowMs + MARGIN_MS) return null;
   let want: { publishAt: string | null } | null;
   if (decision.kind === "vetoed") want = current === null ? null : { publishAt: null };
+  // BL-267 review #1 (ADR 0073 §3/§4, plan §4 "the switch-over moves no date"): the template only ever gives a FIRST date -- a video
+  // that already carries this computer's date keeps it; moving a date is the explicit path (a move) or the owner's own date.
+  else if (decision.source === "template" && current !== null) want = null;
   else if (Date.parse(decision.publishAt) <= nowMs + MARGIN_MS || !checksPassed(stepsOf(row))) want = null;
   else want = sameInstant(current, decision.publishAt) ? null : { publishAt: new Date(decision.publishAt).toISOString() };
   // The same change that was refused or read back differently is tried again only an hour later (the slot shows it meanwhile):
@@ -115,8 +118,13 @@ function errorCode(error: unknown): string | null {
 export function createPlanSchedule(deps: PlanScheduleDeps) {
   /** Review #4: no YouTube call before this (a quota refusal waits for the quota day). */
   let quotaPausedUntil = 0;
-  /** One change, read before and after: refused when the video is not private or its date is within the margin. */
-  async function change(row: StoredPublishingUpload, publishAt: string | null, action: "scheduled" | "unscheduled", at: string): Promise<NonNullable<UploadSteps["planSync"]>> {
+  /**
+   * One change, read before and after: refused when the video is not private or its date is within the margin. BL-267 (ADR 0073 §4,
+   * plan §3.5): `automatic` (the pass) changes a date only when YouTube's current date is the row's own (`row.publishAt`, the date
+   * this computer wrote and read back) or there is none; any other date is foreign and left alone (`foreign_date`). `explicit` (a
+   * move by the owner or the Producer, §3.7) may change any date.
+   */
+  async function change(row: StoredPublishingUpload, publishAt: string | null, action: "scheduled" | "unscheduled", at: string, mode: "automatic" | "explicit" = "automatic"): Promise<NonNullable<UploadSteps["planSync"]>> {
     const before = await deps.read(row);
     // BL-243: YouTube answered "no such video" -- the pass decides with the removed mark whether that is the end of it.
     if (before.missing) return { at, action, publishAt, result: "video_missing", reason: "the video is not on YouTube" };
@@ -125,13 +133,99 @@ export function createPlanSchedule(deps: PlanScheduleDeps) {
     if (before.publishAt !== null && Date.parse(before.publishAt) <= deps.clock.now().getTime() + MARGIN_MS) {
       return { at, action, publishAt, result: "refused", reason: "the video's date is within 15 minutes" };
     }
+    // A date our own last write put there late (read back differently at the time: `mismatch`, YouTube now shows what that write
+    // sent) is ours too. Review #4: only the date that write SENT -- never the different date the read-back saw (that may be the
+    // owner's own date set in Studio meanwhile).
+    const lastSync = stepsOf(row).planSync;
+    const ownMismatch = lastSync?.result === "mismatch" && lastSync.publishAt !== null && sameInstant(before.publishAt, lastSync.publishAt);
+    if (mode === "automatic" && before.publishAt !== null && !sameInstant(before.publishAt, row.publishAt) && !ownMismatch) {
+      return { at, action, publishAt, result: "foreign_date", reason: `the video's date ${before.publishAt} was not set by this computer`, youtubePublishAt: before.publishAt };
+    }
     if (!sameInstant(before.publishAt, publishAt)) await deps.write(row, publishAt);
     const after = await deps.read(row);
     if (after.privacyStatus === "private" && sameInstant(after.publishAt, publishAt)) return { at, action, publishAt, result: "verified" };
-    return { at, action, publishAt, result: "mismatch", reason: `read back as ${after.publishAt ?? "no date"} (${after.privacyStatus ?? "no privacy status"})` };
+    return { at, action, publishAt, result: "mismatch", reason: `read back as ${after.publishAt ?? "no date"} (${after.privacyStatus ?? "no privacy status"})`, youtubePublishAt: after.publishAt };
+  }
+
+  /**
+   * BL-267 (plan §3.7): what an explicit move would do to this row's video now -- read only. `moves`: the video is private and dated
+   * outside the margin (a move writes the new date at once); `plan_only`: private without a date (a move never gives a first date);
+   * else a refusal code. The switches are checked first (off: refused, nothing read).
+   */
+  async function explicitPrecheck(row: StoredPublishingUpload): Promise<{ outcome: "moves" | "plan_only"; youtubePublishAt: string | null } | { outcome: "refused"; code: string; reason: string }> {
+    if (!(await deps.liveWritesEnabled())) return { outcome: "refused", code: "live_writes_disabled", reason: "Live writes are off" };
+    if (!(await deps.dataReadsEnabled())) return { outcome: "refused", code: "data_api_reads_disabled", reason: "Data API reads are off" };
+    if (!row.videoId || row.status !== "done") return { outcome: "refused", code: "publishing_plan_move_not_here", reason: "no finished upload of this video on this computer" };
+    const before = await deps.read(row);
+    if (before.missing) return { outcome: "refused", code: "publishing_plan_video_missing", reason: "the video is not on YouTube" };
+    if (before.privacyStatus !== "private") return { outcome: "refused", code: "publishing_plan_already_published", reason: `video is ${before.privacyStatus ?? "unknown"}` };
+    if (before.publishAt !== null && Date.parse(before.publishAt) <= deps.clock.now().getTime() + MARGIN_MS) return { outcome: "refused", code: "publishing_plan_slot_too_soon", reason: "the video's date is within 15 minutes" };
+    return before.publishAt === null ? { outcome: "plan_only", youtubePublishAt: null } : { outcome: "moves", youtubePublishAt: before.publishAt };
+  }
+
+  /**
+   * BL-267 (plan §3.7): an explicit move's YouTube write for one row -- video-details' write path through `change` in explicit mode
+   * (identity check, Live writes right before, read-back), then the row takes the new date (so the next pass sees its own date) and
+   * the change is audited with who moved it. A date is only moved, never given: a row whose video has no date is not written.
+   */
+  async function explicitMove(row: StoredPublishingUpload, publishAt: string, by: "owner" | "producer", slotId: string): Promise<NonNullable<UploadSteps["planSync"]>> {
+    const at = deps.clock.now().toISOString();
+    const iso = new Date(publishAt).toISOString();
+    let result: NonNullable<UploadSteps["planSync"]>;
+    try {
+      const before = await deps.read(row);
+      if (before.publishAt === null) return { at, action: "scheduled", publishAt: iso, result: "refused", reason: "a move never gives a first date" };
+      result = await change(row, iso, "scheduled", at, "explicit");
+    } catch (error) {
+      result = { at, action: "scheduled", publishAt: iso, result: "refused", reason: errorCode(error) ?? "unknown_error" };
+    }
+    const steps = stepsOf(row);
+    const nextSteps: UploadSteps = { ...steps, planSync: result, ...(result.result === "verified" ? { publishAt: "set" as const } : {}) };
+    await deps.update(row, { publishAt: result.result === "verified" ? iso : row.publishAt, stepsJson: JSON.stringify(nextSteps) });
+    await deps.audit(row, { event: "publishing.plan_moved", uploadId: row.id, video: row.video, slotId, by, previous: row.publishAt, ...result });
+    return result;
+  }
+
+  /**
+   * BL-267 review #5: the `foreign_date` mark comes only from the last change the pass tried, so it is re-read once an hour even when
+   * the plan wants nothing. YouTube's date back to this computer's own (`row.publishAt`), or no date at all: the mark is cleared (the
+   * row's `planSync` dropped -- the date's own steps stay, so the slot reads as before the foreign date). Still another date: the mark
+   * is renewed with what YouTube has now. Nothing is written to YouTube. One read per marked row per hour.
+   */
+  async function recheckForeign(row: StoredPublishingUpload): Promise<"changed" | "kept" | "stop"> {
+    const steps = stepsOf(row);
+    const last = steps.planSync;
+    if (last?.result !== "foreign_date") return "kept";
+    const now = deps.clock.now();
+    if (now.getTime() - Date.parse(last.at) < RETRY_AFTER_MS) return "kept";
+    let before: Awaited<ReturnType<PlanScheduleDeps["read"]>>;
+    try {
+      before = await deps.read(row);
+    } catch (error) {
+      const code = errorCode(error);
+      if (code !== null && RETRY_LATER.has(code)) return "stop";
+      if (code === "youtube_quota_exceeded") {
+        quotaPausedUntil = deps.nextQuotaReset(now).getTime();
+        return "stop";
+      }
+      return "kept";
+    }
+    if (before.missing) return "kept";
+    if (before.publishAt === null || sameInstant(before.publishAt, row.publishAt)) {
+      const { planSync: _cleared, ...rest } = steps;
+      void _cleared;
+      if (!(await deps.update(row, { publishAt: row.publishAt, stepsJson: JSON.stringify(rest) }))) return "kept";
+      await deps.audit(row, { event: "publishing.plan_foreign_cleared", uploadId: row.id, video: row.video, slotId: row.slotId, previous: last.youtubePublishAt ?? null, youtubePublishAt: before.publishAt });
+      return "changed";
+    }
+    const renewed: UploadSteps = { ...steps, planSync: { ...last, at: now.toISOString(), youtubePublishAt: before.publishAt } };
+    await deps.update(row, { publishAt: row.publishAt, stepsJson: JSON.stringify(renewed) });
+    return "kept";
   }
 
   return {
+    explicitPrecheck,
+    explicitMove,
     /** One pass over the finished uploads with a slot; a row whose date already matches the plan costs no YouTube call. */
     async tick(): Promise<{ changed: number }> {
       // Review #4: switched off or out of quota -> nothing is read, nothing is written, nothing recorded.
@@ -161,8 +255,15 @@ export function createPlanSchedule(deps: PlanScheduleDeps) {
           const removed = await removedOf(row.channelId);
           if (removed === null || removed.has(row.videoId)) continue;
         }
-        const want = desiredDate(row, decisionForRow(row, decisions), deps.clock.now().getTime());
-        if (!want) continue;
+        const decision = decisionForRow(row, decisions);
+        const want = desiredDate(row, decision, deps.clock.now().getTime());
+        if (!want) {
+          // Review #5: a `foreign_date` mark is looked at again hourly even when the plan wants nothing (else it would stick).
+          const outcome = await recheckForeign(row);
+          if (outcome === "stop") return { changed };
+          if (outcome === "changed") changed += 1;
+          continue;
+        }
         // BL-243 (ADR 0063 §4): a video the sync found removed is never dated; an unreadable list dates nothing of the channel
         // (fail closed). Removing a date never waits on the list: YouTube's own answer decides (`missing`: nothing to do).
         if (want.publishAt !== null) {
@@ -194,7 +295,7 @@ export function createPlanSchedule(deps: PlanScheduleDeps) {
         const nextSteps: UploadSteps = { ...steps, planSync: result, ...(result.result === "verified" && want.publishAt !== null ? { publishAt: "set" as const } : {}) };
         if (await deps.update(row, { publishAt: stored, stepsJson: JSON.stringify(nextSteps) })) {
           changed += 1;
-          await deps.audit(row, { event: action === "unscheduled" ? "publishing.plan_unscheduled" : "publishing.plan_scheduled", uploadId: row.id, video: row.video, slotId: row.slotId, previous: row.publishAt, ...result });
+          await deps.audit(row, { event: action === "unscheduled" ? "publishing.plan_unscheduled" : "publishing.plan_scheduled", uploadId: row.id, video: row.video, slotId: row.slotId, previous: row.publishAt, ...(decision?.kind === "approved" && decision.source ? { source: decision.source } : {}), ...result });
         }
         if (deps.clock.now().getTime() < quotaPausedUntil) return { changed };
       }

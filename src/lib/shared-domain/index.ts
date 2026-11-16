@@ -108,6 +108,10 @@ export type DomainErrorCode =
   | "weekly_build_job_running"
   | "weekly_build_failed"
   | "weekly_build_bad_dates"
+  // BL-267 (ADR 0073 §7, owner O7): «Собрать неделю по шаблону» -- NO_TEMPLATE: no template in force; REFUSED: the job's own
+  // refusal (details.code: no_template | week_has_plan | outside_horizon | job_running).
+  | "weekly_build_no_template"
+  | "weekly_build_refused"
   | "runtime_repo_private_needs_token"
   | "runtime_repo_not_visible_to_token"
   | "media_runtime_incompatible"
@@ -329,6 +333,18 @@ export type DomainErrorCode =
   | "publishing_plan_slot_not_packaged"
   | "publishing_plan_slot_past"
   | "publishing_plan_slot_too_soon"
+  // BL-267 (WEEK_TEMPLATE_PLAN.md, ADR 0073): TEMPLATE_NOT_FOUND: no such template version; ALREADY_PUBLISHED: a move of a video that
+  // is not private; MOVE_NOT_HERE: a dated video with no finished upload row on this computer; VIDEO_MISSING: YouTube has no such
+  // video; MOVE_YOUTUBE_UNAVAILABLE: Live writes or Data API reads are off (a dated video's move writes at once).
+  | "publishing_plan_template_not_found"
+  | "publishing_plan_already_published"
+  | "publishing_plan_move_not_here"
+  | "publishing_plan_video_missing"
+  | "publishing_plan_move_youtube_unavailable"
+  // BL-267 review 2026-11-16: MOVE_YOUTUBE_FAILED: the new date was not read back verified on YouTube -- the plan was not changed (#2);
+  // MOVE_UPLOAD_ACTIVE: this computer still uploads the slot's video (#10).
+  | "publishing_plan_move_youtube_failed"
+  | "publishing_plan_move_upload_active"
   | "release_folder_not_found"
   | "release_folder_ambiguous"
   | "release_folder_name_invalid"

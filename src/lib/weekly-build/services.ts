@@ -2,6 +2,7 @@ import path from "node:path";
 import { DomainError } from "@/lib/shared-domain";
 import {
   MIN_BUNDLE_VERSION,
+  MIN_TEMPLATE_BUNDLE_VERSION,
   WEEKLY_BUILD_DATE_FIRST_OFFSET,
   WEEKLY_BUILD_DATE_LAST_OFFSET,
   WEEKLY_BUILD_DAYS_MAX,
@@ -17,6 +18,9 @@ import {
   type WeeklyBuildStatus,
   type WeeklyBuildStep,
   type WeeklyBuildView,
+  type WeeklyTemplateCollect,
+  type WeeklyTemplatePayloadResult,
+  WEEK_TEMPLATE_FILE,
 } from "./contracts";
 import type { RunScript, ScriptEnv, ScriptResult } from "./host";
 
@@ -26,6 +30,8 @@ import type { RunScript, ScriptEnv, ScriptResult } from "./host";
 // and mtime, for 5 minutes.
 
 export type WeeklyBuildFs = {
+  /** BL-267 (O7): writes the template file (creating its folder). Absent: a template build cannot run here. */
+  writeFile?(p: string, text: string): Promise<void>;
   realpath(p: string): Promise<string>;
   stat(p: string): Promise<{ isFile: boolean; size: number; mtimeMs: number }>;
   readFile(p: string): Promise<string>;
@@ -105,9 +111,20 @@ export function parseStatus(raw: Record<string, unknown>): WeeklyBuildStatus | n
       plan: str(s.plan),
     });
   }
+  const result = obj(job?.result);
   const parsedJob: WeeklyBuildJob | null =
     job && str(job.jobId)
-      ? { jobId: str(job.jobId)!, state: str(job.state) ?? "?", args: strings(job.args), startedAt: str(job.startedAt), finishedAt: str(job.finishedAt), exitCode: num(job.exitCode) }
+      ? {
+          jobId: str(job.jobId)!,
+          state: str(job.state) ?? "?",
+          args: strings(job.args),
+          startedAt: str(job.startedAt),
+          finishedAt: str(job.finishedAt),
+          exitCode: num(job.exitCode),
+          ...(result && (Array.isArray(result.payloads) || str(result.error))
+            ? { result: { plan: str(result.plan), week: str(result.week), payloads: Array.isArray(result.payloads) ? result.payloads : [], error: str(result.error), message: str(result.message) } }
+            : {}),
+        }
       : null;
   return {
     plan: plan && str(plan.file) ? { file: str(plan.file)!, start: str(plan.start), days: num(plan.days) ?? slots.length } : null,
@@ -190,6 +207,10 @@ export function createWeeklyBuildServices(deps: WeeklyBuildDeps) {
   const checkPassed = new Map<string, { key: string; at: number }>();
   const pythonCache = new Map<string, { python: string | null; at: number }>();
   const busy = new Set<string>();
+  /** BL-267 (O7): template builds already collected, by `<channel>:<job>` (one save per job). */
+  const collected = new Map<string, WeeklyTemplateCollect>();
+  /** Review #8: the collect in flight per channel. */
+  const collecting = new Map<string, Promise<WeeklyTemplateCollect | null>>();
 
   const blocked = (code: WeeklyBuildBlockCode, message: string, bundle: string | null = null, python: string | null = null): { readiness: WeeklyBuildReadiness; ctx: null } => ({
     readiness: { ready: false, code, message, bundle, python },
@@ -355,6 +376,66 @@ export function createWeeklyBuildServices(deps: WeeklyBuildDeps) {
       });
     },
 
+    /**
+     * BL-267 (ADR 0073 §7, owner O7): «Собрать неделю по шаблону» -- writes the template in force (the caller's one serializer) to
+     * `<workspace>/05 Docs/publishing/week-template.json`, then `start "13 Weekly_Plan v1" auto --template [--week W] --json`. The
+     * job's own refusals come back as `weekly_build_refused` with details.code.
+     */
+    async startByTemplate(channelId: string, input: { templateJson: string; week?: string | null }): Promise<WeeklyBuildStarted> {
+      const week = input.week ?? null;
+      if (week !== null && (!isRealDate(week) || new Date(`${week}T00:00:00Z`).getUTCDay() !== 1)) {
+        throw new DomainError({ code: "validation_failed", message: "week must be a Monday YYYY-MM-DD", details: { week } });
+      }
+      return exclusive(channelId, async () => {
+        const ctx = await requireReady(channelId);
+        const status = await readStatus(ctx);
+        if (isRunningState(status.job?.state)) {
+          throw new DomainError({ code: "weekly_build_job_running", message: `The weekly build already runs (job ${status.job!.jobId}).`, details: { jobId: status.job!.jobId } });
+        }
+        const cmp = compareVersions(ctx.bundle, MIN_TEMPLATE_BUNDLE_VERSION);
+        if (cmp === null || cmp < 0) {
+          throw new DomainError({ code: "weekly_build_unavailable", message: `The channel is pinned to factory bundle ${ctx.bundle}; building by template needs ${MIN_TEMPLATE_BUNDLE_VERSION} or newer.`, details: { channelId, code: "bundle_too_old" } });
+        }
+        if (!deps.fs.writeFile) throw new DomainError({ code: "weekly_build_unavailable", message: "This computer cannot write the template file.", details: { channelId } });
+        const file = path.join(ctx.workspace, ...WEEK_TEMPLATE_FILE);
+        if (!deps.isPathInsideOrEqual(ctx.workspace, file)) throw new DomainError({ code: "weekly_build_unavailable", message: "The template file would leave the channel folder.", details: { channelId } });
+        await deps.fs.writeFile(file, input.templateJson);
+        let clearedStop = false;
+        if (status.stopped) {
+          const go = await runLauncher(ctx, ["run", WEEKLY_PLAN_WORKFLOW, "go"]);
+          if (go.exitCode !== 0) throw failed("clearing STOP (go)", go);
+          clearedStop = true;
+        }
+        const result = await runLauncher(ctx, ["start", WEEKLY_PLAN_WORKFLOW, "auto", "--template", ...(week ? ["--week", week] : []), "--json"]);
+        const parsed = parseJsonOutput(result.stdout);
+        if (result.exitCode !== 0) {
+          const code = str(parsed?.error);
+          if (code && ["no_template", "week_has_plan", "outside_horizon", "job_running"].includes(code)) {
+            throw new DomainError({ code: "weekly_build_refused", message: str(parsed?.message) ?? `The factory refused the template build: ${code}`, details: { code } });
+          }
+          throw failed("start", result);
+        }
+        if (!parsed || !str(parsed.jobId)) throw failed("start (unreadable answer)", { ...result, exitCode: 0 });
+        return { jobId: str(parsed.jobId)!, log: str(parsed.log) ?? "", pid: num(parsed.pid), clearedStop };
+      });
+    },
+
+    /**
+     * BL-267 (O7): a template build's payloads saved by the caller (`save`: the plan's agent save as the factory, with every check),
+     * then `13 push --sent --plan <plan>` when at least one was accepted. The result appears while the job still runs (the Operator,
+     * 2026-11-16), so it is collected as soon as it is there, whatever the job's state. A refusal (`result.error`) is answered as
+     * `error`, nothing saved. A job already collected is answered from memory (nothing saved twice). null: no result yet.
+     */
+    async collectTemplateBuild(channelId: string, save: (payload: unknown) => Promise<void>): Promise<WeeklyTemplateCollect | null> {
+      // Review #8: one collect per channel at a time (the card's poll and a click): a second call waits for the one in flight and
+      // gets its answer -- the existence check and the saves in `save` never run twice side by side, and push runs once.
+      const running = collecting.get(channelId);
+      if (running) return running;
+      const run = collectOnce(channelId, save).finally(() => collecting.delete(channelId));
+      collecting.set(channelId, run);
+      return run;
+    },
+
     async stop(channelId: string): Promise<{ stopped: true }> {
       return exclusive(channelId, async () => {
         const ctx = await requireReady(channelId);
@@ -364,6 +445,54 @@ export function createWeeklyBuildServices(deps: WeeklyBuildDeps) {
       });
     },
   };
+
+  async function collectOnce(channelId: string, save: (payload: unknown) => Promise<void>): Promise<WeeklyTemplateCollect | null> {
+    {
+      const ctx = await requireReady(channelId);
+      const status = await readStatus(ctx);
+      const job = status.job;
+      if (!job || !job.result) return null;
+      const key = `${channelId}:${job.jobId}`;
+      const known = collected.get(key);
+      if (known) return known;
+      if (job.result.error) {
+        const refused: WeeklyTemplateCollect = { jobId: job.jobId, plan: null, results: [], pushed: false, pushError: null, error: { code: job.result.error, message: job.result.message } };
+        collected.set(key, refused);
+        return refused;
+      }
+      const results: WeeklyTemplatePayloadResult[] = [];
+      for (const [index, payload] of job.result.payloads.entries()) {
+        const weekStart = str(obj(payload)?.weekStart);
+        try {
+          await save(payload);
+          results.push({ index, weekStart, status: "accepted", code: null });
+        } catch (error) {
+          const e = error as { code?: unknown; details?: { refused?: unknown } };
+          results.push({ index, weekStart, status: "refused", code: typeof e.code === "string" ? e.code : "save_failed", ...(e.details?.refused ? { refused: e.details.refused } : {}) });
+        }
+      }
+      let pushed = false;
+      let pushError: string | null = null;
+      if (results.some((r) => r.status === "accepted") && job.result.plan) {
+        // The Operator (2026-11-16): every payload saved → no `--accepted` (the whole plan is pushed); some refused → `--accepted` with
+        // the slot ids of the saved payloads only (a save is all-or-nothing per payload); nothing saved → no push at all.
+        const payloads = job.result.payloads;
+        const partial = results.some((r) => r.status === "refused");
+        const acceptedIds = results
+          .filter((r) => r.status === "accepted")
+          .flatMap((r) => {
+            const slots = obj(payloads[r.index])?.slots;
+            return Array.isArray(slots) ? slots.map((x) => str(obj(x)?.slotId)).filter((id): id is string => id !== null) : [];
+          });
+        const push = await runLauncher(ctx, ["run", WEEKLY_PLAN_WORKFLOW, "push", "--sent", "--plan", job.result.plan, ...(partial ? ["--accepted", acceptedIds.join(",")] : [])]);
+        pushed = push.exitCode === 0;
+        if (!pushed) pushError = tail(`${push.stdout}\n${push.stderr}`) || `exit ${push.exitCode}`;
+      }
+      const answer: WeeklyTemplateCollect = { jobId: job.jobId, plan: job.result.plan, results, pushed, pushError };
+      collected.set(key, answer);
+      return answer;
+    }
+  }
 }
 
 export type WeeklyBuildService = ReturnType<typeof createWeeklyBuildServices>;

@@ -48,3 +48,11 @@ network with an API; each channel connects its own, chosen in the UI), 4279 (bac
    public posts need the app Live, which needs a public Privacy Policy URL — an owner decision.
 7. **Social posts do not wait for YouTube** (owner msg 4360, «Оставь как есть»): an approved slot posts to its networks at its
    time even if the YouTube upload did not happen -- the approval covers the whole package.
+
+## Note — BL-267 (ADR 0073, owner TG 4630–4636 O10, 2026-11-16; with that merge)
+
+Amendment 1's "the owner's approval of one manifest SHA-256 authorizes the posts" widens: one plan for YouTube and the social networks.
+A slot authorizes its package's `crossPost` when the weekly plan dates it -- a match of the owner's approved week template with his
+media approval (where the channel has the review gate), or his explicit one-slot date -- evaluated also for slots up to 36 h past and
+bound to the slot's CURRENT manifest SHA-256, which the runner re-checks before each Meta call (`socialSlotStates`). A vetoed slot, a
+slot whose video carries a date this computer did not set, or one the template no longer dates, posts nothing.

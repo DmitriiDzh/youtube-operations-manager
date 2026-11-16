@@ -1030,7 +1030,8 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   - BL-256 (ADR 0051 Amendment 1): владелец переносит слот на другой день недели и/или время («Изменить время» в строке слота,
     маршрут `/publishing-plans/[weekStart]/retime`, `retime()` в модуле): не снятый, не прошедший, не ближе 15 минут; старое
     одобрение отзывается, «Сохранить и одобрить» одобряет новое время тем же шагом — дату загруженного видео на YouTube переносит
-    цикл plan-schedule. `updatedBy: owner`; аудит `publishing_plan.retimed`. Factory API 1.47.0, Agent API 4.20.0.
+    цикл plan-schedule. `updatedBy: owner`; аудит `publishing_plan.retimed`. Factory API 1.47.0, Agent API 4.20.0. **BL-267 (ревью):
+    маршрут `retime` и `retime()` удалены — их заменил перенос `move()` (сначала YouTube, потом план).**
   - BL-263 (PRD-REQ-0194, owner TG 2332/2334/4553/4555, ADR 0071, `docs/roadmap/plans/SHORT_VIDEO_CODE_PLAN.md`) — **на ветке
     `feature/bl-263-short-video-code`, не влито в `dev`**: второй код видео `S<n>` для шортсов WWE. Общий модуль
     `src/lib/shared-video-code/` (§M, без зависимостей) — единственное место правил кода: строгий `^(V|S)[1-9][0-9]{0,5}$` для ввода,
@@ -1310,7 +1311,8 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Настройка:** путь к Python — `app_settings.weekly_build_settings` (`/api/weekly-build/settings`); пусто — обычные папки, потом PATH.
 - **Маршруты владельца** `/api/channels/[channelId]/weekly-build` (GET), `/dry-run`, `/start`, `/stop` (POST); MCP-инструмента нет
   (`no-agent.test.ts`). Ошибки: `weekly_build_unavailable` (409, `details.code`), `weekly_build_job_running` (409), `weekly_build_failed` (502).
-- **Web:** карточка «Сборка недели» над планом на вкладке Контент → «План недели» (`src/components/weekly-build-card.tsx`): календарь
+- **Web (до BL-267; карточка `weekly-build-card.tsx` удалена на ревью BL-267, её заменила «Собрать неделю по шаблону» —
+  `weekly-template-build-card.tsx`; маршруты ниже остались):** карточка «Сборка недели» над планом: календарь
   дат (завтра … +28, только отмеченные; `auto --dates`, перед запуском всегда пробный прогон, отказ фабрики `bad_dates` →
   `weekly_build_bad_dates` 422 с причиной по дате), «Собрать N дней» → подтверждение с пробным прогоном, ход и «Стоп», таблица слотов с проблемами, «Нужна упаковка» →
   «Разбудить агента» (`auto --wake`). Задача отсоединена запускатором: перезапуск сервера её не останавливает.
@@ -1410,6 +1412,30 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   `REVIEW-DECISION-package-<video>-<decisionId>.md`. Ни один MCP-путь не решает и не переключает (`package-reviews/boundaries.test.ts`).
   Это не писатель YouTube.
 
+### 2.9bn Шаблон недели вместо одобрения слотов (BL-267, PRD-REQ-0195 A, ADR 0073, `docs/roadmap/plans/WEEK_TEMPLATE_PLAN.md`) — **IMPLEMENTED на ветке** `feature/bl-267-week-template` (ждёт ревью, текст §F у владельца, разрешения на мердж)
+
+- **Шаблон:** `publishing-plans/template.ts` (`week-template/1`: дни `mon..sun`, `kind long|short`, `hours?`, `publishTimeUtc`;
+  `horizonWeeks`, `displayTimeZone` только для показа), хранение в семействе `publishing_plans` — карты `templateVersions` (неизменяемые
+  версии) и `templateDecisions` (решения владельца), не в генезисе, чтение через конфликт первой записи. «В силе» — новейшее решение
+  владельца approved/withdrawn с совпадающим хэшем; иначе нет (fail closed). Службы `template-services.ts`: правка владельца (версия +
+  одобрение одним изменением), принять/отклонить, снять — только Web UI; предложение — Продюсер.
+- **Сопоставление:** UTC-день и точная минута; short ≤ 180 с, `hours` ±10 %, S-код длиннее 180 с — неясный вид; одна позиция = первый
+  созданный слот этого вида (O4), long и short раздельно.
+- **Правило даты** (`slotDecisions`, `source: template | owner`): совпал + упаковка готова/загружена + медиа одобрено (на канале с
+  проверкой; сведения о медиа — порт `progress`, `publishing-plan-progress` по правилу `package-reviews`); явная дата — один слот.
+  Привязка к медиа (`approvalNamesUpload`, `fingerprintCovers`). `approvalStage` и замена (`replacesSlotId`) больше ничего не решают.
+  Соцсети (`socialSlotStates`) следуют тому же датированию (O10).
+- **Своя дата** (`publishing/plan-schedule.ts`): автоматический проход не двигает и не снимает дату, поставленную не этим компьютером
+  (`planSync.result: foreign_date`); явный перенос (`explicitPrecheck` / `explicitMove`, тот же `change()` в явном режиме) — может.
+- **Перенос** (`publishing-plans` `move()`): владелец (маршрут `/publishing-plans/move`) и Продюсер (`producer_publishing_plan_move_slot`)
+  — куда угодно, id сохраняется, одно изменение `moveSlot`, `movedFrom`; дата на YouTube пишется сразу через порт `moveYoutube`
+  (`src/composition/publishing-plan-moves.ts` → `publishing.createPlanMoveYoutubeCore`); первую дату не даёт.
+- **Экран:** «План» (Неделя | Месяц | Шаблон недели, `week-template-editor.tsx`, `week-template-model.ts`), «Календарь» убран,
+  «Собрать неделю по шаблону» (`weekly-template-build-card.tsx`, `composition/weekly-build-template.ts`, weekly-build `startByTemplate` /
+  `collectTemplateBuild`, файл `05 Docs/publishing/week-template.json`).
+- **Контракты:** Factory 1.52.0 (`factory_publishing_template_get`), Agent 4.23.0 (`agent_publishing_template_get`), Producer 1.25.0
+  (`producer_week_template_get` / `_propose`, `producer_publishing_plan_get` / `_list` / `_move_slot`, разрешение `PLAN_MOVE`).
+
 ### 2.9bm Ворота только по медиа и правка упаковки после загрузки (BL-265, PRD-REQ-0195 B, ADR 0072, `docs/roadmap/plans/MEDIA_GATE_PLAN.md`) — **IMPLEMENTED на ветке** `feature/bl-265-media-gate` (ждёт ревью и разрешения на мердж)
 
 - **Ворота по медиа:** решение владельца (`package-reviews/model.ts`, `standingDecision`) покрывает mp4 — `videoSha256` + `videoSizeBytes`
@@ -1435,7 +1461,8 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   `00 YT Producer/Inbox` (новый не-dot файл будит Продюсера, `wait_inbox.sh`). Виды: `clip` (одобрен / возвращён, комментарий,
   вложения), `storyboard` (решение по версии, комментарий и ответ владельца), `render` («Ролик целиком»), `plan` (проход проверки
   плана генерации: волна закончена или 5 минут тишины — все оценки, выборы и «ни один не подходит» с прошлого файла), `slot` (решение
-  по слоту плана недели). Только решения владельца: отзыв/отправка Продюсером, комментарии и ответы Оператора — нет.
+  по слоту плана недели), `template` (BL-267, AC-WT-04: решение владельца по шаблону недели — его правка, принятое или отклонённое
+  предложение Продюсера, отзыв шаблона). Только решения владельца: отзыв/отправка Продюсером, комментарии и ответы Оператора — нет.
 - **Модуль:** `src/lib/review-notify/` (общий, без фич-модулей и базы): имена и Markdown (`render.ts`, одни и те же байты на любом
   компьютере), тик (`services.ts`), запись `.tmp-<random>` → rename, существующий файл не трогается (`adapters/fs.ts`), толчок
   `nudgeReviewNotify` (фич-модули clip-reviews / storyboards / publishing-plans — порт `notifyOwnerDecision` в своём index.ts).

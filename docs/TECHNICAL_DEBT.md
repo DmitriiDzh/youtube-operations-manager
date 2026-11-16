@@ -2277,6 +2277,24 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Mitigation:** both computers run BL-240 before agents remove vetoed slots or use `replacesSlotId` (stated in the release note).
 - **Gate(s):** none (no new YouTube write; nothing is ever scheduled by it). **Re-evaluate:** when upload rows are synced between
   the computers.
+- **Amended (BL-267, ADR 0073 §5):** decisions are now read by slot id across weeks (a moved slot keeps its veto and approvals); a
+  build without BL-267 still reads them by week, which is why a vetoed slot cannot be moved.
+
+## RISK-156 — Week template: mixed builds, agents changing dates, and the template maps' first write — OPEN, 2026-11-16
+
+- **Affected components:** `src/lib/publishing-plans/` (template, moves), `src/lib/publishing/plan-schedule.ts` (owned dates, explicit
+  moves), `src/composition/publishing-plan-moves.ts`, the Producer's `producer_publishing_plan_move_slot` (BL-267, ADR 0073).
+- **Risk:** (1) a build without BL-267 ignores the template maps and `movedFrom`, shows per-slot approval, reads decisions by week and
+  never dates by template; a template-dated video is dated only by the BL-267 upload computer. (2) The Producer now changes release
+  dates of dated videos on its own (owner 4630/4636): a wrong move moves a real date (still private, more than 15 minutes ahead). (3) The
+  template maps are created by the first write on each computer: a concurrent first write conflicts on the root key; the reader merges
+  both, but each computer keeps writing into its own winner until merged. (4) Social posts now follow template dates (O10): captions an
+  agent re-packaged go out without a per-video owner look (bound to the current manifest, re-checked before each Meta call).
+- **Mitigation:** both computers update together (release note); every move write keeps identity check, Live writes immediately
+  before, read-back and audit with `by`; a public video and the 15-minute margin are refused; a move never gives a first date; the
+  Operator and workers cannot move or re-time a dated slot (`slot_dated`); the owner can veto any slot.
+- **Gate(s):** Gate B (a YouTube write by an agent's tool) -- same path as BL-255/BL-265 Producer writes. **Re-evaluate:** after the
+  first weeks of Producer moves, or if the owner asks for an undo window (O8, not now).
 
 ## RISK-155 — Short codes: an older build meeting an S report keeps a stale copy of that peer; the recode alias is read-time only — OPEN, 2026-11-16
 
@@ -2296,6 +2314,10 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
   or a new reader of job / reservation rows that must know a video's current code.
 
 ## RISK-154 — Package review: decisions in the synced folder are not authenticated; ordering across computers is causal, not absolute — OPEN, 2026-11-15
+
+- **Amended (BL-267, ADR 0073):** the week template's owner decisions live in the same kind of synced document: a forged
+  `templateDecisions` record with `by: "owner"` would put a template in force. It dates only slots whose package is ready and, on a
+  gated channel, whose media the owner approved (this risk's own condition), and never moves an existing date.
 
 - **Affected components:** `src/lib/package-reviews/`, `src/lib/sync-gateway/package-reviews(-sync)/`, the gate in
   `src/lib/publishing/package-scan.ts` and the upload runner (BL-257, ADR 0070).
@@ -2368,7 +2390,10 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Gate(s):** none (no new YouTube write path). **Re-evaluate:** when the next change touches deleted videos -- introduce one
   "effective upload" concept in the scan (the upload a package's slot counts, with its presence and time) that every layer reads.
 
-## RISK-150 — Weekly plan approval stage: the two computers on different builds disagree — OPEN, 2026-11-04
+## RISK-150 — Weekly plan approval stage: the two computers on different builds disagree — CLOSED with BL-267 (merge pending), 2026-11-16
+
+- **Closure (BL-267, ADR 0073):** `approvalStage` is retired -- this build ignores it and `setApprovalStage` writes nothing, so a
+  build can no longer put the other into the `slot` stage. The mixed-build part moves to RISK-156.
 
 - **Affected components:** `src/lib/publishing-plans/` (`approvalStage`, fingerprinted decisions), `src/lib/publishing/`
   `slot-decision.ts`, `auto-upload.ts`, `plan-schedule.ts` (BL-242, ADR 0062).

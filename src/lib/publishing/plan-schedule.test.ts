@@ -220,6 +220,24 @@ test("AC-WP-57: a finished upload (slot old, vid1, no date) and an approved slot
   assert.deepEqual(vetoedOld.state.writes, ["2026-11-04T09:00:00.000Z"]);
 });
 
+test("BL-267 review #1 scenarios A/B: a template date never moves a date this computer already set", async () => {
+  // A (switch-over): the video carries this Mac's date (Mon 15:00Z, from the old approval); the slot was re-timed to Wed and the new
+  // template matches Wed -> the template decision names the video, but the date is not moved.
+  const dated = dateless({ publishAt: "2026-11-02T15:00:00.000Z", stepsJson: JSON.stringify(OK_STEPS) });
+  const a = multiHarness(dated, new Map<string, SlotDecision>([["old", { kind: "approved", publishAt: "2026-11-04T15:00:00.000Z", source: "template", package: { video: "V73", manifestSha256: "mf-aa", videoId: "vid1" } }]]));
+  assert.deepEqual(await a.schedule.tick(), { changed: 0 });
+  assert.deepEqual(a.state.writes, []);
+  // B (manifest re-pointed): the package now names another slot on a template position at another time; that slot's template decision
+  // names vid1 (by its video id) -- the row keeps its own date.
+  const b = multiHarness(dated, new Map<string, SlotDecision>([["old", { kind: "pending" }], ["new", { kind: "approved", publishAt: "2026-11-06T15:00:00.000Z", package: { video: "V73", manifestSha256: "mf-aa", videoId: "vid1" }, source: "template" }]]));
+  assert.deepEqual(await b.schedule.tick(), { changed: 0 });
+  assert.deepEqual(b.state.writes, []);
+  // The same with the owner's own date: moved (his explicit word).
+  const owner = multiHarness(dated, new Map<string, SlotDecision>([["old", { kind: "pending" }], ["new", { kind: "approved", publishAt: "2026-11-06T15:00:00.000Z", package: { video: "V73", manifestSha256: "mf-aa", videoId: "vid1" }, source: "owner" }]]));
+  await owner.schedule.tick();
+  assert.deepEqual(owner.state.writes, ["2026-11-06T15:00:00.000Z"]);
+});
+
 test("AC-WP-57: two approved live slots naming vid1 -> no write", async () => {
   const h = multiHarness(dateless(), new Map([["new", byVideo("2026-11-04T09:00:00.000Z")], ["other", byVideo("2026-11-05T09:00:00.000Z")]]));
   assert.deepEqual(await h.schedule.tick(), { changed: 0 });
@@ -347,10 +365,59 @@ test("BL-243 AC-WP-83: after video_missing and a cleared mark, the veto unschedu
   await back.schedule.tick();
   assert.equal(back.steps().planSync.result, "mismatch", "not again within the hour");
   back.state.readBackWrong = false;
+  // BL-267 review #4: the date the failed read-back saw (2026-12-01) is NOT adopted as this computer's own any more (it may be the
+  // owner's Studio date) -- here YouTube is back at the row's own date by the retry (the write did not take), so the veto retries.
+  back.state.video.publishAt = "2026-10-26T09:00:00.000Z";
   back.state.now = new Date(NOW.getTime() + RETRY_AFTER_MS + 1);
   assert.deepEqual(await back.schedule.tick(), { changed: 1 });
   assert.equal(back.steps().planSync.result, "verified");
   assert.equal(back.state.row.publishAt, null);
+});
+
+test("BL-267 review #4: after a mismatch the date the read-back saw is foreign; only the date that write sent counts as own", async () => {
+  // The pass writes 10-27 09:00; meanwhile the owner sets 12-01 in Studio and the read-back sees it: mismatch.
+  const h = harness(row(), { kind: "approved", publishAt: "2026-10-27T09:00:00.000Z", source: "owner" });
+  h.state.readBackWrong = true;
+  await h.schedule.tick();
+  assert.deepEqual([h.steps().planSync.result, h.steps().planSync.youtubePublishAt], ["mismatch", "2026-12-01T00:00:00.000Z"]);
+  h.state.readBackWrong = false;
+  h.state.now = new Date(NOW.getTime() + RETRY_AFTER_MS + 1);
+  await h.schedule.tick();
+  assert.deepEqual(h.state.writes, ["2026-10-27T09:00:00.000Z"], "the owner's 12-01 is never written over");
+  assert.equal(h.steps().planSync.result, "foreign_date");
+  // The same mismatch, but YouTube later shows the date that write sent (it landed late): own -- verified, no second write.
+  const late = harness(row(), { kind: "approved", publishAt: "2026-10-27T09:00:00.000Z", source: "owner" });
+  late.state.readBackWrong = true;
+  await late.schedule.tick();
+  late.state.readBackWrong = false;
+  late.state.video.publishAt = "2026-10-27T09:00:00.000Z";
+  late.state.now = new Date(NOW.getTime() + RETRY_AFTER_MS + 1);
+  await late.schedule.tick();
+  assert.deepEqual(late.state.writes, ["2026-10-27T09:00:00.000Z"]);
+  assert.deepEqual([late.steps().planSync.result, late.state.row.publishAt], ["verified", "2026-10-27T09:00:00.000Z"]);
+});
+
+test("BL-267 review #5: a foreign_date mark is re-read hourly -- cleared once YouTube is back at the row's own date or has none; renewed otherwise", async () => {
+  const earlier = new Date(NOW.getTime() - 2 * 60 * 60_000).toISOString();
+  const marked = (youtube: string) => JSON.stringify({ ...OK_STEPS, planSync: { at: earlier, action: "scheduled", publishAt: "2026-10-27T09:00:00.000Z", result: "foreign_date", youtubePublishAt: youtube } });
+  // A pending slot (the template withdrawn): the plan wants nothing, the mark is still looked at.
+  const back = harness(row({ stepsJson: marked("2026-10-26T10:00:00.000Z") }), { kind: "pending" }, { privacyStatus: "private", publishAt: "2026-10-26T09:00:00.000Z" });
+  assert.deepEqual(await back.schedule.tick(), { changed: 1 });
+  assert.equal(back.steps().planSync, undefined, "own date again: mark cleared");
+  assert.equal(back.steps().publishAt, "set", "the date's own steps stay");
+  assert.deepEqual(back.state.writes, []);
+  assert.equal(back.state.audits[0].event, "publishing.plan_foreign_cleared");
+  const none = harness(row({ stepsJson: marked("2026-10-26T10:00:00.000Z") }), undefined, { privacyStatus: "private", publishAt: null });
+  await none.schedule.tick();
+  assert.equal(none.steps().planSync, undefined, "no date: mark cleared");
+  const still = harness(row({ stepsJson: marked("2026-10-26T10:00:00.000Z") }), { kind: "pending" }, { privacyStatus: "private", publishAt: "2026-10-28T10:00:00.000Z" });
+  assert.deepEqual(await still.schedule.tick(), { changed: 0 });
+  assert.deepEqual([still.steps().planSync.result, still.steps().planSync.youtubePublishAt], ["foreign_date", "2026-10-28T10:00:00.000Z"], "renewed");
+  assert.deepEqual(still.state.writes, []);
+  // Within the hour: no read at all.
+  const reads = still.state.reads;
+  await still.schedule.tick();
+  assert.equal(still.state.reads, reads);
 });
 
 // BL-243 review round 6 (AC-WP-79): only video-details' "no item for the id" is a not-found; an item without snippet/status is not.
@@ -361,4 +428,77 @@ test("BL-243 AC-WP-79: isVideoNotFound needs reason no_item for that video id", 
   assert.equal(isVideoNotFound(error({ videoId: "vid64" }), "vid64"), false);
   assert.equal(isVideoNotFound(error({ videoId: "other", reason: "no_item" }), "vid64"), false);
   assert.equal(isVideoNotFound(new Error("network"), "vid64"), false);
+});
+
+// BL-267 (WEEK_TEMPLATE_PLAN.md §3.5/§3.7, ADR 0073 §4-§5; owner TG 4630/4636): the pass (automatic) never moves or removes a date it did
+// not set itself -- YouTube's current date must equal the row's own; an explicit move by the owner or the Producer may change any
+// date, reads back, and the row takes the new date. Values by hand: NOW 2026-10-25 12:00Z; the row wrote 2026-10-26 09:00Z.
+
+test("AC-WT-23: row without a date, YouTube dated by hand, slot approved at another time -> no write, planSync foreign_date", async () => {
+  const h = harness(row({ publishAt: null }), { kind: "approved", publishAt: "2026-10-27T09:00:00.000Z" }, { privacyStatus: "private", publishAt: "2026-10-28T18:00:00.000Z" });
+  await h.schedule.tick();
+  assert.deepEqual(h.state.writes, []);
+  assert.equal(h.steps().planSync.result, "foreign_date");
+  assert.equal(h.steps().planSync.youtubePublishAt, "2026-10-28T18:00:00.000Z");
+  assert.equal(h.state.row.publishAt, null, "the row keeps its own (no) date");
+  // The same wish is not read again within the hour.
+  const reads = h.state.reads;
+  await h.schedule.tick();
+  assert.equal(h.state.reads, reads);
+});
+
+test("AC-WT-24: own date is moved by the pass for the owner's date; a foreign date is never written, also not for a veto", async () => {
+  // BL-267 review #1 (ADR 0073 §3/§4: the template gives only a FIRST date): this case moved an own date with `source: "template"`;
+  // that is now refused (below) -- moving an own date remains the owner's explicit date's job.
+  const own = harness(row(), { kind: "approved", publishAt: "2026-10-26T12:00:00.000Z", source: "owner" });
+  await own.schedule.tick();
+  assert.deepEqual(own.state.writes, ["2026-10-26T12:00:00.000Z"]);
+  assert.equal(own.state.audits[0].source, "owner");
+  const firstOnly = harness(row(), { kind: "approved", publishAt: "2026-10-26T12:00:00.000Z", source: "template" });
+  await firstOnly.schedule.tick();
+  assert.deepEqual([firstOnly.state.writes, firstOnly.state.reads], [[], 0], "template + own date: nothing read or written");
+  const first = harness(row({ publishAt: null, stepsJson: JSON.stringify({ ...OK_STEPS, publishAt: undefined }) }), { kind: "approved", publishAt: "2026-10-26T12:00:00.000Z", source: "template" });
+  await first.schedule.tick();
+  assert.deepEqual(first.state.writes, ["2026-10-26T12:00:00.000Z"], "template gives the first date");
+  assert.equal(first.state.audits[0].source, "template");
+  const foreignMove = harness(row(), { kind: "approved", publishAt: "2026-10-26T12:00:00.000Z" }, { privacyStatus: "private", publishAt: "2026-10-26T10:00:00.000Z" });
+  await foreignMove.schedule.tick();
+  assert.deepEqual(foreignMove.state.writes, []);
+  assert.equal(foreignMove.steps().planSync.result, "foreign_date");
+  const foreignVeto = harness(row(), { kind: "vetoed" }, { privacyStatus: "private", publishAt: "2026-10-26T10:00:00.000Z" });
+  await foreignVeto.schedule.tick();
+  assert.deepEqual(foreignVeto.state.writes, []);
+  assert.equal(foreignVeto.steps().planSync.result, "foreign_date");
+});
+
+test("AC-WT-44 / AC-WT-31: an explicit move writes over a foreign date, reads back, the row takes it, the next pass makes no call", async () => {
+  const h = harness(row({ publishAt: null }), { kind: "pending" }, { privacyStatus: "private", publishAt: "2026-10-28T18:00:00.000Z" });
+  assert.deepEqual(await h.schedule.explicitPrecheck(h.state.row), { outcome: "moves", youtubePublishAt: "2026-10-28T18:00:00.000Z" });
+  const result = await h.schedule.explicitMove(h.state.row, "2026-10-30T15:00:00Z", "producer", "w44-mon");
+  assert.equal(result.result, "verified");
+  assert.deepEqual(h.state.writes, ["2026-10-30T15:00:00.000Z"]);
+  assert.equal(h.state.row.publishAt, "2026-10-30T15:00:00.000Z");
+  assert.deepEqual([h.state.audits[0].event, h.state.audits[0].by, h.state.audits[0].previous], ["publishing.plan_moved", "producer", null]);
+  const reads = h.state.reads;
+  assert.deepEqual(await h.schedule.tick(), { changed: 0 });
+  assert.equal(h.state.reads, reads, "pending: nothing to do, no YouTube call");
+});
+
+test("AC-WT-33 / AC-WT-45 / AC-WT-46: explicit precheck refuses a public video, a date within 15 min, switches off, no row; undated = plan only", async () => {
+  const pub = harness(row(), undefined, { privacyStatus: "public", publishAt: null });
+  assert.deepEqual(await pub.schedule.explicitPrecheck(pub.state.row), { outcome: "refused", code: "publishing_plan_already_published", reason: "video is public" });
+  const soon = harness(row(), undefined, { privacyStatus: "private", publishAt: "2026-10-25T12:10:00.000Z" });
+  assert.equal(((await soon.schedule.explicitPrecheck(soon.state.row)) as { code: string }).code, "publishing_plan_slot_too_soon");
+  const off = harness(row(), undefined);
+  off.state.liveWrites = false;
+  assert.equal(((await off.schedule.explicitPrecheck(off.state.row)) as { code: string }).code, "live_writes_disabled");
+  assert.equal(off.state.reads, 0);
+  const uploading = harness(row({ status: "processing" }), undefined);
+  assert.equal(((await uploading.schedule.explicitPrecheck(uploading.state.row)) as { code: string }).code, "publishing_plan_move_not_here");
+  const undated = harness(row({ publishAt: null }), undefined, { privacyStatus: "private", publishAt: null });
+  assert.deepEqual(await undated.schedule.explicitPrecheck(undated.state.row), { outcome: "plan_only", youtubePublishAt: null });
+  // D1: a move never gives a first date, even if called.
+  const r = await undated.schedule.explicitMove(undated.state.row, "2026-10-30T15:00:00Z", "owner", "w44-mon");
+  assert.equal(r.result, "refused");
+  assert.deepEqual(undated.state.writes, []);
 });

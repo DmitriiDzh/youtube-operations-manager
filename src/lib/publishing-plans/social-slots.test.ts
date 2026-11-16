@@ -78,9 +78,10 @@ test("not approved: once vetoed; once the package changed (a new manifest); when
   unreadable.setUnavailable(true);
   assert.deepEqual(await unreadable.service.socialSlotStates(CH), []);
 
+  // BL-267 (AC-WT-38): the slot stage is retired -- the switch writes nothing, so the slot stays approved (was: nothing posts).
   const slotStage = await approvedSlot();
   await slotStage.service.setApprovalStage(CH, { stage: "slot" }, "u1");
-  assert.deepEqual(await slotStage.service.socialSlotStates(CH), []);
+  assert.equal((await slotStage.service.socialSlotStates(CH))[0].approved, true);
 });
 
 test("slots more than 36 h in the past are not read", async () => {

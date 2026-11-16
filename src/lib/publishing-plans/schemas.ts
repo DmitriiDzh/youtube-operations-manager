@@ -56,7 +56,8 @@ export const ownerDecisionInputSchema = z
     if ((value.action === "approve" || value.action === "revoke") && value.slots.some((s) => !s.contentHash)) {
       ctx.addIssue({ code: "custom", path: ["slots"], message: "approve and revoke name the content hash each slot was shown with" });
     }
-    if ((value.action === "veto" || value.action === "restore" || value.action === "revoke") && value.slots.length !== 1) {
+    // BL-267 (ADR 0073 §3, AC-WT-26): no bulk date action -- an explicit date is one slot at a time.
+    if (value.slots.length !== 1) {
       ctx.addIssue({ code: "custom", path: ["slots"], message: `${value.action} takes exactly one slot` });
     }
   });
@@ -67,17 +68,18 @@ export const approvalStageInputSchema = z.object({ stage: z.enum(["packaged", "s
 export type ApprovalStageInput = z.infer<typeof approvalStageInputSchema>;
 
 /**
- * BL-256 (owner msgs 4380/4383): the owner moves one slot to another day of its week and/or another time (Web UI only). `contentHash`
- * is the hash the screen showed (a slot changed meanwhile is refused); `approve` -- the new time is approved in the same step (the
- * plan-schedule pass then moves an uploaded video's date on YouTube).
+ * BL-267 (ADR 0073 §5, plan §3.7): a move by the owner (Web UI) or the Producer (its tool) -- the slot by id (any week), the content
+ * hash the mover was shown, the target week (a Monday), date and local wall time in the target plan's zone (the source plan's zone
+ * when the target week has no plan yet). `dryRun`: checked and described, nothing written.
  */
-export const ownerRetimeInputSchema = z
+export const moveSlotInputSchema = z
   .object({
     slotId,
     contentHash: z.string().regex(/^[0-9a-f]{64}$/),
+    toWeekStart: day,
     date: day,
     publishAt: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/),
-    approve: z.boolean(),
+    dryRun: z.boolean().optional(),
   })
   .strict();
-export type OwnerRetimeInput = z.infer<typeof ownerRetimeInputSchema>;
+export type MoveSlotInput = z.infer<typeof moveSlotInputSchema>;

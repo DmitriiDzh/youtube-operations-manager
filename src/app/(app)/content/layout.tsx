@@ -6,13 +6,12 @@ import { useAppChannel } from "@/components/app-channel";
 import { ContentManager } from "@/components/content-manager";
 import { FeatureErrorBoundary } from "@/components/feature-error-boundary";
 import { LiveStreamPanel } from "@/components/live-stream-panel";
-import { PublishingCalendar } from "@/components/publishing-calendar";
 import { PublishingPackages } from "@/components/publishing-packages";
 import { LocalVideoCleanupCard } from "@/components/local-video-cleanup-card";
 import { PublishingSettingsPanel } from "@/components/publishing-settings-panel";
 import { VideoProjectsPanel } from "@/components/video-projects-panel";
 import { WeeklyPlanPanel } from "@/components/weekly-plan-panel";
-import { WeeklyBuildCard } from "@/components/weekly-build-card";
+import { WeeklyTemplateBuildCard } from "@/components/weekly-template-build-card";
 import { CONTENT_TABS } from "@/components/section-tabs";
 import { useContentTabBadges } from "@/components/content-tab-badges";
 import { useT } from "@/components/ui-text-provider";
@@ -47,14 +46,15 @@ export default function ContentLayout({ children }: { children: ReactNode }) {
                 {badges.releases}
               </span>
             )}
+            {/* BL-267: the coverage warning of the former «Календарь» tab is on «План» now. */}
+            {item.value === "week-plan" && badges.calendarDue && (
+              <span className="ml-1.5 rounded-full bg-amber-500/90 px-1.5 text-[10px] font-semibold text-zinc-950" title={t("contentTabs.badge.calendar")}>
+                !
+              </span>
+            )}
             {item.value === "week-plan" && badges.weekPlan > 0 && (
               <span className="ml-1.5 rounded-full bg-amber-500/90 px-1.5 text-[10px] font-semibold text-zinc-950" title={t("contentTabs.badge.weekPlan", { count: badges.weekPlan })}>
                 {badges.weekPlan}
-              </span>
-            )}
-            {item.value === "calendar" && badges.calendarDue && (
-              <span className="ml-1.5 rounded-full bg-amber-500/90 px-1.5 text-[10px] font-semibold text-zinc-950" title={t("contentTabs.badge.calendar")}>
-                !
               </span>
             )}
             {item.value === "streams" && badges.streamTrouble && (
@@ -97,18 +97,13 @@ export default function ContentLayout({ children }: { children: ReactNode }) {
           <FeatureErrorBoundary label={t("tabs.content.weekPlan")}>
             <WeeklyPlanPanel channelId={channel?.id ?? null} visible={tab === "week-plan"} />
           </FeatureErrorBoundary>
-          {/* BL-231 (FO-REQ-0046, AGENTS.md §M): the factory's weekly build in its own boundary -- the plan works without it. Below
-              the plan since owner msg 4008 (2026-11-03: not in active use now). */}
+          {/* BL-231 (FO-REQ-0046, AGENTS.md §M): the factory's weekly build in its own boundary -- the plan works without it. BL-267
+              (owner O7): «Собрать неделю по шаблону», shown only for a music template (the card hides itself otherwise). */}
           <div className="mt-4">
             <FeatureErrorBoundary label={t("weeklyBuild.title")}>
-              <WeeklyBuildCard channelId={channel?.id ?? null} visible={tab === "week-plan"} />
+              <WeeklyTemplateBuildCard channelId={channel?.id ?? null} visible={tab === "week-plan"} />
             </FeatureErrorBoundary>
           </div>
-        </div>
-        <div className={tab === "calendar" ? undefined : "hidden"}>
-          <FeatureErrorBoundary label={t("tabs.content.calendar")}>
-            <PublishingCalendar channelId={channel?.id ?? null} visible={tab === "calendar"} />
-          </FeatureErrorBoundary>
         </div>
         <div className={tab === "streams" ? undefined : "hidden"}>
           <FeatureErrorBoundary label={t("tabs.content.streams")}>

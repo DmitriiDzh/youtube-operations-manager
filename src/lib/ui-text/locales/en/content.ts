@@ -597,6 +597,8 @@ export const content = {
   "weekPlan.actorCap.worker": "The channel's agent",
   "weekPlan.actor.owner": "you",
   "weekPlan.actorCap.owner": "You",
+  "weekPlan.actor.producer": "the Producer",
+  "weekPlan.actorCap.producer": "The Producer",
   "weekPlan.action.retime": "Change time",
   "weekPlan.retime.day": "Day",
   "weekPlan.retime.time": "Time ({zone})",

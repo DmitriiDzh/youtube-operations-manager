@@ -43,7 +43,7 @@ export const shell: Record<keyof typeof en, string> = {
   "tabs.content.streams": "Трансляции",
   "tabs.content.calendar": "Календарь",
   "tabs.content.publishing": "Ролики и релизы",
-  "tabs.content.weekPlan": "План недели",
+  "tabs.content.weekPlan": "План",
   "contentTabs.badge.releases": "{count, plural, one {# ролик готов} few {# ролика готовы} many {# роликов готовы} other {# ролика готовы}} к следующему шагу (пакет или загрузка)",
   "contentTabs.badge.calendar": "Запланировано меньше чем на 7 дней вперёд",
   "contentTabs.badge.weekPlan": "{count, plural, one {# слот ждёт} few {# слота ждут} many {# слотов ждут} other {# слота ждут}} вашего одобрения",

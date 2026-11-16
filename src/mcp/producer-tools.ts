@@ -54,7 +54,12 @@
 // owner's package review gates the VIDEO (mp4) only, so a re-package of only its packaging stays ready; producer_upload_queue_add's
 // "tried" rule keys a row by its mp4; wake files gain the status packaging_comment (REVIEW-DECISION-package-<video>-<id>.md); upload
 // rows gain the error codes media_changed / package_slot_changed. Additive.
-export const PRODUCER_API_VERSION = "1.24.0";
+// 1.25.0 (BL-267, PRD-REQ-0195 A, owner TG 4569/4575/4620/4630-4636, ADR 0073): the weekly plan's tools producer_week_template_get /
+// _propose (DRAFT), producer_publishing_plan_get / _list (READ) and producer_publishing_plan_move_slot (permission PLAN_MOVE: moves a
+// slot anywhere at once and writes a dated video's new date on YouTube); producer_get_capabilities lists planTools / planMoveTools.
+// producer_upload_queue_add: a date by the weekly-plan rule (the owner's approved template with his media approval, or his explicit
+// one-slot date). Additive.
+export const PRODUCER_API_VERSION = "1.25.0";
 
 /** The channel agent's READ tools the Producer gets; each call names its channel and runs in that channel's agent scope. */
 export const PRODUCER_CHANNEL_TOOLS: Readonly<Record<string, { capability: string }>> = Object.freeze({
@@ -133,7 +138,17 @@ export const PRODUCER_ONLY_TOOLS = [
   "producer_clip_review_withdraw",
   "producer_video_thumbnail_replace",
   "producer_video_metadata_update",
+  "producer_week_template_get",
+  "producer_week_template_propose",
+  "producer_publishing_plan_get",
+  "producer_publishing_plan_list",
+  "producer_publishing_plan_move_slot",
 ] as const;
+
+/** BL-267 (ADR 0073 §5): the Producer's weekly-plan tools -- exactly these five, the test pins the list. */
+export const PRODUCER_PLAN_TOOLS = ["producer_week_template_get", "producer_week_template_propose", "producer_publishing_plan_get", "producer_publishing_plan_list", "producer_publishing_plan_move_slot"] as const;
+/** BL-267: the one tool with permission PLAN_MOVE (a move writes a dated video's new date on YouTube at once). */
+export const PRODUCER_PLAN_MOVE_TOOLS = ["producer_publishing_plan_move_slot"] as const;
 
 /**
  * BL-239 (UPLOAD_QUEUE_CONTROL_PLAN.md, ADR 0059): the Producer's upload queue tools -- exactly these four, the test pins the list.
@@ -167,7 +182,7 @@ export const PRODUCER_CLIP_REVIEW_TOOLS = ["producer_clip_review_submit", "produ
  * Web-UI-only (`agent-proposal-approval-inventory.test.ts`). BL-241 adds the clip review submit and withdraw: a request for the owner,
  * taken back while still pending; only the owner decides it (`clip-reviews/boundaries.test.ts`).
  */
-export const PRODUCER_DRAFT_TOOLS = ["producer_propose", "producer_mark_proposals_done", "create_experiment_proposal", "producer_clip_review_submit", "producer_clip_review_withdraw"] as const;
+export const PRODUCER_DRAFT_TOOLS = ["producer_propose", "producer_mark_proposals_done", "create_experiment_proposal", "producer_clip_review_submit", "producer_clip_review_withdraw", "producer_week_template_propose"] as const;
 
 /** Every tool the Producer endpoint lists, in order. */
 export const PRODUCER_TOOL_NAMES: readonly string[] = Object.freeze([

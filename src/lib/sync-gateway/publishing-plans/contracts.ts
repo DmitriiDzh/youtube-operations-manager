@@ -9,8 +9,11 @@ export { DomainError, isDomainError };
 // under `<weekStart>:<slotId>`, a decision under a fresh id, a plan's fields one by one. The meaning (validation, what is approved,
 // vetoed or locked) is the publishing-plans module's; this family stores and carries.
 
-/** BL-256 (owner msgs 4380/4383): `owner` -- the owner moved a slot's day or time himself in the Web UI. */
-export type PublishingPlanActor = "factory" | "worker" | "owner";
+/**
+ * BL-256 (owner msgs 4380/4383): `owner` -- the owner moved a slot's day or time himself in the Web UI. BL-267 (ADR 0073 §5):
+ * `producer` -- the Producer moved a slot (its own endpoint).
+ */
+export type PublishingPlanActor = "factory" | "worker" | "owner" | "producer";
 
 /** A plan's own fields: its week (a Monday) and the time zone its slots' times are in. */
 export type PublishingPlanMeta = {
@@ -43,6 +46,43 @@ export type PublishingPlanSlot = PublishingPlanSlotContent & {
   createdAt: string;
   updatedAt: string;
   updatedBy: PublishingPlanActor;
+  /** BL-267 (ADR 0073 §5): where the slot was before its last move by the owner or the Producer (absent: never moved). Not hashed. */
+  movedFrom?: { weekStart: string; publishAt: string; timeZone: string; at: string; by: "owner" | "producer" };
+};
+
+/** BL-267 (ADR 0073 §1, `week-template/1`): one release of a template day -- its kind, the factory's length bucket, the UTC time. */
+export type WeekTemplateEntry = { kind: "long" | "short"; hours?: number; publishTimeUtc: string };
+export const WEEK_TEMPLATE_DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
+export type WeekTemplateDay = (typeof WEEK_TEMPLATE_DAYS)[number];
+export type WeekTemplateDays = Partial<Record<WeekTemplateDay, WeekTemplateEntry[]>>;
+
+/** BL-267 (ADR 0073 §1): one immutable template version (an edit is a new version). `by: producer` -- a proposal. */
+export type PublishingPlanTemplateVersion = {
+  id: string;
+  format: "week-template/1";
+  days: WeekTemplateDays;
+  horizonWeeks: number;
+  displayTimeZone: string | null;
+  /** SHA-256 of the canonical template content (what a decision names). */
+  contentHash: string;
+  by: "owner" | "producer";
+  device: string | null;
+  at: string;
+  seq: number;
+  /** The version this one was edited from (the owner's edit of a proposal), else absent. */
+  basedOn?: string;
+};
+
+/** BL-267 (ADR 0073 §1): the owner's decision on a template version; the newest `approved` / `withdrawn` sets the one in force. */
+export type PublishingPlanTemplateDecision = {
+  id: string;
+  versionId: string;
+  contentHash: string;
+  kind: "approved" | "rejected" | "withdrawn";
+  by: "owner";
+  device: string | null;
+  at: string;
+  seq: number;
 };
 
 export type PublishingPlanDecisionKind = "approved" | "revoked" | "vetoed" | "restored";
@@ -82,6 +122,11 @@ export type PublishingPlanDecision = {
    * Absent on a decision made in the `slot` stage (or before this field).
    */
   package?: PublishingPlanPackageFingerprint;
+  /**
+   * BL-267 (ADR 0073 §3, plan §3.4): on an approval made by this build, the media of that package (video code, the mp4's SHA-256 and
+   * size), so a packaging-only re-package keeps it. Not part of the hash; an older build ignores it (and keeps the manifest rule).
+   */
+  media?: { video: string; videoSha256: string; sizeBytes: number };
 };
 
 export type PublishingPlansDocument = {
@@ -94,12 +139,27 @@ export type PublishingPlansDocument = {
   slots: Record<string, PublishingPlanSlot>;
   /** By decision id. */
   decisions: Record<string, PublishingPlanDecision>;
-  /** BL-242 (ADR 0062 §1): set only by the owner; absent = `packaged`. An older build ignores it. */
+  /** BL-242 (ADR 0062 §1): set only by the owner; absent = `packaged`. An older build ignores it. BL-267: ignored (retired). */
   approvalStage?: PublishingPlanApprovalStage;
+  /** BL-267 (ADR 0073 §1): template versions by id -- not in the genesis (an older build ignores them). */
+  templateVersions?: Record<string, PublishingPlanTemplateVersion>;
+  /** BL-267: the owner's template decisions by id. */
+  templateDecisions?: Record<string, PublishingPlanTemplateDecision>;
 };
 
-/** The whole document as plain data (empty maps for a channel without a document yet). */
-export type PublishingPlansSnapshot = Pick<PublishingPlansDocument, "plans" | "slots" | "decisions" | "approvalStage">;
+/**
+ * The whole document as plain data (empty maps for a channel without a document yet). BL-267: the template maps are present only
+ * when the document has them, read across a first-write conflict (both computers' entries kept).
+ */
+export type PublishingPlansSnapshot = Pick<PublishingPlansDocument, "plans" | "slots" | "decisions" | "approvalStage" | "templateVersions" | "templateDecisions">;
+
+/** BL-267 (ADR 0073 §5): one move as one change -- the old key deleted, the same slot put under its new week. */
+export type PublishingPlanMove = {
+  fromWeekStart: string;
+  slot: PublishingPlanSlot;
+  /** Set when the target week has no plan yet. */
+  createTarget: PublishingPlanMeta | null;
+};
 
 /** One agent save, applied as one change: the plan made or updated, slots assigned whole, slots deleted. */
 export type PublishingPlanChange = {

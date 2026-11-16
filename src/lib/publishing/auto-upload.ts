@@ -145,7 +145,7 @@ export async function checkPackageForQueue(p: ScannedPackage, ctx: PackageCheckC
   if (actual !== expected) return { ok: false, reason: "hash_mismatch", video, expected, actual };
   // BL-242: an approval of another manifest (the package changed since the owner saw it) gives no date.
   const slotPublishAt =
-    slot?.kind === "approved" && approvalNamesUpload(slot, { manifestSha256: p.manifestSha256, videoId: null }) && Date.parse(slot.publishAt) > ctx.now().getTime() + SLOT_MARGIN_MS ? slot.publishAt : null;
+    slot?.kind === "approved" && approvalNamesUpload(slot, { manifestSha256: p.manifestSha256, videoId: null, media: { video, videoSha256: expected, sizeBytes: p.pkg.sizeBytes } }) && Date.parse(slot.publishAt) > ctx.now().getTime() + SLOT_MARGIN_MS ? slot.publishAt : null;
   return { ok: true, video, manifestSha256: p.manifestSha256, videoSha256: expected, slotPublishAt };
 }
 

@@ -81,12 +81,22 @@ export type PlanSlotProgress = {
    * the old V still covers the package when it names the same, non-null video id. Absent: none.
    */
   recodedFrom?: string[];
+  /** BL-267 (ADR 0073 §4): the date YouTube carries that this computer did not set (the pass leaves it), else absent. */
+  foreignPublishAt?: string | null;
+  /**
+   * BL-267 (plan §3.4): the package's media and the owner's media review of it (computed with package-reviews' own rule by the
+   * composition layer, uploaded packages included). Absent: unknown -- on a gated channel nothing is dated by the template.
+   */
+  media?: { videoSha256: string | null; sizeBytes: number | null; review: PlanMediaReview };
 };
+
+/** BL-267: the owner's media review of a slot's package. `unreadable`: the review document could not be read (counts as not approved). */
+export type PlanMediaReview = "approved" | "pending" | "returned" | "not_required" | "unreadable";
 
 /** Why an agent's save was refused, one entry per problem (`validation_failed`, `details.refused`). */
 export type PlanSaveRefusal = {
   slotId?: string;
-  field: "weekStart" | "timeZone" | "slots" | "date" | "publishAt" | "removeSlotIds" | "replacesSlotId";
+  field: "weekStart" | "timeZone" | "slots" | "date" | "publishAt" | "removeSlotIds" | "replacesSlotId" | "toWeekStart";
   reason:
     | "week_start_invalid"
     | "week_start_not_monday"
@@ -109,7 +119,11 @@ export type PlanSaveRefusal = {
     | "slot_id_removed"
     | "replaces_self"
     | "replaces_unknown"
-    | "replaces_cycle";
+    | "replaces_cycle"
+    // BL-267 (ADR 0073 §5): the slot's video has a date on YouTube -- only the owner or the Producer moves it.
+    | "slot_dated"
+    // BL-267: a move's target more than 52 weeks ahead.
+    | "beyond_horizon";
 };
 
 /** BL-240 (ADR 0060): the slot a slot replaces, as it stands now. */
@@ -125,6 +139,29 @@ export type ReplacedSlot = {
   released: boolean;
   /** False: no slot with that id in the channel (any more). */
   found: boolean;
+};
+
+/**
+ * BL-267 (ADR 0073 §3, plan §3.10): how a slot gets its date. `source`: what dates it (or would, once its package and media allow)
+ * -- the owner's template or his explicit one-slot date; null: nothing. `state` is what the screen and the agents show.
+ */
+export type PlanSlotDatingState =
+  | "dated"
+  | "will_date"
+  | "on_template_awaiting_package"
+  | "awaiting_media_review"
+  | "off_template"
+  | "position_taken"
+  | "foreign_date"
+  | "vetoed"
+  | "released";
+export type PlanSlotDating = {
+  source: PlanDatingSource | null;
+  state: PlanSlotDatingState;
+  /** The template position the slot is on (match, awaiting package or media, taken). */
+  position?: { date: string; day: string; index: number };
+  /** With `position_taken`: the slot that holds the position. */
+  heldBy?: string;
 };
 
 /** BL-242: `planned` -- in the `packaged` stage, nothing waits for the owner but a live future slot still waits for its package. */
@@ -171,6 +208,12 @@ export type PlanSlotView = PublishingPlanSlotContent & {
   duplicateVideo: boolean;
   /** The slot's time has passed (it can no longer be approved, vetoed or restored). */
   released: boolean;
+  /** BL-267 (ADR 0073): how the slot is dated (template / explicit owner date) and what it waits for. */
+  dating: PlanSlotDating;
+  /** BL-267: the date YouTube carries that this computer did not set («дата задана вручную»), else null. */
+  foreignPublishAt: string | null;
+  /** BL-267 (ADR 0073 §5): where the slot was before its last move by the owner or the Producer, else null. */
+  movedFrom: { weekStart: string; publishAt: string; timeZone: string; at: string; by: "owner" | "producer" } | null;
   createdAt: string;
   updatedAt: string;
   updatedBy: PublishingPlanActor;
@@ -204,7 +247,7 @@ export type PlanAuditEntry = { channelId: string; weekStart: string | null; slot
 
 export type PublishingPlansPorts = {
   /** The sync family's operations the module uses (one document per channel, merged between the computers). */
-  store: Pick<PublishingPlansCore, "read" | "savePlan" | "addDecisions" | "setApprovalStage">;
+  store: Pick<PublishingPlansCore, "read" | "savePlan" | "addDecisions" | "setApprovalStage" | "addTemplateRecords" | "moveSlot">;
   /** Whether the channel is connected on this computer. */
   isChannelConnected(channelId: string): Promise<boolean>;
   /** This computer's name for decisions ("Mac", a host name), or null. */
@@ -223,6 +266,42 @@ export type PublishingPlansPorts = {
   progress?(channelId: string, weekStart: string, slotIds: string[]): Promise<PlanProgressResult>;
   /** BL-248 (ADR 0066): "the owner just decided" -- the review-notify writer runs in a moment. Optional, never throws, never awaited. */
   notifyOwnerDecision?(): void;
+  /**
+   * BL-267 (ADR 0073 §5, plan §3.7): the YouTube side of an explicit move, composed outside this module (publishing's plan-schedule
+   * change in explicit mode, through video-details' write path). Absent: a dated video cannot be moved here (`publishing_plan_move_not_here`).
+   */
+  moveYoutube?: PlanMoveYoutubePort;
+};
+
+/** BL-267 (plan §3.3): a slot a template change would start or stop dating (the owner's apply dialog). */
+export type TemplateEffectSlot = { slotId: string; weekStart: string; publishAtUtc: string; video: string | null; youtubePublishAt: string | null };
+
+/** BL-267: what a move may do to a slot's video on YouTube (read first; review #2: the write before the plan change). */
+export type PlanMoveYoutubePort = {
+  /** Read only: `moves` -- private and dated (the move writes the new date); `plan_only` -- private, no date; else refused with a code. */
+  precheck(channelId: string, videoId: string): Promise<{ outcome: "moves" | "plan_only"; youtubePublishAt: string | null } | { outcome: "refused"; code: string; reason: string }>;
+  /** The write + read-back for this computer's upload row of the video; never a first date. */
+  write(channelId: string, videoId: string, slotId: string, publishAtUtc: string, by: "owner" | "producer"): Promise<{ result: string; reason?: string; publishAt: string | null }>;
+  /**
+   * Review #10: whether this computer still has an upload under way (not finished, failed or cancelled) for the slot or its video
+   * number -- a move is refused then (`publishing_plan_move_upload_active`). Absent: not checked.
+   */
+  uploadActive?(channelId: string, slotId: string, video: string | null): Promise<boolean>;
+};
+
+/** Review #7: a slot a move pushes off its template position (it becomes `position_taken`, held by the moved slot). */
+export type PlanMoveDisplaced = { slotId: string; weekStart: string; publishAtUtc: string; video: string | null };
+
+/** BL-267: a move's answer -- the plan of the target week, what moved, and what happened on YouTube. */
+export type PlanMoveResult = {
+  plan: PlanView | null;
+  moved: boolean;
+  dryRun: boolean;
+  from: { weekStart: string; date: string; publishAt: string; publishAtUtc: string; timeZone: string };
+  to: { weekStart: string; date: string; publishAt: string; publishAtUtc: string; timeZone: string };
+  youtube: { effect: "moves" | "plan_only" | "none"; previous: string | null; result?: string; reason?: string; publishAt?: string | null };
+  /** Review #7: the slots this move takes a template position from (dry run and real move alike). */
+  displaces: PlanMoveDisplaced[];
 };
 
 /**
@@ -236,9 +315,14 @@ export type PublishingPlansPorts = {
  * veto reaches the video a slot took over by its package (BL-242 D).
  */
 export type PlanSlotDecision =
-  | { kind: "approved"; publishAt: string; package?: PublishingPlanPackageFingerprint }
+  | { kind: "approved"; publishAt: string; package?: PublishingPlanPackageFingerprint; source?: PlanDatingSource; media?: PlanMediaKey }
   | { kind: "vetoed"; package?: PublishingPlanPackageFingerprint }
   | { kind: "pending" };
+
+/** BL-267 (ADR 0073 §3): what dated a slot -- the owner's approved week template, or his explicit one-slot date. */
+export type PlanDatingSource = "template" | "owner";
+/** BL-267 (plan §3.4): the media a date stands on (video code, the mp4's SHA-256 and size). */
+export type PlanMediaKey = { video: string; videoSha256: string; sizeBytes: number };
 
 /** BL-252 stage 2 (ADR 0068 amendment 1): one slot as cross-posting reads it -- approval, veto and release as separate facts. */
 export type SocialSlotState = {
@@ -248,7 +332,7 @@ export type SocialSlotState = {
   publishAtUtc: string;
   released: boolean;
   vetoed: boolean;
-  /** A standing owner approval covering the slot's CURRENT package, not vetoed (packaged stage only). */
+  /** BL-267 (owner O10): the plan dates the slot (template or explicit owner date), not vetoed, no foreign date. */
   approved: boolean;
   /** The approved package (video number, manifest SHA-256, video id) when approved, else null. */
   package: PublishingPlanPackageFingerprint | null;

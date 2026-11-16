@@ -137,6 +137,7 @@ export function createFactoryChannelDeps(): FactoryChannelDeps {
       },
       get: async (input) => ({ ...(await createPublishingPlansAgentCore(publishingPlanProgress).get(input)) }),
       list: async (input) => ({ ...(await createPublishingPlansAgentCore(publishingPlanProgress).list(input)) }),
+      templateGet: async (input) => ({ ...(await createPublishingPlansAgentCore(publishingPlanProgress).templateGet((input as { channelId: string }).channelId)) }),
     },
     // BL-235: the shared publishing coverage in the channel's zone (the weekly plan's, else the owner's) -- a local read.
     publishingCoverage: {

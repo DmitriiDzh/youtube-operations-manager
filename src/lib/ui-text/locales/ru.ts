@@ -32,6 +32,7 @@ import { shell } from "./ru/shell";
 import { storyboards } from "./ru/storyboards";
 import { musicLibrary } from "./ru/musicLibrary";
 import { weeklyBuild } from "./ru/weeklyBuild";
+import { weekTemplate } from "./ru/weekTemplate";
 import { speech } from "./ru/speech";
 import { diskGuard } from "./ru/diskGuard";
 import { localVideoCleanup } from "./ru/localVideoCleanup";
@@ -40,6 +41,6 @@ import { packageReviews } from "./ru/packageReviews";
 import { remoteAccess } from "./ru/remoteAccess";
 import { social } from "./ru/social";
 
-export const ruAreas = { common, shell, settings, production, media, languages, batches, decisions, research, researchData, analytics, content, merge, settingsCards, errors, analyticsLabels, liveStreams, storyboards, musicLibrary, weeklyBuild, speech, diskGuard, localVideoCleanup, clipReviews, packageReviews, remoteAccess, social } as const;
+export const ruAreas = { common, shell, settings, production, media, languages, batches, decisions, research, researchData, analytics, content, merge, settingsCards, errors, analyticsLabels, liveStreams, storyboards, musicLibrary, weeklyBuild, weekTemplate, speech, diskGuard, localVideoCleanup, clipReviews, packageReviews, remoteAccess, social } as const;
 
-export const ru: Record<UiTextKey, string> = { ...common, ...shell, ...settings, ...production, ...media, ...languages, ...batches, ...decisions, ...research, ...researchData, ...analytics, ...content, ...merge, ...settingsCards, ...errors, ...analyticsLabels, ...liveStreams, ...storyboards, ...musicLibrary, ...weeklyBuild, ...speech, ...diskGuard, ...localVideoCleanup, ...clipReviews, ...packageReviews, ...remoteAccess, ...social };
+export const ru: Record<UiTextKey, string> = { ...common, ...shell, ...settings, ...production, ...media, ...languages, ...batches, ...decisions, ...research, ...researchData, ...analytics, ...content, ...merge, ...settingsCards, ...errors, ...analyticsLabels, ...liveStreams, ...storyboards, ...musicLibrary, ...weeklyBuild, ...weekTemplate, ...speech, ...diskGuard, ...localVideoCleanup, ...clipReviews, ...packageReviews, ...remoteAccess, ...social };

@@ -215,7 +215,12 @@ import { isReportVCode, isStrictSCode, VIDEO_CODE_PATTERN } from "@/lib/shared-v
 // sha256 + sizeBytes) only, so a re-package of only its packaging stays ready and a queued upload takes it; factory_release_recode
 // copies only a decision made before BL-265 (a media decision follows the V -> S alias without a copy); wake files gain the status
 // packaging_comment; upload rows gain the error codes media_changed / package_slot_changed. Additive.
-export const FACTORY_API_VERSION = "1.51.0";
+// BL-267 (PRD-REQ-0195 A, owner TG 4569/4575/4630-4636, ADR 0073): 1.52.0 -- factory_publishing_template_get (READ: the channel's
+// week template, week-template/1, and matchRules); plan slots gain dating { source, state, position?, heldBy? }, foreignPublishAt and
+// movedFrom; updatedBy / movedFrom.by may be producer; factory_publishing_plan_save refuses slot_dated (the slot's video has a date on
+// YouTube: only the owner or the Producer moves it); approvalStage is always packaged (retired); the owner approves one slot at a
+// time; replacesSlotId holds nothing (no implied veto). Bundle 2.5.48 pins with it. Additive.
+export const FACTORY_API_VERSION = "1.52.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -303,6 +308,8 @@ export const FACTORY_TOOL_NAMES = [
   "factory_publishing_plan_save",
   "factory_publishing_plan_get",
   "factory_publishing_plan_list",
+  // BL-267: the channel's week template (a read; only the owner approves or edits it, in the Web UI).
+  "factory_publishing_template_get",
   // BL-235: which days ahead are covered on YouTube (a video published or scheduled with every tracked translation), a read.
   "factory_publishing_coverage",
   // BL-261: rename a release package's folder under 04 Videos/ (local files and this computer's upload rows; no YouTube call).
@@ -542,6 +549,8 @@ export type FactoryToolDeps = {
     save(input: unknown, by?: "factory" | "worker"): Promise<Record<string, unknown>>;
     get(input: unknown): Promise<Record<string, unknown>>;
     list(input: unknown): Promise<Record<string, unknown>>;
+    /** BL-267 (ADR 0073 §1): the channel's week template in force, the pending proposal and the match rules -- read-only. */
+    templateGet(input: unknown): Promise<Record<string, unknown>>;
   };
   /**
    * BL-235: the shared publishing coverage of a channel (`@/lib/publishing-coverage`, with the channel's zone): the module validates
@@ -1814,6 +1823,19 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       inputSchema: planListInput,
     },
     async (args) => successResult(await deps.publishingPlans.list(parseInput(planListInput, args)))
+  );
+
+  // BL-267 (ADR 0073 §1, plan §3.10, Operator Op1/Op4): the channel's week template, read-only -- bundle 2.5.48 reads exactly
+  // template.days[*][*].kind/hours/publishTimeUtc, horizonWeeks, displayTimeZone and matchRules.
+  const templateRefInput = z.object({ channelId: z.string().min(1).max(64) }).strict();
+  registerTool(
+    "factory_publishing_template_get",
+    {
+      description:
+        "A channel's week template (1.52.0): { channelId } -> { template: { format: 'week-template/1', channelId, versionId, contentHash, horizonWeeks (informational: how far ahead to plan), displayTimeZone (display only), days: { mon..sun?: [{ kind: long | short, hours? (long only: the length bucket), publishTimeUtc ('HH:MM' UTC) }] }, by, at } | null (none in force: nothing is dated by a template), proposal (the Producer's newest proposal the owner has not decided) | null, matchRules: { shortMaxSeconds: 180, hoursTolerance: 0.1, time: exact_minute_utc, position: first_created } }. Times and weekdays are UTC. A slot gets its date from the template when its UTC weekday and exact minute match an entry, its package fits the entry's kind (short <= 180 s; long with hours within ±10 % of hours x 3600; an S code over 180 s matches nothing), the package is ready or uploaded and, on a channel whose owner reviews its packages, he approved its media; two slots of one kind on one position: the first created takes it (place one slot per position). Only the owner approves, edits or withdraws a template (Web UI). Refusals: publishing_plan_channel_unavailable. Read-only.",
+      inputSchema: templateRefInput,
+    },
+    async (args) => successResult(await deps.publishingPlans.templateGet(parseInput(templateRefInput, args)))
   );
 
   // -- BL-235 (owner msgs 3806/3807): the one answer to "is this publishing day covered", from the synced copy. A read.

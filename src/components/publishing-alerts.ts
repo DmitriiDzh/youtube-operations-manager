@@ -17,7 +17,8 @@ export type PublishingAlertChannel = {
   thresholdDays: number;
 };
 
-export const CALENDAR_HREF = "/content/calendar";
+// BL-267 (owner msg 4572): the calendar is «План» → «Месяц» now.
+export const CALENDAR_HREF = "/content/week-plan";
 
 function coverageText(t: Translate, alert: PublishingAlertChannel): string {
   // Date and time (review): "data from 13.10.2026" would hide an 18-hour-old copy.

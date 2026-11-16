@@ -67,10 +67,15 @@ const PRODUCER_QUEUE_TOOLS = new Set<string>(PRODUCER_UPLOAD_QUEUE_TOOLS);
  * video's thumbnail. It neither uploads, schedules nor publishes a video; the next tests pin it to exactly one producer-only tool.
  */
 const PRODUCER_THUMBNAIL_TOOL_SET = new Set<string>(PRODUCER_THUMBNAIL_TOOLS);
+/**
+ * BL-267 (owner TG 4630/4636, ADR 0073 §5 -- a new requirement): the template read (agents) and the Producer's plan tools. None
+ * uploads a video; the move re-dates a video already dated (never a first date), on the Producer's endpoint only.
+ */
+const PLAN_TEMPLATE_TOOLS = new Set<string>(["agent_publishing_template_get", "producer_publishing_plan_get", "producer_publishing_plan_list", "producer_publishing_plan_move_slot"]);
 
 test("AC-UP-14: no MCP tool name uploads, schedules or publishes a video; the matching names are known reads, plan drafts or the Producer's queue", () => {
   const publishingTools = Object.keys(MCP_TOOL_CLASSIFICATION).filter((name) => /upload|schedul|publish|insert_video|thumbnail/i.test(name));
-  assert.deepEqual(publishingTools.filter((name) => !KNOWN_READS.has(name) && !KNOWN_PLAN_DRAFTS.has(name) && !PRODUCER_QUEUE_TOOLS.has(name) && !PRODUCER_THUMBNAIL_TOOL_SET.has(name)), []);
+  assert.deepEqual(publishingTools.filter((name) => !KNOWN_READS.has(name) && !KNOWN_PLAN_DRAFTS.has(name) && !PRODUCER_QUEUE_TOOLS.has(name) && !PRODUCER_THUMBNAIL_TOOL_SET.has(name) && !PLAN_TEMPLATE_TOOLS.has(name)), []);
 });
 
 // BL-255 AC-TH-12: exactly one thumbnail tool, producer-only; the factory and the channel workers have none.

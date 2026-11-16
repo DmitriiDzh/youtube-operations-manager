@@ -157,6 +157,7 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
       save: async (input, by) => (mediaCalls.push(`plan.save:${(input as { channelId: string }).channelId}:${by ?? "factory"}`), { plan: {} }),
       get: async (input) => (mediaCalls.push(`plan.get:${(input as { weekStart: string }).weekStart}`), { plan: {} }),
       list: async (input) => (mediaCalls.push(`plan.list:${(input as { channelId: string }).channelId}`), { plans: [] }),
+      templateGet: async (input) => (mediaCalls.push(`plan.template:${(input as { channelId: string }).channelId}`), { template: null, proposal: null }),
     },
     // BL-235: the publishing coverage is a fake that records what reached it.
     publishingCoverage: {
@@ -408,6 +409,7 @@ test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exact
     "factory_publishing_plan_get",
     "factory_publishing_plan_list",
     "factory_publishing_plan_save",
+    "factory_publishing_template_get",
     "factory_release_folder_rename",
     "factory_release_recode",
     "factory_storyboard_attach_render",
@@ -478,7 +480,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.51.0", // BL-265 (new requirement PRD-REQ-0195 B, ADR 0072): warnings, media-keyed review gate (1.51.0); BL-263 fix (owner TG 4584): factory_release_recode carries the package review, result review (1.50.0); BL-263 (new requirement PRD-REQ-0194, ADR 0071): S codes, factory_release_recode (1.49.0); BL-261 (new requirement): factory_release_folder_rename (1.48.0); BL-256 (new requirement): plan updatedBy may be owner (1.47.0); BL-257 (new requirement ADR 0070): plan package review codes and reviewComment; BL-253: factory_sfx_create_job / factory_music_create_job; BL-250: elevenlabs accountLimit / monthlyLimit; BL-243: statusCode video_deleted_on_youtube; BL-242: plan approvalStage / planned / awaiting_package; 1.41.0 = BL-240: plan slots replacesSlotId; 1.40.0 = BL-236: factory_speech_* and factory_voice_*; 1.39.0 = BL-235: factory_publishing_coverage; 1.38.0 = BL-234: factory_live_get_status gains sources; BL-233: factory_live_get_status gains encoders / upload; 1.36.0 = BL-230: runtime creation checks github.com sources; 1.35.0 = BL-229 part B: plan review forms, wave genre, verdict answers; 1.34.0 (BL-227): factory_localization_report_checks; 1.33.0 (BL-225): factory_publishing_plan_save / _get / _list; 1.32.0 (BL-223): factory_channel_get_branding / factory_channel_save_branding; 1.31.0 (BL-221: factory_video_list gains youtubeVideoId / hasVideoFile (additive); 1.30.0 (BL-220): the three restart tools
+    factoryApiVersion: "1.52.0", // BL-267 (new requirement PRD-REQ-0195 A, ADR 0073): factory_publishing_template_get; BL-265 (new requirement PRD-REQ-0195 B, ADR 0072): warnings, media-keyed review gate (1.51.0); BL-263 fix (owner TG 4584): factory_release_recode carries the package review, result review (1.50.0); BL-263 (new requirement PRD-REQ-0194, ADR 0071): S codes, factory_release_recode (1.49.0); BL-261 (new requirement): factory_release_folder_rename (1.48.0); BL-256 (new requirement): plan updatedBy may be owner (1.47.0); BL-257 (new requirement ADR 0070): plan package review codes and reviewComment; BL-253: factory_sfx_create_job / factory_music_create_job; BL-250: elevenlabs accountLimit / monthlyLimit; BL-243: statusCode video_deleted_on_youtube; BL-242: plan approvalStage / planned / awaiting_package; 1.41.0 = BL-240: plan slots replacesSlotId; 1.40.0 = BL-236: factory_speech_* and factory_voice_*; 1.39.0 = BL-235: factory_publishing_coverage; 1.38.0 = BL-234: factory_live_get_status gains sources; BL-233: factory_live_get_status gains encoders / upload; 1.36.0 = BL-230: runtime creation checks github.com sources; 1.35.0 = BL-229 part B: plan review forms, wave genre, verdict answers; 1.34.0 (BL-227): factory_localization_report_checks; 1.33.0 (BL-225): factory_publishing_plan_save / _get / _list; 1.32.0 (BL-223): factory_channel_get_branding / factory_channel_save_branding; 1.31.0 (BL-221: factory_video_list gains youtubeVideoId / hasVideoFile (additive); 1.30.0 (BL-220): the three restart tools
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",
@@ -547,6 +549,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
       "factory_publishing_plan_save",
       "factory_publishing_plan_get",
       "factory_publishing_plan_list",
+      "factory_publishing_template_get",
       "factory_publishing_coverage",
       "factory_release_folder_rename",
       "factory_release_recode",

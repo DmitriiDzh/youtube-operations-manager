@@ -834,7 +834,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   // BL-225 (WEEKLY_PUBLISHING_PLAN.md stage 1 item 5, ADR 0051): the channel's weekly publishing plan -- a draft for the owner.
   {
     id: "channel_production.read_publishing_plan",
-    mcpTools: ["agent_publishing_plan_get", "agent_publishing_plan_list"],
+    mcpTools: ["agent_publishing_plan_get", "agent_publishing_plan_list", "agent_publishing_template_get"],
     domain: "channel_production",
     permission: "READ",
     description:

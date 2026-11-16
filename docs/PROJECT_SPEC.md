@@ -1895,8 +1895,11 @@ Do not implement yet:
   uploaded as private without a date on the standing approval of the owner's automatic-upload switch, when the video matches
   its manifest's SHA-256 -- still never by an agent, never published or scheduled that way; since 2026-10-25, ADR 0051, also
   scheduled at a weekly-plan slot's time when the owner approved that slot -- agents draft the plan, never approve it; since
+  2026-11-16, ADR 0073 (BL-267), instead when the slot matches the owner-approved week template (first dates only; media owner-approved
+  where reviewed), by the owner's one-slot «Дать дату вне шаблона», or by an explicit move by the owner or the Producer of a dated
+  video (written at once, never public, never within 15 minutes) -- automatic changes never move a date set elsewhere; since
   2026-11-01, ADR 0059, the Producer orders the upload queue, cancels a queued upload (since 2026-11-05, ADR 0064, also stops one being sent
-  before its last chunk) and adds a ready package under the owner's automatic-upload switch -- private, a date only from a slot the owner approved; channel agents still get no upload tool);
+  before its last chunk) and adds a ready package under the owner's automatic-upload switch -- private, a date only by the weekly-plan rule (ADR 0073); channel agents still get no upload tool);
 - thumbnail generation;
 - image generation;
 - music generation;

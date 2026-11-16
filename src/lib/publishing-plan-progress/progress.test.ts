@@ -293,3 +293,23 @@ test("BL-257 AC-PR-02/14: waiting for review -> built with owner_review_pending;
   const returned = progressOfSlots([scanned("V11", "s1", { state: "not_ready", problems: [{ code: "owner_review_returned", params: { comment: "redo the intro" } }] })], ["s1"], false).get("s1");
   assert.deepEqual([returned?.status, returned?.package?.problems, returned?.package?.reviewComment], ["built", ["owner_review_returned"], "redo the intro"]);
 });
+
+// BL-267 (WEEK_TEMPLATE_PLAN.md §3.4, AC-WT-41): the media review by package-reviews' own rule, for every package (uploaded ones too):
+// gate off -> not_required; gate on -> approved / returned / pending by the standing decision on the media key; the review state
+// unreadable -> unreadable (counts as not approved).
+test("AC-WT-41: mediaReviewReaderOf -- not_required, approved, pending, returned, unreadable", async () => {
+  const { mediaReviewReaderOf } = await import("./index");
+  const key = { manifestSha256: "a".repeat(64), video: "V1", videoSha256: "1".repeat(64), videoSizeBytes: 1000 };
+  const off = await mediaReviewReaderOf("UC", async () => ({ required: false, decisions: [], aliases: new Map() }) as never);
+  assert.equal(off(key), "not_required");
+  const decision = (kind: "approved" | "returned") => ({ id: "d1", kind, video: "V1", manifestSha256: "b".repeat(64), videoSha256: "1".repeat(64), videoSizeBytes: 1000, by: "owner", device: null, at: "2026-11-16T10:00:00Z", seq: 1, comment: kind === "returned" ? "x" : null });
+  const approved = await mediaReviewReaderOf("UC", async () => ({ required: true, decisions: [decision("approved")], aliases: new Map() }) as never);
+  assert.equal(approved(key), "approved", "a media decision covers another manifest of the same mp4");
+  assert.equal(approved({ ...key, videoSha256: "2".repeat(64) }), "pending");
+  const returned = await mediaReviewReaderOf("UC", async () => ({ required: true, decisions: [decision("returned")], aliases: new Map() }) as never);
+  assert.equal(returned(key), "returned");
+  const broken = await mediaReviewReaderOf("UC", async () => {
+    throw new Error("unreadable");
+  });
+  assert.equal(broken(key), "unreadable");
+});

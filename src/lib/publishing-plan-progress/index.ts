@@ -1,7 +1,26 @@
-import { createPackageScanCore, createPublishingSettingsCore, listChannelUploads, removedVideosOf } from "@/lib/publishing";
+import { createPackageScanCore, createPublishingSettingsCore, listChannelUploads, ownerReviewStateFor, removedVideosOf } from "@/lib/publishing";
+import { standingDecision } from "@/lib/package-reviews";
 import type { PlanProgressResult, PlanSlotProgress, PublishingPlansPorts } from "@/lib/publishing-plans";
 import { createPackagesReader, invalidatePackagesEntry, type PackagesEntry } from "./packages-cache";
-import { deletedVideosBySlot, progressOfSlots, progressWithUploads } from "./progress";
+import { deletedVideosBySlot, progressOfSlots, progressWithUploads, type MediaReviewOf } from "./progress";
+
+/**
+ * BL-267 (plan §3.4, AC-WT-41): the owner's media review of a channel's packages by package-reviews' own rule (`standingDecision`),
+ * for every package, uploaded ones included -- `not_required` when the channel has no gate; `unreadable` when the review state cannot
+ * be read (counts as not approved: fail closed).
+ */
+export async function mediaReviewReaderOf(channelId: string, read: (channelId: string) => ReturnType<typeof ownerReviewStateFor> = ownerReviewStateFor): Promise<MediaReviewOf> {
+  try {
+    const state = await read(channelId);
+    if (!state.required) return () => "not_required";
+    return (key) => {
+      const standing = standingDecision(state, key);
+      return standing?.kind === "approved" ? "approved" : standing?.kind === "returned" ? "returned" : "pending";
+    };
+  } catch {
+    return () => "unreadable";
+  }
+}
 
 // BL-225 stage 2 (ADR 0051, AGENTS.md §M): the plan's `progress` port from the publishing module's package scan, given to the plan's
 // surfaces by the MCP deps and the Web routes. A scan reads the channel's whole `04 Videos/` folder, so one is kept for a minute per
@@ -44,7 +63,8 @@ export const publishingPlanProgress: NonNullable<PublishingPlansPorts["progress"
   // BL-225 stage 3: this computer's upload rows name their slot -- uploading, failed (with the step's code), scheduled, published.
   const rows = await listChannelUploads(channelId).catch(() => []);
   // BL-243: of two deleted packages naming a slot, the one uploaded last speaks (`uploadTimeOf`: record, else the row's own time).
-  const fromPackages = found.packages ? progressOfSlots(found.packages, slotIds, found.synthetic, rows) : new Map<string, PlanSlotProgress>();
+  const reviewOf = found.packages ? await mediaReviewReaderOf(channelId) : undefined;
+  const fromPackages = found.packages ? progressOfSlots(found.packages, slotIds, found.synthetic, rows, reviewOf) : new Map<string, PlanSlotProgress>();
   // BL-243: the rows of removed videos and deleted packages say nothing -- by the same removed list the packages were scanned with.
   const progress = progressWithUploads(fromPackages, rows, slotIds, Date.now(), {
     removedVideoIds: found.removedVideoIds,

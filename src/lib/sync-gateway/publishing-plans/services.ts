@@ -1,6 +1,6 @@
 import * as Automerge from "@automerge/automerge";
 import type { AutomergeCore, DocumentByteStore } from "../automerge-core";
-import { slotKey, type MergeResult, type PublishingPlanApprovalStage, type PublishingPlanChange, type PublishingPlanDecision, type PublishingPlansDocument, type PublishingPlansSnapshot } from "./contracts";
+import { slotKey, type MergeResult, type PublishingPlanApprovalStage, type PublishingPlanChange, type PublishingPlanDecision, type PublishingPlanMove, type PublishingPlansDocument, type PublishingPlansSnapshot, type PublishingPlanTemplateDecision, type PublishingPlanTemplateVersion } from "./contracts";
 
 export type ServiceDependencies = { core: AutomergeCore<PublishingPlansDocument>; store: DocumentByteStore };
 
@@ -24,6 +24,17 @@ export function emptyDocument(channelId: string): PublishingPlansDocument {
 }
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+
+/**
+ * BL-267 (ADR 0073 §1, plan §3.1): the template maps are not in the genesis, so two computers that each wrote the first entry
+ * conflict on the root key; every conflicting map is read (each entry is assigned whole under a fresh id), so nothing is lost --
+ * the `storyboards` pattern.
+ */
+function mergedMap<K extends "templateVersions" | "templateDecisions">(doc: Automerge.Doc<PublishingPlansDocument>, field: K): NonNullable<PublishingPlansDocument[K]> | undefined {
+  const maps = Object.values(Automerge.getConflicts(doc, field) ?? {}).filter((m) => m && typeof m === "object") as Array<NonNullable<PublishingPlansDocument[K]>>;
+  if (maps.length === 0 && !doc[field]) return undefined;
+  return clone(Object.assign({}, ...maps, doc[field] ?? {})) as NonNullable<PublishingPlansDocument[K]>;
+}
 
 export function createPublishingPlansCore(deps: ServiceDependencies) {
   // Every load -> change/merge -> save runs one at a time: a merge that loaded the document before a save would otherwise write
@@ -52,6 +63,11 @@ export function createPublishingPlansCore(deps: ServiceDependencies) {
           decisions: clone(doc.decisions ?? {}),
           // BL-242: only the two known values; anything else (absent, or a future value) reads as absent (`packaged`).
           ...(doc.approvalStage === "slot" || doc.approvalStage === "packaged" ? { approvalStage: doc.approvalStage } : {}),
+          ...(() => {
+            const versions = mergedMap(doc, "templateVersions");
+            const decisions = mergedMap(doc, "templateDecisions");
+            return { ...(versions ? { templateVersions: versions } : {}), ...(decisions ? { templateDecisions: decisions } : {}) };
+          })(),
         };
       });
     },
@@ -82,6 +98,53 @@ export function createPublishingPlansCore(deps: ServiceDependencies) {
         const doc = await loadOrGenesis(channelId);
         const next = Automerge.change(doc, `decisions ${decisions.map((d) => `${d.kind} ${d.slotId}`).join(", ")}`, (draft) => {
           for (const decision of decisions) draft.decisions[decision.id] = clone(decision);
+        });
+        await deps.core.save(channelId, next);
+      });
+    },
+
+    /**
+     * BL-267 (ADR 0073 §1): template versions and decisions appended under their ids in ONE change (the owner's edit is a version
+     * and its approval together). The caller checks who may.
+     */
+    addTemplateRecords(channelId: string, records: { versions?: PublishingPlanTemplateVersion[]; decisions?: PublishingPlanTemplateDecision[] }): Promise<void> {
+      return serialized(async () => {
+        const doc = await loadOrGenesis(channelId);
+        const next = Automerge.change(doc, `template ${[...(records.versions ?? []).map((v) => `version ${v.id}`), ...(records.decisions ?? []).map((d) => `${d.kind} ${d.versionId}`)].join(", ")}`, (draft) => {
+          if ((records.versions ?? []).length > 0) {
+            if (!draft.templateVersions) draft.templateVersions = {};
+            for (const version of records.versions ?? []) draft.templateVersions[version.id] = clone(version);
+          }
+          if ((records.decisions ?? []).length > 0) {
+            if (!draft.templateDecisions) draft.templateDecisions = {};
+            for (const decision of records.decisions ?? []) draft.templateDecisions[decision.id] = clone(decision);
+          }
+        });
+        await deps.core.save(channelId, next);
+      });
+    },
+
+    /**
+     * BL-267 (ADR 0073 §5): a slot moved, also to another week, as ONE change -- the old key deleted and the same slot (same id)
+     * put under its new week; the target plan created when it has none. Decisions are not touched (they are read by slot id).
+     */
+    moveSlot(channelId: string, move: PublishingPlanMove): Promise<void> {
+      return serialized(async () => {
+        const doc = await loadOrGenesis(channelId);
+        const next = Automerge.change(doc, `move ${move.slot.slotId} ${move.fromWeekStart} -> ${move.slot.weekStart}`, (draft) => {
+          const target = draft.plans[move.slot.weekStart];
+          if (!target) draft.plans[move.slot.weekStart] = clone(move.createTarget ?? { weekStart: move.slot.weekStart, timeZone: "UTC", createdAt: move.slot.updatedAt, createdBy: move.slot.updatedBy, updatedAt: move.slot.updatedAt, updatedBy: move.slot.updatedBy });
+          else {
+            target.updatedAt = move.slot.updatedAt;
+            target.updatedBy = move.slot.updatedBy;
+          }
+          const source = draft.plans[move.fromWeekStart];
+          if (source && move.fromWeekStart !== move.slot.weekStart) {
+            source.updatedAt = move.slot.updatedAt;
+            source.updatedBy = move.slot.updatedBy;
+          }
+          delete draft.slots[slotKey(move.fromWeekStart, move.slot.slotId)];
+          draft.slots[slotKey(move.slot.weekStart, move.slot.slotId)] = clone(move.slot);
         });
         await deps.core.save(channelId, next);
       });

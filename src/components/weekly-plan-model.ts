@@ -29,7 +29,7 @@ export type PlanSlotDto = {
     previous: { date: string; publishAt: string; lengthHint: string | null; note: string | null; timeZone: string; package?: PackageFingerprintDto };
     approvedAt: string;
     changedAt: string;
-    changedBy: "factory" | "worker" | "owner";
+    changedBy: "factory" | "worker" | "owner" | "producer";
   } | null;
   /** BL-240: the slot this one replaces (approving this one pulls it), or null. */
   replaces: { slotId: string; weekStart: string | null; publishAt: string | null; video: string | null; vetoed: boolean; released: boolean; found: boolean } | null;
@@ -46,8 +46,17 @@ export type PlanSlotDto = {
   /** BL-242 round 3: another counting approval names the same video number -- the uploads give no date. */
   duplicateVideo?: boolean;
   updatedAt: string;
-  updatedBy: "factory" | "worker" | "owner";
+  updatedBy: "factory" | "worker" | "owner" | "producer";
+  /** BL-267 (ADR 0073): how the slot is dated and what it waits for (absent from an older server). */
+  dating?: { source: "template" | "owner" | null; state: DatingState; position?: { date: string; day: string; index: number }; heldBy?: string };
+  /** BL-267: a date YouTube carries that this computer did not set («дата задана вручную»). */
+  foreignPublishAt?: string | null;
+  /** BL-267: where the slot was before its last move. */
+  movedFrom?: { weekStart: string; publishAt: string; timeZone: string; at: string; by: "owner" | "producer" } | null;
 };
+
+/** BL-267 (plan §3.10): the dating states the screen names. */
+export type DatingState = "dated" | "will_date" | "on_template_awaiting_package" | "awaiting_media_review" | "off_template" | "position_taken" | "foreign_date" | "vetoed" | "released";
 
 export type PlanSummaryDto = {
   weekStart: string;
@@ -61,7 +70,7 @@ export type PlanSummaryDto = {
   createdAt: string;
   createdBy: "factory" | "worker" | "owner";
   updatedAt: string;
-  updatedBy: "factory" | "worker" | "owner";
+  updatedBy: "factory" | "worker" | "owner" | "producer";
 };
 
 export type PlanDto = PlanSummaryDto & { slots: PlanSlotDto[] };
