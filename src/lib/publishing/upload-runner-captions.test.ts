@@ -457,3 +457,22 @@ test("review #5 mergeRecordCaptions: one entry per track id; for the same id the
   assert.deepEqual(mergeRecordCaptions([null, "x", { name: "no id" }, olderEntry], null), [olderEntry]);
   assert.deepEqual(mergeRecordCaptions([], null), []);
 });
+
+test("review #3 a re-mark keeps the earlier mark's time: a lost answer's track listed only later is still adopted, not foreign", async () => {
+  // Attempt 1 (11:00) was sent, its answer lost; the retry did not see the track yet and marked again -- the track YouTube made at
+  // 11:00:05 must stay adoptable on the next retry (its time is after the FIRST mark, though before the second).
+  const earlier = { at: "2026-11-17T11:00:00.000Z", trackIdsBefore: ["DE"] };
+  const seen: unknown[] = [];
+  let calls = 0;
+  const h = harness(row(PKG, { captionsAttempt: earlier }), async (args) => {
+    calls += 1;
+    seen.push(args.adoptAfterAttempt);
+    if (calls === 1) {
+      await args.onAttempt(["DE"]);
+      throw Object.assign(new Error("read ETIMEDOUT"), { code: "ETIMEDOUT" });
+    }
+    return verified;
+  });
+  await h.runAll();
+  assert.deepEqual(seen, [earlier, { trackIdsBefore: ["DE"], at: earlier.at }]);
+});

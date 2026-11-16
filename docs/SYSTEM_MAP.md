@@ -1517,8 +1517,10 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - Пакет `yt-release-package/2` `captions: [{ language, file, name, sha256 }]`; `captionsProblems` (блокирующие `captions_missing` /
   `captions_invalid` + reason), переключатель канала `captionsEnabled` (настройки публикации, по умолчанию выкл.), только
   горизонтальное длинное видео (V-код).
-- Шаг загрузки `captions` (после переводов, до обложки; никогда не перезаписывает; дата только после none/verified/already_present),
-  `checksPassed` плана учитывает его. Запись `Vn_youtube.json`: `videoSha256`, `videoSizeBytes`, `captions`.
+- Шаг загрузки `captions` (`publishing/caption-step.ts`; после переводов, до обложки; никогда не перезаписывает; дата только после
+  none/verified/already_present — проходит только дорожка `serving`), `checksPassed` плана учитывает его. Запись `Vn_youtube.json`:
+  `videoSha256`, `videoSizeBytes`, `captions` (шаг record сохраняет записи другого компьютера; добавление отказывает
+  `captions_upload_unfinished`, пока запись ещё первая).
 - Уже загруженное видео: маршрут владельца `POST /api/channels/[channelId]/publishing/package-captions` (кнопки «Субтитры» →
   «Добавить» / «Перезаписать субтитры» в «Ролики и релизы») и `producer_video_captions_add` (Producer API 1.26.0, CAPTIONS_WRITE);
   сервис `publishing/package-captions.ts`. Agent API 4.24.0, Factory API 1.53.0 (поля `captions`, коды проблем; `docs/interfaces.md`).

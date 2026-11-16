@@ -883,7 +883,9 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
           // Saved before the insert: a lost answer is then adopted on the retry, never inserted twice (AC-CAP-27).
           onAttempt: async (trackIdsBefore) => {
             previousAttempt = steps.captionsAttempt;
-            steps.captionsAttempt = { at: now().toISOString(), trackIdsBefore };
+            // A re-mark keeps the earlier mark's time: that attempt's insert may have been sent and its track not yet listed, and
+            // adoption takes only a track updated at or after the mark (review #3).
+            steps.captionsAttempt = { at: previousAttempt?.at ?? now().toISOString(), trackIdsBefore };
             // The retries in a row are kept (review #2): an insert that keeps failing after its mark must reach MAX_RETRIES and give
             // up (`failed`, date withheld), never be retried every 30 s for ever. `steps` carries the row's count as read.
             const stepsJson = JSON.stringify(steps);

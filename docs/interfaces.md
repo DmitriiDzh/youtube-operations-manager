@@ -1141,7 +1141,8 @@ A second agent role, separate from the channel agents. Technical contract only (
 - **Factory API version:** `1.53.0` since BL-269 (FO-REQ-0055, ADR 0074, additive: `yt-release-package/2` `captions: [{ language, file, name, sha256 }]`
   is read and checked -- plan / calendar packages gain `captions` and the blocking codes `captions_missing` / `captions_invalid` (reason:
   `channel_disabled`, `not_horizontal`, `orientation_unknown`, `count`, `language`, `name`, `size`, `sha256`, `format`); the upload record
-  `yt-release-upload/1` gains `videoSha256` (or null), `videoSizeBytes` and `captions: [{ trackId, language, name, sha256, at, by, verified? }]`;
+  `yt-release-upload/1` gains `videoSha256` (or null), `videoSizeBytes` and `captions: [{ trackId, language, name, sha256, at, by, verified?, pending? }]` (`pending: true` with `verified: false`: sent, YouTube
+  still processing -- re-checked by the next add; the runner's record step keeps entries already there, one per track id, the later `at` wins);
   the factory gets no caption tool; Agent API `4.24.0` the same fields in `agent_get_publishing_calendar` (uploads gain `captions`, the step's
   outcome, once it ran)); `1.52.0` since BL-267 (PRD-REQ-0195 A, ADR 0073, additive: `factory_publishing_template_get` (READ) --
   `{ template: { format: 'week-template/1', channelId, versionId, contentHash, horizonWeeks, displayTimeZone, days: { mon..sun?: [{ kind:
