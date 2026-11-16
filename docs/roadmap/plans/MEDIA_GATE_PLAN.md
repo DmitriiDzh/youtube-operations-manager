@@ -4,7 +4,8 @@ Owner: 2026-11-16, Producer PRD-REQ-0195 part B (owner TG 2340 via the Producer)
 оба»). Factory contract: Operator bundle 2.5.45 (frozen, pins with this work): `12 Release_Package` always writes the mp4's top-level
 `sha256` + `sizeBytes`; only YouTube/YTM hard rejections make a package NOT READY, everything else is a warning.
 
-Status: **plan, Proposed** (ADR 0072). Nothing here is built yet. Parts A (week template) and D (factory routines) of PRD-REQ-0195 are
+Status: **plan, Proposed** (ADR 0072; stays Proposed until the merge). Nothing here is built yet. The owner answered the open
+questions on 2026-11-16 (TG 4578/4581, slot approval TG 4569); §6 records the answers. Parts A (week template) and D (factory routines) of PRD-REQ-0195 are
 not in this plan; part C shipped as BL-264 (`496aeb12`, Producer API 1.22.0).
 
 ## 1. Goal
@@ -39,7 +40,7 @@ not in this plan; part C shipped as BL-264 (`496aeb12`, Producer API 1.22.0).
 
 **Discrepancy to report.** The requirement calls B2 a "NEW YouTube writer". The physical write of `snippet.title/description/tags`
 already exists in `src/lib/video-details/` (owner Details card). Per AGENTS.md §D no parallel writer is built: B2 is a new **surface**
-over that writer (package-driven, plus possibly the Producer), with the safety gaps below closed in `video-details` itself. It still
+over that writer (package-driven, for the owner and the Producer), with the safety gaps below closed in `video-details` itself. It still
 needs an AGENTS.md §F entry, because it adds a new path and possibly a new caller (§4).
 
 ## 3. Design
@@ -60,13 +61,13 @@ needs an AGENTS.md §F entry, because it adds a new path and possibly a new call
   matches, ordered as today (`seq`, `at`, `id`). `packaging_comment` never counts for the gate.
 - **Video code match.** The decision's `video` must equal the package's `video` exactly (string as-is; BL-263 adds `S<n>`), **or**
   the package's code is the BL-263 recode alias of the decision's code (a V cancelled with `replacedBy` that S). The recode only
-  renames files, so the mp4 bytes and `sha256` stay. (Depends on BL-263 being merged first; until then exact match only. §6 Q8.)
+  renames files, so the mp4 bytes and `sha256` stay. (BL-263 merges first; owner accepted, §6 Q8.)
 - **Legacy decisions** (no `videoSha256`) keep exactly BL-257's meaning: one counts only while a manifest with its
   `manifestSha256` is on disk, and then for that manifest's media key. BL-257 already proved the mp4 hashed to that `sha256` at
   approval. Nothing persists a manifest→media mapping for it: only the owner writes decisions, and a derived mapping kept by the app
   would be a second, unauthenticated source of approvals. So **the first re-package of a legacy-approved package needs one
   re-approval**, and every approval made by this build survives re-packages. (WWE is the only gated channel, with a handful of
-  pending packages; §6 Q7.)
+  pending packages; owner accepted, §6 Q7.)
 
 **Gate port** (`owner-review-gate.ts`): `problemOf({ video, videoSha256, videoSizeBytes, manifestSha256 })`. `needsThumbnailHash`
 is removed: the scan and the runner no longer hash the thumbnail for the gate. `CLOSED_OWNER_REVIEW_GATE` is unchanged (fail
@@ -76,7 +77,7 @@ closed). The rule stays in `package-reviews/model.ts` (§M).
 - «Одобрить» = approve the media. Preconditions: the manifest states `sha256`, and this computer's mp4 is `sizeBytes` long and
   hashes to it. **A thumbnail is no longer required.**
 - «Вернуть» stays, for the media only, with a required comment. It returns this mp4 (media key), and a new mp4 is pending again.
-  A return of packaging is not possible any more (§6 Q5).
+  A return of packaging is not possible any more (owner accepted, §6 Q5).
 - **New «Комментарий к упаковке»** (kind `packaging_comment`, comment required, ≤ 2000 chars) on **any package of the channel**:
   pending, approved or uploaded, gate on or off. `decide` refuses uploaded packages today (`package_review_uploaded`); that refusal
   stays for approve/return only. The comment never changes the gate, and it wakes the Producer like any decision
@@ -227,12 +228,13 @@ existing `video-thumbnails` owner surface with its own pipeline, as a separate c
 **Who and when.**
 - **Owner, Web UI** (stage 4): the uploaded package's row in «Ролики и релизы» and its week-plan slot (§3.1 entry point), on every
   channel. The review screen's uploaded items link there. Owner session, active channel, remote allowed (like the Details card and ADR 0069 §6).
-- **Producer** (proposed, stage 5, only on the owner's yes): `producer_video_metadata_update { channelId, video, dryRun? }` on the
-  Producer endpoint only. It applies only the video's **current package** values (no free text) and refuses on any conflict (no
+- **Producer** (stage 5; owner TG 4578/4581: the Producer needs it perhaps more than he does, for packaging tests):
+  `producer_video_metadata_update { channelId, video, dryRun? }` on the Producer endpoint only. It applies only the video's **current package** values (no free text) and refuses on any conflict (no
   override for the Producer). It has the same pipeline and the device gate (AC-TH-15 precedent). Channel worker agents and the factory get no such tool.
 - **Not automatic.** A re-package of an uploaded video is never applied to YouTube by itself. Safer default: the video may be public,
   a title change is visible to the audience at once, and an agent's re-package must not change a public title without a person
-  seeing the diff. The screen shows the difference, and the owner clicks (or, if he says so, tells the Producer).
+  seeing the diff. The screen shows the difference and the owner clicks, or the Producer calls its tool deliberately (dry run first),
+  refusing any conflict.
 
 ### 3.5 Factory contract (bundle 2.5.45)
 
@@ -240,7 +242,7 @@ The factory always writes `sha256` + `sizeBytes`, and only YouTube/YTM hard reje
 must not be stricter than that. Any YTM-only check that the factory treats as a warning becomes a YTM warning. The table in §3.1
 is the agreed list for the Operator. `factory_*` scan reads expose `warnings`.
 
-## 4. AGENTS.md §F draft (for the owner's approval; to be added in stage 5)
+## 4. AGENTS.md §F draft (owner's answers TG 4578/4581 included; to be added in stage 6)
 
 > **Package metadata after upload (2026-11-16, owner, Telegram msgs 4566–4569, BL-265, ADR 0072):** `src/lib/publishing/` may write
 > a video's default-language `snippet.title`, `snippet.description` and `snippet.tags` -- only of a video that a release package of
@@ -249,9 +251,9 @@ is the agreed list for the Operator. `factory_*` scan reads expose `warnings`.
 > `defaultLanguage` and `defaultAudioLanguage` sent back exactly as read just before the write; `zxx` left out as today), with a
 > three-way conflict check (YouTube now / what the upload sent / the manifest), identity check, backup of the current snippet,
 > Live writes immediately before the call, read-back (the written fields, and the untouched snippet fields, privacy, `publishAt`
-> and the localization languages unchanged), audit (`source: package_metadata`) and a dry run. Only on the owner's «Применить
-> упаковку» in the Web UI [*if the owner agrees:* and the Producer's `producer_video_metadata_update`, its own endpoint only,
-> refusing any conflict]; refused while this computer's upload of that video has not finished its read-back. Never
+> and the localization languages unchanged), audit (`source: package_metadata`, actor owner/producer) and a dry run. Only for the
+> owner («Применить упаковку» in the Web UI) and the Producer (`producer_video_metadata_update`, its own endpoint only, refusing any
+> conflict); refused while this computer's upload of that video has not finished its read-back. Never
 > `localizations`, `status`, `publishAt`, category or languages; never automatically from a new manifest. Channel worker agents and
 > the factory get no such tool. The owner package review (BL-257) now gates the **media** only: an approval covers the mp4
 > (`sha256` + `sizeBytes`, per channel and video code); packaging changes neither need nor reset it.
@@ -260,31 +262,26 @@ PROJECT_SPEC §21 gets the same paragraph (short). §F's existing «Owner packag
 
 ## 5. API versions
 
-Read on dev `f3e637b2`: Factory **1.48.0**, Agent **4.20.0**, Producer **1.22.0**. BL-263 (parallel) takes Factory 1.49.0, Agent
-4.21.0, Producer 1.23.0. BL-265 therefore takes **Factory 1.50.0, Agent 4.22.0, Producer 1.24.0** (all additive: `warnings` on scanned
+Read on dev `f3e637b2`: Factory **1.48.0**, Agent **4.20.0**, Producer **1.22.0**. **BL-263 merges first** and takes Factory 1.49.0,
+Agent 4.21.0, Producer 1.23.0. BL-265 therefore takes **Factory 1.50.0, Agent 4.22.0, Producer 1.24.0** (all additive: `warnings` on scanned
 packages and calendar items, review codes unchanged, wake-file kind `packaging_comment`, `media_changed` / `package_slot_changed`
-upload error codes; Producer also `producer_video_metadata_update` if the owner says yes). If BL-263 merges later or drops a bump,
-renumber at merge time.
+upload error codes; Producer also `producer_video_metadata_update`). This branch is rebased on dev after BL-263's merge; if BL-263
+drops a bump, renumber at merge time.
 
-## 6. Open questions for the owner
+## 6. Owner's answers (2026-11-16, TG 4578/4581; slot approval TG 4569)
 
-1. **Slot approval still names the manifest (ADR 0062).** With B alone, a metadata-only re-package after the slot was approved
-   still uploads (private) but the **date** waits for one slot re-approval, and cross-posts likewise. Recommendation: leave this to
-   part A (week template), which replaces per-slot approval. Alternative: B also matches the `packaged` fingerprint by the media key.
-2. **Date withheld when the thumbnail or translations step failed** (BL-224, owner msgs 3510/3511). This is an owner rule, not a
-   review. Recommendation: keep it.
-3. **Producer tool** `producer_video_metadata_update` (current package values only, no conflict override): yes or no?
-4. **Translations of an already-uploaded video** from a re-package, through `shared-video-localizations` (a third caller, new §F
-   bullet): authorize now, later, or keep Batches for it?
-5. **«Вернуть»** stays for the media only; packaging gets «Комментарий к упаковке» (non-blocking, wakes the Producer). Agreed?
-6. **Warnings list** (§3.1): chapters and test thumbnails become warnings; `same_title_on_channel` and the language baseline stay
-   blocking. Agreed?
-7. **Existing (BL-257) approvals** keep counting while their manifest is unchanged. The first re-package of such a package needs
-   one re-approval, because no owner-written record ties them to the mp4. Acceptable?
-8. **BL-263 recode** (V→S, same mp4): the approval follows the recode alias (recommended)?
-9. **Owner upload-approval rows** also freeze the mp4 SHA-256 (one hash before the first byte, as automatic rows), so they can take
-   a refreshed manifest. Such a row then keeps the date he chose with packaging he has not seen, and the refresh also applies on
-   channels without the review gate (§3.3). Agreed?
+1. **Slot approval (ADR 0062)** -- left to part A (week template), where slot approvals go away entirely (owner TG 4569: «Одобрение
+   слота вообще не нужно»). B does not change the `packaged` fingerprint. Until A lands, a metadata-only re-package after a slot
+   approval uploads (private) and its date waits for one slot re-approval; cross-posts likewise.
+2. **Date withheld when the thumbnail or translations step failed** (BL-224) -- kept.
+3. **Producer tool** `producer_video_metadata_update` -- **yes**, a regular stage (5): its own endpoint only, current package values
+   only, refusing any conflict, dry run, the same safety pipeline and the device gate.
+4. **Translations of an already-uploaded video** -- stay out for now (no new `shared-video-localizations` caller); Batches covers it.
+5. **«Вернуть»** for the media only, plus «Комментарий к упаковке» -- accepted.
+6. **Warnings list** (§3.1) -- accepted as proposed.
+7. **Existing BL-257 approvals** -- one re-approval at the first re-package, accepted.
+8. **BL-263 recode** -- the approval follows the V→S recode alias, accepted.
+9. **Owner upload-approval rows** freeze the mp4 SHA-256 (with the consequences in §3.3) -- accepted.
 
 ## 7. Stages (one branch `feature/bl-265-media-gate`, one merge)
 
@@ -302,9 +299,12 @@ renumber at merge time.
    `verifyUnchanged`, description read-back rule); `publishing/package-metadata.ts`
    (preview/apply, three-way diff, refusals); owner routes; UI with per-field conflict override; thumbnail button wired to
    `video-thumbnails`.
-5. **Agents + docs.** Producer tool only if Q3 = yes; API bumps (§5); AGENTS §F, PROJECT_SPEC §21, SYSTEM_MAP, ARCHITECTURE,
-   `docs/interfaces.md`, TECHNICAL_DEBT (RISK-154 amended: an approval no longer covers the thumbnail); ADR 0072 → Accepted;
-   independent review before the merge request.
+5. **Producer tool.** `producer_video_metadata_update { channelId, video, dryRun? }` on the Producer endpoint only, over the
+   same `package-metadata` service (actor `producer`, no conflict override, device gate); `no-agent-upload-tool.test.ts`-style
+   boundary test (worker and factory endpoints have no such tool); Producer API 1.24.0 with the wake kind.
+6. **Docs + review.** Rebase on dev after BL-263; API bumps (§5); AGENTS §F (§4 text), PROJECT_SPEC §21, SYSTEM_MAP, ARCHITECTURE,
+   `docs/interfaces.md`, TECHNICAL_DEBT (RISK-154 amended: an approval no longer covers the thumbnail); independent review before
+   the merge request; ADR 0072 → Accepted only at the merge.
 
 ## 8. Acceptance criteria (written before the code, from the requirement)
 
@@ -370,14 +370,16 @@ Writer (B2):
 - **AC-MG-28** Read-back shows an untouched field changed (e.g. `defaultLanguage`) → `verified: false` with the field, audited, and
   never reported as success.
 - **AC-MG-29** Three-way conflict: YouTube's title differs from both the uploaded and the manifest title → the field is `CONFLICT` and
-  not written without the owner's per-field override. The Producer surface (if built) refuses any conflict.
+  not written without the owner's per-field override. The Producer surface refuses any conflict.
 - **AC-MG-30** The etag changed between preview and apply → `video_details_conflict`, no write.
 - **AC-MG-31** An active upload row of that video here whose read-back has not run → `upload_steps_pending`, no write.
 - **AC-MG-32** Device handoff (operation lock) or recovery mode → refused before backup or write.
 - **AC-MG-33** A field equal on YouTube and in the manifest is not in the patch. When all three are equal → nothing written,
   `changed: false`.
-- **AC-MG-34** Owner routes need the owner session and the active channel. Agents and the factory have no metadata tool. The
-  Producer tool exists only on the Producer endpoint, and only if Q3 = yes.
+- **AC-MG-34** Owner routes need the owner session and the active channel. Channel worker agents and the factory have no
+  metadata tool. `producer_video_metadata_update` exists only on the Producer endpoint; its dry run writes nothing, it refuses any
+  conflict (no override), a wrong channel, Live writes off and a missing video exactly as the owner path, and audits actor
+  `producer`.
 - **AC-MG-35** Tried by media key: a row of `V7`/S that failed (or ended `unknown_outcome`, or was cancelled after the
   approval) → a metadata-only re-package of `V7`/S is **not** queued by the automatic upload (`tried`) and is refused by the
   Producer's add. With every row of S cancelled before YouTube and before the owner's approval of S → it is queued (the exception).

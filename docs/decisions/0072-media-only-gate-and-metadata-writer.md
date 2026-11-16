@@ -1,7 +1,8 @@
 # 0072. The owner's review gates the media only; packaging is fixed after upload through the existing snippet writer
 
-Status: Proposed. The requirement is the owner's (PRD-REQ-0195 part B, owner TG 2340 via the Producer, 2026-11-16; owner msgs
-4566–4569 to the developer, «да на оба»). The design choices and the open questions in the plan's §6 await the owner.
+Status: Proposed (until the merge). The requirement is the owner's (PRD-REQ-0195 part B, owner TG 2340 via the Producer,
+2026-11-16; owner msgs 4566–4569 to the developer, «да на оба»). The owner answered the plan's open questions on 2026-11-16 (TG
+4578/4581; slot approval TG 4569 «Одобрение слота вообще не нужно»): every recommendation accepted, and the Producer gets the tool.
 
 **Date:** 2026-11-16.
 - **Plan:** `docs/roadmap/plans/MEDIA_GATE_PLAN.md`, acceptance AC-MG-01..38. Backlog BL-265.
@@ -60,10 +61,10 @@ read-merge-write, read-back and audit. What is missing is a package-driven path 
    patch sends the normalised description, and `video-details`' read-back gains the description rule. An unknown upload baseline
    (the upload ran on the other computer) makes every differing field a conflict.
 8. **Who.** The owner, by a click on the diff on the uploaded package's row in «Ролики и релизы» or its week-plan slot, on any channel (remote allowed). The Producer gets
-   `producer_video_metadata_update` (current package values only, refuses conflicts, its endpoint only) **only if the owner says
-   so**. A new manifest is never applied to YouTube automatically. Worker agents and the factory get no tool. The thumbnail is
-   replaced through `src/lib/video-thumbnails/` (ADR 0069). Translations of an uploaded video stay out until the owner authorizes
-   them (plan §6 Q4).
+   `producer_video_metadata_update` (current package values only, refuses conflicts, dry run, the same pipeline and device gate,
+   its endpoint only) -- owner TG 4578/4581: it needs it perhaps more than he does, for packaging tests. A new manifest is never applied to YouTube automatically. Worker agents and the factory get no tool. The thumbnail is
+   replaced through `src/lib/video-thumbnails/` (ADR 0069). Translations of an uploaded video stay out for now (owner,
+   plan §6 Q4).
 
 ## Alternatives
 
@@ -81,9 +82,11 @@ read-merge-write, read-back and audit. What is missing is a package-driven path 
 
 - AGENTS.md §F gains the «Package metadata after upload» entry (draft in the plan §4) and the «Owner package review» bullet is
   amended. PROJECT_SPEC §21 follows. RISK-154 is amended.
-- The `packaged` slot approval (ADR 0062) still names the manifest. Until part A of PRD-REQ-0195 (week template) lands, a
-  metadata-only re-package after a slot approval uploads but waits for one slot re-approval for its date (plan §6 Q1).
-- APIs (additive): Factory 1.50.0, Agent 4.22.0, Producer 1.24.0 (after BL-263's 1.49.0 / 4.21.0 / 1.23.0).
+- The `packaged` slot approval (ADR 0062) still names the manifest; the owner leaves it to part A of PRD-REQ-0195 (week template),
+  where slot approvals go away entirely (TG 4569). Until then a metadata-only re-package after a slot approval uploads but waits for
+  one slot re-approval for its date. The date stays withheld when the thumbnail or translations step fails (BL-224, kept).
+- APIs (additive): Factory 1.50.0, Agent 4.22.0, Producer 1.24.0. BL-263 merges first (1.49.0 / 4.21.0 / 1.23.0); this branch is
+  rebased after it.
 
 ## Compatibility / migration impact
 
