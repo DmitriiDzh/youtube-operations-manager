@@ -4,7 +4,7 @@ Owner: 2026-11-16, Producer PRD-REQ-0195 part B (owner TG 2340 via the Producer)
 оба»). Factory contract: Operator bundle 2.5.45 (frozen, pins with this work): `12 Release_Package` always writes the mp4's top-level
 `sha256` + `sizeBytes`; only YouTube/YTM hard rejections make a package NOT READY, everything else is a warning.
 
-Status: **plan, Proposed** (ADR 0072; stays Proposed until the merge). Nothing here is built yet. The owner answered the open
+Status: **built on the branch** (stages 1–6, ADR 0072 stays Proposed until the merge). The owner answered the open
 questions on 2026-11-16 (TG 4578/4581, slot approval TG 4569); §6 records the answers. Parts A (week template) and D (factory routines) of PRD-REQ-0195 are
 not in this plan; part C shipped as BL-264 (`496aeb12`, Producer API 1.22.0).
 
@@ -62,6 +62,10 @@ needs an AGENTS.md §F entry, because it adds a new path and possibly a new call
 - **Video code match.** The decision's `video` must equal the package's `video` exactly (string as-is; BL-263 adds `S<n>`), **or**
   the package's code is the BL-263 recode alias of the decision's code (a V cancelled with `replacedBy` that S). The recode only
   renames files, so the mp4 bytes and `sha256` stay. (BL-263 merges first; owner accepted, §6 Q8.)
+- **The BL-263 review carry (owner TG 4584, merged before this build).** A media decision needs no copy: the recode keeps the mp4 and the
+  gate follows the alias (read from `video-projects.recodeAliasesOf` through a port). `carryReviewDecisionForRecode` stays as the
+  fallback for decisions made before BL-265 (keyed by the old manifest alone -- the 11 live WWE decisions are of this shape): it copies
+  those as before and writes nothing for a media decision (it still answers that decision's kind, so `review.carried` reads the same).
 - **Legacy decisions** (no `videoSha256`) keep exactly BL-257's meaning: one counts only while a manifest with its
   `manifestSha256` is on disk, and then for that manifest's media key. BL-257 already proved the mp4 hashed to that `sha256` at
   approval. Nothing persists a manifest→media mapping for it: only the owner writes decisions, and a derived mapping kept by the app
@@ -262,8 +266,9 @@ PROJECT_SPEC §21 gets the same paragraph (short). §F's existing «Owner packag
 
 ## 5. API versions
 
-Read on dev `f3e637b2`: Factory **1.48.0**, Agent **4.20.0**, Producer **1.22.0**. **BL-263 merges first** and takes Factory 1.49.0,
-Agent 4.21.0, Producer 1.23.0. BL-265 therefore takes **Factory 1.50.0, Agent 4.22.0, Producer 1.24.0** (all additive: `warnings` on scanned
+Read on dev `f3e637b2`: Factory **1.48.0**, Agent **4.20.0**, Producer **1.22.0**. BL-263 merged first (Factory 1.49.0, Agent
+4.21.0, Producer 1.23.0), and its review-carry fix (owner TG 4584) took Factory **1.50.0**. BL-265 therefore takes **Factory 1.51.0,
+Agent 4.22.0, Producer 1.24.0** (all additive: `warnings` on scanned
 packages and calendar items, review codes unchanged, wake-file kind `packaging_comment`, `media_changed` / `package_slot_changed`
 upload error codes; Producer also `producer_video_metadata_update`). This branch is rebased on dev after BL-263's merge; if BL-263
 drops a bump, renumber at merge time.
@@ -302,6 +307,9 @@ drops a bump, renumber at merge time.
 5. **Producer tool.** `producer_video_metadata_update { channelId, video, dryRun? }` on the Producer endpoint only, over the
    same `package-metadata` service (actor `producer`, no conflict override, device gate); `no-agent-upload-tool.test.ts`-style
    boundary test (worker and factory endpoints have no such tool); Producer API 1.24.0 with the wake kind.
+   *As built:* the entry point is the uploaded package's row in «Ролики и релизы» (`package-packaging-actions.tsx`); its week-plan slot
+   has no button yet (AC-MG-38 names the row only). The row's «Упаковка отличается от YouTube» compares title and description with the
+   synced copy (tags are not synced); the dialog's preview compares all three with a fresh read.
 6. **Docs + review.** Rebase on dev after BL-263; API bumps (§5); AGENTS §F (§4 text), PROJECT_SPEC §21, SYSTEM_MAP, ARCHITECTURE,
    `docs/interfaces.md`, TECHNICAL_DEBT (RISK-154 amended: an approval no longer covers the thumbnail); independent review before
    the merge request; ADR 0072 → Accepted only at the merge.

@@ -29,7 +29,7 @@ read-merge-write, read-back and audit. What is missing is a package-driven path 
    `package_reviews` family gain `videoSha256` and `videoSizeBytes` and keep `manifestSha256`, so an older build reads them as
    manifest-only, which is stricter. The thumbnail is no longer part of the approval or of the gate. A package without `sha256` is
    never approvable. A different `sha256` or size is a media change, and the package is pending again. The video code must match
-   exactly, or be BL-263's recode alias. Legacy decisions keep BL-257's meaning: one counts while its manifest is unchanged on disk, and the first re-package needs one re-approval, because no owner-written record ties them to the mp4.
+   exactly, or be BL-263's recode alias. Legacy decisions keep BL-257's meaning: one counts while its manifest is unchanged on disk, and the first re-package needs one re-approval, because no owner-written record ties them to the mp4. A recode copies only such a legacy decision; a media decision needs no copy.
 2. **«Вернуть» returns media; packaging gets comments.** A new decision kind `packaging_comment` (comment required, allowed on any
    package of the channel, uploaded ones and gate-off channels included) never changes the gate. It wakes the Producer like any decision. Older builds drop the unknown kind. Only the owner's Web UI decides (unchanged).
 3. **Only hard limits block.** `packageProblems` splits into blocking problems (unreadable package, media integrity, channel,
@@ -85,8 +85,10 @@ read-merge-write, read-back and audit. What is missing is a package-driven path 
 - The `packaged` slot approval (ADR 0062) still names the manifest; the owner leaves it to part A of PRD-REQ-0195 (week template),
   where slot approvals go away entirely (TG 4569). Until then a metadata-only re-package after a slot approval uploads but waits for
   one slot re-approval for its date. The date stays withheld when the thumbnail or translations step fails (BL-224, kept).
-- APIs (additive): Factory 1.50.0, Agent 4.22.0, Producer 1.24.0. BL-263 merges first (1.49.0 / 4.21.0 / 1.23.0); this branch is
-  rebased after it.
+- APIs (additive): Factory 1.51.0, Agent 4.22.0, Producer 1.24.0. BL-263 merged first (1.49.0 / 4.21.0 / 1.23.0) and its review-carry
+  fix took Factory 1.50.0.
+- The BL-263 review carry (`carryReviewDecisionForRecode`) stays only as the fallback for decisions made before BL-265 (manifest-keyed);
+  a media decision follows the recode alias with no copy.
 
 ## Compatibility / migration impact
 

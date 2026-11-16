@@ -848,6 +848,18 @@ not yet run its own thumbnail step, backup of the current thumbnail (URLs and im
 immediately before the call, read-back (`hasCustomThumbnail`, privacy and `publishAt` unchanged) and audit. Nothing else of the
 video, the weekly plan, the approval or the package changes. Channel worker agents and the factory get no thumbnail tool.
 
+**Package metadata after upload (added 2026-11-16, owner, Telegram msgs 4566–4569, TG 4578/4581, BL-265, ADR 0072).**
+`src/lib/publishing/` may write an uploaded video's default-language `snippet.title`, `snippet.description` and `snippet.tags` -- only
+of a video a release package of the channel put on YouTube (its upload record names it), only the values that package's current
+manifest states (never free text), only through `src/lib/video-details/` (a full snippet read-merge-write: category and languages sent
+back as read, `zxx` left out), with a three-way conflict check (YouTube now / what the upload sent / the manifest), identity check,
+backup, the Live-writes check immediately before the call, read-back (the written fields; the untouched snippet fields, privacy,
+`publishAt` and the localization languages unchanged), audit (`source: package_metadata`) and a dry run. Only the owner («Применить
+упаковку», Web UI) and the Producer (`producer_video_metadata_update`, refusing any conflict); refused while this computer's upload of
+that video has not finished its read-back; never automatic, never `localizations`, `status`, category or languages. The owner's package
+review (BL-257) now gates the **media** only: an approval covers the mp4 (`sha256` + `sizeBytes`, per channel and video code, or its
+BL-263 recode alias); packaging changes neither need nor reset it, and a queued upload takes a re-package of only its packaging.
+
 ---
 
 # 22. Idempotent Batch Execution

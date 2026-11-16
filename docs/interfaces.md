@@ -450,6 +450,11 @@ Key MCP tools:
     defaultAudioLanguage }]`: synced videos whose language fields differ from the baseline, case-insensitive; a Batch aligns
     such a video's `defaultLanguage` when it writes it, PROJECT_SPEC §14). `get_change_set` (Web and MCP) also returns
     `languageAlignments` `[{ videoId, from, to }]`.
+  - BL-265 (2026-11-16, Agent API 4.22.0, additive; ADR 0072): `agent_get_publishing_calendar` packages (and the plan tools' slot
+    packages) gain `warnings` -- codes that never block (`chapters_first_not_zero`, `chapters_too_few`, `chapter_too_short`,
+    `test_thumbnail_*`); every other problem still makes a package `not_ready`. `owner_review_pending` / `owner_review_returned` now
+    follow the package's VIDEO (the manifest's mp4 `sha256` + `sizeBytes` under its code): a re-package of only the texts, thumbnail or
+    translations keeps the owner's approval.
   - BL-263 (2026-11-16, Agent API 4.21.0, additive; ADR 0071): video codes may be `S<n>` (a WWE Short) besides `V<n>` in
     `agent_video_list` (state `recoded` + `recodedTo`, `series`), `agent_video_get_cost` and the publishing calendar. `agent_video_create`
     still gives only the next V (a given `video` is refused `validation_failed`, `s_codes_factory_only`).
@@ -1133,7 +1138,11 @@ A second agent role, separate from the channel agents. Technical contract only (
   POST only (405), the MCP connection switch (403 `MCP_CONNECTION_DISABLED`), a token (401 `AGENT_TOKEN_REQUIRED`), the token (401 `AGENT_TOKEN_INVALID` for an
   unknown, revoked or wrong-type token, including a channel token; 503 `AGENT_ENDPOINT_UNAVAILABLE` if the database cannot answer). The token is re-verified on
   every tool call, so a revocation applies to the next call. A factory token on `/api/mcp` is rejected the same way.
-- **Factory API version:** `1.50.0` since the BL-263 fix (owner TG 4584, ADR 0071 §4 amendment, additive: `factory_release_recode`
+- **Factory API version:** `1.51.0` since BL-265 (PRD-REQ-0195 B, ADR 0072, additive: the plan / calendar packages gain `warnings`
+  (codes that never block); the owner's package review gates the video (mp4 `sha256` + `sizeBytes`) only -- a re-package of only its
+  packaging stays ready and a queued upload takes it (upload rows gain the error codes `media_changed` / `package_slot_changed`);
+  `factory_release_recode` copies only a decision made before BL-265 (a media decision follows the V -> S alias; `review.carried`
+  still names it); wake files gain the status `packaging_comment`); `1.50.0` = the BL-263 fix (owner TG 4584, ADR 0071 §4 amendment, additive: `factory_release_recode`
   carries the owner's package-review decision to the new manifest instead of refusing -- `release_recode_approval_standing` reason
   `package_review` gone; result `review: { carried }`; `release_recode_busy` reasons `review_carry_failed`, `manifest_changed`;
   read-back problem `review_carry`); `1.49.0` = BL-263 (ADR 0071, additive: video codes `V<n>` or `S<n>` -- `^(V|S)[1-9][0-9]{0,5}$`, `S` = a
@@ -1489,7 +1498,9 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
 
 - **Transport:** as the factory endpoint, with `Authorization: Bearer ytom_pr_...` (the same checks and codes; a channel or factory token is
   401 `AGENT_TOKEN_INVALID` here, and a producer token on `/api/mcp` and `/api/mcp/factory`). Re-verified on every tool call.
-- **Producer API version:** `1.23.0` (since BL-263, ADR 0071: video codes may be `S<n>` in `agent_get_publishing_calendar`,
+- **Producer API version:** `1.24.0` (since BL-265, ADR 0072, additive: `producer_video_metadata_update`, permission `METADATA_WRITE`
+  and `metadataTools` in `producer_get_capabilities`; calendar `warnings`; the media-keyed review gate; the queue add's "tried" rule by
+  the row's mp4; wake status `packaging_comment`); `1.23.0` = BL-263 (ADR 0071: video codes may be `S<n>` in `agent_get_publishing_calendar`,
   `producer_upload_queue_*` (`video`: `V61` or `S14`) and the wake file names `REVIEW-DECISION-package-S14-...` -- additive; `1.22.0` =
   PRD-REQ-0195 C: `producer_upload_queue_add` also queues a version the owner approved in package review whose rows here were all cancelled before that approval -- same shape); `1.21.0` = BL-257 (ADR 0070: `agent_get_publishing_calendar` and `producer_upload_queue_add` see the package problems `owner_review_pending` / `owner_review_returned` -- the owner's review of the channel's final packages; the Inbox gains `REVIEW-DECISION-package-<video>-<decisionId>.md`; no tool decides -- additive); `1.20.0` = BL-255 ( ADR 0069: `producer_video_thumbnail_replace`, permission `THUMBNAIL_WRITE`, `thumbnailTools` in `producer_get_capabilities` -- additive); `1.19.0` = BL-246, ADR 0065: `producer_clip_review_get` / `_list` give each clip `attachments`, the
   owner's files on the deciding answer -- additive, no tool added); `1.18.0` = BL-244, ADR 0064: `producer_upload_queue_cancel` also stops an upload being sent, or paused, before its last chunk -- refused `upload_not_cancellable` with `details.reason` `final_chunk_sent` | `video_exists` | `status` | `changed` once it may be on YouTube; its result gains `previousStatus`, `storedBytes`, `totalBytes`; same tool); `1.17.0` = BL-243 (ADR 0063: the calendar read's `deleted_on_youtube`, `existsOnChannel` / `checkedAt` / `removedAt`, `missingOnChannel`; `channel_video_list` `videoIds` -- additive); `1.16.0` = BL-242 (ADR 0062: in the packaged approval stage `producer_upload_queue_add` dates only the manifest the owner approved -- same shape; before that `1.15.0`: 1.0.0, plus the three proposal tools in 1.1.0 (BL-163), plus `agent_get_video_milestones` and
@@ -1531,6 +1542,18 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
   `Figures = { samples, onAirMs, notLiveMs, dataGaps, viewerHours, averageViewers, peakViewers, interruptions }` -- from the stream computer's
   own broadcast checks and its stored YouTube Analytics pulls; unknown is null, never 0; `analyticsCollected` = the final pull (4 days after the
   broadcast) is stored. Local read only.
+- **Metadata tool (BL-265, ADR 0072, owner TG 4578/4581; Producer 1.24.0):** `producer_video_metadata_update` `{ channelId, video, dryRun? }`
+  (strict: no text of the caller's) → dry run `{ dryRun: true, video, videoId, manifestSha256, etag, baseline: upload_row | metadata_apply | unknown,
+  fields: [{ field: title | description | tags, youtube, uploaded, manifest, status: same | write | conflict }], changed, audioLanguageLeftOut,
+  quotaUnits (54), thumbnail: { path, differs } | null }`; real `{ dryRun: false, video, videoId, manifestSha256, changed, written, skippedConflicts,
+  verified, backupPath, audioLanguageLeftOut }`, plus `forChannelId`. Writes an UPLOADED video's default-language title / description / tags from its
+  package's current manifest through `video-details` (identity check, backup, Live writes immediately before `videos.update`, read-back of the
+  written and untouched fields and the localization languages, audit `source: package_metadata`, actor `producer`); any conflict (YouTube differs
+  from both what the upload sent and the package; an unknown baseline makes every difference one) is refused. Errors: `upload_package_not_ready`,
+  `package_metadata_not_uploaded`, `package_metadata_invalid`, `upload_steps_pending`, `video_missing`, `video_not_in_channel`,
+  `package_metadata_conflict` (`details.conflicts`), `video_details_conflict`, `CHANNEL_NOT_ACTIVE`, `WRITE_CHANNEL_MISMATCH`, `live_writes_disabled`,
+  `update_failed`, `operation_lock_held` / `device_in_recovery_mode`. The owner's route: `POST /api/channels/[channelId]/publishing/package-metadata`
+  `{ video, dryRun? }` / `{ video, expectedEtag, overwrite?: field[] }` (owner session, active channel; the owner may overwrite a conflicting field).
 - **Thumbnail tool (BL-255, ADR 0069, owner msgs 4380/4383):** `producer_video_thumbnail_replace` `{ channelId, videoId (11 chars), path (workspace-
   relative, under `04 Videos/`, .jpg/.jpeg/.png), dryRun? }` → `{ channelId, videoId, path, dryRun, file: { bytes, contentType, sha256 }, before:
   { hasCustomThumbnail, privacyStatus, publishAt, url }, after (same shape, or null), units (52), written, backupPath, verified, verificationDetail, imageChanged }`
