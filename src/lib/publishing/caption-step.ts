@@ -37,14 +37,14 @@ export type CaptionStepDeps = {
     resolve(channelId: string, relativePath: string): Promise<{ path: string; bytes: number } | null>;
     readChunk(path: string, start: number, length: number): Promise<Buffer>;
   };
-  /** The captions writer, with the runner's attempt mark (persisted before the insert). */
-  write(input: CaptionWriteInput, actor: CaptionActor, attempt: { mark(trackIdsBefore: string[]): Promise<void> }): Promise<CaptionWriteResult>;
+  /** The captions writer, with the runner's attempt mark (persisted before the insert; taken back when nothing was sent). */
+  write(input: CaptionWriteInput, actor: CaptionActor, attempt: { mark(trackIdsBefore: string[]): Promise<void>; clear(): Promise<void> }): Promise<CaptionWriteResult>;
 };
 
 export const CAPTIONS_FILE_MAX_BYTES = 10 * 1024 * 1024;
 
 export function createCaptionStepWriter(deps: CaptionStepDeps): NonNullable<UploadRunnerDeps["writeCaptions"]> {
-  return async ({ channelId, videoId, video, uploadId, captions, frameFallback, ownTracks, adoptAfterAttempt, onAttempt, credentialRef }) => {
+  return async ({ channelId, videoId, video, uploadId, captions, frameFallback, ownTracks, adoptAfterAttempt, onAttempt, onAttemptCleared, credentialRef }) => {
     const file = await deps.files.resolve(channelId, captions.file);
     if (!file) return { outcome: "refused", code: "captions_missing", detail: `${captions.file} is not in the channel's workspace.` };
     if (file.bytes === 0 || file.bytes > CAPTIONS_FILE_MAX_BYTES) return { outcome: "refused", code: "captions_invalid", detail: `size ${file.bytes} bytes` };
@@ -66,7 +66,7 @@ export function createCaptionStepWriter(deps: CaptionStepDeps): NonNullable<Uplo
           adoptAfterAttempt,
         },
         { kind: "upload", uploadId, userId: credentialRef.userId },
-        { mark: (trackIdsBefore) => onAttempt(trackIdsBefore) }
+        { mark: (trackIdsBefore) => onAttempt(trackIdsBefore), clear: () => onAttemptCleared() }
       );
       return { outcome: captionStepOutcome(result), trackId: result.trackId as string, trackName: result.trackName, detail: result.verificationDetail };
     } catch (error) {

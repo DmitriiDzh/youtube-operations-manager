@@ -518,7 +518,7 @@ export function createUploadRunnerCore(options: { slotDecisions?: (channelId: st
     // BL-269 (ADR 0074 §7): the captions writer; the file is read once here (the workspace rule) and re-hashed by the writer.
     writeCaptions: createCaptionStepWriter({
       files: { resolve: (channelId, relativePath) => deps.files.resolve(channelId, relativePath), readChunk: (filePath, start, length) => deps.files.readChunk(filePath, start, length) },
-      write: (input, actor, attempt) => createVideoCaptionsCore({ captionsEnabled: captionsEnabledNow, markAttempt: ({ trackIdsBefore }) => attempt.mark(trackIdsBefore) }).write(input, actor),
+      write: (input, actor, attempt) => createVideoCaptionsCore({ captionsEnabled: captionsEnabledNow, markAttempt: ({ trackIdsBefore }) => attempt.mark(trackIdsBefore), clearAttempt: () => attempt.clear() }).write(input, actor),
     }),
     // BL-225 stage 3 (AGENTS.md §F «Upload localizations», ADR 0051 §8): the shared video translations writer, named in the audit.
     async writeLocalizations({ channelId, videoId, localizations, expected, credentialRef }) {

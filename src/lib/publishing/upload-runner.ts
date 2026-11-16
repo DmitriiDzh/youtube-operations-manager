@@ -212,8 +212,10 @@ export type UploadRunnerDeps = {
     captions: NonNullable<ApprovedPackage["captions"]>;
     frameFallback: "vertical" | "horizontal" | null;
     ownTracks: Array<{ trackId: string; sha256: string }>;
-    adoptAfterAttempt: { trackIdsBefore: string[] } | null;
+    adoptAfterAttempt: { trackIdsBefore: string[]; at: string } | null;
     onAttempt(trackIdsBefore: string[]): Promise<void>;
+    /** Review #3: the insert was never sent (the client or Live writes refused) -- the mark is taken back (the earlier one restored). */
+    onAttemptCleared(): Promise<void>;
   } & UploadCredentials): Promise<
     | { outcome: "verified" | "already_present" | "mismatch" | "pending"; trackId: string; trackName: string | null; detail: string | null }
     | { outcome: "refused"; code: string; detail: string }
@@ -843,6 +845,7 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
           note("captions: no writer on this computer");
           return void (await saveSteps(job, steps));
         }
+        let previousAttempt: UploadSteps["captionsAttempt"];
         const result = await deps.writeCaptions({
           channelId: job.channelId,
           videoId,
@@ -852,9 +855,10 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
           frameFallback: pkg.orientation ?? null,
           ownTracks: steps.captionsTrack ? [{ trackId: steps.captionsTrack.trackId, sha256: steps.captionsTrack.sha256 }] : [],
           // Once the track is known (a re-read of a syncing one), it is ours by id: no adoption again.
-          adoptAfterAttempt: steps.captionsAttempt && !steps.captionsTrack ? { trackIdsBefore: steps.captionsAttempt.trackIdsBefore } : null,
+          adoptAfterAttempt: steps.captionsAttempt && !steps.captionsTrack ? { trackIdsBefore: steps.captionsAttempt.trackIdsBefore, at: steps.captionsAttempt.at } : null,
           // Saved before the insert: a lost answer is then adopted on the retry, never inserted twice (AC-CAP-27).
           onAttempt: async (trackIdsBefore) => {
+            previousAttempt = steps.captionsAttempt;
             steps.captionsAttempt = { at: now().toISOString(), trackIdsBefore };
             // The retries in a row are kept (review #2): an insert that keeps failing after its mark must reach MAX_RETRIES and give
             // up (`failed`, date withheld), never be retried every 30 s for ever. `steps` carries the row's count as read.
@@ -862,6 +866,13 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
             if (!(await deps.store.update(job.id, "finishing", { stepsJson, updatedAt: now() }))) throw new Error("The upload row changed while its captions were written.");
             // An error after this point is handled on the row as saved (onError reads its steps), so the mark survives a lost answer.
             job = { ...job, stepsJson };
+          },
+          onAttemptCleared: async () => {
+            // An earlier run's mark (its insert may have been sent) is kept; only this run's unsent attempt is taken back.
+            if (previousAttempt) steps.captionsAttempt = previousAttempt;
+            else delete steps.captionsAttempt;
+            const stepsJson = JSON.stringify(steps);
+            if (await deps.store.update(job.id, "finishing", { stepsJson, updatedAt: now() })) job = { ...job, stepsJson };
           },
           ...creds,
         });

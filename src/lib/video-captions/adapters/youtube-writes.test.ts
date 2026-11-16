@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ResolvedCredentials } from "@/lib/shared-domain";
+import { wasCaptionWriteNotSent } from "../contracts";
 import { createVideoCaptionWrites } from "./youtube-writes";
 
 const credentials = { credentialRef: { userId: "u" }, accessToken: "t", scopeSet: new Set<string>() } as ResolvedCredentials;
@@ -34,4 +35,31 @@ test("AC-CAP-12 / AC-CAP-44 Live writes off: no insert and no update", async () 
   await assert.rejects(writes.insert(credentials, { videoId: "V", language: "en", name: "", media }), /Live writes/);
   await assert.rejects(writes.update(credentials, { trackId: "T", media }), /Live writes/);
   assert.deepEqual(calls, []);
+});
+
+test("review #3 an error before the call (client or Live writes) is marked not sent, its code kept; the gateway's own error is not", async () => {
+  const off = createVideoCaptionWrites({
+    client: async () => ({}),
+    assertLiveWrites: async () => {
+      throw Object.assign(new Error("Live writes are off"), { code: "live_writes_disabled" });
+    },
+    insert: async () => ({ trackId: "x" }),
+  });
+  await assert.rejects(off.insert(credentials, { videoId: "V", language: "en", name: "", media }), (e: unknown) => wasCaptionWriteNotSent(e) && (e as { code?: string }).code === "live_writes_disabled");
+  const noClient = createVideoCaptionWrites({
+    client: async () => {
+      throw new Error("token refresh failed");
+    },
+    assertLiveWrites: async () => undefined,
+    update: async () => undefined,
+  });
+  await assert.rejects(noClient.update(credentials, { trackId: "T", media }), (e: unknown) => wasCaptionWriteNotSent(e));
+  const sent = createVideoCaptionWrites({
+    client: async () => ({}),
+    assertLiveWrites: async () => undefined,
+    insert: async () => {
+      throw Object.assign(new Error("read ETIMEDOUT"), { code: "ETIMEDOUT" });
+    },
+  });
+  await assert.rejects(sent.insert(credentials, { videoId: "V", language: "en", name: "", media }), (e: unknown) => !wasCaptionWriteNotSent(e));
 });

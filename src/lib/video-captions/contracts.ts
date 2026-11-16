@@ -44,10 +44,11 @@ export type CaptionWriteInput = {
   /** The track the owner's preview showed would be replaced (null: "none, an insert"); a different one now refuses. */
   expectedTrackId?: string | null;
   /**
-   * The upload runner's lost-answer rule (§3.3): an earlier attempt was marked with the track ids listed before it -- a `standard`
-   * English track with exactly the package's name absent from that list is this upload's own and is adopted, not inserted again.
+   * The upload runner's lost-answer rule (§3.3): an earlier attempt was marked with the track ids listed before it and its time -- a
+   * `standard` English track with exactly the package's name, absent from that list and last updated at or after the mark (review
+   * #3: an unknown time is not adopted), is this upload's own and is adopted, not inserted again.
    */
-  adoptAfterAttempt?: { trackIdsBefore: string[] } | null;
+  adoptAfterAttempt?: { trackIdsBefore: string[]; at: string } | null;
 };
 
 export type CaptionTrackSummary = { trackId: string; language: string | null; name: string | null; trackKind: string | null; lastUpdated: string | null; ours: boolean };
@@ -103,6 +104,8 @@ export type VideoCaptionsDeps = {
   assertWriteChannel(args: { channelId: string } & CaptionCredentials): Promise<void>;
   /** Persists "an insert was attempted" with the track ids listed before it (the runner's lost-answer rule); others: nothing. */
   markAttempt(args: { channelId: string; videoId: string; trackIdsBefore: string[] }): Promise<void>;
+  /** Takes that mark back when the error proves nothing was sent (the client or the Live writes check failed: review #3). */
+  clearAttempt(args: { channelId: string; videoId: string }): Promise<void>;
   /** The two writes; each checks Live writes immediately before its gateway call (the adapter). */
   insert(credentials: ResolvedCredentials, args: { videoId: string; language: string; name: string; media: { mimeType: string; bytes: Buffer } }): Promise<{ trackId: string }>;
   update(credentials: ResolvedCredentials, args: { trackId: string; media: { mimeType: string; bytes: Buffer } }): Promise<void>;
@@ -110,3 +113,24 @@ export type VideoCaptionsDeps = {
   newOperationId(): string;
   sleep(ms: number): Promise<void>;
 };
+
+/**
+ * Review #3: an error thrown BEFORE a caption write was sent (the client could not be made, or Live writes refused) carries this
+ * mark, so the runner's attempt mark is taken back -- no insert was sent, nothing may be adopted later on its strength.
+ */
+const NOT_SENT = Symbol.for("ytm.videoCaptions.notSent");
+
+/** Marks `error` as "nothing was sent" (the same object, so its code still decides a pause); a non-object is wrapped. */
+export function markCaptionWriteNotSent(error: unknown): unknown {
+  const target = error !== null && (typeof error === "object" || typeof error === "function") ? error : new Error(String(error));
+  try {
+    Object.defineProperty(target, NOT_SENT, { value: true, enumerable: false });
+  } catch {
+    /* a frozen object: treated as possibly sent (the mark stays, adoption still needs the time rule) */
+  }
+  return target;
+}
+
+export function wasCaptionWriteNotSent(error: unknown): boolean {
+  return error !== null && typeof error === "object" && (error as Record<symbol, unknown>)[NOT_SENT] === true;
+}

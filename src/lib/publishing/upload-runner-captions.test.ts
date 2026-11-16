@@ -257,7 +257,8 @@ test("AC-CAP-27 the attempt mark is saved before the insert and handed to the re
     return { outcome: "verified", trackId: "LOST", trackName: "", detail: null };
   });
   await h.runAll();
-  assert.deepEqual(seen, [null, { trackIdsBefore: ["DE"] }]);
+  // Review #3: the retry also gets the mark's time (adoption only of a track updated at or after it).
+  assert.deepEqual(seen, [null, { trackIdsBefore: ["DE"], at: NOW.toISOString() }]);
   assert.deepEqual([h.steps().captions, h.steps().captionsTrack?.trackId, h.steps().captionsAttempt?.trackIdsBefore], ["verified", "LOST", ["DE"]]);
 });
 
@@ -274,7 +275,7 @@ test("pending (YouTube still syncing) is read again later with the track as ours
   await h.runAll();
   assert.deepEqual(owns, [[], [{ trackId: "T1", sha256: CAPTIONS.sha256 }]]);
   // The first pass may adopt (a mark is there); once the track is known it is ours by id, never adopted again.
-  assert.deepEqual(adopts, [{ trackIdsBefore: [] }, null]);
+  assert.deepEqual(adopts, [{ trackIdsBefore: [], at: NOW.toISOString() }, null]);
   assert.deepEqual([h.steps().captions, h.steps().captionsRereads, h.steps().publishAt], ["already_present", 1, "set"]);
 });
 
@@ -333,6 +334,7 @@ function realWriter(lists: VideoCaptionTrack[][], log: string[] = []) {
     backup: { checkInfrastructureHealth: async () => ({ healthy: true }), captureBackup: async () => ({ path: "/b", capturedAt: "now" }) },
     assertWriteChannel: async () => undefined,
     markAttempt: async () => undefined,
+    clearAttempt: async () => undefined,
     insert: async () => (log.push("insert"), { trackId: "NEW" }),
     update: async () => assert.fail("never an overwrite"),
     audit: async () => undefined,
@@ -341,7 +343,7 @@ function realWriter(lists: VideoCaptionTrack[][], log: string[] = []) {
   };
   return createCaptionStepWriter({
     files: { resolve: async (_c, p) => ({ path: p, bytes: REAL_VTT.length }), readChunk: async () => REAL_VTT },
-    write: (input, actor, attempt) => createVideoCaptionsServices({ ...deps, markAttempt: ({ trackIdsBefore }) => attempt.mark(trackIdsBefore) }).write(input, actor),
+    write: (input, actor, attempt) => createVideoCaptionsServices({ ...deps, markAttempt: ({ trackIdsBefore }) => attempt.mark(trackIdsBefore), clearAttempt: () => attempt.clear() }).write(input, actor),
   });
 }
 
@@ -405,4 +407,23 @@ test("review #2 an insert that keeps failing after its attempt mark gives up aft
   const steps = h.steps();
   assert.deepEqual([h.row().status, steps.captions, steps.publishAt, h.row().errorCode], ["done", "failed", "withheld", "step_failed"]);
   assert.ok((steps.notes ?? []).some((n) => /^captions: .*ETIMEDOUT/.test(n)));
+});
+
+test("review #3 the insert never sent (Live writes off after the mark) -> the mark is taken back, the earlier one kept; a pause", async () => {
+  const fresh = harness(row(PKG), async (args) => {
+    await args.onAttempt(["DE"]);
+    await args.onAttemptCleared();
+    throw new DomainError({ code: "live_writes_disabled", message: "off" });
+  });
+  await fresh.runAll(1);
+  assert.deepEqual([fresh.row().status, fresh.row().pausedReason, fresh.steps().captionsAttempt], ["paused", "live_writes_off", undefined]);
+  // A retry of an attempt whose answer was lost: that earlier mark (its insert may have been sent) survives this run's unsent one.
+  const earlier = { at: "2026-11-17T11:00:00.000Z", trackIdsBefore: ["DE"] };
+  const retry = harness(row(PKG, { captionsAttempt: earlier }), async (args) => {
+    await args.onAttempt(["DE", "FR"]);
+    await args.onAttemptCleared();
+    throw new DomainError({ code: "live_writes_disabled", message: "off" });
+  });
+  await retry.runAll(1);
+  assert.deepEqual(retry.steps().captionsAttempt, earlier);
 });

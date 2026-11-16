@@ -12,6 +12,7 @@ import {
   type CaptionWriteResult,
   type VideoCaptionTrack,
   type VideoCaptionsDeps,
+  wasCaptionWriteNotSent,
 } from "./contracts";
 import { sha256Hex } from "./hash";
 
@@ -36,6 +37,18 @@ function actorDetail(actor: CaptionActor): Record<string, unknown> {
 }
 
 const timeOf = (value: string | null) => (value ? Date.parse(value) : Number.NaN);
+
+/**
+ * The runner's lost-answer rule (§3.3, review #3): a `standard` English track with exactly the package's name that was not listed
+ * before the attempt -- and, for a mark from an earlier run, last updated at or after that mark (an unknown time: not adopted).
+ * A foreign track of the same name ("" is normal) added before the mark is never taken.
+ */
+function adoptable(track: VideoCaptionTrack, name: string, before: ReadonlySet<string>, sinceMs: number | null): boolean {
+  if (!isEnglishLanguage(track.language) || kindOf(track) !== "standard" || track.name !== name || before.has(track.id)) return false;
+  if (sinceMs === null) return true;
+  const updated = timeOf(track.lastUpdated);
+  return Number.isFinite(updated) && Number.isFinite(sinceMs) && updated >= sinceMs;
+}
 
 export function createVideoCaptionsServices(deps: VideoCaptionsDeps) {
   /** The status part of a read-back: serving is verified; syncing is pending; failed is not verified. */
@@ -116,7 +129,8 @@ export function createVideoCaptionsServices(deps: VideoCaptionsDeps) {
     // The runner's lost-answer rule: a standard English track with the package's name that was not there before the earlier attempt.
     if (input.adoptAfterAttempt && !overwrite) {
       const before = new Set(input.adoptAfterAttempt.trackIdsBefore);
-      const found = english.find((t) => kindOf(t) === "standard" && t.name === input.name && !before.has(t.id));
+      const since = Date.parse(input.adoptAfterAttempt.at);
+      const found = english.find((t) => adoptable(t, input.name, before, since));
       if (found) return finishAdopted(found, tracks, input, result, base, creds.credentials);
     }
 
@@ -196,20 +210,27 @@ export function createVideoCaptionsServices(deps: VideoCaptionsDeps) {
     await deps.assertWriteChannel({ channelId, ...creds });
     const media = { mimeType: CAPTIONS_MIME_TYPE, bytes };
     let trackId: string;
+    let marked = false;
     try {
       if (target) {
         await deps.update(creds.credentials, { trackId: target.id, media });
         trackId = target.id;
       } else {
-        if (actor.kind === "upload") await deps.markAttempt({ channelId, videoId, trackIdsBefore: tracks.map((t) => t.id) });
+        if (actor.kind === "upload") {
+          await deps.markAttempt({ channelId, videoId, trackIdsBefore: tracks.map((t) => t.id) });
+          marked = true;
+        }
         trackId = (await deps.insert(creds.credentials, { videoId, language: CAPTIONS_LANGUAGE, name: input.name, media })).trackId;
       }
     } catch (error) {
+      // Review #3: nothing was sent (the client or Live writes refused) -- the mark is taken back, so no later run adopts on it.
+      if (marked && wasCaptionWriteNotSent(error)) await deps.clearAttempt({ channelId, videoId }).catch(() => undefined);
       // A 409 captionExists on the runner's insert (a lost answer): the track with this name is this upload's own -- adopted.
       if (!target && actor.kind === "upload" && isCaptionExists(error)) {
         const relisted = await deps.listTracks(creds.credentials, videoId);
         const before = new Set(tracks.map((t) => t.id));
-        const found = relisted.find((t) => isEnglishLanguage(t.language) && kindOf(t) === "standard" && t.name === input.name && !before.has(t.id));
+        // This very call listed the tracks just before its insert: a track absent then is the lost answer's (no time rule needed).
+        const found = relisted.find((t) => adoptable(t, input.name, before, null));
         if (found) return finishAdopted(found, relisted, input, result, base, creds.credentials);
       }
       await deps.audit({ channelId, videoId, eventType: "RESULT", detail: { event: "video_captions.write_failed", ...audited, error: error instanceof Error ? error.message.slice(0, 500) : String(error) } }).catch(() => undefined);

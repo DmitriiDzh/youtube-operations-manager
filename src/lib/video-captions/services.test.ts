@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DomainError, type ResolvedCredentials } from "@/lib/shared-domain";
 import type { BackupSnapshot } from "@/lib/backup/contracts";
-import type { CaptionActor, CaptionWriteInput, VideoCaptionTrack, VideoCaptionsDeps } from "./contracts";
+import { markCaptionWriteNotSent, type CaptionActor, type CaptionWriteInput, type VideoCaptionTrack, type VideoCaptionsDeps } from "./contracts";
 import { sha256Hex } from "./hash";
 import { createVideoCaptionsServices } from "./services";
 
@@ -105,6 +105,9 @@ function harness(world: World) {
     async markAttempt({ trackIdsBefore }) {
       calls.push("mark");
       marks.push(trackIdsBefore);
+    },
+    async clearAttempt() {
+      calls.push("clear");
     },
     async insert(_c, args) {
       calls.push(`insert:${args.language}:${args.name}:${sha256Hex(args.media.bytes) === SHA ? "bytes-ok" : "bytes-bad"}`);
@@ -277,6 +280,7 @@ function unreadableDeps(): VideoCaptionsDeps {
     backup: { checkInfrastructureHealth: async () => ({ healthy: true }), captureBackup: async () => ({ path: "/b", capturedAt: "now" }) },
     assertWriteChannel: async () => undefined,
     markAttempt: async () => undefined,
+    clearAttempt: async () => undefined,
     insert: async () => ((wrote = true), { trackId: "NEW" }),
     update: async () => undefined,
     audit: async ({ eventType }) => {
@@ -344,7 +348,7 @@ test("AC-CAP-27 lost answer: a mark, then a retry finds an unlisted standard en 
   assert.deepEqual(first.marks, [["DE"]], "the mark names the tracks listed before the insert");
   // The retry: the track made by the lost answer is there.
   const retry = harness({ tracks: [track({ id: "DE", language: "de" }), track({ id: "LOST", name: "English" })] });
-  const r = await retry.services.write(input({ name: "English", adoptAfterAttempt: { trackIdsBefore: ["DE"] } }), upload);
+  const r = await retry.services.write(input({ name: "English", adoptAfterAttempt: { trackIdsBefore: ["DE"], at: "2026-11-10T09:59:00Z" } }), upload);
   assert.deepEqual([r.adopted, r.trackId, r.verified], [true, "LOST", true]);
   assert.deepEqual(writes(retry.calls), []);
   // Without the mark the same track is foreign (no adoption on the owner's or Producer's path).
@@ -360,6 +364,33 @@ test("AC-CAP-27 a 409 captionExists on the runner's insert -> the new track is a
   assert.equal(writes(h.calls).length, 1, "one insert attempt in total");
   const ownerPath = harness({ tracks: [], insertError: conflict(), relist: [lost] });
   await assert.rejects(ownerPath.services.write(input({ name: "English" }), owner), /exists/);
+});
+
+test("review #3 nothing sent (the client or Live writes refused) -> the runner's mark is taken back; an error after sending keeps it", async () => {
+  const notSent = harness({ tracks: [], insertError: markCaptionWriteNotSent(new DomainError({ code: "live_writes_disabled", message: "off" })) });
+  await rejectsWith(notSent.services.write(input(), upload), "live_writes_disabled");
+  assert.deepEqual(notSent.calls.slice(-3), ["mark", "insert:en::bytes-ok", "clear"]);
+  // An unknown answer after the call went out: the mark stays (the lost-answer rule needs it).
+  const lost = harness({ tracks: [], insertError: Object.assign(new Error("read ETIMEDOUT"), { code: "ETIMEDOUT" }) });
+  await assert.rejects(lost.services.write(input(), upload), /ETIMEDOUT/);
+  assert.equal(lost.calls.includes("clear"), false);
+  // The owner's path sets no mark, so it takes none back.
+  const ownerPath = harness({ tracks: [], insertError: markCaptionWriteNotSent(new DomainError({ code: "live_writes_disabled", message: "off" })) });
+  await rejectsWith(ownerPath.services.write(input(), owner), "live_writes_disabled");
+  assert.deepEqual(ownerPath.calls.filter((c) => c === "mark" || c === "clear"), []);
+});
+
+test("review #3 adoption only of a same-name track updated at or after the mark; older, or with no time, is foreign", async () => {
+  const at = "2026-11-17T12:00:00Z";
+  const adopt = (lost: VideoCaptionTrack) => harness({ tracks: [lost] }).services.write(input({ adoptAfterAttempt: { trackIdsBefore: [], at } }), upload);
+  // A person's "" -named English track from before the attempt (names "" are normal): never taken.
+  await rejectsWith(adopt(track({ id: "PERSON", lastUpdated: "2026-11-17T11:59:59Z" })), "captions_foreign_track");
+  await rejectsWith(adopt(track({ id: "UNKNOWN", lastUpdated: null })), "captions_foreign_track");
+  // Exactly at the mark, or after it: the lost answer's own.
+  for (const lastUpdated of [at, "2026-11-17T12:00:05Z"]) {
+    const r = await adopt(track({ id: "LOST", lastUpdated }));
+    assert.deepEqual([r.adopted, r.trackId], [true, "LOST"]);
+  }
 });
 
 // ---- Explicit overwrite (owner msg 4660) ----

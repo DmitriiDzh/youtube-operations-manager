@@ -26,6 +26,8 @@ export type VideoCaptionsCoreOptions = {
   captionsEnabled(channelId: string): Promise<boolean>;
   /** The runner's lost-answer mark (absent: nothing persisted -- the owner and Producer paths). */
   markAttempt?(args: { channelId: string; videoId: string; trackIdsBefore: string[] }): Promise<void>;
+  /** Takes that mark back when nothing was sent (review #3). */
+  clearAttempt?(args: { channelId: string; videoId: string }): Promise<void>;
 };
 
 export function createVideoCaptionsCore(options: VideoCaptionsCoreOptions) {
@@ -54,6 +56,9 @@ export function createVideoCaptionsCore(options: VideoCaptionsCoreOptions) {
     },
     markAttempt: async (args) => {
       await options.markAttempt?.(args);
+    },
+    clearAttempt: async (args) => {
+      await options.clearAttempt?.(args);
     },
     insert: (credentials, args) => writes.insert(credentials, args),
     update: (credentials, args) => writes.update(credentials, args),
