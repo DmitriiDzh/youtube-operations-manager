@@ -1,6 +1,6 @@
 # 0073. An owner-approved week template replaces slot approval
 
-Status: Proposed (accepted at the merge). The requirement is the owner's (PRD-REQ-0195 part A via the Producer; owner msgs 4569 /
+Status: Accepted (2026-11-16, owner «Да мерджи», TG 4648). The requirement is the owner's (PRD-REQ-0195 part A via the Producer; owner msgs 4569 /
 4575 «Одобрение слота вообще не нужно», Media review stays; 4572 the screens; 4620 the Producer moves a slot to another week keeping
 its id; 4630–4636 the answers: moves anywhere and at once, no replacement, one plan for YouTube and the social networks, «Собрать
 неделю по шаблону»). The AGENTS.md §F wording below is shown to the owner before the merge (plan §7 O9).
@@ -99,7 +99,7 @@ video is refused anyway). Template matches and Producer moves add new time sourc
 - The Producer changes release dates of dated videos on its own (owner 4630/4636); every such write is audited with `by: producer`.
 - Explicit approvals made before the switch keep counting (plan §7 O2); V11/V18-like hand-set dates are never touched.
 
-## Proposed AGENTS.md §F text (for the owner's approval; AGENTS.md is not edited until then)
+## AGENTS.md §F text (approved by the owner 2026-11-16, TG 4645/4648; now in AGENTS.md)
 
 In the «Upload localizations» bullet, replace «A weekly-plan slot's date reaches a video only through the owner's approval of that
 slot (on the computer whose automatic-upload switch is on); a veto removes an uploaded video's date (still private) through
