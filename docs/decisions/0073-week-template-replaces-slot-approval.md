@@ -112,11 +112,13 @@ slot (on the computer whose automatic-upload switch is on); a veto removes an up
 > a date, by the owner (Web UI) or the Producer (`producer_publishing_plan_move_slot`, its own endpoint only), to any day, time or
 > week -- written at once through `src/lib/video-details/` (identity check, backup, Live writes immediately before, read-back,
 > audit), never for a public video, never within 15 minutes, and never as a first date. Always only on the computer whose
-> automatic-upload switch is on (a move: the computer that uploaded the video). Automatic changes (template matches, the
-> plan-schedule pass) give only first dates of undated private videos or move or remove a date that computer itself set; a date set
+> automatic-upload switch is on (a move: the computer that uploaded the video). A template match gives only a first date of an
+> undated private video, never moves one; the plan-schedule pass otherwise changes or removes only a date that computer itself set
+> (the owner's explicit date, a veto); a date set
 > elsewhere (YouTube Studio, «Видео», the other computer) is changed only by an explicit move, and a template change never moves or
 > removes a date. A veto removes a date the app set (still private) through `src/lib/video-details/`. A slot dated by (a) or (b)
-> also authorizes its release package's social posts (`crossPost`, ADR 0068): one plan for YouTube and the social networks. Agents
+> also authorizes its release package's social posts (`crossPost`, ADR 0068), as does a slot whose video carries that computer's own
+> date at the slot's time (owner msg 4640: the social networks duplicate YouTube); never a foreign date. Agents
 > never approve or withdraw a template, give a first date or veto: the Producer may propose a template and move slots as above; the
 > Operator and channel workers cannot move a slot or re-time a slot whose video has a date.
 
