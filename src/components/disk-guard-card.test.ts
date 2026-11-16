@@ -38,7 +38,11 @@ test("Servers → Sessions renders the disk card inside its own FeatureErrorBoun
   assert.match(sessions, /<FeatureErrorBoundary[^>]*>\s*<DiskGuardCard \/>/);
   const bell = await readFile(path.join(process.cwd(), "src", "components", "device-sync-bell.tsx"), "utf8");
   assert.match(bell, /fetch\("\/api\/disk-guard\/notice"\)/);
-  assert.match(bell, /DISK_HREF = "\/servers\/sessions"/);
   assert.match(bell, /diskNotice !== null/);
-  assert.match(bell, /from "\.\/gb-label"/, "the bell does not import the card component");
+  assert.doesNotMatch(bell, /disk-guard-card/, "the bell does not import the card component");
+  // BL-262: the bell's disk row (its link and its size label) is built in bell-notices.ts.
+  const notices = await readFile(path.join(process.cwd(), "src", "components", "bell-notices.ts"), "utf8");
+  assert.match(notices, /DISK_HREF = "\/servers\/sessions"/);
+  assert.match(notices, /from "\.\/gb-label"/, "the bell does not import the card component");
+  assert.doesNotMatch(notices, /disk-guard-card/);
 });

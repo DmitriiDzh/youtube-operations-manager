@@ -6,10 +6,12 @@ import type { Translate, UiTextKey } from "@/lib/ui-text";
 import { useT } from "./ui-text-provider";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PlanChannelWork } from "@/lib/generation-plans/contracts";
-import { otherChannelEntries, type ChannelWorkEntry } from "./channel-work";
+import { otherChannelEntries, type BellGroup, type BellSeverity, type ChannelWorkEntry } from "./channel-work";
+import { diskNoticeEntry, liveNoticeEntries, type BellEntry, type DiskNotice, type LiveNotice } from "./bell-notices";
 import { useChannelNames } from "./use-channel-names";
 import Link from "next/link";
-import { gbLabel } from "./gb-label";
+import type { ComponentType, SVGProps } from "react";
+import { BroadcastIcon, CalendarIcon, DiskIcon, HeadphonesIcon, LocalizationsIcon, MediaIcon, SyncIcon } from "./icons";
 
 /**
  * Automatic device sync notifications (docs/roadmap/plans/DEVICE_AUTO_SYNC_PLAN.md §3.7): a bell in
@@ -21,6 +23,9 @@ import { gbLabel } from "./gb-label";
  * Media work of every channel that is NOT active -- one entry per channel and type of work, with the channel's avatar and
  * name and a button that switches to it and opens the place. Entries come from the summary on every poll, so they update in
  * place and go away only when the work is done; they cannot be dismissed.
+ *
+ * BL-262 (owner msgs 4541/4542/4545): every row shows its group as an icon (no group headers), coloured by urgency -- red where the
+ * owner has to act, sky for information -- with a short text; the full text is on hover.
  */
 
 type Notice = {
@@ -44,18 +49,17 @@ type SyncStatus = {
 };
 
 const POLL_MS = 30_000;
-// BL-176 (LIVE_STREAMS_PLAN.md §3.10): this computer's live-stream notices, each opening the channel's «Трансляции» tab.
-type LiveNotice = { channelId: string; kind: "live_stream_down" | "live_stream_ended" | "live_stream_source_missing" | "live_segment_switch_failed"; since: number; detail?: string };
-const LIVE_NOTICE_TEXT: Record<LiveNotice["kind"], UiTextKey> = {
-  live_stream_down: "live.bell.down",
-  live_stream_ended: "live.bell.ended",
-  live_stream_source_missing: "live.bell.sourceMissing",
-  live_segment_switch_failed: "live.bell.segmentSwitchFailed",
+// BL-262: the icon of each group and the colour of each urgency (red: the owner has to act; sky: information).
+const GROUP_ICON: Record<BellGroup, ComponentType<SVGProps<SVGSVGElement>>> = {
+  disk: DiskIcon,
+  media: HeadphonesIcon,
+  translations: LocalizationsIcon,
+  storyboards: MediaIcon,
+  publishing: CalendarIcon,
+  live: BroadcastIcon,
+  sync: SyncIcon,
 };
-const LIVE_STREAM_HREF = "/content/streams";
-// BL-237: this computer's low-disk alert (the server's 15-minute check), opening Servers → Sessions where the «Диск» card is.
-type DiskNotice = { freeBytes: number; thresholdGb: number; since: string };
-const DISK_HREF = "/servers/sessions";
+const SEVERITY_CLASS: Record<BellSeverity, string> = { action: "text-red-400", info: "text-sky-400" };
 
 const STATE_LABEL: Record<SyncStatus["state"], UiTextKey> = {
   disabled: "deviceSync.state.disabled",
@@ -172,36 +176,58 @@ export function DeviceSyncBell({
     }
   }
 
-  // One row of another channel's open work (Media, translations): its avatar and name, the text, and "Open" (switch, then go).
-  const entryRow = (entry: ChannelWorkEntry) => {
-    const thumbnail = channelLabels?.find((c) => c.channelId === entry.channelId)?.thumbnailUrl ?? null;
+  // One bell row: the group icon (coloured by urgency), the channel's avatar and name when it has one, the short text (the full
+  // text on hover), and "Open" (switch to the channel, then go; the disk notice is this computer's and just goes).
+  const entryRow = (entry: BellEntry) => {
+    const Icon = GROUP_ICON[entry.group];
+    const channelId = entry.channelId;
+    const thumbnail = channelId ? (channelLabels?.find((c) => c.channelId === channelId)?.thumbnailUrl ?? null) : null;
+    const buttonClass = "shrink-0 rounded-md bg-indigo-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-indigo-500";
     return (
-      <div key={entry.key} className="flex items-start gap-2 rounded-lg border border-zinc-700 bg-zinc-950 p-2.5">
-        {thumbnail ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={thumbnail} alt="" className="mt-0.5 h-7 w-7 shrink-0 rounded-full" />
-        ) : (
-          <div className="mt-0.5 h-7 w-7 shrink-0 rounded-full bg-zinc-700" />
-        )}
-        <div className="min-w-0 flex-1">
+      <div key={entry.key} className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-950 p-2">
+        <Icon aria-hidden="true" className={`shrink-0 ${SEVERITY_CLASS[entry.severity]}`} />
+        {channelId &&
+          (thumbnail ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={thumbnail} alt="" className="h-6 w-6 shrink-0 rounded-full" />
+          ) : (
+            <div className="h-6 w-6 shrink-0 rounded-full bg-zinc-700" />
+          ))}
+        <div className="min-w-0 flex-1" title={entry.detail}>
           {/* ui-text-ignore: a channel's own name (data) */}
-          <p className="truncate text-xs font-medium text-zinc-100">{nameOf(entry.channelId)}</p>
+          {channelId && <p className="truncate text-xs font-medium text-zinc-100">{nameOf(channelId)}</p>}
           <p className="text-xs text-zinc-300">{entry.text}</p>
         </div>
-        {onOpenChannelWork && (
-          <button
-            onClick={() => {
-              setOpen(false);
-              onOpenChannelWork(entry.channelId, entry.href);
-            }}
-            className="shrink-0 rounded-md bg-indigo-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-indigo-500"
-          >
-            {t("channelWork.open")}
-          </button>
+        {channelId === null ? (
+          <Link href={entry.href} onClick={() => setOpen(false)} className={buttonClass}>
+            {t("disk.bell.open")}
+          </Link>
+        ) : (
+          onOpenChannelWork && (
+            <button
+              onClick={() => {
+                setOpen(false);
+                onOpenChannelWork(channelId, entry.href);
+              }}
+              className={buttonClass}
+            >
+              {t("channelWork.open")}
+            </button>
+          )
         )}
       </div>
     );
   };
+
+  // Disk first (this computer), then the channels' work by group, then the live streams.
+  const rows: BellEntry[] = [
+    ...(diskNotice ? [diskNoticeEntry(t, diskNotice)] : []),
+    ...entries,
+    ...languageEntries,
+    ...storyboardEntries,
+    ...publishingEntries,
+    ...liveNoticeEntries(t, liveNotices),
+  ];
 
   const notices = status?.notices ?? [];
   const attention = notices.length > 0 || diskNotice !== null || liveNotices.some((n) => n.kind !== "live_stream_source_missing");
@@ -225,69 +251,13 @@ export function DeviceSyncBell({
       </button>
 
       {open && (
-        <div className="absolute right-0 z-50 mt-2 max-h-[80vh] w-96 space-y-3 overflow-y-auto rounded-xl border border-zinc-700 bg-zinc-900 p-4 shadow-xl">
-          {diskNotice && (
-            <div className="space-y-2 border-b border-zinc-800 pb-3">
-              <h3 className="text-sm font-semibold text-zinc-100">{t("disk.bell.title")}</h3>
-              <div className="flex items-start gap-2 rounded-lg border border-red-800 bg-zinc-950 p-2.5">
-                <p className="min-w-0 flex-1 text-xs text-zinc-200">{t("disk.bell.low", { free: gbLabel(t, diskNotice.freeBytes), threshold: diskNotice.thresholdGb })}</p>
-                <Link href={DISK_HREF} onClick={() => setOpen(false)} className="shrink-0 rounded-md bg-indigo-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-indigo-500">
-                  {t("disk.bell.open")}
-                </Link>
-              </div>
-            </div>
-          )}
-          {entries.length > 0 && (
-            <div className="space-y-2 border-b border-zinc-800 pb-3">
-              <h3 className="text-sm font-semibold text-zinc-100">{t("channelWork.title")}</h3>
-              {entries.map(entryRow)}
-            </div>
-          )}
-          {languageEntries.length > 0 && (
-            <div className="space-y-2 border-b border-zinc-800 pb-3">
-              <h3 className="text-sm font-semibold text-zinc-100">{t("languageAlerts.bellTitle")}</h3>
-              {languageEntries.map(entryRow)}
-            </div>
-          )}
-          {storyboardEntries.length > 0 && (
-            <div className="space-y-2 border-b border-zinc-800 pb-3">
-              <h3 className="text-sm font-semibold text-zinc-100">{t("storyboards.alert.bellTitle")}</h3>
-              {storyboardEntries.map(entryRow)}
-            </div>
-          )}
-          {publishingEntries.length > 0 && (
-            <div className="space-y-2 border-b border-zinc-800 pb-3">
-              <h3 className="text-sm font-semibold text-zinc-100">{t("publishingAlerts.bellTitle")}</h3>
-              {publishingEntries.map(entryRow)}
-            </div>
-          )}
-          {liveNotices.length > 0 && (
-            <div className="space-y-2 border-b border-zinc-800 pb-3">
-              <h3 className="text-sm font-semibold text-zinc-100">{t("live.bell.title")}</h3>
-              {liveNotices.map((notice) => (
-                <div key={`${notice.channelId}-${notice.kind}`} className="flex items-start gap-2 rounded-lg border border-zinc-700 bg-zinc-950 p-2.5">
-                  <div className="min-w-0 flex-1">
-                    {/* ui-text-ignore: a channel's own name (data) */}
-                    <p className="truncate text-xs font-medium text-zinc-100">{nameOf(notice.channelId)}</p>
-                    <p className="text-xs text-zinc-300">{t(LIVE_NOTICE_TEXT[notice.kind], { since: formatTime(t, new Date(notice.since).toISOString()), videoId: notice.detail ?? "" })}</p>
-                  </div>
-                  {onOpenChannelWork && (
-                    <button
-                      onClick={() => {
-                        setOpen(false);
-                        onOpenChannelWork(notice.channelId, LIVE_STREAM_HREF);
-                      }}
-                      className="shrink-0 rounded-md bg-indigo-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-indigo-500"
-                    >
-                      {t("channelWork.open")}
-                    </button>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
+        <div className="absolute right-0 z-50 mt-2 max-h-[80vh] w-96 max-w-[calc(100vw-2rem)] space-y-3 overflow-y-auto rounded-xl border border-zinc-700 bg-zinc-900 p-4 shadow-xl">
+          {rows.length > 0 && <div className="space-y-2 border-b border-zinc-800 pb-3">{rows.map(entryRow)}</div>}
           <div>
-            <h3 className="text-sm font-semibold text-zinc-100">{t("shell.deviceSync")}</h3>
+            <h3 className="flex items-center gap-2 text-sm font-semibold text-zinc-100">
+              <SyncIcon aria-hidden="true" className="h-4 w-4 text-zinc-400" />
+              {t("shell.deviceSync")}
+            </h3>
             <p className="mt-1 text-xs text-zinc-400">{status ? t(STATE_LABEL[status.state]) : t("common.loading")}</p>
             {status?.busyReason && status.state === "busy" && <p className="text-xs text-zinc-500">{status.busyReason}</p>}
             <p className="mt-1 text-xs text-zinc-500">
@@ -302,7 +272,11 @@ export function DeviceSyncBell({
 
           {notices.map((notice, index) => (
             <div key={`${notice.kind}-${index}`} className="space-y-2 rounded-lg border border-zinc-700 bg-zinc-950 p-3">
-              <p className="text-xs text-zinc-200">{notice.message}</p>
+              {/* BL-262: a sync notice always needs the owner (the bell's red dot) -- the sync icon in red. */}
+              <div className="flex items-start gap-2">
+                <SyncIcon aria-hidden="true" className={`shrink-0 ${SEVERITY_CLASS.action}`} />
+                <p className="min-w-0 flex-1 text-xs text-zinc-200">{notice.message}</p>
+              </div>
               {notice.kind === "divergence" && notice.snapshotId && (
                 <>
                   {notice.createdAt && (

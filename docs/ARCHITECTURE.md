@@ -3302,6 +3302,10 @@ Plan: `docs/roadmap/plans/SERVERS_MEDIA_PLAN.md` (FO-REQ-0009, FO-MSG-0011). Bra
       entries since owner msg 4535);
     - entries cannot be dismissed, and the dot is sky blue;
     - an entry's button runs `activateStoredChannel`, waits until `channel.id` matches, then `router.push`es the place.
+    - BL-262 (owner msgs 4541/4542/4545): no group headers. Each row is a group icon (`components/icons.tsx`: disk, media,
+      translations, storyboards, publishing, live, sync), red for `severity: "action"` and sky for `"info"`, then the
+      avatar/name, a short `text`, and the full text as the hover `detail`. The builders set `group`/`severity`/`detail`;
+      this computer's live and disk notices are built in `components/bell-notices.ts`.
   - The pure rules are in `components/channel-work.ts`.
 - **Plan move (`movePlan`, `factory_plan_move`).**
   - It is serialized per plan and uses the plan's compare-and-swap.
