@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { StoredPublishingUpload } from "@/lib/db";
-import { DomainError } from "@/lib/shared-domain";
+import { DomainError, type ResolvedCredentials } from "@/lib/shared-domain";
+import type { VideoCaptionTrack, VideoCaptionsDeps } from "@/lib/video-captions/contracts";
+import { sha256Hex } from "@/lib/video-captions/hash";
+import { createVideoCaptionsServices } from "@/lib/video-captions/services";
+import { captionStepOutcome, createCaptionStepWriter } from "./caption-step";
 import { checksPassed } from "./plan-schedule";
 import { estimateUploadUnits } from "./publish-dates";
 import { DEFAULT_PUBLISHING_SETTINGS } from "./settings";
@@ -294,4 +298,96 @@ test("AC-CAP-29 / AC-CAP-30 a row from before BL-269 (no captions): steps.captio
   assert.equal(record.videoSizeBytes, 10);
   assert.equal("captions" in record, false);
   assert.equal(h.order.includes("captions"), false);
+});
+
+// ---- The real wiring: the captions writer (fake YouTube) -> the step writer's mapping -> the runner (independent review #1) ----
+// Requirement (ADR 0074 §7, plan §3.2 step 9, R3): only a track YouTube SERVES lets the date through. `syncing` is read again
+// (bounded) and then withheld; `failed` is not verified (with `failureReason`) and withholds the date -- also when the track is the
+// app's own from this very file ("already there"), which must not pass on the sha256 alone.
+
+const REAL_VTT = Buffer.from("WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nHello\n");
+const REAL_CAPTIONS = { ...CAPTIONS, sha256: sha256Hex(REAL_VTT) };
+const REAL_PKG: ApprovedPackage = { ...PKG, captions: REAL_CAPTIONS };
+const enTrack = (over: Partial<VideoCaptionTrack> & { id: string }): VideoCaptionTrack => ({
+  language: "en",
+  name: "",
+  trackKind: "standard",
+  isDraft: false,
+  status: "serving",
+  failureReason: null,
+  lastUpdated: "2026-11-17T12:00:00Z",
+  ...over,
+});
+
+/** A fake YouTube for the real writer: `lists` is what each captions.list returns, in order (the last one repeats). */
+function realWriter(lists: VideoCaptionTrack[][], log: string[] = []) {
+  let n = 0;
+  const deps: VideoCaptionsDeps = {
+    credentials: async () => ({ credentialRef: { userId: "owner-1" }, credentials: {} as ResolvedCredentials }),
+    captionsEnabled: async () => true,
+    readVideo: async () => ({ channelId: "UC_wwe", frame: { width: 1920, height: 1080 } }),
+    listTracks: async () => lists[Math.min(n++, lists.length - 1)],
+    downloadTrack: async () => assert.fail("never an overwrite"),
+    checkUnits: async () => ({ decision: "allow" }),
+    assertDeviceAvailable: async () => undefined,
+    backup: { checkInfrastructureHealth: async () => ({ healthy: true }), captureBackup: async () => ({ path: "/b", capturedAt: "now" }) },
+    assertWriteChannel: async () => undefined,
+    markAttempt: async () => undefined,
+    insert: async () => (log.push("insert"), { trackId: "NEW" }),
+    update: async () => assert.fail("never an overwrite"),
+    audit: async () => undefined,
+    newOperationId: () => "op",
+    sleep: async () => undefined,
+  };
+  return createCaptionStepWriter({
+    files: { resolve: async (_c, p) => ({ path: p, bytes: REAL_VTT.length }), readChunk: async () => REAL_VTT },
+    write: (input, actor, attempt) => createVideoCaptionsServices({ ...deps, markAttempt: ({ trackIdsBefore }) => attempt.mark(trackIdsBefore) }).write(input, actor),
+  });
+}
+
+test("captionStepOutcome: only a serving track passes; already present + syncing is pending, + failed is a mismatch", () => {
+  assert.equal(captionStepOutcome({ alreadyPresent: true, verified: true, pending: false }), "already_present");
+  assert.equal(captionStepOutcome({ alreadyPresent: true, verified: false, pending: true }), "pending");
+  assert.equal(captionStepOutcome({ alreadyPresent: true, verified: false, pending: false }), "mismatch");
+  assert.equal(captionStepOutcome({ alreadyPresent: false, verified: true, pending: false }), "verified");
+  assert.equal(captionStepOutcome({ alreadyPresent: false, verified: false, pending: true }), "pending");
+  assert.equal(captionStepOutcome({ alreadyPresent: false, verified: false, pending: false }), "mismatch");
+});
+
+test("review #1 the app's own track already there but FAILED on YouTube -> mismatch, date withheld with the reason (real writer)", async () => {
+  const own = enTrack({ id: "T0", status: "failed", failureReason: "processingFailed" });
+  const h = harness(row(REAL_PKG, { captionsTrack: { trackId: "T0", language: "en", name: "", sha256: REAL_CAPTIONS.sha256, at: NOW.toISOString() } }), realWriter([[own]]));
+  await h.runAll();
+  const steps = h.steps();
+  assert.deepEqual([steps.captions, steps.publishAt, h.row().errorCode], ["mismatch", "withheld", "verify_mismatch"]);
+  assert.equal(h.order.includes("publishAt"), false);
+  assert.ok((steps.notes ?? []).some((n) => /captions/.test(n) && /processingFailed/.test(n)), "the owner sees why");
+  assert.equal(checksPassed(steps), false);
+});
+
+test("review #1 the app's own track already there but still SYNCING -> read again, never already_present; stays syncing -> withheld", async () => {
+  const own = enTrack({ id: "T0", status: "syncing" });
+  const h = harness(row(REAL_PKG, { captionsTrack: { trackId: "T0", language: "en", name: "", sha256: REAL_CAPTIONS.sha256, at: NOW.toISOString() } }), realWriter([[own]]));
+  await h.runAll();
+  const steps = h.steps();
+  assert.equal(h.order.filter((o) => o === "captions").length, 4, "the first read and READ_BACK_RETRIES (3) re-reads");
+  assert.deepEqual([steps.captions, steps.captionsRereads, steps.publishAt], ["mismatch", 3, "withheld"]);
+  assert.ok((steps.notes ?? []).some((n) => /captions/.test(n) && /syncing/.test(n)));
+  // ...and once YouTube serves it, the re-read lets the date through.
+  const later = harness(row(REAL_PKG, { captionsTrack: { trackId: "T0", language: "en", name: "", sha256: REAL_CAPTIONS.sha256, at: NOW.toISOString() } }), realWriter([[own], [{ ...own, status: "serving" }]]));
+  await later.runAll();
+  assert.deepEqual([later.steps().captions, later.steps().publishAt], ["already_present", "set"]);
+});
+
+test("review #1 a fresh insert whose re-reads end FAILED -> mismatch, date withheld, the reason in the notes (real writer)", async () => {
+  const log: string[] = [];
+  const syncing = enTrack({ id: "NEW", status: "syncing" });
+  const failed = enTrack({ id: "NEW", status: "failed", failureReason: "unknownFormat" });
+  // before, read-back, the writer's own re-read (syncing) -> pending; the runner's next pass finds it failed.
+  const h = harness(row(REAL_PKG), realWriter([[], [syncing], [syncing], [failed]], log));
+  await h.runAll();
+  const steps = h.steps();
+  assert.deepEqual(log, ["insert"], "one insert in total");
+  assert.deepEqual([steps.captions, steps.captionsTrack?.trackId, steps.publishAt, h.row().errorCode], ["mismatch", "NEW", "withheld", "verify_mismatch"]);
+  assert.ok((steps.notes ?? []).some((n) => /unknownFormat/.test(n)));
 });
