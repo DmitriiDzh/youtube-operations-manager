@@ -1038,6 +1038,9 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
     недели» и календаре (`src/components/orientation-icon.tsx`). Источник — ширина и высота из того же вызова ffprobe, что и длительность
     при сканировании пакета (`probeFrame`, поле `orientation` пакета и `PlanSlotPackage`); прочитанное запоминается на этом компьютере
     по номеру видео (`app_settings.video_orientations`), так что значок остаётся после удаления mp4. Неизвестно — значка нет.
+  - BL-260 (owner msg 4421): всплывающий плеер «▶» в «Плане недели», календаре (список дня) и на «Роликах и релизах» (доска и
+    пакеты) — `src/components/video-popup.tsx`: сначала mp4 пакета с этого компьютера через маршрут `package-reviews/video` (по SHA-256
+    манифеста, HTTP Range, только браузер владельца), если файла нет — плеер YouTube (youtube-nocookie) по video id и ссылка на ролик.
   - Этап 3: автозагрузка (BL-209) ставит пакет одобренного и не снятого слота с его временем, снятый пропускает (решения слотов —
     `src/composition/publishing-plan-slots.ts`); загрузчик пишет переводы пакета первым шагом после обработки общим писателем
     `src/lib/shared-video-localizations/` (вынесен из live-localizations) и ИИ-метку пакета; дата — только после переводов, обложки,

@@ -11,6 +11,7 @@ import { useT } from "./ui-text-provider";
 import { VideoDetailModal } from "./video-detail-modal";
 import { VideoDetailsPanel } from "./video-details-panel";
 import { OrientationIcon, type Orientation } from "./orientation-icon";
+import { VideoPlayButton } from "./video-popup";
 
 // BL-182 stage 1 (FO-REQ-0023 §4 C; PUBLISHING_PLAN.md §2 stage 1): Content → «Календарь». The questions the owner asks of it, in
 // order: until when is the channel covered (and is that soon), which days of the next two weeks have no video, what is waiting
@@ -78,7 +79,14 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
   const [views, setViews] = useState<Map<string, number | null>>(new Map());
   // BL-259: the frame of each package's video, by manifest path and by uploaded video id.
   const [orientations, setOrientations] = useState<Map<string, Orientation>>(new Map());
+  // BL-260: the package manifest of each entry (by manifest path or video id), for the popup player.
+  const [manifestOf, setManifestOf] = useState<Map<string, string>>(new Map());
   const packagesReadAt = useRef(0);
+  // Review (BL-260): another channel -- its packages are read again at once, never the previous channel's manifests.
+  useEffect(() => {
+    packagesReadAt.current = 0;
+    setManifestOf(new Map());
+  }, [channelId]);
   const [detailsDirty, setDetailsDirty] = useState(false);
 
   const load = useCallback(async () => {
@@ -96,15 +104,23 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
         const base = `/api/channels/${encodeURIComponent(channelId)}`;
         const [packagesRes, settingsRes] = await Promise.all([fetch(`${base}/publishing/packages`), fetch(`${base}/publishing-settings`)]);
         if (packagesRes.ok && settingsRes.ok) {
-          const scanned = (await packagesRes.json()) as { status: string; packages?: Array<{ manifestPath: string; video: string | null; title: string | null; plannedPublishDate: string | null; state: string; orientation?: Orientation | null; youtube?: { videoId: string } | null }> };
+          const scanned = (await packagesRes.json()) as { status: string; packages?: Array<{ manifestPath: string; video: string | null; title: string | null; plannedPublishDate: string | null; state: string; orientation?: Orientation | null; manifestSha256?: string | null; youtube?: { videoId: string } | null }> };
           // BL-259: each package's frame, by its manifest (a planned package) and by its uploaded video id (a YouTube entry).
+          // BL-260: each package's manifest, the same two keys -- the popup plays the package's own file when it is here.
           const frames = new Map<string, Orientation>();
+          const manifests = new Map<string, string>();
           for (const p of scanned.packages ?? []) {
-            if (!p.orientation) continue;
-            frames.set(p.manifestPath, p.orientation);
-            if (p.youtube?.videoId) frames.set(p.youtube.videoId, p.orientation);
+            if (p.orientation) {
+              frames.set(p.manifestPath, p.orientation);
+              if (p.youtube?.videoId) frames.set(p.youtube.videoId, p.orientation);
+            }
+            if (p.manifestSha256) {
+              manifests.set(p.manifestPath, p.manifestSha256);
+              if (p.youtube?.videoId) manifests.set(p.youtube.videoId, p.manifestSha256);
+            }
           }
           setOrientations(frames);
+          setManifestOf(manifests);
           const time = ((await settingsRes.json()) as { settings?: { publishTimeUtc?: string } }).settings?.publishTimeUtc ?? "12:00";
           setPackageEntries(
             (scanned.packages ?? [])
@@ -417,6 +433,8 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
                         {entry.title}
                       </button>
                     )}
+                    {/* BL-260 (owner msg 4421): play it in a popup -- a package by its file, a YouTube video by its id. */}
+                    {channelId && <VideoPlayButton channelId={channelId} target={{ title: entry.title, manifestSha256: manifestOf.get(entry.videoId) ?? null, videoId: entry.kind === "package" ? null : entry.videoId }} />}
                     {entry.at && <span className="shrink-0 text-xs text-zinc-500">{cellTime(entry.at)}</span>}
                     {entry.kind !== "package" && views.get(entry.videoId) != null && (
                       <span className="shrink-0 text-xs tabular-nums text-zinc-400">{t("pipeline.views", { count: views.get(entry.videoId)! })}</span>

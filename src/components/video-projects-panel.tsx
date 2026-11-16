@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { OrientationIcon, type Orientation } from "./orientation-icon";
+import { VideoPlayButton } from "./video-popup";
 import { formatDisplayDate, formatDisplayDateTime, resolvePublishDate } from "@/lib/shared-formatting";
 import { errorText, type UiTextKey } from "@/lib/ui-text";
 import { ConfirmDialog } from "./confirm-dialog";
@@ -117,16 +118,18 @@ export function VideoProjectsPanel({ channelId, visible }: { channelId: string |
     }
   }, [channelId]);
 
-  // BL-259 (owner msg 4397): each packaged video's frame (vertical / horizontal) from the package scan, by video number. A failure
-  // leaves the icons out.
+  // BL-259 (owner msg 4397): each packaged video's frame (vertical / horizontal); BL-260 (owner msg 4421): its manifest, so «▶»
+  // plays its own file here. Both from the package scan, by video number. A failure leaves the icons out and the YouTube player only.
   const [frames, setFrames] = useState<Map<string, Orientation>>(new Map());
-  const loadFrames = useCallback(async () => {
+  const [manifests, setManifests] = useState<Map<string, string>>(new Map());
+  const loadPackages = useCallback(async () => {
     if (!channelId) return;
     try {
       const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/publishing/packages`);
       if (!res.ok) return;
-      const data = (await res.json()) as { packages?: Array<{ video: string | null; orientation?: Orientation | null }> };
+      const data = (await res.json()) as { packages?: Array<{ video: string | null; orientation?: Orientation | null; manifestSha256?: string | null }> };
       setFrames(new Map((data.packages ?? []).filter((p) => p.video && p.orientation).map((p) => [p.video as string, p.orientation as Orientation])));
+      setManifests(new Map((data.packages ?? []).filter((p) => p.video && p.manifestSha256).map((p) => [p.video as string, p.manifestSha256 as string])));
     } catch {
       // the board works without them
     }
@@ -150,9 +153,9 @@ export function VideoProjectsPanel({ channelId, visible }: { channelId: string |
       void load();
       void loadCosts();
       void loadSynced();
-      void loadFrames();
+      void loadPackages();
     }
-  }, [visible, load, loadCosts, loadSynced, loadFrames]);
+  }, [visible, load, loadCosts, loadSynced, loadPackages]);
 
   async function act(url: string, body: unknown, success: (data: { video: VideoProjectView; replaced?: string }) => string) {
     setBusy(true);
@@ -203,7 +206,7 @@ export function VideoProjectsPanel({ channelId, visible }: { channelId: string |
           >
             {t("videoProjects.new")}
           </button>
-          <button type="button" onClick={() => void Promise.all([load(), loadCosts(), loadSynced(), loadFrames()])} disabled={loading} className="rounded-lg bg-zinc-800 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700 disabled:opacity-50">
+          <button type="button" onClick={() => void Promise.all([load(), loadCosts(), loadSynced(), loadPackages()])} disabled={loading} className="rounded-lg bg-zinc-800 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700 disabled:opacity-50">
             {t("videoProjects.refresh")}
           </button>
         </div>
@@ -251,6 +254,7 @@ export function VideoProjectsPanel({ channelId, visible }: { channelId: string |
                     return (
                       <article key={v.video} className="space-y-1 rounded-md border border-zinc-800 bg-zinc-900 p-2 text-xs">
                         <div className="flex items-center gap-2">
+                          {channelId && <VideoPlayButton channelId={channelId} target={{ title: yt?.title ? `${v.video} ${yt.title}` : v.video, manifestSha256: manifests.get(v.video) ?? null, videoId: v.youtubeVideoId ?? null }} />}
                           <span className="flex items-center gap-1 font-mono text-sm text-zinc-100">
                             <OrientationIcon orientation={frames.get(v.video)} />
                             {v.video}

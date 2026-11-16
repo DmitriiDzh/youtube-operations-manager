@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ThumbnailReplaceButton } from "./thumbnail-replace";
 import { SlotSocialPreview } from "./slot-social-preview";
 import { OrientationIcon } from "./orientation-icon";
+import { VideoPlayButton } from "./video-popup";
 import { estimateUploadUnits } from "@/lib/publishing/publish-dates";
 import type { UiTextKey } from "@/lib/ui-text";
 import { ActionButton, SkeletonLines } from "./busy-feedback";
@@ -600,6 +601,8 @@ function SlotRow(props: {
           <div className={`flex items-center gap-1.5 truncate text-sm font-medium ${slot.vetoed ? "text-zinc-500" : "text-zinc-100"}`}>
             {/* BL-259 (owner msg 4397): vertical (Shorts) or horizontal. */}
             <OrientationIcon orientation={pkg?.orientation} />
+            {/* BL-260 (owner msg 4421): the video in a popup player -- the package's file here, else YouTube's player. */}
+            <VideoPlayButton channelId={props.channelId} target={{ title, manifestSha256: pkg?.manifestSha256 ?? null, videoId: deletedOnYoutube(slot) ? null : slot.videoId }} />
             <span className="truncate">{title}</span>
           </div>
           {facts.length > 0 && (
