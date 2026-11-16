@@ -3,6 +3,7 @@ import { createPublishingPlansAgentCore } from "@/lib/publishing-plans";
 import { claimTranslationRequest, completeTranslationRequest, failTranslationRequest, listTranslationRequests, reportLocalizationChecks } from "@/lib/localization-review";
 import { publishingPlanProgress } from "@/lib/publishing-plan-progress";
 import { renameReleaseFolder } from "@/composition/release-folder-rename";
+import { recodeRelease } from "@/composition/release-recode";
 import { createChannelPublishingCoverage, invalidateChannelTimeZone } from "@/composition/publishing-coverage";
 import { createChannelLocalizationsOperatorCore, operatorChannelLocalizations } from "@/lib/channel-localizations";
 import { createGeminiMediaCore } from "@/lib/gemini-media";
@@ -144,6 +145,8 @@ export function createFactoryChannelDeps(): FactoryChannelDeps {
     // BL-261: a release folder's rename; the weekly plan's package cache is read again after it.
     releaseFolders: {
       rename: async (input) => ({ ...(await renameReleaseFolder(input)) }),
+      // BL-263: a Short's code V → S (the weekly plan's package cache is read again after it).
+      recode: async (input) => ({ ...(await recodeRelease(input)) }),
     },
     // BL-227 (ADR 0052): check reports on change sets -- a report decides nothing (only the owner approves, in the Web UI).
     localizationChecks: {

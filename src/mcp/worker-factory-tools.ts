@@ -353,8 +353,8 @@ export function pinFactoryDepsToChannel(
       get: byChannel((input) => deps().publishingPlans.get(input)),
       list: byChannel((input) => deps().publishingPlans.list(input)),
     },
-    // BL-261: renaming release folders is the Factory Operator's only.
-    releaseFolders: { rename: refused },
+    // BL-261 / BL-263: renaming and recoding release folders are the Factory Operator's only.
+    releaseFolders: { rename: refused, recode: refused },
     // BL-235: the coverage of the worker's own channel (a read).
     publishingCoverage: {
       get: async (input) => deps().publishingCoverage.get(pinChannel(input, channelId) as { channelId: string; days?: number }),

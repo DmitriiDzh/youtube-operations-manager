@@ -165,6 +165,8 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
     // BL-261: the release-folder rename is a fake that records what reached it.
     releaseFolders: {
       rename: async (input) => (mediaCalls.push(`folders.rename:${input.video}:${input.newName}:${input.dryRun ?? false}`), { dryRun: input.dryRun ?? false }),
+      // BL-263: the recode is a fake that records what reached it.
+      recode: async (input) => (mediaCalls.push(`folders.recode:${input.video}:${input.newCode}:${input.dryRun ?? false}`), { dryRun: input.dryRun ?? false }),
     },
     // BL-227: the check-report surface is a fake that records what reached it.
     localizationChecks: {
@@ -407,6 +409,7 @@ test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exact
     "factory_publishing_plan_list",
     "factory_publishing_plan_save",
     "factory_release_folder_rename",
+    "factory_release_recode",
     "factory_storyboard_attach_render",
     "factory_storyboard_create",
     "factory_storyboard_get",
@@ -546,6 +549,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
       "factory_publishing_plan_list",
       "factory_publishing_coverage",
       "factory_release_folder_rename",
+      "factory_release_recode",
       "factory_localization_report_checks",
       "factory_localization_requests_list",
       "factory_localization_request_claim",
@@ -605,6 +609,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
       "factory_channel_save_branding",
       "factory_publishing_plan_save",
       "factory_release_folder_rename",
+      "factory_release_recode",
       "factory_localization_report_checks",
       "factory_localization_request_claim",
       "factory_localization_request_complete",

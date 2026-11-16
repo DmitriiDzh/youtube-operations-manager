@@ -299,6 +299,8 @@ export const FACTORY_TOOL_NAMES = [
   "factory_publishing_coverage",
   // BL-261: rename a release package's folder under 04 Videos/ (local files and this computer's upload rows; no YouTube call).
   "factory_release_folder_rename",
+  // BL-263: recode a WWE Short's package from its V code to its S code (local files and this computer's rows; no YouTube call).
+  "factory_release_recode",
   "factory_localization_report_checks",
   "factory_localization_requests_list",
   "factory_localization_request_claim",
@@ -382,6 +384,8 @@ export const FACTORY_WRITE_TOOL_NAMES = [
   "factory_publishing_plan_save",
   // BL-261: a release folder's name (the folder moves; this computer's upload rows follow it).
   "factory_release_folder_rename",
+  // BL-263: a Short's code V → S (files, manifest, records and this computer's rows; the others follow the recode alias).
+  "factory_release_recode",
   // BL-227: a check report on a change set (synced with the set; only the owner approves or rejects, in the Web UI), and taking,
   // completing or failing the owner's translation request (synced; the sets it produces still wait for the owner).
   "factory_localization_report_checks",
@@ -541,6 +545,8 @@ export type FactoryToolDeps = {
   /** BL-261: rename a release package's folder (`@/lib/publishing` createReleaseFolderRenameCore; the module checks every rule). */
   releaseFolders: {
     rename(input: { channelId: string; video: string; newName: string; dryRun?: boolean }): Promise<Record<string, unknown>>;
+    /** BL-263: recode a Short's package from its V code to its S code (`@/lib/publishing` createReleaseRecodeCore checks every rule). */
+    recode(input: { channelId: string; video: string; newCode: string; dryRun?: boolean }): Promise<Record<string, unknown>>;
   };
   /** BL-227 (ADR 0052): check reports on change sets (the localization-review module validates every input itself). `by`: the Operator or a worker. */
   localizationChecks: {
@@ -1763,6 +1769,23 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       const input = parseInput(releaseFolderRenameInput, args);
       if (!input.dryRun) await deps.assertMutationAllowed();
       return successResult(await deps.releaseFolders.rename(input));
+    }
+  );
+
+  const releaseRecodeInput = z
+    .object({ channelId: z.string().min(1).max(64), video: z.string().regex(VIDEO_CODE_PATTERN), newCode: z.string().regex(VIDEO_CODE_PATTERN), dryRun: z.boolean().optional() })
+    .strict();
+  registerTool(
+    "factory_release_recode",
+    {
+      description:
+        "Recode one WWE Short's release package from its V code to its S code (1.49.0, BL-263; local only -- NO YouTube call: the video's title, description and metadata on YouTube are untouched): { channelId (connected here), video ('V14': a V code), newCode ('S12': an S code), dryRun? } -> { dryRun, video, newCode, from, to (the release folder relative to the workspace, '<MMDD> V14 Short' -> '<MMDD> S12 Short'), files: [{ from, to }] (renamed inside the folder: every file whose name starts with the code followed by '_', ' ' or '.' -- V14_release.json, V14_YouTube_Title_Description.txt, V14_CrossPost.json, V14_Tags.txt, V14_youtube.json, V14_cost.json, 'V14 <Channel>.mp4' -- the thumbnails Thumbnail_V14(_A..Z|_base).jpg/.jpeg/.png and Thumbnail_V14_A.logo.json, and work/V14_* scratch files; the code is matched as a whole token, so V1 never touches V12's files; localizations/*.json and other names stay), manifest: { fields (the manifest fields rewritten: video, files.video, files.thumbnail, thumbnails[i].file and any other field naming a renamed file -- never title, description, localizations or tags), oldSha256, newSha256 }, records: { youtube, cost } (V14_youtube.json / V14_cost.json present: only their top-level video changes; videoId stays), rows: { uploads, reservations, jobs, plans, storyboards, socialJobs, orientation } (this computer's rows that move), frame (vertical | horizontal | null: unknown is allowed), peerLinks: [{ deviceId, hostName, kind: reservation | cost_run, count }] (other computers' own rows naming V14: not edited, they follow the recode alias), changed, readBack: verified | mismatch | null, recoveredFrom? (the journal of an earlier crashed recode of this channel, undone first) }. In one go, with a journal and backups written first: the files are renamed, the manifest and records rewritten, the folder renamed, then in ONE transaction this computer's upload rows (code, paths, the new manifest SHA-256; the video id stays, so the package stays uploaded/tried and is never offered again), reservations (V14 cancelled with replacedBy S12, S12 in work with V14's working title), media/Gemini/speech job and plan links, finished cross-post jobs and the orientation memo; the storyboards linked to V14 follow. Any failure undoes every done step (release_recode_busy, details.step); a failed undo answers release_recode_rollback_failed with details.journal. The other computer learns it by sync: factory_video_list there shows V14 state recoded with recodedTo S12 (never in dispute; no new links: video_not_found reason recoded; it still counts toward the next V, so the next long video is the highest V ever known + 1). An unpublished package gets a new manifest SHA-256, so its owner review is pending again; a weekly-plan approval made with the uploaded video's id keeps counting, one made before the upload asks the owner again (no date changes). Refusals: release_recode_invalid (details.field video | newCode), release_recode_not_found (no package of that video in this channel's workspace, not under 04 Videos/<month>/, not a real folder, or the channel is not connected / has no workspace), release_recode_ambiguous (several packages of that video), release_recode_not_short (details.reason folder -- no ' Short' suffix, i.e. a long video; horizontal -- the frame is horizontal), release_recode_target_exists (details.source reservation | folder | upload | registry, or details.to / details.file: a target name exists), release_recode_busy (details.reason upload_here | cross_post | live_rotation | video_list_unavailable | step_failed), release_recode_elsewhere (another computer reports an upload row of the video, finished included: run it on that computer), release_recode_approval_standing (details.reason package_review | plan_slot -- an owner approval of the not-uploaded package; plan_slot_date -- an approved slot and the uploaded video has no date yet), release_recode_rollback_failed. Published videos are recoded too. Passes the device mutation gate. Factory endpoint only. Run dryRun first.",
+      inputSchema: releaseRecodeInput,
+    },
+    async (args) => {
+      const input = parseInput(releaseRecodeInput, args);
+      if (!input.dryRun) await deps.assertMutationAllowed();
+      return successResult(await deps.releaseFolders.recode(input));
     }
   );
 

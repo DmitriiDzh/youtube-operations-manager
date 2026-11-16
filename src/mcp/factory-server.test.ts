@@ -91,6 +91,7 @@ const EXPECTED_TOOLS = [
   "factory_publishing_plan_save",
   "factory_release_folder_rename",
   "factory_release_hold",
+  "factory_release_recode",
   "factory_restart_status",
   "factory_sfx_create_job",
   "factory_speech_create_job",
@@ -207,6 +208,7 @@ test("AC-FO-09 (amended by ADR 0025/0026): writes are exactly the named media/se
     "factory_publishing_plan_save",
     "factory_release_folder_rename",
     "factory_release_hold",
+    "factory_release_recode",
     "factory_sfx_create_job",
     "factory_speech_create_job",
     "factory_storyboard_attach_render",
@@ -288,6 +290,8 @@ test("§2.5(3): the factory route and endpoint reach only the allowlisted module
     "@/composition/publishing-coverage",
     // BL-261: the release-folder rename only (a local file move and this computer's upload rows; no upload, no YouTube call).
     "@/composition/release-folder-rename",
+    // BL-263: the release recode (composition: video list, approvals, storyboards, peer rows handed to publishing).
+    "@/composition/release-recode",
     // BL-227 (LANGUAGES_REVIEW_PLAN.md §5): the localization-review module's check report (it decides nothing).
     "@/lib/localization-review",
     // BL-184 (STORYBOARD_PLAN.md §2.6): the storyboards module for the factory_storyboard_* tools.

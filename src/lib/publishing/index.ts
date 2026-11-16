@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { createReleaseFolderRename } from "./release-folder-rename";
-import { lstat, open, realpath, rename as renamePath, stat } from "node:fs/promises";
+import { createReleaseRecode, type ReleaseRecodeDeps, type ReleaseRecodeJournal } from "./release-recode";
+import { writeFileAtomic } from "@/lib/atomic-json-file";
+import { lstat, mkdir, open, readdir, readFile, realpath, rename as renamePath, stat, unlink } from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
 import { YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
@@ -34,6 +36,9 @@ import {
   reorderQueuedPublishingUploads,
   rawSqlClient,
   rewritePublishingUploadPaths,
+  recodeVideoRows,
+  snapshotVideoRecodeRows,
+  undoVideoRecodeRows,
   listSocialPostJobs,
   listLiveStreamVideos,
   listLiveStreamSources,
@@ -368,6 +373,31 @@ async function thisDevice(): Promise<{ deviceId: string | null; hostname: string
 /** A channel's uploads playlist: its id with "UC" replaced by "UU" (the documented convention for a channel's uploads). */
 const uploadsPlaylistOf = (channelId: string) => (channelId.startsWith("UC") ? `UU${channelId.slice(2)}` : channelId);
 
+
+/** Every row that holds its package: under way, or done / failed with a video (review B1) -- the other computer must refuse those too. */
+async function ownUploadsForReport() {
+  return (await listPublishingUploads({ limit: 500 }))
+    .filter(holdsPackage)
+    .map((row) => ({
+      channelId: row.channelId,
+      video: row.video,
+      state: (ACTIVE_UPLOAD_STATUSES as readonly string[]).includes(row.status) ? (row.status as "queued" | "uploading" | "processing" | "finishing" | "paused") : ("uploaded" as const),
+    }));
+}
+
+async function writeUploadsReport(uploads: Awaited<ReturnType<typeof ownUploadsForReport>>): Promise<void> {
+  const device = await thisDevice();
+  const deviceId = (await createBootstrapConfigStore(getProductionAppPaths().bootstrapConfigPath).ensureExists()).deviceId;
+  const hostName = (device.hostname ?? "").replace(/[^\p{L}\p{N} ._'-]/gu, "").slice(0, 64) || null;
+  // BL-263 (plan §5): version 2 only when a row names an S code; a V-only report stays version 1 exactly as before.
+  await createPublishingUploadsShareCoreForProduction().publishLocalReport({ format: PUBLISHING_UPLOADS_REPORT_FORMAT, version: reportVersionFor(uploads.map((u) => u.video)), deviceId, hostName, updatedAt: new Date().toISOString(), uploads });
+}
+
+/** BL-263: this computer's uploads report written now (after a recode moved rows from a V to an S code). */
+export async function publishUploadsReportNow(): Promise<void> {
+  await writeUploadsReport(await ownUploadsForReport());
+}
+
 /**
  * BL-182 stage 2 (ADR 0037): the background upload runner of this computer. Every write goes through the write gateway right after
  * the Live writes check; every read through the read gateway; the deferred publish time through video-details' own write path.
@@ -480,25 +510,13 @@ export function createUploadRunnerCore(options: { slotDecisions?: (channelId: st
     runnerId: `${hostname()}:${process.pid}:${randomUUID()}`,
   };
   const runner = createUploadRunner(deps);
-  const share = createPublishingUploadsShareCoreForProduction();
   let published = { key: "", at: 0 };
   /** This computer's uploads under way, for the other computer (ADR 0037 §4); written when they change, refreshed every 5 minutes. */
   async function publishReport(): Promise<void> {
-    // Every row that holds its package: under way, or done / failed with a video (review B1) -- the other computer must refuse those too.
-    const uploads = (await listPublishingUploads({ limit: 500 }))
-      .filter(holdsPackage)
-      .map((row) => ({
-        channelId: row.channelId,
-        video: row.video,
-        state: (ACTIVE_UPLOAD_STATUSES as readonly string[]).includes(row.status) ? (row.status as "queued" | "uploading" | "processing" | "finishing" | "paused") : ("uploaded" as const),
-      }));
+    const uploads = await ownUploadsForReport();
     const key = JSON.stringify(uploads);
     if (key === published.key && Date.now() - published.at < 5 * 60_000) return;
-    const device = await thisDevice();
-    const deviceId = (await createBootstrapConfigStore(getProductionAppPaths().bootstrapConfigPath).ensureExists()).deviceId;
-    const hostName = (device.hostname ?? "").replace(/[^\p{L}\p{N} ._'-]/gu, "").slice(0, 64) || null;
-    // BL-263 (plan §5): version 2 only when a row names an S code; a V-only report stays version 1 exactly as before.
-    await share.publishLocalReport({ format: PUBLISHING_UPLOADS_REPORT_FORMAT, version: reportVersionFor(uploads.map((u) => u.video)), deviceId, hostName, updatedAt: new Date().toISOString(), uploads });
+    await writeUploadsReport(uploads);
     published = { key, at: Date.now() };
   }
   return {
@@ -965,3 +983,83 @@ export function createReleaseFolderRenameCore(options: { invalidate?: (channelId
   });
 }
 export { folderNameProblem, rewritePaths, type ReleaseFolderRenameInput, type ReleaseFolderRenameResult } from "./release-folder-rename";
+
+/**
+ * BL-263 (SHORT_VIDEO_CODE_PLAN.md §6, ADR 0071 §4): the one-shot recode of a WWE Short's package from its V code to its S code, with
+ * this module's reads and file system and the shared persistence layer's rows. Never a YouTube call. What other modules own -- the
+ * video list, the owner's approvals, the storyboards, the other computers' rows, the other reports -- comes from the composition layer.
+ */
+export function createReleaseRecodeCore(options: {
+  videoList: ReleaseRecodeDeps["videoList"];
+  approvals: ReleaseRecodeDeps["approvals"];
+  peerLinks: ReleaseRecodeDeps["peerLinks"];
+  storyboards: ReleaseRecodeDeps["storyboards"];
+  /** The reservations and costs reports written now (the uploads report is this module's own). */
+  publishOtherReports(): Promise<void>;
+  invalidate?: (channelId: string) => void;
+}) {
+  const scan = createPackageScanCore();
+  const reads = createPackageScanReads();
+  const journalRoot = path.join(getProductionAppPaths().appDataDir, "release-recode");
+  const safe = (s: string) => s.replace(/[^A-Za-z0-9_-]/g, "_");
+  return createReleaseRecode({
+    workspace: (channelId) => reads.workspace(channelId),
+    scan: (channelId) => scan.scan(channelId),
+    uploads: (channelId) => listPublishingUploads({ channelId, limit: 5000 }),
+    peerUploads: (channelId) => peerUploadsOf(channelId),
+    async socialBusy(channelId, video) {
+      return (await listSocialPostJobs(channelId)).some((job) => job.video === video && (job.status === "uploading" || job.status === "processing"));
+    },
+    async livePaths(channelId) {
+      const [videos, sources] = await Promise.all([listLiveStreamVideos(channelId), listLiveStreamSources(channelId)]);
+      return [...videos, ...sources].map((row) => row.originalPath).filter((p): p is string => typeof p === "string");
+    },
+    videoList: options.videoList,
+    approvals: options.approvals,
+    peerLinks: options.peerLinks,
+    async listFolder(absolutePath) {
+      const entries = await readdir(absolutePath, { withFileTypes: true });
+      return entries.map((e) => ({ name: e.name, kind: e.isSymbolicLink() ? ("other" as const) : e.isDirectory() ? ("dir" as const) : e.isFile() ? ("file" as const) : ("other" as const) }));
+    },
+    readText: (absolutePath) => readFile(absolutePath, "utf8"),
+    writeText: (absolutePath, text) => writeFileAtomic(absolutePath, text),
+    exists: (absolutePath) => lstat(absolutePath).then(() => true, () => false),
+    async isRealFolder(workspace, relativeFolder) {
+      const absolute = path.join(workspace, ...relativeFolder.split("/"));
+      const info = await lstat(absolute).catch(() => null);
+      if (!info || !info.isDirectory() || info.isSymbolicLink()) return false;
+      const [root, real] = await Promise.all([realpath(path.join(workspace, VIDEOS_FOLDER)).catch(() => null), realpath(absolute).catch(() => null)]);
+      return root !== null && real !== null && real !== root && isPathInsideOrEqual(root, real);
+    },
+    rename: (from, to) => renamePath(from, to),
+    rows: {
+      snapshot: (channelId, from, to, uploadIds) => snapshotVideoRecodeRows(channelId, from, to, uploadIds),
+      recode: (snapshot, plan) => recodeVideoRows(snapshot, plan),
+      undo: (snapshot, plan) => undoVideoRecodeRows(snapshot, plan),
+    },
+    storyboards: options.storyboards,
+    journal: {
+      pathFor: (channelId, video, at) => path.join(journalRoot, safe(channelId), `${safe(video)}-${at.getTime()}.json`),
+      async write(file, journal) {
+        await mkdir(path.dirname(file), { recursive: true });
+        await writeFileAtomic(file, JSON.stringify(journal, null, 2));
+      },
+      async list(channelId) {
+        const dir = path.join(journalRoot, safe(channelId));
+        const names = await readdir(dir).catch(() => [] as string[]);
+        return names.filter((n) => n.endsWith(".json")).sort().map((n) => path.join(dir, n));
+      },
+      read: async (file) => JSON.parse(await readFile(file, "utf8")) as ReleaseRecodeJournal,
+      remove: (file) => unlink(file),
+    },
+    async publishReports() {
+      await Promise.allSettled([publishUploadsReportNow(), options.publishOtherReports()]);
+    },
+    assertMutationAllowed: () => assertDeviceAvailableForMutation(rawSqlClient),
+    audit: ({ channelId, video, detail }) => insertVideoEditAuditEvent({ channelId, videoId: `release-recode:${video}`, eventType: "RESULT", detail }),
+    invalidate: (channelId) => options.invalidate?.(channelId),
+    now: () => new Date(),
+    join: (...parts) => path.join(...parts),
+  });
+}
+export { renamedForCode, rewriteManifest, type ReleaseRecodeInput, type ReleaseRecodeResult, type RecodeVideoList } from "./release-recode";
