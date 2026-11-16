@@ -28,7 +28,7 @@ A 409 `captionExists` guards only the same language **and** name.
    unknown → refused). Anything else is a package problem (`captions_invalid` with a `reason`), and nothing is written.
 3. **The package field (Operator).** `yt-release-package/2` `captions: [{ language, file, name, sha256 }]`: at most one entry,
    `language` `en`, a `.srt` or `.vtt` file inside the package folder, UTF-8, parsed (cues, timestamps, within the duration), ≤ 10 MiB,
-   SHA-256 matching, name 1–150 characters. Problems `captions_missing` / `captions_invalid` block. Captions are packaging: they keep
+   SHA-256 matching, name 0–150 characters ("" allowed: the bundle writes it, YouTube shows its default label). Problems `captions_missing` / `captions_invalid` block. Captions are packaging: they keep
    the owner's media approval and a queued upload takes a metadata-only re-package (ADR 0072 §1, §4). Optional on every package.
 4. **Existing tracks -- by language, never by name.** ASR tracks are never touched and never block. A standard/forced English track
    the app recorded with the same SHA-256 → already present, no write. The app's own track with another file → refused (no update

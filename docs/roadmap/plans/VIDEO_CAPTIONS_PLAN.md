@@ -184,7 +184,7 @@ Pre-build check (stage 1, read-only): WWE's stored grant includes `youtube.force
   Recommendation: not now.
 - **Q2 (owner).** A foreign English track found during the upload step withholds the date (fail closed). Recommendation: keep; the
   owner decides in Studio, then the Producer or he adds the date.
-- **Q3 (Operator).** Bundle 2.5.46 writes `language: "en"` exactly (not `en-US`), one entry, `.srt` or `.vtt`, UTF-8, `name` ≤ 150
+- **Q3 (Operator).** Bundle 2.5.46 writes `language: "en"` exactly (not `en-US`), one entry, `.srt` or `.vtt`, UTF-8, `name` ≤ 150 — ANSWERED 2026-11-16 by the Operator: `name` is always "" (allowed, 0–150), `.vtt` only (`V<n>_captions.en.vtt`, bare file name), UTF-8 (BOM tolerated), one `en` entry in practice, 12 caps the file at 1 MB; record names `videoSha256`/`videoSizeBytes`/`captions{…}` accepted (2.5.49 reads them first). Original question:
   characters (suggest `"English"`)? Record field names `videoSha256` / `videoSizeBytes` OK?
 - **Q4 (Producer).** One tool `producer_video_captions_add { channelId, video, dryRun }` enough (no free file path)?
 
