@@ -1423,3 +1423,70 @@ export async function downloadVideoThumbnailImage(url: string, fetchImpl: typeof
   if (bytes.length === 0 || bytes.length > THUMBNAIL_IMAGE_MAX_BYTES) return null;
   return { bytes, contentType: response.headers.get("content-type") ?? "application/octet-stream" };
 }
+
+// ---------------------------------------------------------------------------
+// BL-269 (VIDEO_CAPTIONS_PLAN.md §2, §3.2, §3.5, §3.7; ADR 0074): the caption writer's reads -- the video's channel and frame, its
+// caption tracks, and (the explicit overwrite's backup) one track's current content. Scope youtube.force-ssl for the caption
+// methods (the caller resolves it).
+// ---------------------------------------------------------------------------
+
+/** One caption track as `captions.list part=snippet` gives it. No content hash exists (the app records which tracks are its own). */
+export type VideoCaptionTrack = {
+  id: string;
+  language: string | null;
+  name: string | null;
+  /** `standard` | `ASR` | `forced`, as YouTube spells it. */
+  trackKind: string | null;
+  isDraft: boolean | null;
+  /** `serving` | `syncing` | `failed`. */
+  status: string | null;
+  failureReason: string | null;
+  lastUpdated: string | null;
+};
+
+/** `captions.list part=snippet` of one video (50 units); every track, ASR included. */
+export async function listVideoCaptions(youtube: youtube_v3.Youtube, videoId: string): Promise<VideoCaptionTrack[]> {
+  const res = await youtube.captions.list({ part: ["snippet"], videoId });
+  return (res.data.items ?? [])
+    .filter((item) => typeof item.id === "string" && item.id !== "")
+    .map((item) => ({
+      id: item.id as string,
+      language: item.snippet?.language ?? null,
+      name: item.snippet?.name ?? null,
+      trackKind: item.snippet?.trackKind ?? null,
+      isDraft: item.snippet?.isDraft ?? null,
+      status: item.snippet?.status ?? null,
+      failureReason: item.snippet?.failureReason ?? null,
+      lastUpdated: item.snippet?.lastUpdated ?? null,
+    }));
+}
+
+/** The explicit overwrite's backup: one track's current content in its original format (`captions.download`, 200 units). */
+export async function downloadVideoCaption(youtube: youtube_v3.Youtube, trackId: string): Promise<Buffer> {
+  const res = await youtube.captions.download({ id: trackId }, { responseType: "arraybuffer" });
+  const data = res.data as unknown;
+  if (data instanceof ArrayBuffer) return Buffer.from(new Uint8Array(data));
+  if (Buffer.isBuffer(data)) return data;
+  if (typeof data === "string") return Buffer.from(data, "utf8");
+  throw new Error("captions.download returned no content");
+}
+
+/** The video's channel and stored frame (`videos.list part=snippet,fileDetails`, 1 unit; `fileDetails` is returned to the owner only). */
+export type VideoCaptionContext = {
+  channelId: string | null;
+  /** The frame as shown: width and height swapped for a 90/270-degree rotation; null when `fileDetails` carries no video stream. */
+  frame: { width: number; height: number } | null;
+};
+
+export async function getVideoCaptionContext(youtube: youtube_v3.Youtube, videoId: string): Promise<VideoCaptionContext | null> {
+  const res = await youtube.videos.list({ part: ["snippet", "fileDetails"], id: [videoId] });
+  const item = res.data.items?.[0];
+  if (!item) return null;
+  const stream = item.fileDetails?.videoStreams?.[0];
+  const width = Number(stream?.widthPixels ?? 0);
+  const height = Number(stream?.heightPixels ?? 0);
+  // `rotation`: none | clockwise | counterClockwise | upsideDown | other (videos resource reference).
+  const quarter = stream?.rotation === "clockwise" || stream?.rotation === "counterClockwise";
+  const frame = width > 0 && height > 0 ? (quarter ? { width: height, height: width } : { width, height }) : null;
+  return { channelId: item.snippet?.channelId ?? null, frame };
+}

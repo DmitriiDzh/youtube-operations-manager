@@ -33,6 +33,8 @@ test("known Data API methods cost what Google's table says", () => {
     "liveChatBans.insert": 200,
     "liveChatModerators.list": 50,
     "superChatEvents.list": 1,
+    // BL-269: captions/download reference page ("a quota cost of 200 units"); the table does not list it (read 2026-11-17).
+    "captions.download": 200,
   };
   for (const [method, units] of Object.entries(expected)) assert.equal(quotaUnitsForCall("data", method), units, method);
   assert.equal(quotaUnitsForCall("analytics", "reports.query"), 1);

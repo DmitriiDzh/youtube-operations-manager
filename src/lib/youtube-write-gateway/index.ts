@@ -349,3 +349,5 @@ export async function deletePlaylistItemById(
 export * from "./live";
 // BL-182 (ADR 0037): resumable video upload and the G1 probe's delete.
 export * from "./upload";
+// BL-269 (ADR 0074): the caption writer's insert and update (no delete primitive).
+export * from "./captions";
