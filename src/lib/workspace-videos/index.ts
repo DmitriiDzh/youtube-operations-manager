@@ -38,6 +38,34 @@ export async function walkVideosFolder(deps: WalkDeps, workspace: string, includ
   return found.sort();
 }
 
+/**
+ * BL-270 (owner TG 4662/4665): a cheap fingerprint of everything under `<workspace>/04 Videos/` (the same walk rules as
+ * `walkVideosFolder`): every folder, and every regular file with its size and modification time. Any file added, removed, renamed,
+ * replaced or edited in place changes it, so a reader that keyed a result on it (the package scan's cache) never reuses a result the
+ * folder no longer matches. A file that cannot be stat'ed is listed without size, so it still counts.
+ */
+export async function videosFolderSignature(
+  deps: WalkDeps & { statFile(absolutePath: string): Promise<{ size: number; mtimeMs: number } | null> },
+  workspace: string
+): Promise<string> {
+  const lines: string[] = [];
+  const walk = async (relative: string, depth: number) => {
+    const entries = await deps.listDir(deps.join(workspace, ...relative.split("/")));
+    for (const entry of [...entries].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+      const child = `${relative}/${entry.name}`;
+      if (entry.kind === "file") {
+        const info = await deps.statFile(deps.join(workspace, ...child.split("/")));
+        lines.push(info ? `f ${child} ${info.size} ${info.mtimeMs}` : `f ${child} ?`);
+      } else if (entry.kind === "dir" && depth < VIDEOS_MAX_DEPTH && !entry.name.startsWith(".")) {
+        lines.push(`d ${child}`);
+        await walk(child, depth + 1);
+      }
+    }
+  };
+  await walk(VIDEOS_FOLDER, 1);
+  return lines.join("\n");
+}
+
 /** A `MMDD Vn` folder of `04 Videos/` (BL-194): its workspace-relative path, its release number and the names of its files. */
 export type VideoFolder = { folder: string; video: string; files: string[] };
 

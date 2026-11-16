@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isNamedAfterRelease, isVideoFileName, listVideoFolders, parseUploadRecord, parseVideoRegistry, videoNumberOfFolder, walkVideosFolder, type DirEntry } from "./index";
+import { isNamedAfterRelease, isVideoFileName, listVideoFolders, parseUploadRecord, parseVideoRegistry, videoNumberOfFolder, videosFolderSignature, walkVideosFolder, type DirEntry } from "./index";
 
 // BL-187 (LIVE_STREAMS_FIELDS_PLAN.md §1.2, §2.4). Expected values come from the factory's layout read on the Mac
 // (2026-10-14): `04 Videos/<MM Month>/<MMDD Vn>/Vn Tropico Jazz.mp4`, source clips beside it, folders without a V-number
@@ -117,3 +117,32 @@ function dir(name: string): DirEntryForTest {
 function file(name: string): DirEntryForTest {
   return { name, kind: "file" };
 }
+
+// BL-270 (owner TG 4662/4665): the fingerprint of `04 Videos/` changes with any file added, removed, renamed or edited in place.
+test("BL-270: videosFolderSignature moves when a file is added, removed, renamed or edited in place; hidden folders do not count", async () => {
+  const tree: Record<string, DirEntry[]> = {
+    "/ws/04 Videos": [{ name: "11 November", kind: "dir" }, { name: ".hidden", kind: "dir" }],
+    "/ws/04 Videos/11 November": [{ name: "1117 V12", kind: "dir" }],
+    "/ws/04 Videos/11 November/1117 V12": [{ name: "V12_release.json", kind: "file" }, { name: "V12.mp4", kind: "file" }],
+    "/ws/04 Videos/.hidden": [{ name: "x.json", kind: "file" }],
+  };
+  const stats: Record<string, { size: number; mtimeMs: number }> = {
+    "/ws/04 Videos/11 November/1117 V12/V12_release.json": { size: 900, mtimeMs: 1 },
+    "/ws/04 Videos/11 November/1117 V12/V12.mp4": { size: 5_000_000, mtimeMs: 1 },
+    "/ws/04 Videos/.hidden/x.json": { size: 1, mtimeMs: 1 },
+  };
+  const sig = () =>
+    videosFolderSignature({ listDir: async (p) => tree[p] ?? [], join: (...parts) => parts.join("/"), statFile: async (p) => stats[p] ?? null }, "/ws");
+  const base = await sig();
+  assert.equal(await sig(), base, "stable");
+  stats["/ws/04 Videos/.hidden/x.json"] = { size: 2, mtimeMs: 2 };
+  assert.equal(await sig(), base, "a hidden folder is not part of it");
+  stats["/ws/04 Videos/11 November/1117 V12/V12_release.json"] = { size: 900, mtimeMs: 2 };
+  const edited = await sig();
+  assert.notEqual(edited, base, "same size, new modification time");
+  tree["/ws/04 Videos/11 November/1117 V12"].push({ name: "V12_thumb.jpg", kind: "file" });
+  const added = await sig();
+  assert.notEqual(added, edited, "a file added (even one that cannot be stat'ed)");
+  tree["/ws/04 Videos/11 November/1117 V12"] = tree["/ws/04 Videos/11 November/1117 V12"].filter((e) => e.name !== "V12.mp4");
+  assert.notEqual(await sig(), added, "a file removed");
+});

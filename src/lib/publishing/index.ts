@@ -71,7 +71,7 @@ import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-
 import { createWriteContextCore } from "@/lib/write-context";
 import { createYoutubeClient, getVideoMetadataContext, getVideoUploadState, listPlaylistItemIdsByVideo, listUploadsPlaylistFirstPage } from "@/lib/youtube-read-gateway";
 import { createWorkspaceExchangeFsForPublishing, isRealVideoFolder, resolveWorkspaceFileForPublishing, writeVideoFolderFile } from "./adapters/files";
-import { createWorkspaceVideoFiles, videoNumberOfFolder, writeUploadRecordFile } from "@/lib/workspace-videos";
+import { createWorkspaceVideoFiles, videoNumberOfFolder, videosFolderSignature, writeUploadRecordFile } from "@/lib/workspace-videos";
 import { reportVersionFor } from "@/lib/shared-video-code";
 import { createPackageScan, isPackageThumbnailPath, VIDEOS_FOLDER, type PackageScanDeps } from "./package-scan";
 import { imageKindOf } from "./packages";
@@ -743,6 +743,29 @@ export async function removedVideoIdsOf(channelId: string): Promise<Set<string>>
 /** BL-243: the channel's videos the sync found removed, with when (ISO) -- the package scan's own input, for a caller to pass in. */
 export async function removedVideosOf(channelId: string): Promise<Array<{ videoId: string; removedAt: string }>> {
   return (await createChannelVideoStoreAdapter().listRemovedVideosByChannel(channelId)).map((video) => ({ videoId: video.videoId, removedAt: video.removedAt.toISOString() }));
+}
+
+/**
+ * BL-270 (owner TG 4662/4665): a cheap fingerprint of what the package scan reads that changes on its own -- every file under the
+ * channel's `04 Videos/` (path, size, modification time), the removed-on-YouTube list and when the channel's copy was last synced or
+ * checked. The same value means a scan now would read the same folder and the same copy, so a kept scan may be reused (the plan
+ * progress's cache); null when there is no workspace or something cannot be read (then nothing is reused). Read-only.
+ */
+export async function packageScanSignature(channelId: string): Promise<string | null> {
+  try {
+    const workspace = await createChannelWorkspacesCore().getWorkspace({ channelId });
+    if (!workspace.configured || !workspace.path) return null;
+    const files = createWorkspaceVideoFiles();
+    const store = createChannelVideoStoreAdapter();
+    const [folder, removed, channel] = await Promise.all([
+      videosFolderSignature({ listDir: (p) => files.listDir(p), statFile: (p) => files.statFile(p), join: (...parts) => path.join(...parts) }, workspace.path),
+      removedVideosOf(channelId),
+      store.getChannel(channelId),
+    ]);
+    return JSON.stringify([workspace.path, folder, removed, channel?.lastSyncedAt?.getTime() ?? null, channel?.removedCheckAt?.getTime() ?? null]);
+  } catch {
+    return null;
+  }
 }
 
 /** The channel's uploads on this computer, newest first (the progress list in Content → «Публикация»). */
