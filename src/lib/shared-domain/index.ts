@@ -329,6 +329,11 @@ export type DomainErrorCode =
   | "publishing_plan_slot_not_packaged"
   | "publishing_plan_slot_past"
   | "publishing_plan_slot_too_soon"
+  | "release_folder_not_found"
+  | "release_folder_ambiguous"
+  | "release_folder_name_invalid"
+  | "release_folder_target_exists"
+  | "release_folder_busy"
   // BL-241 (CLIP_REVIEWS_PLAN.md, ADR 0061) -- clips for review. NOT_FOUND: no such clip in the channel; NOT_PENDING: the clip is
   // decided or withdrawn (details.status); WORKSPACE_UNAVAILABLE: no workspace folder here; FILE_UNAVAILABLE: the path is not a
   // regular file strictly inside the workspace (details.reason); NOT_VIDEO: not .mp4/.webm; DURATION_OUT_OF_RANGE: not 5-300 s;

@@ -162,6 +162,10 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
     publishingCoverage: {
       get: async (input) => (mediaCalls.push(`coverage.get:${input.channelId}:${input.days ?? "default"}`), { channelId: input.channelId, days: [] }),
     },
+    // BL-261: the release-folder rename is a fake that records what reached it.
+    releaseFolders: {
+      rename: async (input) => (mediaCalls.push(`folders.rename:${input.video}:${input.newName}:${input.dryRun ?? false}`), { dryRun: input.dryRun ?? false }),
+    },
     // BL-227: the check-report surface is a fake that records what reached it.
     localizationChecks: {
       report: async (input, by) => (mediaCalls.push(`checks.report:${(input as { changeSetId: string }).changeSetId}:${by ?? "factory"}`), { reportId: "r-1", reportedAt: "t", replaced: null }),
@@ -402,6 +406,7 @@ test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exact
     "factory_publishing_plan_get",
     "factory_publishing_plan_list",
     "factory_publishing_plan_save",
+    "factory_release_folder_rename",
     "factory_storyboard_attach_render",
     "factory_storyboard_create",
     "factory_storyboard_get",
@@ -470,7 +475,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.47.0", // BL-256 (new requirement): plan updatedBy may be owner; BL-257 (new requirement ADR 0070): plan package review codes and reviewComment; BL-253: factory_sfx_create_job / factory_music_create_job; BL-250: elevenlabs accountLimit / monthlyLimit; BL-243: statusCode video_deleted_on_youtube; BL-242: plan approvalStage / planned / awaiting_package; 1.41.0 = BL-240: plan slots replacesSlotId; 1.40.0 = BL-236: factory_speech_* and factory_voice_*; 1.39.0 = BL-235: factory_publishing_coverage; 1.38.0 = BL-234: factory_live_get_status gains sources; BL-233: factory_live_get_status gains encoders / upload; 1.36.0 = BL-230: runtime creation checks github.com sources; 1.35.0 = BL-229 part B: plan review forms, wave genre, verdict answers; 1.34.0 (BL-227): factory_localization_report_checks; 1.33.0 (BL-225): factory_publishing_plan_save / _get / _list; 1.32.0 (BL-223): factory_channel_get_branding / factory_channel_save_branding; 1.31.0 (BL-221: factory_video_list gains youtubeVideoId / hasVideoFile (additive); 1.30.0 (BL-220): the three restart tools
+    factoryApiVersion: "1.48.0", // BL-261 (new requirement): factory_release_folder_rename (1.48.0); BL-256 (new requirement): plan updatedBy may be owner (1.47.0); BL-257 (new requirement ADR 0070): plan package review codes and reviewComment; BL-253: factory_sfx_create_job / factory_music_create_job; BL-250: elevenlabs accountLimit / monthlyLimit; BL-243: statusCode video_deleted_on_youtube; BL-242: plan approvalStage / planned / awaiting_package; 1.41.0 = BL-240: plan slots replacesSlotId; 1.40.0 = BL-236: factory_speech_* and factory_voice_*; 1.39.0 = BL-235: factory_publishing_coverage; 1.38.0 = BL-234: factory_live_get_status gains sources; BL-233: factory_live_get_status gains encoders / upload; 1.36.0 = BL-230: runtime creation checks github.com sources; 1.35.0 = BL-229 part B: plan review forms, wave genre, verdict answers; 1.34.0 (BL-227): factory_localization_report_checks; 1.33.0 (BL-225): factory_publishing_plan_save / _get / _list; 1.32.0 (BL-223): factory_channel_get_branding / factory_channel_save_branding; 1.31.0 (BL-221: factory_video_list gains youtubeVideoId / hasVideoFile (additive); 1.30.0 (BL-220): the three restart tools
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",
@@ -540,6 +545,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
       "factory_publishing_plan_get",
       "factory_publishing_plan_list",
       "factory_publishing_coverage",
+      "factory_release_folder_rename",
       "factory_localization_report_checks",
       "factory_localization_requests_list",
       "factory_localization_request_claim",
@@ -598,6 +604,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
       "factory_channel_save_localizations",
       "factory_channel_save_branding",
       "factory_publishing_plan_save",
+      "factory_release_folder_rename",
       "factory_localization_report_checks",
       "factory_localization_request_claim",
       "factory_localization_request_complete",

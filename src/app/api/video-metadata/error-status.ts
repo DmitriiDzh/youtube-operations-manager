@@ -247,6 +247,12 @@ const DOMAIN_ERROR_STATUS = {
   publishing_plan_slot_past: 409,
   // BL-256: the slot comes out in less than 15 minutes -- it can no longer be moved.
   publishing_plan_slot_too_soon: 409,
+  // BL-261: renaming a release folder.
+  release_folder_not_found: 404,
+  release_folder_ambiguous: 409,
+  release_folder_name_invalid: 400,
+  release_folder_target_exists: 409,
+  release_folder_busy: 409,
   // BL-241 (ADR 0061): clips for review.
   clip_review_not_found: 404,
   clip_review_file_unavailable: 422,
