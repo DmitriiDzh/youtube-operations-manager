@@ -13,15 +13,22 @@ const alerts = [
   { channelId: "UC_two", waiting: 3, storyboardId: null },
 ];
 
+// Changed 2026-11-16 (BL-262, owner msgs 4541/4542 -- a requirement change, AGENTS.md §L): the bell row's text is short
+// («N раскадровки ждут»), the earlier full text is its hover text; storyboards are information (sky icon).
 test("the active channel's waiting storyboards go on the Media badge, never in the bell", () => {
   assert.equal(activeStoryboardsWaiting(alerts, "UC_active"), 2);
   assert.equal(activeStoryboardsWaiting(alerts, "UC_none"), 0);
   assert.deepEqual(
-    otherChannelStoryboardEntries(t, alerts, "UC_active").map((e) => [e.channelId, e.text, e.href]),
+    otherChannelStoryboardEntries(t, alerts, "UC_active").map((e) => [e.channelId, e.text, e.detail, e.group, e.severity, e.href]),
     [
-      ["UC_one", "1 storyboard waits for your review", "/media/storyboards/bar%20loop"],
-      ["UC_two", "3 storyboards wait for your review", "/media/storyboards"],
+      ["UC_one", "1 storyboard waits", "1 storyboard waits for your review", "storyboards", "info", "/media/storyboards/bar%20loop"],
+      ["UC_two", "3 storyboards wait", "3 storyboards wait for your review", "storyboards", "info", "/media/storyboards"],
     ]
+  );
+  const ru = createTranslator("ru");
+  assert.deepEqual(
+    otherChannelStoryboardEntries(ru, [{ channelId: "UC_a", waiting: 1, storyboardId: null }, { channelId: "UC_b", waiting: 3, storyboardId: null }, { channelId: "UC_c", waiting: 5, storyboardId: null }], null).map((e) => e.text),
+    ["1 раскадровка ждёт", "3 раскадровки ждут", "5 раскадровок ждут"]
   );
 });
 

@@ -131,3 +131,59 @@ export function ServersIcon(props: SVGProps<SVGSVGElement>) {
     </IconBase>
   );
 }
+
+// BL-262 (owner msgs 4541/4542/4545): the header bell's group icons -- each notification shows what it is about with one of these
+// (or MediaIcon for storyboards, LocalizationsIcon for translations), coloured by urgency.
+
+// A disk drive: the low-disk notice.
+export function DiskIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <IconBase {...props}>
+      <rect x="3" y="6" width="18" height="12" rx="2" />
+      <path d="M3 13h18M16.5 15.5h.01M13 15.5h1" />
+    </IconBase>
+  );
+}
+
+// Headphones: Media plans (generated tracks waiting to be listened to, a plan's attempts and budget).
+export function HeadphonesIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <IconBase {...props}>
+      <path d="M4 15v-3a8 8 0 0 1 16 0v3" />
+      <rect x="3" y="14" width="4" height="6" rx="1.5" />
+      <rect x="17" y="14" width="4" height="6" rx="1.5" />
+    </IconBase>
+  );
+}
+
+// A calendar: publishing (how far ahead videos are scheduled).
+export function CalendarIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <IconBase {...props}>
+      <rect x="3" y="5" width="18" height="16" rx="2" />
+      <path d="M3 10h18M8 3v4M16 3v4" />
+    </IconBase>
+  );
+}
+
+// A broadcast point with waves: live streams.
+export function BroadcastIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <IconBase {...props}>
+      <circle cx="12" cy="12" r="2" />
+      <path d="M8.5 8.5a5 5 0 0 0 0 7M15.5 8.5a5 5 0 0 1 0 7M5.6 5.6a9 9 0 0 0 0 12.8M18.4 5.6a9 9 0 0 1 0 12.8" />
+    </IconBase>
+  );
+}
+
+// Two circling arrows: device sync.
+export function SyncIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <IconBase {...props}>
+      <path d="M20 12a8 8 0 0 0-14.3-4.9L4 9" />
+      <path d="M4 4v5h5" />
+      <path d="M4 12a8 8 0 0 0 14.3 4.9L20 15" />
+      <path d="M20 20v-5h-5" />
+    </IconBase>
+  );
+}

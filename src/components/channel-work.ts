@@ -27,11 +27,22 @@ export function waitingLabel(t: Translate, work: Pick<PlanChannelWork, "waitingR
     : t("channelWork.waiting", { count: work.waitingReview });
 }
 
+/** BL-262 (owner msgs 4541/4542/4545): what a bell entry is about -- the bell shows it as an icon instead of a group header. */
+export type BellGroup = "disk" | "media" | "translations" | "storyboards" | "publishing" | "live" | "sync";
+
+/** BL-262: `action` = the owner has to act (red icon); `info` = something to know or look at (sky icon). */
+export type BellSeverity = "action" | "info";
+
 export type ChannelWorkEntry = {
   /** Stable per channel and type of work, so an entry updates in place as its count changes. */
   key: string;
   channelId: string;
+  /** BL-262: the short text (2-4 words) shown in the row. */
   text: string;
+  /** BL-262: the full text (counts split, data age, thresholds), shown on hover. */
+  detail: string;
+  group: BellGroup;
+  severity: BellSeverity;
   /** Where the entry's button leads once the channel is active. */
   href: string;
 };
@@ -51,11 +62,16 @@ export function otherChannelEntries(t: Translate, channels: readonly PlanChannel
         work.waitingRejected > 0
           ? t("channelWork.reviewSplit", { count: work.waitingReview, passed: work.waitingPassed, rejected: work.waitingRejected })
           : t("channelWork.review", { count: work.waitingReview });
+      const short = t("channelWork.reviewShort", { count: work.waitingReview });
+      const withWaves = (text: string) => (waves.length > 0 ? `${text} · ${waves.join(" · ")}` : text);
       const only = work.plans.length === 1 ? work.plans[0] : null;
       entries.push({
         key: `${work.channelId}:review`,
         channelId: work.channelId,
-        text: waves.length > 0 ? `${counts} · ${waves.join(" · ")}` : counts,
+        text: withWaves(short),
+        detail: withWaves(counts),
+        group: "media",
+        severity: "info",
         href: only ? planReviewHref(only.planId, only.device) : "/media/plans",
       });
     }
@@ -65,14 +81,16 @@ export function otherChannelEntries(t: Translate, channels: readonly PlanChannel
       if (notice.kind === "stage_complete" || notice.kind === "plan_complete") continue;
       const plan = planTitle || planId;
       const planKey = `${device?.deviceId ?? "here"}:${planId}`;
-      const text =
+      const [text, detail] =
         notice.kind === "attempts_exhausted"
-          ? t("channelWork.attemptsExhausted", { plan, count: notice.count })
+          ? [t("channelWork.attemptsExhaustedShort", { plan, count: notice.count }), t("channelWork.attemptsExhausted", { plan, count: notice.count })]
           : notice.kind === "budget_100"
-            ? t("channelWork.budget100", { plan })
-            : t("channelWork.budget80", { plan });
+            ? [t("channelWork.budget100Short", { plan }), t("channelWork.budget100", { plan })]
+            : [t("channelWork.budget80Short", { plan }), t("channelWork.budget80", { plan })];
+      // BL-262: an exhausted attempt count or budget stops the plan -- the owner has to act; 80% of the budget is a heads-up.
+      const severity: BellSeverity = notice.kind === "budget_80" ? "info" : "action";
       // BL-184 stage 3 (independent review): to the plan itself -- Media's kind tabs could hide it under the first tab.
-      entries.push({ key: `${work.channelId}:${planKey}:${notice.kind}`, channelId: work.channelId, text, href: planReviewHref(planId, device ?? undefined) });
+      entries.push({ key: `${work.channelId}:${planKey}:${notice.kind}`, channelId: work.channelId, text, detail, group: "media", severity, href: planReviewHref(planId, device ?? undefined) });
     }
   }
   return entries;

@@ -152,6 +152,6 @@ export const storyboards = {
   "storyboards.diff.title2": "title",
   "storyboards.diff.loop": "loop on/off",
   "storyboards.alert.waiting": "{count, plural, one {# storyboard waits for your review} other {# storyboards wait for your review}}",
-  "storyboards.alert.bellTitle": "Storyboards",
+  "storyboards.alert.waitingShort": "{count, plural, one {# storyboard waits} other {# storyboards wait}}",
   "storyboards.alert.plans": "{count, plural, one {# result waits for your verdict} other {# results wait for your verdict}}",
 } as const;

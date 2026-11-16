@@ -33,9 +33,22 @@ export function contentBadge(t: Translate, alert: PublishingAlertChannel | undef
   return { badge: Math.max(1, alert.thresholdDays - alert.daysCovered), badgeTitle: coverageText(t, alert) };
 }
 
+/** BL-262: the bell row's short text -- the coverage date only; the day count and data age are in the hover text. */
+function coverageShort(t: Translate, alert: PublishingAlertChannel): string {
+  return alert.coveredThrough ? t("publishingAlerts.coveredThroughShort", { date: formatDisplayDate(alert.coveredThrough) }) : t("publishingAlerts.nothingScheduledShort");
+}
+
 /** The bell's entries for every channel that is NOT active and whose coverage ends within the threshold. */
 export function otherChannelPublishingEntries(t: Translate, channels: readonly PublishingAlertChannel[], activeChannelId: string | null): ChannelWorkEntry[] {
   return channels
     .filter((alert) => alert.channelId !== activeChannelId && alert.due)
-    .map((alert) => ({ key: `${alert.channelId}:publishing:coverage`, channelId: alert.channelId, text: coverageText(t, alert), href: CALENDAR_HREF }));
+    .map((alert) => ({
+      key: `${alert.channelId}:publishing:coverage`,
+      channelId: alert.channelId,
+      text: coverageShort(t, alert),
+      detail: coverageText(t, alert),
+      group: "publishing" as const,
+      severity: "info" as const,
+      href: CALENDAR_HREF,
+    }));
 }

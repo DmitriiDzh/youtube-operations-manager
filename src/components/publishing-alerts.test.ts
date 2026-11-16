@@ -38,6 +38,19 @@ test("bell: one entry per other channel that is due, linking to the calendar; th
   );
   assert.equal(entries.length, 1);
   assert.deepEqual([entries[0].key, entries[0].channelId, entries[0].href], ["UC_B:publishing:coverage", "UC_B", "/content/calendar"]);
-  assert.match(entries[0].text, /Ничего не запланировано/);
-  assert.match(entries[0].text, /13\.10\.2026/, "the data age is in the text");
+  // Changed 2026-11-16 (BL-262, owner msgs 4541/4542 -- a requirement change, AGENTS.md §L): the row says only «Ничего не
+  // запланировано»; the data age moved into the hover text (`detail`).
+  assert.equal(entries[0].text, "Ничего не запланировано");
+  assert.match(entries[0].detail, /Ничего не запланировано/);
+  assert.match(entries[0].detail, /13\.10\.2026/, "the data age is in the hover text");
+  assert.deepEqual([entries[0].group, entries[0].severity], ["publishing", "info"]);
+});
+
+test("BL-262 (owner msgs 4541/4542): a partly covered week -- «План только до {date}», the day count and data age on hover", () => {
+  const [entry] = otherChannelPublishingEntries(t, [alert({ channelId: "UC_B" })], null);
+  assert.equal(entry.text, "План только до 14.10.2026");
+  assert.match(entry.detail, /14\.10\.2026/);
+  assert.match(entry.detail, /1 день/);
+  assert.match(entry.detail, /13\.10\.2026/);
+  assert.equal(otherChannelPublishingEntries(createTranslator("en"), [alert({ channelId: "UC_B" })], null)[0].text, "Scheduled only through 14.10.2026");
 });

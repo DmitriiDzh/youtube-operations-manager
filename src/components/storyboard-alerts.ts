@@ -20,7 +20,15 @@ export function activeStoryboardsWaiting(channels: readonly StoryboardAlertChann
 export function otherChannelStoryboardEntries(t: Translate, channels: readonly StoryboardAlertChannel[], activeChannelId: string | null): ChannelWorkEntry[] {
   return channels
     .filter((alert) => alert.channelId !== activeChannelId && alert.waiting > 0)
-    .map((alert) => ({ key: `${alert.channelId}:storyboards:waiting`, channelId: alert.channelId, text: t("storyboards.alert.waiting", { count: alert.waiting }), href: hrefOf(alert) }));
+    .map((alert) => ({
+      key: `${alert.channelId}:storyboards:waiting`,
+      channelId: alert.channelId,
+      text: t("storyboards.alert.waitingShort", { count: alert.waiting }),
+      detail: t("storyboards.alert.waiting", { count: alert.waiting }),
+      group: "storyboards" as const,
+      severity: "info" as const,
+      href: hrefOf(alert),
+    }));
 }
 
 /**

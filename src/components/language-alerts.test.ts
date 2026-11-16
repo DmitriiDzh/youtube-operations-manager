@@ -6,6 +6,8 @@ import { languagesBadge, otherChannelLanguageEntries, type LanguageAlertChannel 
 // BL-178 part C (LOCALIZATION_BASELINE_PLAN §3.3 C2, FO-REQ-0022 §6): the badge on «Языки» is the active channel's; the bell
 // names every other channel with the count and the missing languages, and the videos labelled with another language; nothing
 // is shown once the counts are zero (the alert clears by itself). Expected texts written from the plan, not from the code.
+// Changed 2026-11-16 (BL-262, owner msgs 4541/4542 -- a requirement change, AGENTS.md §L): a bell row's text is short, the earlier
+// full text is its hover text (`detail`); translations are information (sky icon).
 const en = createTranslator("en");
 const ru = createTranslator("ru");
 
@@ -16,8 +18,24 @@ const done: LanguageAlertChannel = { channelId: "UC_done", missingVideoCount: 0,
 
 test("the bell lists the other channels only: the missing languages, most missing first, and the mislabelled videos", () => {
   assert.deepEqual(otherChannelLanguageEntries(en, [tropico, japan, done], "UC_tropico"), [
-    { key: "UC_japan:languages:missing", channelId: "UC_japan", text: "3 public or scheduled videos lack a translation: pt-BR (3), es (2)", href: "/languages" },
-    { key: "UC_japan:languages:deviations", channelId: "UC_japan", text: "1 video is labelled with another language than the channel's", href: "/languages" },
+    {
+      key: "UC_japan:languages:missing",
+      channelId: "UC_japan",
+      text: "3 videos without a translation: pt-BR (3), es (2)",
+      detail: "3 public or scheduled videos lack a translation: pt-BR (3), es (2)",
+      group: "translations",
+      severity: "info",
+      href: "/languages",
+    },
+    {
+      key: "UC_japan:languages:deviations",
+      channelId: "UC_japan",
+      text: "1 video: wrong language",
+      detail: "1 video is labelled with another language than the channel's",
+      group: "translations",
+      severity: "info",
+      href: "/languages",
+    },
   ]);
   assert.deepEqual(otherChannelLanguageEntries(en, [done], null), [], "nothing left: no entry");
 });
@@ -32,5 +50,8 @@ test("the «Языки» badge counts the active channel's videos to look at, ea
 
 test("Russian wording", () => {
   const [entry] = otherChannelLanguageEntries(ru, [{ ...japan, missingVideoCount: 5 }], null);
-  assert.equal(entry.text, "5 публичных или запланированных видео без перевода: pt-BR (3), es (2)");
+  assert.equal(entry.text, "5 видео без перевода: pt-BR (3), es (2)");
+  assert.equal(entry.detail, "5 публичных или запланированных видео без перевода: pt-BR (3), es (2)");
+  const deviations = otherChannelLanguageEntries(ru, [{ ...done, deviationCount: 2 }], null);
+  assert.deepEqual(deviations.map((e) => e.text), ["2 видео: не тот язык"]);
 });
