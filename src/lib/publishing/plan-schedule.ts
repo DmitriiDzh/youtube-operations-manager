@@ -96,6 +96,9 @@ export function desiredDate(row: Pick<StoredPublishingUpload, "publishAt" | "ste
   if (current !== null && Date.parse(current) <= nowMs + MARGIN_MS) return null;
   let want: { publishAt: string | null } | null;
   if (decision.kind === "vetoed") want = current === null ? null : { publishAt: null };
+  // BL-267 review #1 (ADR 0073 §3/§4, plan §4 "the switch-over moves no date"): the template only ever gives a FIRST date -- a video
+  // that already carries this computer's date keeps it; moving a date is the explicit path (a move) or the owner's own date.
+  else if (decision.source === "template" && current !== null) want = null;
   else if (Date.parse(decision.publishAt) <= nowMs + MARGIN_MS || !checksPassed(stepsOf(row))) want = null;
   else want = sameInstant(current, decision.publishAt) ? null : { publishAt: new Date(decision.publishAt).toISOString() };
   // The same change that was refused or read back differently is tried again only an hour later (the slot shows it meanwhile):
@@ -130,9 +133,11 @@ export function createPlanSchedule(deps: PlanScheduleDeps) {
     if (before.publishAt !== null && Date.parse(before.publishAt) <= deps.clock.now().getTime() + MARGIN_MS) {
       return { at, action, publishAt, result: "refused", reason: "the video's date is within 15 minutes" };
     }
-    // A date our own last write left behind (read back differently: `mismatch`) is ours too.
+    // A date our own last write put there late (read back differently at the time: `mismatch`, YouTube now shows what that write
+    // sent) is ours too. Review #4: only the date that write SENT -- never the different date the read-back saw (that may be the
+    // owner's own date set in Studio meanwhile).
     const lastSync = stepsOf(row).planSync;
-    const ownMismatch = lastSync?.result === "mismatch" && lastSync.youtubePublishAt !== undefined && sameInstant(before.publishAt, lastSync.youtubePublishAt ?? null);
+    const ownMismatch = lastSync?.result === "mismatch" && lastSync.publishAt !== null && sameInstant(before.publishAt, lastSync.publishAt);
     if (mode === "automatic" && before.publishAt !== null && !sameInstant(before.publishAt, row.publishAt) && !ownMismatch) {
       return { at, action, publishAt, result: "foreign_date", reason: `the video's date ${before.publishAt} was not set by this computer`, youtubePublishAt: before.publishAt };
     }
@@ -181,6 +186,43 @@ export function createPlanSchedule(deps: PlanScheduleDeps) {
     return result;
   }
 
+  /**
+   * BL-267 review #5: the `foreign_date` mark comes only from the last change the pass tried, so it is re-read once an hour even when
+   * the plan wants nothing. YouTube's date back to this computer's own (`row.publishAt`), or no date at all: the mark is cleared (the
+   * row's `planSync` dropped -- the date's own steps stay, so the slot reads as before the foreign date). Still another date: the mark
+   * is renewed with what YouTube has now. Nothing is written to YouTube. One read per marked row per hour.
+   */
+  async function recheckForeign(row: StoredPublishingUpload): Promise<"changed" | "kept" | "stop"> {
+    const steps = stepsOf(row);
+    const last = steps.planSync;
+    if (last?.result !== "foreign_date") return "kept";
+    const now = deps.clock.now();
+    if (now.getTime() - Date.parse(last.at) < RETRY_AFTER_MS) return "kept";
+    let before: Awaited<ReturnType<PlanScheduleDeps["read"]>>;
+    try {
+      before = await deps.read(row);
+    } catch (error) {
+      const code = errorCode(error);
+      if (code !== null && RETRY_LATER.has(code)) return "stop";
+      if (code === "youtube_quota_exceeded") {
+        quotaPausedUntil = deps.nextQuotaReset(now).getTime();
+        return "stop";
+      }
+      return "kept";
+    }
+    if (before.missing) return "kept";
+    if (before.publishAt === null || sameInstant(before.publishAt, row.publishAt)) {
+      const { planSync: _cleared, ...rest } = steps;
+      void _cleared;
+      if (!(await deps.update(row, { publishAt: row.publishAt, stepsJson: JSON.stringify(rest) }))) return "kept";
+      await deps.audit(row, { event: "publishing.plan_foreign_cleared", uploadId: row.id, video: row.video, slotId: row.slotId, previous: last.youtubePublishAt ?? null, youtubePublishAt: before.publishAt });
+      return "changed";
+    }
+    const renewed: UploadSteps = { ...steps, planSync: { ...last, at: now.toISOString(), youtubePublishAt: before.publishAt } };
+    await deps.update(row, { publishAt: row.publishAt, stepsJson: JSON.stringify(renewed) });
+    return "kept";
+  }
+
   return {
     explicitPrecheck,
     explicitMove,
@@ -215,7 +257,13 @@ export function createPlanSchedule(deps: PlanScheduleDeps) {
         }
         const decision = decisionForRow(row, decisions);
         const want = desiredDate(row, decision, deps.clock.now().getTime());
-        if (!want) continue;
+        if (!want) {
+          // Review #5: a `foreign_date` mark is looked at again hourly even when the plan wants nothing (else it would stick).
+          const outcome = await recheckForeign(row);
+          if (outcome === "stop") return { changed };
+          if (outcome === "changed") changed += 1;
+          continue;
+        }
         // BL-243 (ADR 0063 §4): a video the sync found removed is never dated; an unreadable list dates nothing of the channel
         // (fail closed). Removing a date never waits on the list: YouTube's own answer decides (`missing`: nothing to do).
         if (want.publishAt !== null) {
