@@ -1,4 +1,4 @@
-import { writeFileAtomic } from "@/lib/atomic-json-file";
+import { writeFileAtomicIfChanged } from "@/lib/atomic-json-file";
 import { mkdir, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
@@ -46,7 +46,8 @@ export function createPerChannelFilesystemTransport(): PerChannelTransportAdapte
       const dir = channelDir(root, channelId);
       await mkdir(dir, { recursive: true });
       const finalPath = path.join(dir, `${sanitize(deviceId)}.automerge`);
-      await writeFileAtomic(finalPath, bytes); // tmp + fsync + RISK-22 rename retry (audit M4)
+      // BL-270: an unchanged document is not written into the sync folder again (Syncthing rescanned every file every minute).
+      await writeFileAtomicIfChanged(finalPath, bytes); // tmp + fsync + RISK-22 rename retry (audit M4)
     },
 
     async listPeerFiles(root, channelId, ownDeviceId) {

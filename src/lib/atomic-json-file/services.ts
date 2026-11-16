@@ -1,5 +1,5 @@
 import { constants as fsConstants } from "node:fs";
-import { chmod, mkdir, open, rm, type FileHandle } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, rm, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { renameWithRetry } from "@/lib/rename-retry";
@@ -35,6 +35,21 @@ export async function writeJsonFileAtomic(
  */
 export async function writeFileAtomic(targetPath: string, content: string | Uint8Array): Promise<void> {
   await writeAtomic(targetPath, content, { privateFile: false }, open);
+}
+
+/**
+ * BL-270 (owner TG 4662/4665): `writeFileAtomic`, skipped when the file already holds exactly these bytes -- the sync cycle
+ * re-saves every document and report every minute, and an unchanged one used to be rewritten anyway (tmp file, fsync, rename:
+ * a fresh mtime that also makes Syncthing rescan it). The comparison is with the file ON DISK (never a remembered hash), so a
+ * file another process changed in between is always written. Returns whether it wrote. The pattern BL-203 introduced in
+ * change-drafts' own transport, shared here.
+ */
+export async function writeFileAtomicIfChanged(targetPath: string, content: string | Uint8Array): Promise<boolean> {
+  const bytes = typeof content === "string" ? Buffer.from(content, "utf8") : content;
+  const current = await readFile(targetPath).catch(() => null);
+  if (current && Buffer.compare(current, bytes) === 0) return false;
+  await writeFileAtomic(targetPath, bytes);
+  return true;
 }
 
 async function writeAtomic(

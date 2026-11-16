@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFile, readdir, open } from "node:fs/promises";
+import { readFile, readdir, open, stat, utimes } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { writeJsonFileAtomic } from "./services";
+import { writeFileAtomicIfChanged, writeJsonFileAtomic } from "./services";
 import { withTempDir } from "@/test-support/temp-dir";
 
 test("writeJsonFileAtomic writes readable, correctly-formatted JSON", () =>
@@ -131,3 +131,20 @@ test("writeFileAtomic writes bytes in place, leaves no temp file, and does not c
     await remove(dir, { recursive: true, force: true });
   }
 });
+
+// BL-270 (owner TG 4662/4665): an unchanged file is not rewritten (no fsync, the mtime stays); any difference is written.
+test("BL-270: writeFileAtomicIfChanged skips identical bytes, writes different ones and a missing file", () =>
+  withTempDir("atomic-if-changed-", async (dir) => {
+    const file = path.join(dir, "doc.bin");
+    assert.equal(await writeFileAtomicIfChanged(file, new Uint8Array([1, 2, 3])), true, "missing -> written");
+    const old = new Date(Date.now() - 60 * 60_000);
+    await utimes(file, old, old);
+    assert.equal(await writeFileAtomicIfChanged(file, new Uint8Array([1, 2, 3])), false);
+    assert.equal((await stat(file)).mtimeMs, old.getTime(), "mtime untouched");
+    assert.equal(await writeFileAtomicIfChanged(file, new Uint8Array([1, 2, 4])), true, "same size, other bytes -> written");
+    assert.deepEqual([...(await readFile(file))], [1, 2, 4]);
+    assert.notEqual((await stat(file)).mtimeMs, old.getTime());
+    assert.equal(await writeFileAtomicIfChanged(file, "text"), true);
+    assert.equal(await writeFileAtomicIfChanged(file, "text"), false, "strings compare as their UTF-8 bytes");
+    assert.deepEqual((await readdir(dir)).sort(), ["doc.bin"], "no tmp files left");
+  }));
