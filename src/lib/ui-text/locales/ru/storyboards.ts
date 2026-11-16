@@ -154,6 +154,6 @@ export const storyboards: Record<keyof typeof en, string> = {
   "storyboards.diff.title2": "название",
   "storyboards.diff.loop": "петля",
   "storyboards.alert.waiting": "{count, plural, one {# раскадровка ждёт проверки} few {# раскадровки ждут проверки} many {# раскадровок ждут проверки} other {# раскадровки ждут проверки}}",
-  "storyboards.alert.bellTitle": "Раскадровки",
+  "storyboards.alert.waitingShort": "{count, plural, one {# раскадровка ждёт} few {# раскадровки ждут} many {# раскадровок ждут} other {# раскадровки ждут}}",
   "storyboards.alert.plans": "{count, plural, one {# результат ждёт оценки} few {# результата ждут оценки} many {# результатов ждут оценки} other {# результата ждут оценки}}",
 };

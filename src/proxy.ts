@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { rawSqlClient } from "@/lib/db";
-import { assertDeviceAvailableForMutation, assertNoOperationLock } from "@/lib/device-mutation-gate";
+import { assertDeviceAvailableForMutation, assertNoOperationLock, waitForExportLockRelease } from "@/lib/device-mutation-gate";
 import { OperationLockError } from "@/lib/operation-lock";
 import { RecoveryModeError } from "@/lib/device-mutation-gate";
 import { recordActivity } from "@/lib/idle-shutdown";
@@ -194,6 +194,8 @@ export async function proxy(request: NextRequest) {
   const isStopSwitch = EXEMPT_STOP_SWITCH_ROUTES.has(route) || STOP_SWITCH_ROUTE_PATTERNS.some((pattern) => pattern.test(route));
 
   try {
+    // Owner msg 4556: a save made during the few seconds of an automatic sync export waits for it instead of failing.
+    await waitForExportLockRelease(rawSqlClient);
     if (isStopSwitch) {
       await assertNoOperationLock(rawSqlClient);
     } else {

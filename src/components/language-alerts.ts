@@ -44,12 +44,23 @@ export function otherChannelLanguageEntries(t: Translate, channels: readonly Lan
       entries.push({
         key: `${alert.channelId}:languages:missing`,
         channelId: alert.channelId,
-        text: t("languageAlerts.missing", { count: alert.missingVideoCount, languages: missingLanguagesLabel(alert.missingByLanguage) }),
+        text: t("languageAlerts.missingShort", { count: alert.missingVideoCount, languages: missingLanguagesLabel(alert.missingByLanguage) }),
+        detail: t("languageAlerts.missing", { count: alert.missingVideoCount, languages: missingLanguagesLabel(alert.missingByLanguage) }),
+        group: "translations",
+        severity: "info",
         href: LANGUAGES_HREF,
       });
     }
     if (alert.deviationCount > 0) {
-      entries.push({ key: `${alert.channelId}:languages:deviations`, channelId: alert.channelId, text: t("languageAlerts.deviations", { count: alert.deviationCount }), href: LANGUAGES_HREF });
+      entries.push({
+        key: `${alert.channelId}:languages:deviations`,
+        channelId: alert.channelId,
+        text: t("languageAlerts.deviationsShort", { count: alert.deviationCount }),
+        detail: t("languageAlerts.deviations", { count: alert.deviationCount }),
+        group: "translations",
+        severity: "info",
+        href: LANGUAGES_HREF,
+      });
     }
   }
   return entries;

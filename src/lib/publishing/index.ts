@@ -762,7 +762,13 @@ export function createUploadQueueControlCore(
     // cancelled (review #4: a cancelled owner's or automatic row stays the owner's, so the Producer cannot replace his approval).
     async blockedHashes(channelId) {
       const rows = await listPublishingUploads({ channelId, limit: 5000 });
-      return new Set(rows.filter((row) => !(row.status === "cancelled" && row.errorCode === CANCELLED_BY_PRODUCER && row.queuedBy === "producer")).map((row) => row.manifestSha256));
+      const blocked = new Set(rows.filter((row) => !(row.status === "cancelled" && row.errorCode === CANCELLED_BY_PRODUCER && row.queuedBy === "producer")).map((row) => row.manifestSha256));
+      // PRD-REQ-0195 C (owner TG 2340 via the Producer, 2026-11-16): the same exception as the automatic upload (BL-257, ADR 0070
+      // §5) -- a manifest the owner approved in package review whose rows here were all cancelled before reaching YouTube, before
+      // that approval, may be queued by the Producer too (WWE V7: upload_already_tried). The rule is package-reviews' own.
+      const excused = triedExceptionsOf(await readOwnerReviewState(channelId), await listUploadRowsForTriedRule(channelId));
+      for (const sha of excused) blocked.delete(sha);
+      return blocked;
     },
     ...(options.slotDecisions ? { slotDecisions: options.slotDecisions } : {}),
     async videoFile(channelId, relativePath) {

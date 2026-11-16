@@ -22,7 +22,7 @@ export const diskGuard = {
   "disk.threshold.save": "Save",
   "disk.threshold.saved": "Saved",
   "disk.threshold.invalid": "A number from 1 to 10000",
-  "disk.bell.title": "Disk",
   "disk.bell.low": "Low disk space on this computer: {free} free, below {threshold} GB.",
+  "disk.bell.lowShort": "Low disk space: {free}",
   "disk.bell.open": "Open",
 } as const;

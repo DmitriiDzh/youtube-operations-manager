@@ -8,6 +8,8 @@ import { otherChannelEntries, planReviewHref, waitingLabel } from "./channel-wor
 // Expected texts are written from the plan's examples (FO-REQ-0009 §3/§3a, SERVERS_MEDIA_PLAN.md AC-BL-03/04), not from running
 // the code. With no rejected track the split is left out, as the BL-153 badge and notice already do (recorded in the plan).
 // BL-152: the words are translated; the requirement checked here is the English wording (plus one Russian check).
+// Changed 2026-11-16 (BL-262, owner msgs 4541/4542/4545 -- a requirement change, AGENTS.md §L): a bell row shows a short text
+// (2-4 words) with a group icon and an urgency; the earlier full text moved unchanged into `detail` (the hover text).
 const t = createTranslator("en");
 
 const work = (over: Partial<PlanChannelWork> & { channelId: string }): PlanChannelWork => ({ waitingReview: 0, waitingPassed: 0, waitingRejected: 0, plans: [], batches: [], notices: [], ...over });
@@ -40,15 +42,26 @@ test("AC-BL-04/06: only channels that are not active get entries; one review ent
     {
       key: "UC_japan:review",
       channelId: "UC_japan",
-      text: "Media: 169 tracks waiting for review (20 passed, 149 rejected) · C13 47 · C14 38",
+      text: "169 tracks wait · C13 47 · C14 38",
+      detail: "Media: 169 tracks waiting for review (20 passed, 149 rejected) · C13 47 · C14 38",
+      group: "media",
+      severity: "info",
       href: "/media/plans/R-0001-S1-music/review?device=win&host=DESKTOP-B0UCB4I",
     },
   ]);
   const fromJapan = otherChannelEntries(t, [japan, tropico], "UC_japan");
   assert.deepEqual(fromJapan, [
-    { key: "UC_tropico:review", channelId: "UC_tropico", text: "Media: 5 tracks waiting for review", href: "/media/plans" },
+    { key: "UC_tropico:review", channelId: "UC_tropico", text: "5 tracks wait", detail: "Media: 5 tracks waiting for review", group: "media", severity: "info", href: "/media/plans" },
     // BL-184 stage 3: a plan's notice opens that plan (Media's kind tabs could hide it under the first tab).
-    { key: "UC_tropico:here:T-1:attempts_exhausted", channelId: "UC_tropico", text: "Media: plan Jazz wave 1, attempts used up for 2 items", href: "/media/plans/T-1/review" },
+    {
+      key: "UC_tropico:here:T-1:attempts_exhausted",
+      channelId: "UC_tropico",
+      text: "Jazz wave 1: attempts used up (2)",
+      detail: "Media: plan Jazz wave 1, attempts used up for 2 items",
+      group: "media",
+      severity: "action",
+      href: "/media/plans/T-1/review",
+    },
   ]);
   assert.deepEqual(otherChannelEntries(t, [japan, tropico], null).map((e) => e.key), ["UC_japan:review", "UC_tropico:review", "UC_tropico:here:T-1:attempts_exhausted"], "no active channel: every channel");
   assert.deepEqual(otherChannelEntries(t, [work({ channelId: "UC_quiet" })], null), [], "nothing open, no entry");
@@ -63,11 +76,38 @@ test("AC-BL-04: every notice kind shown in the bell has its words; the plan titl
       { planId: "P", planTitle: "Plan P", device: null, notice: { kind: "budget_100" } },
     ],
   });
-  assert.deepEqual(otherChannelEntries(t, [notices], null).map((e) => e.text), [
-    "Media: plan Plan P, attempts used up for 2 items",
-    "Media: plan P has used 80% of its budget",
-    "Media: plan Plan P has reached its budget",
+  assert.deepEqual(otherChannelEntries(t, [notices], null).map((e) => [e.text, e.detail, e.severity]), [
+    ["Plan P: attempts used up (2)", "Media: plan Plan P, attempts used up for 2 items", "action"],
+    ["P: budget at 80%", "Media: plan P has used 80% of its budget", "info"],
+    ["Plan P: budget used up", "Media: plan Plan P has reached its budget", "action"],
   ]);
+});
+
+test("BL-262 (owner msgs 4541/4542): the Russian short texts", () => {
+  const ru = createTranslator("ru");
+  const notices = work({
+    channelId: "UC_x",
+    waitingReview: 47,
+    waitingPassed: 40,
+    waitingRejected: 7,
+    batches: [
+      { planId: "P", groupId: "C13", title: "C13", waiting: 47 },
+      { planId: "P", groupId: null, title: "rest", waiting: 0 },
+    ],
+    notices: [
+      { planId: "P", planTitle: "План P", device: null, notice: { kind: "attempts_exhausted", count: 3 } },
+      { planId: "P", planTitle: "План P", device: null, notice: { kind: "budget_80" } },
+      { planId: "P", planTitle: "План P", device: null, notice: { kind: "budget_100" } },
+    ],
+  });
+  assert.deepEqual(otherChannelEntries(ru, [notices], null).map((e) => e.text), [
+    "47 треков ждут · C13 47",
+    "План P: попытки кончились (3)",
+    "План P: бюджет 80%",
+    "План P: бюджет исчерпан",
+  ]);
+  assert.equal(otherChannelEntries(ru, [work({ channelId: "UC_y", waitingReview: 1, waitingPassed: 1 })], null)[0].text, "1 трек ждёт");
+  assert.equal(otherChannelEntries(ru, [work({ channelId: "UC_y", waitingReview: 3, waitingPassed: 3 })], null)[0].text, "3 трека ждут");
 });
 
 test("AC-BL-03: the switcher line -- '5 waiting (3 passed, 2 rejected)', '4 waiting', nothing when nothing waits", () => {

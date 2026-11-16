@@ -49,7 +49,31 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
   const [actionError, setActionError] = useState<{ manifest: string; text: string } | null>(null);
   const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set());
   const [asking, setAsking] = useState<Asking>(null);
-  const [comment, setComment] = useState("");
+  const [comment, setCommentState] = useState("");
+  // Owner msg 4556: a comment that was not saved (an error, a closed dialog) comes back when he opens the same dialog again, also
+  // after a reload (this browser only), so he never loses or has to retype it. Cleared once the decision is saved.
+  const draftKey = (manifest: string, kind: string) => `packageReviews.draft.${channelId ?? ""}.${manifest}.${kind}`;
+  const setComment = (value: string) => {
+    setCommentState(value);
+    if (asking) {
+      try {
+        if (value) window.localStorage.setItem(draftKey(asking.item.manifestSha256, asking.kind), value);
+        else window.localStorage.removeItem(draftKey(asking.item.manifestSha256, asking.kind));
+      } catch {
+        // storage unavailable: the draft lives only while the page is open
+      }
+    }
+  };
+  const openDialog = (item: PackageReviewDto, kind: "approved" | "returned") => {
+    let draft = "";
+    try {
+      draft = window.localStorage.getItem(draftKey(item.manifestSha256, kind)) ?? "";
+    } catch {
+      // storage unavailable
+    }
+    setCommentState(draft);
+    setAsking({ item, kind });
+  };
   const [busy, setBusy] = useState<string | null>(null);
 
   const base = channelId ? `/api/channels/${encodeURIComponent(channelId)}/package-reviews` : null;
@@ -133,8 +157,13 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
         return;
       }
       accept(body.view);
+      try {
+        window.localStorage.removeItem(draftKey(item.manifestSha256, kind));
+      } catch {
+        // storage unavailable
+      }
       setAsking(null);
-      setComment("");
+      setCommentState("");
     } catch {
       setActionError({ manifest: item.manifestSha256, text: t("packageReviews.error.generic", { message: "network" }) });
     } finally {
@@ -227,10 +256,7 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
                   <button
                     type="button"
                     disabled={busy !== null}
-                    onClick={() => {
-                      setComment("");
-                      setAsking({ item, kind: "approved" });
-                    }}
+                    onClick={() => openDialog(item, "approved")}
                     className="flex-1 rounded-md bg-violet-600 px-3 py-2 text-sm font-semibold text-white hover:bg-violet-500 disabled:opacity-40 md:flex-none md:py-1"
                   >
                     {t("packageReviews.action.approve")}
@@ -240,10 +266,7 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
                   <button
                     type="button"
                     disabled={busy !== null}
-                    onClick={() => {
-                      setComment("");
-                      setAsking({ item, kind: "returned" });
-                    }}
+                    onClick={() => openDialog(item, "returned")}
                     className="flex-1 rounded-md border border-zinc-600 px-3 py-2 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-40 md:flex-none md:py-1"
                   >
                     {t("packageReviews.action.return")}

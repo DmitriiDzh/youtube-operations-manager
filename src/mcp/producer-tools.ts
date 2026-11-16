@@ -44,6 +44,8 @@
 // проверку») or owner_review_returned (he returned it; the calendar carries codes only -- his comment is in the Inbox file
 // REVIEW-DECISION-package-<video>-<decisionId>.md and in a refused queue add's details.problems) and is not_ready until he approves
 // that manifest version. No tool decides. Additive; no tool added.
+// PRD-REQ-0195 C (owner TG 2340): 1.22.0 -- producer_upload_queue_add may queue a version the owner approved in package review
+// whose earlier rows here were all cancelled before that approval (same shape; one refusal fewer).
 // 1.23.0 (BL-263, PRD-REQ-0194, ADR 0071): video codes may be `S<n>` (a WWE Short) besides `V<n>` -- in agent_get_publishing_calendar,
 // producer_upload_queue_* (`video`: 'V61' or 'S14') and the wake file names (REVIEW-DECISION-package-S14-...). Additive; no tool added.
 export const PRODUCER_API_VERSION = "1.23.0";
