@@ -108,7 +108,7 @@ export const errors = {
   "errors.upload_already_queued": "This video is already queued or already uploaded.",
   "errors.package_no_workspace": "This channel has no workspace folder on this computer (Settings → Channels).",
   "errors.package_workspace_unavailable": "The channel’s workspace folder cannot be used right now.",
-  "errors.package_folder_invalid": "This is not a video folder (04 Videos/<month>/<MMDD Vn>).",
+  "errors.package_folder_invalid": "This is not a video folder (04 Videos/<month>/<MMDD Vn> or <MMDD Sn>).",
   "errors.package_file_invalid": "This file is not in the video folder.",
   "errors.package_no_video": "Choose the video file.",
   "errors.package_no_thumbnail": "Choose the thumbnail.",

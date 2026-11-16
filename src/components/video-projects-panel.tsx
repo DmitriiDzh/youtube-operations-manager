@@ -22,7 +22,7 @@ export type VideoReservationView = { deviceId: string; hostName: string | null; 
 export type VideoProjectView = {
   video: string;
   workingTitle: string | null;
-  state: "in_work" | "packaged" | "published" | "cancelled";
+  state: "in_work" | "packaged" | "published" | "cancelled" | "recoded";
   folder: string | null;
   createdAt: string | null;
   hostName: string | null;

@@ -12,6 +12,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { DomainError, isDomainError } from "@/lib/shared-domain";
+import { isReportVCode, isStrictSCode, VIDEO_CODE_PATTERN } from "@/lib/shared-video-code";
 
 /**
  * The factory API's own version (independent of the channel agents' `AGENT_API_VERSION`). 1.1.0 (BL-132, ADR 0025): the
@@ -201,7 +202,12 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // a slot's day or time in the app, which revokes his approval of the old time). Additive.
 // BL-261 (owner TG 3521 via the Operator): 1.48.0 -- factory_release_folder_rename (WRITE, local: a release package's folder and this
 // computer's upload rows that name it; no YouTube call). Additive.
-export const FACTORY_API_VERSION = "1.48.0";
+// BL-263 (PRD-REQ-0194, owner TG 2332/2334/4553/4555, ADR 0071): 1.49.0 -- video codes `V<n>` or `S<n>` (a WWE Short; the number is
+// the factory's piece number) everywhere a video number is taken or returned; factory_video_create.video (an S code, reserved as given;
+// video_number_taken when known, validation_failed v_numbers_are_given for a V); factory_video_list state recoded + recodedTo, series;
+// new WRITE tool factory_release_recode (local: renames a Short's V package to its S code and moves this computer's records; no
+// YouTube call) with the release_recode_* errors. Additive.
+export const FACTORY_API_VERSION = "1.49.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -293,6 +299,8 @@ export const FACTORY_TOOL_NAMES = [
   "factory_publishing_coverage",
   // BL-261: rename a release package's folder under 04 Videos/ (local files and this computer's upload rows; no YouTube call).
   "factory_release_folder_rename",
+  // BL-263: recode a WWE Short's package from its V code to its S code (local files and this computer's rows; no YouTube call).
+  "factory_release_recode",
   "factory_localization_report_checks",
   "factory_localization_requests_list",
   "factory_localization_request_claim",
@@ -376,6 +384,8 @@ export const FACTORY_WRITE_TOOL_NAMES = [
   "factory_publishing_plan_save",
   // BL-261: a release folder's name (the folder moves; this computer's upload rows follow it).
   "factory_release_folder_rename",
+  // BL-263: a Short's code V → S (files, manifest, records and this computer's rows; the others follow the recode alias).
+  "factory_release_recode",
   // BL-227: a check report on a change set (synced with the set; only the owner approves or rejects, in the Web UI), and taking,
   // completing or failing the owner's translation request (synced; the sets it produces still wait for the owner).
   "factory_localization_report_checks",
@@ -535,6 +545,8 @@ export type FactoryToolDeps = {
   /** BL-261: rename a release package's folder (`@/lib/publishing` createReleaseFolderRenameCore; the module checks every rule). */
   releaseFolders: {
     rename(input: { channelId: string; video: string; newName: string; dryRun?: boolean }): Promise<Record<string, unknown>>;
+    /** BL-263: recode a Short's package from its V code to its S code (`@/lib/publishing` createReleaseRecodeCore checks every rule). */
+    recode(input: { channelId: string; video: string; newCode: string; dryRun?: boolean }): Promise<Record<string, unknown>>;
   };
   /** BL-227 (ADR 0052): check reports on change sets (the localization-review module validates every input itself). `by`: the Operator or a worker. */
   localizationChecks: {
@@ -1744,7 +1756,8 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
   );
 
   const releaseFolderRenameInput = z
-    .object({ channelId: z.string().min(1).max(64), video: z.string().regex(/^V\d{1,6}$/), newName: z.string().min(1).max(120), dryRun: z.boolean().optional() })
+    // BL-263: the V spellings accepted before (`V\d{1,6}`, legacy `V07` included) plus a strict S -- never narrower than BL-261.
+    .object({ channelId: z.string().min(1).max(64), video: z.string().refine((v) => isReportVCode(v) || isStrictSCode(v), "a video code such as V65 or S14"), newName: z.string().min(1).max(120), dryRun: z.boolean().optional() })
     .strict();
   registerTool(
     "factory_release_folder_rename",
@@ -1757,6 +1770,23 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       const input = parseInput(releaseFolderRenameInput, args);
       if (!input.dryRun) await deps.assertMutationAllowed();
       return successResult(await deps.releaseFolders.rename(input));
+    }
+  );
+
+  const releaseRecodeInput = z
+    .object({ channelId: z.string().min(1).max(64), video: z.string().regex(VIDEO_CODE_PATTERN), newCode: z.string().regex(VIDEO_CODE_PATTERN), dryRun: z.boolean().optional() })
+    .strict();
+  registerTool(
+    "factory_release_recode",
+    {
+      description:
+        "Recode one WWE Short's release package from its V code to its S code (1.49.0, BL-263; local only -- NO YouTube call: the video's title, description and metadata on YouTube are untouched): { channelId (connected here), video ('V14': a V code), newCode ('S12': an S code), dryRun? } -> { dryRun, video, newCode, from, to (the release folder relative to the workspace, '<MMDD> V14 Short' -> '<MMDD> S12 Short'), files: [{ from, to }] (renamed inside the folder: every file whose name starts with the code followed by '_', ' ' or '.' -- V14_release.json, V14_YouTube_Title_Description.txt, V14_CrossPost.json, V14_Tags.txt, V14_youtube.json, V14_cost.json, 'V14 <Channel>.mp4' -- the thumbnails Thumbnail_V14(_A..Z|_base).jpg/.jpeg/.png and Thumbnail_V14_A.logo.json, and work/V14_* scratch files; the code is matched as a whole token, so V1 never touches V12's files; localizations/*.json and other names stay), manifest: { fields (the manifest fields rewritten: video, files.video, files.thumbnail, thumbnails[i].file and any other field naming a renamed file -- never title, description, localizations or tags), oldSha256, newSha256 }, records: { youtube, cost } (V14_youtube.json / V14_cost.json present: only their top-level video changes; videoId stays), rows: { uploads, reservations, jobs, plans, storyboards, socialJobs, orientation } (this computer's rows that move), frame (vertical | horizontal | null: unknown is allowed), peerLinks: [{ deviceId, hostName, kind: reservation | cost_run, count }] (other computers' own rows naming V14: not edited, they follow the recode alias), changed, readBack: verified | mismatch | null (mismatch: STOP and inspect the folder, the rows and factory_video_list before anything else; readBackProblems lists the failed checks: package_not_found | leftover_names | rows | video_list | old_folder_exists), recoveredFrom? (the journal of an earlier crashed recode of this channel, undone first), clearedJournals? (journals of FINISHED recodes left behind, removed -- never undone), warnings? (e.g. journal_not_removed: <path> after a finished recode) }. PRECONDITION (hard): both computers must run this build (Factory API 1.49.0 or later) before the first real run -- an older build refuses this computer's reports once they hold an S code (version 2) and keeps a frozen copy of them; this tool cannot see the other computer's build, so check its version first (Settings -> О программе / factory_restart_status on each). In one go, with a journal and backups written first: the files are renamed, the manifest and records rewritten, the folder renamed, then in ONE transaction this computer's upload rows (code, paths, the new manifest SHA-256; the video id stays, so the package stays uploaded/tried and is never offered again), reservations (V14 cancelled with replacedBy S12, S12 in work with V14's working title), media/Gemini/speech job and plan links, finished cross-post jobs and the orientation memo; the storyboards linked to V14 follow. Any failure undoes every done step (release_recode_busy, details.step); a failed undo answers release_recode_rollback_failed with details.journal. The other computer learns it by sync: factory_video_list there shows V14 state recoded with recodedTo S12 (never in dispute; no new links: video_not_found reason recoded; it still counts toward the next V, so the next long video is the highest V ever known + 1). An unpublished package gets a new manifest SHA-256, so its owner review is pending again; a weekly-plan approval made with the uploaded video's id keeps counting, one made before the upload asks the owner again (no date changes). Refusals: release_recode_invalid (details.field video | newCode), release_recode_not_found (no package of that video in this channel's workspace, not under 04 Videos/<month>/, not a real folder, or the channel is not connected / has no workspace), release_recode_ambiguous (several packages of that video), release_recode_not_short (details.reason folder -- no ' Short' suffix, i.e. a long video; horizontal -- the frame is horizontal), release_recode_target_exists (details.source reservation | folder | upload | registry, or details.to / details.file: a target name exists), release_recode_busy (details.reason upload_here -- sent, processed, finished, paused or leased here; upload_queued -- queued here, not started; job_running -- a media/Gemini/speech job linked to the video is not finished; cross_post | live_rotation | video_list_unavailable | step_failed (details.step) | recovery_pending -- an unfinished recode journal of this channel exists: a dry run is refused, the next real call undoes it first (details.journal); factory_video_list lists such journals in pendingRecodes), release_recode_elsewhere (another computer reports an upload row of the video, finished included: run it on that computer), release_recode_approval_standing (details.reason package_review | plan_slot -- an owner approval of the not-uploaded package; plan_slot_date -- an approved slot and the uploaded video has no date yet), release_recode_rollback_failed. Published videos are recoded too. Passes the device mutation gate. Factory endpoint only. Run dryRun first.",
+      inputSchema: releaseRecodeInput,
+    },
+    async (args) => {
+      const input = parseInput(releaseRecodeInput, args);
+      if (!input.dryRun) await deps.assertMutationAllowed();
+      return successResult(await deps.releaseFolders.recode(input));
     }
   );
 
@@ -1934,17 +1964,21 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
 
   // -- BL-194 (VIDEO_COST_PLAN.md §2 stage 1, ADR 0040): video numbers. The video-projects module checks every bound and rule.
   const VIDEO_SHAPE =
-    "Video: { channelId, video ('V49'), number (49), workingTitle, state: in_work | packaged (Vn_release.json, or an upload under way) | published (Vn_youtube.json, the registry, or a finished upload -- how far the number got here, NOT that the video is still on YouTube: read existsOnChannel) | cancelled, sources: [reservation | folder | registry | upload], folder (the MMDD Vn folder relative to the workspace, once made) , createdAt / deviceId / hostName / thisComputer (the reservation: when and on which computer; null for a video known only from the workspace or uploads), conflict: null | { reservations: [{ deviceId, hostName, thisComputer, reservedAt, workingTitle, state, replacedBy }] (the winner first), winnerDeviceId, thisComputerInvolved, thisComputerLoses, suggestedVideo }, youtubeVideoId (1.31.0), existsOnChannel (1.43.0: false -- a completed owner sync found that video removed on YouTube, i.e. deleted; true -- in the synced copy as of a completed removed check that could have seen it; null -- unknown: no video id, not in the copy yet, or no check completed), removedAt (1.43.0: when the sync found it removed, ISO, else null) }.";
-  const videoCreateInput = z.object({ channelId: z.string().min(1).max(64), workingTitle: z.string().max(200).nullable().optional() }).strict();
-  const videoListInput = z.object({ channelId: z.string().min(1).max(64), state: z.enum(["in_work", "packaged", "published", "cancelled"]).optional() }).strict();
+    "Video: { channelId, video ('V49', or 1.49.0 'S14' -- a Short), number (49), series (1.49.0: 'V' | 'S'), workingTitle, state: in_work | packaged (Vn_release.json, or an upload under way) | published (Vn_youtube.json, the registry, or a finished upload -- how far the number got here, NOT that the video is still on YouTube: read existsOnChannel) | cancelled | recoded (1.49.0: factory_release_recode moved this V to the S code in recodedTo; never in dispute, no youtubeVideoId, refuses new links with video_not_found reason recoded, still counts toward the next V), recodedTo (1.49.0: that S code, else null), sources: [reservation | folder | registry | upload], folder (the MMDD Vn folder relative to the workspace, once made) , createdAt / deviceId / hostName / thisComputer (the reservation: when and on which computer; null for a video known only from the workspace or uploads), conflict: null | { reservations: [{ deviceId, hostName, thisComputer, reservedAt, workingTitle, state, replacedBy }] (the winner first), winnerDeviceId, thisComputerInvolved, thisComputerLoses, suggestedVideo }, youtubeVideoId (1.31.0), existsOnChannel (1.43.0: false -- a completed owner sync found that video removed on YouTube, i.e. deleted; true -- in the synced copy as of a completed removed check that could have seen it; null -- unknown: no video id, not in the copy yet, or no check completed), removedAt (1.43.0: when the sync found it removed, ISO, else null) }.";
+  const videoCreateInput = z.object({ channelId: z.string().min(1).max(64), workingTitle: z.string().max(200).nullable().optional(), video: z.string().regex(VIDEO_CODE_PATTERN).optional() }).strict();
+  const videoListInput = z.object({ channelId: z.string().min(1).max(64), state: z.enum(["in_work", "packaged", "published", "cancelled", "recoded"]).optional() }).strict();
   registerTool(
     "factory_video_create",
     {
-      description: `Start a new video and get its number (1.20.0): { channelId (connected here, with a readable workspace folder), workingTitle? (<= 200) } -> { video }. The number is one above the highest Vn of the channel known from every source: the MMDD Vn folders in '04 Videos', video_registry.csv, this computer's uploads and the numbers every computer reserved (cancelled ones included -- a number is never given twice). Use it for the video's MMDD Vn folder (the date part is still set when it is published) and pass it as videoNumber to jobs, storyboards and plans. The number is reserved on this computer and reaches the others by sync (a minute or two): if another computer gave out the same number meanwhile, factory_video_list shows a conflict on both; the earlier reservation keeps it and the owner moves the other to the next number in the Web UI -- nothing is renumbered by itself and nothing can be linked to the number until then (video_in_dispute). Nothing is generated, charged or sent to YouTube. Refusals: video_workspace_unavailable (the channel is not connected here, or its workspace folder cannot be read -- no number is given then), validation_failed. ${VIDEO_SHAPE}`,
+      description: `Start a new video and get its number (1.20.0): { channelId (connected here, with a readable workspace folder), workingTitle? (<= 200) } -> { video }. The number is one above the highest Vn of the channel known from every source: the MMDD Vn folders in '04 Videos', video_registry.csv, this computer's uploads and the numbers every computer reserved (cancelled ones included -- a number is never given twice). Use it for the video's MMDD Vn folder (the date part is still set when it is published) and pass it as videoNumber to jobs, storyboards and plans. The number is reserved on this computer and reaches the others by sync (a minute or two): if another computer gave out the same number meanwhile, factory_video_list shows a conflict on both; the earlier reservation keeps it and the owner moves the other to the next number in the Web UI -- nothing is renumbered by itself and nothing can be linked to the number until then (video_in_dispute). Nothing is generated, charged or sent to YouTube. 1.49.0 (BL-263): video? -- a Short's code 'S<n>' (the factory's piece number, S-0014 -> 'S14'; no leading zero, at most six digits), reserved as given instead of the next V; S codes never raise the next V. A given S already known on the channel from any source (any computer's reservation, cancelled ones included; a MMDD Sn folder; an upload row here; an Sn_youtube.json; the registry) is refused with video_number_taken (details.source: reservation | folder | upload | upload_record | registry); a given V is refused with validation_failed (details.reason v_numbers_are_given: V numbers are YT Manager's). Two computers reserving the same S offline show a conflict without suggestedVideo (an S is never renumbered; cancel one reservation). Only the Factory Operator gives an S: a channel worker's agent_video_create refuses video (validation_failed, reason s_codes_factory_only). Refusals: video_workspace_unavailable (the channel is not connected here, or its workspace folder cannot be read -- no number is given then), video_number_taken, validation_failed. ${VIDEO_SHAPE}`,
       inputSchema: videoCreateInput,
     },
     async (args) => {
       const input = parseInput(videoCreateInput, args);
+      // BL-263 (AC-SC-08): a given V is refused before the gate and the module -- V numbers are YT Manager's own.
+      if (input.video !== undefined && !input.video.startsWith("S")) {
+        throw new DomainError({ code: "validation_failed", message: "Only an S code can be given; V numbers are given by YT Manager (leave video out).", details: { field: "video", reason: "v_numbers_are_given" } });
+      }
       await deps.assertMutationAllowed();
       return successResult(await deps.videos.create(input));
     }
@@ -1952,12 +1986,12 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
   registerTool(
     "factory_video_list",
     {
-      description: `A channel's videos by number, highest first (1.20.0): { channelId, state? } -> { channelId, videos: [video], workspace: ok | not_configured | unavailable (without a readable workspace the folders and the registry are missing from the list), nextVideo (what factory_video_create would give now; null without a readable workspace) }. Every computer's reservations (about 1-2 minutes behind), the workspace's MMDD Vn folders (an empty one included), video_registry.csv and this computer's uploads. Read-only, local. ${VIDEO_SHAPE}`,
+      description: `A channel's videos by number, highest first (1.20.0): { channelId, state? } -> { channelId, videos: [video], workspace: ok | not_configured | unavailable (without a readable workspace the folders and the registry are missing from the list), nextVideo (what factory_video_create would give now; null without a readable workspace), pendingRecodes (1.49.0: [{ journal, video, newCode, startedAt, done }] -- unfinished factory_release_recode journals of the channel; while one exists its V and S take no new link (video_not_found reason recode_pending) and the S is not given (video_number_taken source recode_pending); the next real factory_release_recode call undoes it) }. Every computer's reservations (about 1-2 minutes behind), the workspace's MMDD Vn folders (an empty one included), video_registry.csv and this computer's uploads. Read-only, local. ${VIDEO_SHAPE}`,
       inputSchema: videoListInput,
     },
     async (args) => successResult(await deps.videos.list(parseInput(videoListInput, args)))
   );
-  const videoCostInput = z.object({ channelId: z.string().min(1).max(64), video: z.string().regex(/^V[1-9][0-9]{0,5}$/) }).strict();
+  const videoCostInput = z.object({ channelId: z.string().min(1).max(64), video: z.string().regex(VIDEO_CODE_PATTERN) }).strict();
   registerTool(
     "factory_video_get_cost",
     {

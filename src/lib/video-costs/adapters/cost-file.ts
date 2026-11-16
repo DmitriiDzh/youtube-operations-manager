@@ -2,9 +2,11 @@ import { randomUUID } from "node:crypto";
 import { readFile, realpath, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { isPathInsideOrEqual } from "@/lib/local-path-validation";
+import { VIDEO_CODE_PATTERN } from "@/lib/shared-video-code";
 import type { VideoCostFile } from "../contracts";
 
-const NAME = /^V[1-9][0-9]{0,5}_cost\.json$/;
+// BL-263: a strict V or S code (`src/lib/shared-video-code`).
+const NAME = new RegExp(`^${VIDEO_CODE_PATTERN.source.slice(1, -1)}_cost\\.json$`);
 const MAX_BYTES = 8 * 1024 * 1024;
 
 /**

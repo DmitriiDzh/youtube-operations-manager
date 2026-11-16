@@ -6,7 +6,8 @@ export type PipelinePhase = "prep" | "edit" | "package" | "youtube" | "published
 export const PIPELINE_PHASES: readonly PipelinePhase[] = ["prep", "edit", "package", "youtube", "published"];
 
 export type PipelineProject = {
-  state: "in_work" | "packaged" | "published" | "cancelled";
+  /** BL-263: `recoded` -- a V moved to an S code (the S is the board's entry); on no column, never linked. */
+  state: "in_work" | "packaged" | "published" | "cancelled" | "recoded";
   hasVideoFile?: boolean;
   youtubeVideoId?: string | null;
   /** An upload of the number is queued or running on this computer. */
@@ -21,7 +22,7 @@ export type PipelineSyncedVideo = { privacyStatus: string; publishAt: string | n
  * `prep`: nothing of that yet (storyboard and generation). A cancelled number is on no column (null).
  */
 export function pipelinePhase(project: PipelineProject, synced: PipelineSyncedVideo | null): PipelinePhase | null {
-  if (project.state === "cancelled") return null;
+  if (project.state === "cancelled" || project.state === "recoded") return null;
   if (project.youtubeVideoId) {
     if (!synced) return "youtube";
     return synced.privacyStatus === "public" ? "published" : "youtube";
@@ -34,5 +35,5 @@ export function pipelinePhase(project: PipelineProject, synced: PipelineSyncedVi
 /** A number the owner may link to a YouTube video: it has a folder, no video yet, no upload under way, and is not cancelled
  * (`linkVideo`'s rules). */
 export function canLink(project: PipelineProject & { folder: string | null }): boolean {
-  return project.state !== "cancelled" && Boolean(project.folder) && !project.youtubeVideoId && !project.uploading;
+  return project.state !== "cancelled" && project.state !== "recoded" && Boolean(project.folder) && !project.youtubeVideoId && !project.uploading;
 }

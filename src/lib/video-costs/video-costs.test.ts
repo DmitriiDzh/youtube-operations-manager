@@ -379,3 +379,25 @@ test("BL-219: a RunPod output's kind follows its file name first", async () => {
   assert.equal(runpodMediaKind(JSON.stringify([{ kind: "images", filename: "flux_00001_.png" }])), "image");
   assert.equal(runpodMediaKind(null), null);
 });
+
+// BL-263 (SHORT_VIDEO_CODE_PLAN.md §6.4, AC-SC-20; ADR 0071 §5): a run linked to a V that was recoded to an S -- this computer's or a
+// peer's own job -- counts under the S code; the V has no runs of its own any more; a list that cannot be read moves nothing.
+test("BL-263 AC-SC-20: runs linked to a recoded V14 (any computer) count in S12's total; the summary lists S12, not V14", async () => {
+  const w = world();
+  w.states = new Map<string, VideoStateInfo>([
+    ["V14", { state: "recoded", folder: null, recodedTo: "S12" }],
+    ["S12", { state: "published", folder: "04 Videos/11 November/1120 S12 Short" }],
+  ]);
+  const mac = computer("mac", w, () => ({ ...none(), gemini: [gemini("g1", { video: "S12" })] }));
+  const win = computer("win", w, () => ({ ...none(), gemini: [gemini("g2", { video: "V14" })] }));
+  await mac.service.publishOwnReport();
+  await win.service.publishOwnReport();
+  const s12 = await mac.service.videoCost({ channelId: "UC1", video: "S12" });
+  assert.deepEqual(s12.runs.map((r) => [r.runId, r.video, r.thisComputer]).sort(), [["gemini:g1", "S12", true], ["gemini:g2", "S12", false]]);
+  assert.equal(s12.totals.totalUsd, 1.4842);
+  assert.equal((await mac.service.videoCost({ channelId: "UC1", video: "V14" })).totals.runs, 0);
+  assert.deepEqual((await mac.service.summary({ channelId: "UC1" })).videos.map((v) => v.video), ["S12"]);
+  // The video list cannot be read: no alias, the peer's run stays under V14.
+  const blind = computer("mac", w, () => ({ ...none(), gemini: [gemini("g1", { video: "S12" })] }), { videoStates: async () => Promise.reject(new Error("no workspace")) });
+  assert.equal((await blind.service.videoCost({ channelId: "UC1", video: "V14" })).totals.runs, 1);
+});

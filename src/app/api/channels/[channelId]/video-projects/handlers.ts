@@ -71,6 +71,8 @@ export function createVideoProjectsRouteHandlers(deps: VideoProjectsRouteDeps = 
         const body = await bodyOf(request);
         if (!body) return NextResponse.json({ error: "validation_failed", message: "The request must be a JSON object." }, { status: 400 });
         if ("channelId" in body) return NextResponse.json({ error: "validation_failed", message: "The channel is the one in the address; do not send channelId." }, { status: 400 });
+        // BL-263 (decision 2026-11-16): a given S code is accepted only through factory_video_create (the Factory Operator).
+        if ("video" in body) return NextResponse.json({ error: "validation_failed", message: "A video code is given only by the Factory Operator (factory_video_create); leave video out to get the next V.", details: { field: "video", reason: "s_codes_factory_only" } }, { status: 400 });
         return NextResponse.json(await deps.service().createVideo({ ...body, channelId }), { status: 201 });
       }),
 

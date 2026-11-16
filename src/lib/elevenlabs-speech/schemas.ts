@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { parseWithSchema } from "@/lib/shared-domain";
 import { ELEVENLABS_JOB_STATUSES, ELEVENLABS_LIMITS, ELEVENLABS_MUSIC, ELEVENLABS_OUTPUT_FORMATS, ELEVENLABS_SFX, ELEVENLABS_SPEECH_MODELS, charCount, elevenlabsInvalidParams, ownEntry } from "./contracts";
+import { VIDEO_CODE_PATTERN } from "@/lib/shared-video-code";
 
 export { parseWithSchema };
 
@@ -18,7 +19,7 @@ export const createJobInputSchema = z
     outputFormat: z.enum(ELEVENLABS_OUTPUT_FORMATS).optional(),
     requestId: z.string().regex(ELEVENLABS_REQUEST_ID_PATTERN, "a request id: up to 120 letters, digits, '.', '_' or '-'").optional(),
     dryRun: z.boolean().optional(),
-    videoNumber: z.string().regex(/^V[1-9][0-9]{0,5}$/, "a video number such as V49").optional(),
+    videoNumber: z.string().regex(VIDEO_CODE_PATTERN, "a video code such as V49 or S14").optional(),
   })
   .strict();
 
@@ -35,7 +36,7 @@ export const createSfxInputSchema = z
     outputFormat: z.enum(ELEVENLABS_OUTPUT_FORMATS).optional(),
     requestId: z.string().regex(ELEVENLABS_REQUEST_ID_PATTERN, "a request id: up to 120 letters, digits, '.', '_' or '-'").optional(),
     dryRun: z.boolean().optional(),
-    videoNumber: z.string().regex(/^V[1-9][0-9]{0,5}$/, "a video number such as V49").optional(),
+    videoNumber: z.string().regex(VIDEO_CODE_PATTERN, "a video code such as V49 or S14").optional(),
   })
   .strict();
 export type CreateSfxInput = z.infer<typeof createSfxInputSchema>;
@@ -50,7 +51,7 @@ export const createMusicInputSchema = z
     outputFormat: z.enum(ELEVENLABS_OUTPUT_FORMATS).optional(),
     requestId: z.string().regex(ELEVENLABS_REQUEST_ID_PATTERN, "a request id: up to 120 letters, digits, '.', '_' or '-'").optional(),
     dryRun: z.boolean().optional(),
-    videoNumber: z.string().regex(/^V[1-9][0-9]{0,5}$/, "a video number such as V49").optional(),
+    videoNumber: z.string().regex(VIDEO_CODE_PATTERN, "a video code such as V49 or S14").optional(),
   })
   .strict();
 export type CreateMusicInput = z.infer<typeof createMusicInputSchema>;

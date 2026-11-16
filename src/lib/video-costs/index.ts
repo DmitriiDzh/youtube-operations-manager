@@ -42,8 +42,9 @@ export function createVideoCostsServiceForProduction(): VideoCostsService {
       storyboards: async (channelId) => (await createStoryboardsCoreForProduction().read(channelId)).map((s) => ({ id: s.id, picks: s.picks, renders: s.renders })),
       videoStates: async (channelId) => {
         const list = await createVideoProjectsServiceForProduction().listVideos({ channelId });
-        return new Map<string, VideoStateInfo>(list.videos.map((v) => [v.video, { state: v.state, folder: v.folder }]));
+        return new Map<string, VideoStateInfo>(list.videos.map((v) => [v.video, { state: v.state, folder: v.folder, recodedTo: v.recodedTo }]));
       },
+      recodeAliases: (channelId) => createVideoProjectsServiceForProduction().recodeAliasesOf(channelId),
       costFiles: createCostFiles(async (channelId) => {
         const workspace = await workspaces.getWorkspace({ channelId });
         if (!workspace.configured) throw new Error("This channel has no workspace folder on this computer.");

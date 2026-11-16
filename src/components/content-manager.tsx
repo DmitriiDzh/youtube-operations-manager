@@ -15,6 +15,7 @@ import { costUsd } from "./video-cost-dialog";
 import { VideoDetailModal } from "./video-detail-modal";
 import { ThumbnailReplaceButton } from "./thumbnail-replace";
 import { VideoDetailsPanel } from "./video-details-panel";
+import { parseVideoCode } from "@/lib/shared-video-code";
 
 type SyncedChannel = {
   channelId: string;
@@ -140,10 +141,17 @@ function kindHint(kind: VideoKind | null): UiTextKey | null {
   return kind === "live" ? "content.kindHint.live" : kind === "broadcast" ? "content.kindHint.broadcast" : null;
 }
 
+function videoCodeRank(code: string): number | null {
+  const parsed = parseVideoCode(code);
+  if (!parsed) return null;
+  return parsed.series === "V" ? 10_000_000 + parsed.number : parsed.number;
+}
+
 function extraSortValue(extra: VideoExtras, key: ExtraSortKey): number | null {
   switch (key) {
     case "vn":
-      return extra.vn ? Number(extra.vn.slice(1)) : null;
+      // BL-263 (plan §7): highest first shows the V block, then S (each by number): an S ranks below every V.
+      return extra.vn ? videoCodeRank(extra.vn) : null;
     case "views7d":
       return extra.views7d;
     case "ctr":

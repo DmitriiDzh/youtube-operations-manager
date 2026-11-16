@@ -6,6 +6,7 @@ import { getStoredChannel, listStoredVideosByChannel, listVideoPresence } from "
 import { getProductionAppPaths } from "@/lib/platform-paths";
 import { createStoryboardsCoreForProduction, createVideoReservationsShareCoreForProduction } from "@/lib/sync-gateway";
 import { writeUploadRecordFile } from "@/lib/workspace-videos";
+import { listPendingRecodeJournals } from "@/lib/release-recode-journals";
 import { createVideoProjectsStore } from "./adapters/store";
 import { createVideoProjectsWorkspace } from "./adapters/workspace";
 import { DomainError } from "./contracts";
@@ -38,6 +39,8 @@ export function createVideoProjectsServiceForProduction(): VideoProjectsService 
       peers: () => share.listPeerReports(),
       publishReport: (report) => share.publishLocalReport(report),
       ownDevice: async () => ({ deviceId: (await bootstrap.ensureExists()).deviceId, hostName: hostLabel() }),
+      // BL-263: unfinished recode journals (the shared journal module; video-projects never imports publishing).
+      pendingRecodes: (channelId) => listPendingRecodeJournals(getProductionAppPaths().appDataDir, channelId),
       isChannelConnected: async (channelId) => (await createChannelConnectionsCore().listConnectedChannels()).some((c) => c.channelId === channelId),
       workspace: createVideoProjectsWorkspace((channelId) => createChannelWorkspacesCore().getWorkspace({ channelId })),
       // BL-243: the synced copy -- listed videos (YouTube's publishedAt), removed ones, the last completed removed check.

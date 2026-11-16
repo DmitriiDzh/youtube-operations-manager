@@ -228,3 +228,16 @@ test("BL-217: the worker versions of the Operator's channel tools are registered
     "the refused write is logged; the refused read is not"
   );
 });
+
+// BL-263 (ADR 0071 §2; decision 2026-11-16: a given S code is accepted only through factory_video_create): a channel worker's
+// agent_video_create refuses `video` (validation_failed, reason s_codes_factory_only) before anything is reserved.
+test("BL-263: agent_video_create refuses a given S code -- only the Factory Operator gives one", async () => {
+  const channelId = "UC_WL_SCODE";
+  await inSession(channelId, async (tools) => {
+    const refused = await tools.agent_video_create.handler({ channelId, video: "S23" });
+    assert.equal(refused.isError, true);
+    const error = JSON.parse(refused.content[0].text).error;
+    assert.equal(error.code, "validation_failed");
+    assert.equal(error.details?.reason, "s_codes_factory_only");
+  });
+});

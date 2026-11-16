@@ -2,6 +2,8 @@
 // holds, shared by the feature modules that read it (publishing's release packages, live streams' video picker) so neither
 // reaches into the other. Pure: the folder walk takes its directory reads as a dependency; nothing here touches the disk.
 
+import { READABLE_VIDEO_CODE_SOURCE } from "@/lib/shared-video-code";
+
 /** The factory's layout: `04 Videos/<MM Month>/<MMDD Vn>/…`. */
 export const VIDEOS_FOLDER = "04 Videos";
 /** `04 Videos/<MM Month>/<MMDD Vn>/<file>`: three levels below the folder at most. */
@@ -93,9 +95,12 @@ export function parseUploadRecord(text: string): { videoId: string; uploadedAt?:
   return typeof uploadedAt === "string" && Number.isFinite(Date.parse(uploadedAt)) ? { videoId, uploadedAt } : { videoId };
 }
 
-/** The release number a `MMDD Vn` folder is named after (`0928 V39` → `V39`), upper-cased; null for any other name. */
+/**
+ * The release code a `MMDD Vn` / `MMDD Sn` folder is named after (`0928 V39` → `V39`, `1120 S14 Short` → `S14`), upper-cased; null
+ * for any other name. V keeps today's lenient `V\d+`; S is strict (BL-263, `src/lib/shared-video-code`).
+ */
 export function videoNumberOfFolder(folderName: string): string | null {
-  const match = /^\d{4}\s+(V\d+)(?:\s|$)/i.exec(folderName);
+  const match = new RegExp(`^\\d{4}\\s+(${READABLE_VIDEO_CODE_SOURCE})(?:\\s|$)`, "i").exec(folderName);
   return match ? match[1].toUpperCase() : null;
 }
 

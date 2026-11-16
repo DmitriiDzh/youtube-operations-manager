@@ -15,6 +15,7 @@ import {
   geminiInvalidParams,
   ownEntry,
 } from "./contracts";
+import { VIDEO_CODE_PATTERN } from "@/lib/shared-video-code";
 
 export { parseWithSchema };
 
@@ -64,7 +65,7 @@ export const createJobInputSchema = z
     storyboardId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/).optional(),
     segmentId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/).optional(),
     /** BL-194 (ADR 0040): the channel's video number this job is for (`video` is the video's settings); omitted = its storyboard's. */
-    videoNumber: z.string().regex(/^V[1-9][0-9]{0,5}$/, "a video number such as V49").optional(),
+    videoNumber: z.string().regex(VIDEO_CODE_PATTERN, "a video code such as V49 or S14").optional(),
   })
   .strict();
 
@@ -84,7 +85,7 @@ export const createSpeechJobInputSchema = z
     style: z.string().trim().min(1).max(GEMINI_SPEECH.maxStyleChars).optional(),
     requestId: z.string().regex(GEMINI_REQUEST_ID_PATTERN, "a request id: up to 120 letters, digits, '.', '_' or '-'").optional(),
     dryRun: z.boolean().optional(),
-    videoNumber: z.string().regex(/^V[1-9][0-9]{0,5}$/, "a video number such as V49").optional(),
+    videoNumber: z.string().regex(VIDEO_CODE_PATTERN, "a video code such as V49 or S14").optional(),
   })
   .strict();
 

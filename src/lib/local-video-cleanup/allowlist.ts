@@ -1,6 +1,8 @@
 // BL-238 (ADR 0058 §2): the ONE path pattern the cleanup may delete -- the owner's hard rule (FO-REQ-0051, TG 3251): the release's
 // own final video and nothing else. Pure: the file-system checks (real path, symlinks, regular file) are the adapter's.
 
+import { isReadableVideoCode, READABLE_VIDEO_CODE_SOURCE } from "@/lib/shared-video-code";
+
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"] as const;
 
 /** The channel's name as the release file carries it: the channel folder's name without its number prefix ("01 Tropico Jazz"). */
@@ -14,7 +16,8 @@ export function channelNameOfFolder(folderName: string): string {
  * and name agree, the release folder's MMDD lies in that month, and V<n> is the same in both places.
  */
 export function isAllowedReleaseVideo(relativePath: string, video: string, channelName: string): boolean {
-  if (!/^V\d+$/.test(video) || channelName === "" || channelName.includes("/")) return false;
+  // BL-263: today's lenient V or a strict S code.
+  if (!isReadableVideoCode(video) || channelName === "" || channelName.includes("/")) return false;
   const segments = relativePath.split("/");
   if (segments.length !== 4) return false;
   const [root, month, release, file] = segments;
@@ -24,7 +27,7 @@ export function isAllowedReleaseVideo(relativePath: string, video: string, chann
   const mm = Number(monthMatch[1]);
   if (mm < 1 || mm > 12 || MONTHS[mm - 1] !== monthMatch[2]) return false;
   // BL-261 (owner TG 3521): a Short's release folder may carry the « Short» suffix -- nothing else.
-  const releaseMatch = /^(\d{2})(\d{2}) (V\d+)(?: Short)?$/.exec(release);
+  const releaseMatch = new RegExp(`^(\\d{2})(\\d{2}) (${READABLE_VIDEO_CODE_SOURCE})(?: Short)?$`).exec(release);
   if (!releaseMatch) return false;
   const day = Number(releaseMatch[2]);
   if (releaseMatch[1] !== monthMatch[1] || day < 1 || day > 31 || releaseMatch[3] !== video) return false;

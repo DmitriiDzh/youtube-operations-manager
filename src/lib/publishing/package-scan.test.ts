@@ -467,3 +467,64 @@ test("BL-259: orientation from the probed frame, remembered; the memo stands in 
   assert.equal((await scanV65({}, files)).orientation, null);
   assert.equal((await scanV65({ probeFrame: async () => Promise.reject(new Error("ffprobe")) })).orientation, null);
 });
+
+// BL-263 (SHORT_VIDEO_CODE_PLAN.md §2 rows 4–7, AC-SC-02/03/04): an S package scans like a V package; a manifest naming another
+// code than its folder and file is a problem and is never uploaded; every V package scans exactly as before.
+test("BL-263 AC-SC-02: `1120 S14 Short/S14_release.json` (video S14) scans ready, with its record, orientation and date order", async () => {
+  const files = {
+    ...packageFiles("04 Videos/11 November/1120 S14 Short", "S14", { plannedPublishDate: "2026-11-20" }),
+    ...packageFiles("04 Videos/11 November/1120 V27", "V27", { plannedPublishDate: "2026-11-20" }),
+    ...packageFiles("04 Videos/11 November/1120 S2 Short", "S2", { plannedPublishDate: "2026-11-20" }),
+    ...packageFiles("04 Videos/11 November/1119 S15 Short", "S15", { plannedPublishDate: "2026-11-19" }),
+    "04 Videos/11 November/1119 S15 Short/S15_youtube.json": { text: JSON.stringify({ videoId: "vidS15" }), bytes: 20 },
+  };
+  const remembered: string[] = [];
+  const result = await createPackageScan(
+    deps(files, { probeFrame: async () => ({ width: 1080, height: 1920 }), orientations: { get: async () => ({}), remember: async (_c, v) => void remembered.push(v) } }),
+  ).scan("UC_t");
+  if (result.status !== "ok") return assert.fail(result.status);
+  // By date; on a tie the shared comparator (V before S, then numeric: S2 before S14).
+  assert.deepEqual(result.packages.map((p) => [p.video, p.state, p.youtube?.videoId ?? null]), [
+    ["S15", "uploaded_unknown", "vidS15"],
+    ["V27", "ready", null],
+    ["S2", "ready", null],
+    ["S14", "ready", null],
+  ]);
+  const s14 = result.packages[3];
+  assert.equal(s14.manifestPath, "04 Videos/11 November/1120 S14 Short/S14_release.json");
+  assert.equal(s14.orientation, "vertical");
+  assert.deepEqual(s14.problems, []);
+  assert.ok(remembered.includes("S14"));
+});
+
+test("BL-263 AC-SC-03: S14 in a folder of S15, or a manifest saying S014, is field_invalid (video) and never ready", async () => {
+  const mismatch = {
+    "04 Videos/11 November/1120 S15 Short/S15_release.json": { text: manifest("S14"), bytes: 500 },
+    "04 Videos/11 November/1120 S15 Short/S14 Tropico Jazz.mp4": { bytes: 1000 },
+    "04 Videos/11 November/1120 S15 Short/Thumbnail_S14_A.jpg": { bytes: 4000, head: JPEG },
+  };
+  const zero = packageFiles("04 Videos/11 November/1121 S14 Short", "S14", { video: "S014" });
+  const v14InS = packageFiles("04 Videos/11 November/1122 S16 Short", "S16", { video: "V16" });
+  const result = await createPackageScan(deps({ ...mismatch, ...zero, ...v14InS })).scan("UC_t");
+  if (result.status !== "ok") return assert.fail(result.status);
+  assert.equal(result.packages.length, 3);
+  for (const p of result.packages) {
+    assert.equal(p.state, "not_ready", p.manifestPath);
+    assert.deepEqual(p.problems, [{ code: "field_invalid", params: { field: "video" } }], p.manifestPath);
+    assert.equal(p.pkg, null);
+  }
+  // A file named S014_release.json is not a package at all (S is strict in names too).
+  const strict = await createPackageScan(deps({ "04 Videos/11 November/1121 S014 Short/S014_release.json": { text: manifest("S014"), bytes: 500 } })).scan("UC_t");
+  assert.deepEqual(strict.status === "ok" ? strict.packages : null, []);
+});
+
+test("BL-263 AC-SC-04: a V package whose manifest names another V (today's behaviour) still scans as before; a legacy V07 folder is read", async () => {
+  // Before BL-263 the scan never compared a V manifest with its folder; that stays so (plan §3: nothing existing changes meaning).
+  const files = {
+    ...packageFiles("04 Videos/10 October/1024 V65", "V65", { video: "V66" }),
+    ...packageFiles("04 Videos/10 October/1007 V07", "V07"),
+  };
+  const result = await createPackageScan(deps(files)).scan("UC_t");
+  if (result.status !== "ok") return assert.fail(result.status);
+  assert.deepEqual(result.packages.map((p) => p.video).sort(), ["V07", "V66"]);
+});

@@ -49,7 +49,7 @@ export type BackfillProposals = {
 
 const channelId = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const id = z.string().regex(/^[A-Za-z0-9._-]{1,80}$/);
-const video = z.string().regex(VIDEO_NUMBER_PATTERN, "a video number such as V49");
+const video = z.string().regex(VIDEO_NUMBER_PATTERN, "a video code such as V49 or S14");
 const proposalsInput = z.object({ channelId }).strict();
 const confirmInput = z.object({ channelId, storyboardId: id, video }).strict();
 const linkInput = z.object({ channelId, kind: z.enum(["storyboard", "plan"]), id }).strict();
