@@ -61,10 +61,12 @@ needs an AGENTS.md §F entry, because it adds a new path and possibly a new call
 - **Video code match.** The decision's `video` must equal the package's `video` exactly (string as-is; BL-263 adds `S<n>`), **or**
   the package's code is the BL-263 recode alias of the decision's code (a V cancelled with `replacedBy` that S). The recode only
   renames files, so the mp4 bytes and `sha256` stay. (Depends on BL-263 being merged first; until then exact match only. §6 Q8.)
-- **Legacy decisions** (no `videoSha256`): at read time, a legacy decision whose `manifestSha256` equals a manifest currently on
-  disk is treated as a decision for that manifest's `(video, sha256, sizeBytes)`. BL-257 already proved the mp4 hashed to that
-  `sha256` when the owner approved. A legacy decision whose manifest is gone counts for nothing, so the package is pending again
-  (one re-click). (§6 Q7.)
+- **Legacy decisions** (no `videoSha256`) keep exactly BL-257's meaning: one counts only while a manifest with its
+  `manifestSha256` is on disk, and then for that manifest's media key. BL-257 already proved the mp4 hashed to that `sha256` at
+  approval. Nothing persists a manifest→media mapping for it: only the owner writes decisions, and a derived mapping kept by the app
+  would be a second, unauthenticated source of approvals. So **the first re-package of a legacy-approved package needs one
+  re-approval**, and every approval made by this build survives re-packages. (WWE is the only gated channel, with a handful of
+  pending packages; §6 Q7.)
 
 **Gate port** (`owner-review-gate.ts`): `problemOf({ video, videoSha256, videoSizeBytes, manifestSha256 })`. `needsThumbnailHash`
 is removed: the scan and the runner no longer hash the thumbnail for the gate. `CLOSED_OWNER_REVIEW_GATE` is unchanged (fail
@@ -75,12 +77,15 @@ closed). The rule stays in `package-reviews/model.ts` (§M).
   hashes to it. **A thumbnail is no longer required.**
 - «Вернуть» stays, for the media only, with a required comment. It returns this mp4 (media key), and a new mp4 is pending again.
   A return of packaging is not possible any more (§6 Q5).
-- **New «Комментарий к упаковке»** (kind `packaging_comment`, comment required, ≤ 2000 chars) on any item, including approved and
-  uploaded ones. It never changes the gate, and it wakes the Producer like any decision (`REVIEW-DECISION-package-<video>-<id>.md`,
-  `kind: packaging_comment`, via `review-notify`).
-- The review screen keeps showing approved and uploaded items (today: 10 decided uploads) so the owner can comment on packaging
-  later. An uploaded item whose current manifest differs from YouTube shows «Упаковка отличается от YouTube» and the B2 apply
-  action (§3.2).
+- **New «Комментарий к упаковке»** (kind `packaging_comment`, comment required, ≤ 2000 chars) on **any package of the channel**:
+  pending, approved or uploaded, gate on or off. `decide` refuses uploaded packages today (`package_review_uploaded`); that refusal
+  stays for approve/return only. The comment never changes the gate, and it wakes the Producer like any decision
+  (`REVIEW-DECISION-package-<video>-<id>.md`, `kind: packaging_comment`, via `review-notify`).
+- **Entry point for packaging after upload.** It does not depend on the review list. `view` lists an uploaded package only when a
+  decision names its manifest (at most 10), and a channel without a review document lists none. So the B2 action and the comment
+  live on the uploaded package's own row in «Ролики и релизы» and on its week-plan slot, which come from the publishing scan and
+  list every package with a video id on every channel. The row shows «Упаковка отличается от YouTube» when the comparison of §3.4
+  finds a difference. The review screen links there for its uploaded items.
 
 **Hard limits only (`packageProblems`)** — each code classified. Blocking means `not_ready`. A warning goes in a new `warnings: PackageProblem[]`
 field on `ScannedPackage`, is shown, and blocks nothing.
@@ -125,7 +130,21 @@ status, **never** takes a new manifest. After `begin` the insert's title is on Y
    - Then today's checks continue: size, `videoHashDiffers` (the file hashes to the frozen `sha256`), identity, `begin`.
 4. Different SHA-256 and **no** frozen `videoSha256` (a row made before this build) → today's `fail(package_changed)`.
 
-**Consumers of the row's `manifestSha256` after a refresh:** `triedHashes` and `triedExceptionsOf` see the new hash (the old
+**The "tried" rule moves to the media key (amends ADR 0070 §5 and BL-264).** Today `triedHashes` (automatic upload),
+`blockedHashes` (Producer add, BL-264) and `triedExceptionsOf` (which looks up `state.approved` by manifest hash) are keyed by
+manifest SHA-256. With a media-keyed approval, a package whose row failed or was cancelled (including `unknown_outcome`, where the
+video may already exist on YouTube) and that is then re-packaged with only new texts would be a new, untried manifest that is
+already approved. The automatic upload would take it with no owner action, and the duplicate-title guard would miss it because the
+title changed. So:
+- A row is **tried for its media key** `(video, videoSha256, sizeBytes)` when it froze `videoSha256` (§3.3), and for its manifest
+  hash otherwise (rows from before this build).
+- A package is tried when its manifest hash **or** its media key is tried.
+- The exception keeps BL-257's meaning, moved to the media key: every row of that media key was cancelled before reaching YouTube
+  (no video id) and was made before the owner's approval of that media key. It applies only while the gate is on.
+- `blockedHashes` (Producer) applies the same two keys and the same exception. The rule stays in `package-reviews/model.ts`, and
+  publishing only supplies the rows.
+
+**Consumers of the row's `manifestSha256` after a refresh:** the tried sets see the new hash and the unchanged media key (the old
 manifest no longer exists). `plan-schedule.decisionForRow` / the date step `approvalNamesUpload` compare the slot approval with
 the **new** manifest, so a slot approved for the old manifest gives no date until the owner approves the slot again (ADR 0062,
 unchanged; §6 Q1). The automatic upload never makes a second row for the same video: `checkPackageForQueue` refuses `held` while a
@@ -136,6 +155,12 @@ row of that video is active here.
 `upload-approval.ts` freezes `videoSha256` (and the row already has `totalBytes`) on **every** new row whose manifest states
 `sha256`, the owner's approval rows included. So the runner hashes the file before the first byte on owner rows too (the same cost
 as automatic rows today), and only a row with a frozen identity can take a refreshed manifest (§6 Q9).
+
+Two consequences go to the owner with Q9:
+- An owner upload-approval row keeps the `publishAt` he chose when it takes a refreshed manifest whose packaging he has not seen.
+  The texts change, the date does not. This is "packaging never blocks" applied to his own approvals.
+- §3.2 applies on every channel, including channels without the review gate (Japan, Tropico today). There a queued automatic or
+  Producer row of a re-packaged video now uploads the new texts instead of failing `package_changed`.
 
 ### 3.4 B2 — packaging fixes on an uploaded video
 
@@ -151,8 +176,20 @@ read-merge-write: `categoryId` and `defaultLanguage` are sent back exactly as re
 `defaultAudioLanguage`, except `zxx` ("Not applicable"), which YouTube rejected when echoed (RISK-102) and which stays out as
 today. The write never touches `localizations`, `status` (privacy, `publishAt`), recording details or paid placement.
 
+**One comparison rule.** The difference badge, the three-way check, the patch and the read-back all use the same rule. That rule is
+the runner's read-back rule (`readBackMismatches`, `upload-runner.ts` l. 300–306), extracted into one shared helper and used by both:
+- title: exact;
+- description: `normalizeLineEndings` (the factory's files carry CR) then `trimEnd` (YouTube drops trailing line breaks);
+- tags: the same items in any order (YouTube returns them sorted).
+
+The patch sends the normalised description (LF, no trailing line breaks), so YouTube's echo is the text sent. `video-details`'
+`sameFieldValue` already compares `tags` unordered (`read-back.ts`, `UNORDERED_FIELDS`). It gains the same description rule, so
+an apply is not reported unverified because of a trailing line break that YouTube dropped.
+
 **Three-way check (PROJECT_SPEC §30).** For each of the three fields the service compares (a) YouTube now, read fresh, (b) what this
-video's upload sent (the finished upload row's frozen package, or the previous apply's audit), and (c) the manifest now:
+video's upload sent (the finished upload row's frozen package on this computer, or the latest `package_metadata` apply's audit), and (c) the manifest now.
+When (b) is unknown (the upload ran on the other computer and no apply happened here), every field where a ≠ c is a `CONFLICT`. The
+owner confirms it per field, and the Producer surface refuses it. This is the safe default.
 - a = c → nothing to write for this field.
 - a = b ≠ c → write c.
 - a ≠ b and a ≠ c (someone changed it in Studio since) → `CONFLICT` for this field. It is not written unless the owner ticks «перезаписать»
@@ -188,8 +225,8 @@ existing `video-thumbnails` owner surface with its own pipeline, as a separate c
 (§6 Q4). Until then the owner's existing Change Set / Batches path covers an uploaded video's translations.
 
 **Who and when.**
-- **Owner, Web UI** (stage 4): Media → «Видео на проверку» item of an uploaded package. The calendar/«Ролики и релизы» row links
-  there. Owner session, active channel, remote allowed (like the Details card and ADR 0069 §6).
+- **Owner, Web UI** (stage 4): the uploaded package's row in «Ролики и релизы» and its week-plan slot (§3.1 entry point), on every
+  channel. The review screen's uploaded items link there. Owner session, active channel, remote allowed (like the Details card and ADR 0069 §6).
 - **Producer** (proposed, stage 5, only on the owner's yes): `producer_video_metadata_update { channelId, video, dryRun? }` on the
   Producer endpoint only. It applies only the video's **current package** values (no free text) and refuses on any conflict (no
   override for the Producer). It has the same pipeline and the device gate (AC-TH-15 precedent). Channel worker agents and the factory get no such tool.
@@ -242,10 +279,12 @@ renumber at merge time.
 5. **«Вернуть»** stays for the media only; packaging gets «Комментарий к упаковке» (non-blocking, wakes the Producer). Agreed?
 6. **Warnings list** (§3.1): chapters and test thumbnails become warnings; `same_title_on_channel` and the language baseline stay
    blocking. Agreed?
-7. **Existing approvals**: carried over when their manifest is still on disk (recommended), otherwise one re-click. Or re-approve all?
+7. **Existing (BL-257) approvals** keep counting while their manifest is unchanged. The first re-package of such a package needs
+   one re-approval, because no owner-written record ties them to the mp4. Acceptable?
 8. **BL-263 recode** (V→S, same mp4): the approval follows the recode alias (recommended)?
 9. **Owner upload-approval rows** also freeze the mp4 SHA-256 (one hash before the first byte, as automatic rows), so they can take
-   a refreshed manifest. Agreed?
+   a refreshed manifest. Such a row then keeps the date he chose with packaging he has not seen, and the refresh also applies on
+   channels without the review gate (§3.3). Agreed?
 
 ## 7. Stages (one branch `feature/bl-265-media-gate`, one merge)
 
@@ -254,10 +293,13 @@ renumber at merge time.
    thumbnail precondition); sync contract fields; gate port in `owner-review-gate.ts`; scan and runner use it; `warnings` split in
    `packageProblems` / `ScannedPackage`; calendar/factory/agent reads expose `warnings`.
 2. **Runner refresh.** §3.2 and §3.3 (re-read once, wait/fail rules, conditional update, audits, `media_changed`,
-   `package_slot_changed`); `upload-approval` freezes `videoSha256` on all rows.
-3. **Review screen.** Approve/return = media; «Комментарий к упаковке»; uploaded items with «Упаковка отличается от YouTube»; the
+   `package_slot_changed`); `upload-approval` freezes `videoSha256` on all rows; "tried" by media key in `triedHashes`,
+   `blockedHashes` and `triedExceptionsOf` (§3.2).
+3. **Review screen + entry point.** Approve/return = media; «Комментарий к упаковке» on any package; the uploaded package's row in
+   «Ролики и релизы» / its slot with «Упаковка отличается от YouTube»; the
    Producer wake kind; texts in every UI language (AGENTS §H).
-4. **B2 owner apply.** `video-details` gaps (Live-writes order, `channelId`, `verifyUnchanged`); `publishing/package-metadata.ts`
+4. **B2 owner apply.** The shared comparison helper (runner + B2); `video-details` gaps (Live-writes order, `channelId`,
+   `verifyUnchanged`, description read-back rule); `publishing/package-metadata.ts`
    (preview/apply, three-way diff, refusals); owner routes; UI with per-field conflict override; thumbnail button wired to
    `video-thumbnails`.
 5. **Agents + docs.** Producer tool only if Q3 = yes; API bumps (§5); AGENTS §F, PROJECT_SPEC §21, SYSTEM_MAP, ARCHITECTURE,
@@ -278,11 +320,12 @@ Gate (B1):
 - **AC-MG-06** A return of media key K → `owner_review_returned` with its comment. A later package with a different `sha256` →
   pending (not returned). A later approval of K → ready.
 - **AC-MG-07** `packaging_comment` requires a comment and never changes any package's gate state (before = after for every item),
-  on approved, pending and uploaded items alike. It produces exactly one Producer wake file.
+  on approved, pending and uploaded items alike, gate on or off. It produces exactly one Producer wake file. Approve/return of an
+  uploaded package is still refused (`package_review_uploaded`).
 - **AC-MG-08** An approval for `V7` with sha S does not approve a package `V9` with the same sha S (exact code match), unless
   `V9` is the BL-263 recode alias of `V7` (after BL-263).
-- **AC-MG-09** Legacy decision (no `videoSha256`) for manifest M still on disk → it counts for M's media key, so a re-package of M with the
-  same mp4 stays approved. A legacy decision whose manifest is gone counts for nothing.
+- **AC-MG-09** Legacy decision (no `videoSha256`) for manifest M while M is on disk → it counts for M's media key (ready as
+  today). After M is re-packaged with the same mp4 → pending once, and a new approval then survives later re-packages.
 - **AC-MG-10** An unreadable review document → every package pending (fail closed, as AC-PR-07). A channel without the gate scans
   exactly as before.
 - **AC-MG-11** A decision written by this build keeps `manifestSha256`. A reader with BL-257's rules (simulated) sees it as an
@@ -335,6 +378,17 @@ Writer (B2):
   `changed: false`.
 - **AC-MG-34** Owner routes need the owner session and the active channel. Agents and the factory have no metadata tool. The
   Producer tool exists only on the Producer endpoint, and only if Q3 = yes.
+- **AC-MG-35** Tried by media key: a row of `V7`/S that failed (or ended `unknown_outcome`, or was cancelled after the
+  approval) → a metadata-only re-package of `V7`/S is **not** queued by the automatic upload (`tried`) and is refused by the
+  Producer's add. With every row of S cancelled before YouTube and before the owner's approval of S → it is queued (the exception).
+  An old row without a frozen `videoSha256` stays tried by its manifest hash only.
+- **AC-MG-36** Comparison rule: YouTube description = manifest description + `"\n\n"`, or with CRLF line ends, and tags in another
+  order → no difference badge, no patch field, no conflict. After an apply whose description YouTube echoes without its trailing
+  line breaks → `verified: true`.
+- **AC-MG-37** Upload row not on this computer (baseline unknown) and YouTube's title ≠ manifest title → `CONFLICT` (owner override
+  needed; the Producer surface refuses).
+- **AC-MG-38** On a channel without the review gate, the uploaded package's row in «Ролики и релизы» shows the difference and offers
+  the apply and the packaging comment. A re-packaged upload whose old manifest is gone is still listed there.
 
 ## 9. Risks
 

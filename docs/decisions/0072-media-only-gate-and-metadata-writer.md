@@ -4,8 +4,8 @@ Status: Proposed. The requirement is the owner's (PRD-REQ-0195 part B, owner TG 
 4566–4569 to the developer, «да на оба»). The design choices and the open questions in the plan's §6 await the owner.
 
 **Date:** 2026-11-16.
-- **Plan:** `docs/roadmap/plans/MEDIA_GATE_PLAN.md`, acceptance AC-MG-01..34. Backlog BL-265.
-- **Amends:** ADR 0070 §3 (what an approval covers) and §4 (decisions). Builds on ADR 0005 (write gateway), 0046/0059 (upload
+- **Plan:** `docs/roadmap/plans/MEDIA_GATE_PLAN.md`, acceptance AC-MG-01..38. Backlog BL-265.
+- **Amends:** ADR 0070 §3 (what an approval covers), §4 (decisions) and §5 (the tried exception; also BL-264). Builds on ADR 0005 (write gateway), 0046/0059 (upload
   rows), 0051 §7–§8 (upload order, upload translations), 0062 (packaged slot approval, unchanged here), 0069 (thumbnail writer,
   reused), 0071 (BL-263 video code `S<n>`, recode alias).
 - **Factory contract:** Operator bundle 2.5.45 (frozen). Every package states the mp4's `sha256` + `sizeBytes`, and only hard
@@ -28,9 +28,9 @@ read-merge-write, read-back and audit. What is missing is a package-driven path 
    `package_reviews` family gain `videoSha256` and `videoSizeBytes` and keep `manifestSha256`, so an older build reads them as
    manifest-only, which is stricter. The thumbnail is no longer part of the approval or of the gate. A package without `sha256` is
    never approvable. A different `sha256` or size is a media change, and the package is pending again. The video code must match
-   exactly, or be BL-263's recode alias. Legacy decisions count for the media key of their manifest while that manifest is still on disk.
-2. **«Вернуть» returns media; packaging gets comments.** A new decision kind `packaging_comment` (comment required) never changes the
-   gate. It wakes the Producer like any decision. Older builds drop the unknown kind. Only the owner's Web UI decides (unchanged).
+   exactly, or be BL-263's recode alias. Legacy decisions keep BL-257's meaning: one counts while its manifest is unchanged on disk, and the first re-package needs one re-approval, because no owner-written record ties them to the mp4.
+2. **«Вернуть» returns media; packaging gets comments.** A new decision kind `packaging_comment` (comment required, allowed on any
+   package of the channel, uploaded ones and gate-off channels included) never changes the gate. It wakes the Producer like any decision. Older builds drop the unknown kind. Only the owner's Web UI decides (unchanged).
 3. **Only hard limits block.** `packageProblems` splits into blocking problems (unreadable package, media integrity, channel,
    language baseline, duplicate title, factory verdict, YouTube's text/thumbnail/localization limits) and `warnings` (chapters,
    test thumbnails). Warnings are shown and block nothing (plan §3.1 table).
@@ -51,7 +51,15 @@ read-merge-write, read-back and audit. What is missing is a package-driven path 
    `publishAt` and the localization languages, then audit (`source: package_metadata`). A dry run does every read and no write.
    In `video-details` itself, Live writes move to directly before the gateway call, the snapshot gains `channelId`, and a
    `verifyUnchanged` read-back option is added.
-6. **Who.** The owner, by a click on the diff in Media → «Видео на проверку» (remote allowed). The Producer gets
+6. **"Tried" moves to the media key (amends ADR 0070 §5 and BL-264).** A row that froze `videoSha256` makes its media key tried, and
+   an older row its manifest hash. A package is tried when either key is. BL-257's exception (every row cancelled before YouTube and
+   before the approval) is evaluated per media key. Without this, a failed or `unknown_outcome` row followed by a texts-only
+   re-package would be taken by the automatic upload with no owner action.
+7. **One comparison rule** for the difference badge, the three-way check, the patch and the read-back: the runner's
+   `readBackMismatches` rule (title exact; description CR-normalised and trailing line breaks dropped; tags unordered), shared. The
+   patch sends the normalised description, and `video-details`' read-back gains the description rule. An unknown upload baseline
+   (the upload ran on the other computer) makes every differing field a conflict.
+8. **Who.** The owner, by a click on the diff on the uploaded package's row in «Ролики и релизы» or its week-plan slot, on any channel (remote allowed). The Producer gets
    `producer_video_metadata_update` (current package values only, refuses conflicts, its endpoint only) **only if the owner says
    so**. A new manifest is never applied to YouTube automatically. Worker agents and the factory get no tool. The thumbnail is
    replaced through `src/lib/video-thumbnails/` (ADR 0069). Translations of an uploaded video stay out until the owner authorizes
