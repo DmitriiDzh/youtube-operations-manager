@@ -66,6 +66,13 @@ function blocksOf(text: string): string[][] {
   return blocks;
 }
 
+/** WebVTT cue settings (W3C WebVTT §4.4): whitespace-separated `name:value` tokens of the six known names; nothing else. */
+const CUE_SETTING = /^(?:vertical|line|position|size|align|region):[^\s:]+$/;
+function validCueSettings(rest: string): boolean {
+  const tokens = rest.split(/[ \t]+/).filter((t) => t !== "");
+  return tokens.every((t) => CUE_SETTING.test(t) && !t.includes("-->"));
+}
+
 /**
  * The format check of one caption file: UTF-8 (a BOM tolerated), the extension's format and the content agree, at least one cue,
  * every timestamp valid, every end after its start, no cue ending after `durationSeconds` + 1 s (when the duration is known).
@@ -96,6 +103,7 @@ export function checkCaptionFile(bytes: Uint8Array, fileName: string, durationSe
     const parts = /^\s*(\S+)\s+-->\s+(\S+)(.*)$/.exec(timingLine);
     if (!parts) return { ok: false, detail: `cue ${cues + 1}: no timing line` };
     if (format === "srt" && parts[3].trim() !== "") return { ok: false, detail: `cue ${cues + 1}: unexpected text after the end time` };
+    if (format === "vtt" && !validCueSettings(parts[3])) return { ok: false, detail: `cue ${cues + 1}: not a WebVTT cue setting after the end time` };
     const pattern = format === "srt" ? SRT_TIME : VTT_TIME;
     const start = pattern.exec(parts[1]);
     const end = pattern.exec(parts[2]);

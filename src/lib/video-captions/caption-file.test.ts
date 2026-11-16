@@ -58,3 +58,19 @@ test("helpers: format by extension, English by primary subtag, SHA-256 hex", () 
   // SHA-256 of "abc" (FIPS 180-2 test vector).
   assert.equal(sha256Hex(enc("abc")), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
 });
+
+test("review #7 WebVTT: only cue settings (vertical/line/position/size/align/region as key:value) may follow the end time", () => {
+  const vtt = (timing: string) => checkCaptionFile(enc(`﻿WEBVTT\n\n${timing}\nHello\n`), "V27_captions.en.vtt", 10);
+  // The WebVTT cue settings (W3C WebVTT §4.4): accepted, alone or together, separated by spaces or tabs.
+  for (const settings of ["", " align:start", " align:middle line:90% position:50%,center size:80%", "\tvertical:rl\tline:-1", " region:fred align:end"]) {
+    assert.equal(vtt(`00:01.000 --> 00:03.000${settings}`).ok, true, settings);
+  }
+  // Anything else after the end time: refused.
+  for (const tail of [" Hello there", " align:", " :start", " align:start junk", " color:red", " align:start -->"]) {
+    const r = vtt(`00:01.000 --> 00:03.000${tail}`);
+    assert.equal(r.ok, false, tail);
+    assert.match(r.ok ? "" : r.detail, /cue setting/);
+  }
+  // The factory's files: an empty-name track's .vtt with a BOM and no settings stays valid.
+  assert.equal(checkCaptionFile(enc("﻿WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nx\n"), "V30_captions.en.vtt", 5).ok, true);
+});
