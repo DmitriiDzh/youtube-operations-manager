@@ -81,7 +81,17 @@ export type PlanSlotProgress = {
    * the old V still covers the package when it names the same, non-null video id. Absent: none.
    */
   recodedFrom?: string[];
+  /** BL-267 (ADR 0073 §4): the date YouTube carries that this computer did not set (the pass leaves it), else absent. */
+  foreignPublishAt?: string | null;
+  /**
+   * BL-267 (plan §3.4): the package's media and the owner's media review of it (computed with package-reviews' own rule by the
+   * composition layer, uploaded packages included). Absent: unknown -- on a gated channel nothing is dated by the template.
+   */
+  media?: { videoSha256: string | null; sizeBytes: number | null; review: PlanMediaReview };
 };
+
+/** BL-267: the owner's media review of a slot's package. `unreadable`: the review document could not be read (counts as not approved). */
+export type PlanMediaReview = "approved" | "pending" | "returned" | "not_required" | "unreadable";
 
 /** Why an agent's save was refused, one entry per problem (`validation_failed`, `details.refused`). */
 export type PlanSaveRefusal = {
@@ -236,9 +246,14 @@ export type PublishingPlansPorts = {
  * veto reaches the video a slot took over by its package (BL-242 D).
  */
 export type PlanSlotDecision =
-  | { kind: "approved"; publishAt: string; package?: PublishingPlanPackageFingerprint }
+  | { kind: "approved"; publishAt: string; package?: PublishingPlanPackageFingerprint; source?: PlanDatingSource; media?: PlanMediaKey }
   | { kind: "vetoed"; package?: PublishingPlanPackageFingerprint }
   | { kind: "pending" };
+
+/** BL-267 (ADR 0073 §3): what dated a slot -- the owner's approved week template, or his explicit one-slot date. */
+export type PlanDatingSource = "template" | "owner";
+/** BL-267 (plan §3.4): the media a date stands on (video code, the mp4's SHA-256 and size). */
+export type PlanMediaKey = { video: string; videoSha256: string; sizeBytes: number };
 
 /** BL-252 stage 2 (ADR 0068 amendment 1): one slot as cross-posting reads it -- approval, veto and release as separate facts. */
 export type SocialSlotState = {

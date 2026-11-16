@@ -607,14 +607,14 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
           } else if (slot.approval === "approved" && slot.fingerprint) {
             // R1: standing AND covering the slot's current package (the view's own rule).
             const record = standingPackageApprovalOf(decisionsForStage(ownDecisions, "packaged"), meta.timeZone, contentOf(slot))!;
-            decisions.set(slot.slotId, { kind: "approved", publishAt: slot.publishAtUtc, package: { ...slot.fingerprint } });
+            decisions.set(slot.slotId, { kind: "approved", publishAt: slot.publishAtUtc, package: { ...slot.fingerprint }, source: "owner" });
             naming.set(slot.slotId, { record, kind: "approved", package: slot.fingerprint });
           } else decisions.set(slot.slotId, { kind: "pending" });
           continue;
         }
         decisions.set(
           slot.slotId,
-          slot.released ? { kind: "pending" } : slot.vetoed ? { kind: "vetoed" } : slot.approval === "approved" ? { kind: "approved", publishAt: slot.publishAtUtc } : { kind: "pending" }
+          slot.released ? { kind: "pending" } : slot.vetoed ? { kind: "vetoed" } : slot.approval === "approved" ? { kind: "approved", publishAt: slot.publishAtUtc, source: "owner" } : { kind: "pending" }
         );
       }
     }

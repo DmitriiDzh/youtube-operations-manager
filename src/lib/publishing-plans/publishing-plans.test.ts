@@ -305,7 +305,7 @@ test("AC-WP-30/31: slot decisions for the uploads", async () => {
   await h.service.decide(CH, WEEK, { action: "approve", slots: [{ slotId: "s1", contentHash: slotOf(plan, "s1").contentHash }, { slotId: "s2", contentHash: slotOf(plan, "s2").contentHash }] }, "u1");
   await h.service.decide(CH, WEEK, { action: "veto", slots: [{ slotId: "s2" }] }, "u1");
   const decisions = await h.service.slotDecisions(CH);
-  assert.deepEqual(decisions.get("s1"), { kind: "approved", publishAt: "2026-10-26T06:00:00.000Z" }); // 15:00 JST
+  assert.deepEqual(decisions.get("s1"), { kind: "approved", publishAt: "2026-10-26T06:00:00.000Z" , source: "owner" }); // 15:00 JST
   assert.deepEqual(decisions.get("s2"), { kind: "vetoed" });
   // Review #2 changed this case: an id can no longer be saved in two weeks (see the review #2 tests); s3 is simply not approved.
   assert.deepEqual(decisions.get("s3"), { kind: "pending" }, "s3 is not approved");

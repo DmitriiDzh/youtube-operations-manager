@@ -90,7 +90,8 @@ export type UploadSteps = {
    * BL-225 stage 3 (ADR 0051 §5, §10): the last change the plan made to the video's date after the upload -- a veto removed it, an
    * approval (or a re-approval with a new time) set it. Read back before it is stored.
    */
-  planSync?: { at: string; action: "scheduled" | "unscheduled"; publishAt: string | null; result: "verified" | "mismatch" | "refused" | "video_missing"; reason?: string };
+  /** BL-267 (ADR 0073 §4): `foreign_date` -- the pass left a date this computer did not set (`youtubePublishAt`: that date). */
+  planSync?: { at: string; action: "scheduled" | "unscheduled"; publishAt: string | null; result: "verified" | "mismatch" | "refused" | "video_missing" | "foreign_date"; reason?: string; youtubePublishAt?: string | null };
   thumbnail?: "set" | "failed";
   playlist?: "added" | "already_there" | "none" | "failed";
   verify?: { result: "verified" | "mismatch"; mismatches: string[] };

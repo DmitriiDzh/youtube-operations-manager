@@ -162,7 +162,7 @@ type RowSteps = {
   playlist?: string;
   verify?: { result?: string };
   publishAt?: string;
-  planSync?: { result?: string; action?: string };
+  planSync?: { result?: string; action?: string; youtubePublishAt?: string | null };
 };
 
 const ACTIVE = new Set(["queued", "uploading", "processing", "finishing", "paused"]);
@@ -173,7 +173,7 @@ const ACTIVE = new Set(["queued", "uploading", "processing", "finishing", "pause
  * `scheduled` while its date is ahead and `published` once it passed; done without a date (uploaded before the slot was approved)
  * -> `packaged` with the video id. A cancelled row, or one released after an unknown outcome, says nothing.
  */
-export function progressOfUploadRow(row: UploadRowForProgress, nowMs: number): Pick<PlanSlotProgress, "status" | "code" | "videoId" | "publishAt"> | null {
+export function progressOfUploadRow(row: UploadRowForProgress, nowMs: number): Pick<PlanSlotProgress, "status" | "code" | "videoId" | "publishAt" | "foreignPublishAt"> | null {
   if (row.status === "cancelled" || row.errorCode === "unknown_outcome_released") return null;
   if (ACTIVE.has(row.status)) return { status: "uploading", code: null, videoId: row.videoId };
   if (row.status === "failed") return { status: "failed", code: row.errorCode ?? "failed", videoId: row.videoId };
@@ -196,6 +196,11 @@ export function progressOfUploadRow(row: UploadRowForProgress, nowMs: number): P
     : steps.planSync?.result === "refused" || steps.planSync?.result === "mismatch" || steps.planSync?.result === "video_missing" ? `plan_${steps.planSync.action ?? "change"}_failed`
     : null;
   if (failedStep) return { status: "failed", code: failedStep, videoId: row.videoId };
+  // BL-267 (ADR 0073 §4): the pass found a date this computer did not set -- shown as «дата задана вручную», never touched by it.
+  if (steps.planSync?.result === "foreign_date" && typeof steps.planSync.youtubePublishAt === "string") {
+    const at = steps.planSync.youtubePublishAt;
+    return { status: Date.parse(at) > nowMs ? "scheduled" : "published", code: null, videoId: row.videoId, publishAt: at, foreignPublishAt: at };
+  }
   // The date counts only once it is on the video: written by the upload (or an old row's insert), or by the plan afterwards.
   const onVideo = steps.publishAt === "set" || steps.publishAt === "at_insert" || (steps.planSync?.result === "verified" && steps.planSync.action === "scheduled");
   if (row.publishAt === null || !onVideo) return { status: "packaged", code: null, videoId: row.videoId };
@@ -250,7 +255,7 @@ export function progressWithUploads(
     const fromRow = progressOfUploadRow(row, nowMs);
     if (!fromRow) continue;
     const before = result.get(slotId);
-    result.set(slotId, { ...fromRow, videoId: fromRow.videoId ?? before?.videoId ?? null, publishAt: fromRow.publishAt ?? before?.publishAt ?? null, package: before?.package ?? null });
+    result.set(slotId, { ...fromRow, videoId: fromRow.videoId ?? before?.videoId ?? null, publishAt: fromRow.publishAt ?? before?.publishAt ?? null, package: before?.package ?? null, ...(before?.media ? { media: before.media } : {}) });
   }
   return result;
 }

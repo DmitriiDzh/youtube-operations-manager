@@ -131,7 +131,7 @@ test("AC-WP-46: approving a slot that replaces another vetoes that one in the sa
   assert.deepEqual(added, [["s3", "publishing_plan.approved", null], ["s1", "publishing_plan.vetoed", "s3"]]);
   const uploads = await h.service.slotDecisions(CH);
   assert.deepEqual(uploads.get("s1"), { kind: "vetoed" });
-  assert.deepEqual(uploads.get("s3"), { kind: "approved", publishAt: "2026-10-28T09:00:00.000Z" });
+  assert.deepEqual(uploads.get("s3"), { kind: "approved", publishAt: "2026-10-28T09:00:00.000Z" , source: "owner" });
 
   // Another week: n1 (2 Nov) replaces s2 (27 Oct).
   await h.service.save({ channelId: CH, weekStart: NEXT, timeZone: "Asia/Tokyo", slots: [slot("n1", "2026-11-02", "18:00", { replacesSlotId: "s2" })] }, "factory");

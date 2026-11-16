@@ -256,7 +256,7 @@ test("AC-WP-55: an approval made in the slot stage does not count in the package
   await h.service.setApprovalStage(CH, { stage: "slot" }, "u1");
   await approve(h, "s1");
   assert.equal(slotOf(await get(h), "s1").approval, "approved");
-  assert.deepEqual((await h.service.slotDecisions(CH)).get("s1"), { kind: "approved", publishAt: "2026-10-26T06:00:00.000Z" });
+  assert.deepEqual((await h.service.slotDecisions(CH)).get("s1"), { kind: "approved", publishAt: "2026-10-26T06:00:00.000Z" , source: "owner" });
 
   await h.service.setApprovalStage(CH, { stage: "packaged" }, "u1");
   h.progress.set("s1", packaged());
@@ -278,8 +278,8 @@ test("AC-WP-56: the uploads' decision for an approved packaged slot names the fi
   await approve(h, "s1");
   await approve(h, "s2");
   const decisions = await h.service.slotDecisions(CH);
-  assert.deepEqual(decisions.get("s1"), { kind: "approved", publishAt: "2026-10-26T06:00:00.000Z", package: { video: "V64", manifestSha256: AA, videoId: null } });
-  assert.deepEqual(decisions.get("s2"), { kind: "approved", publishAt: "2026-10-27T09:00:00.000Z", package: { video: "V65", manifestSha256: BB, videoId: "vid65" } });
+  assert.deepEqual(decisions.get("s1"), { kind: "approved", publishAt: "2026-10-26T06:00:00.000Z", package: { video: "V64", manifestSha256: AA, videoId: null } , source: "owner" });
+  assert.deepEqual(decisions.get("s2"), { kind: "approved", publishAt: "2026-10-27T09:00:00.000Z", package: { video: "V65", manifestSha256: BB, videoId: "vid65" } , source: "owner" });
   // R1 (re-review of BL-242): the uploads read the same package the screen does -- another manifest now, the approval counts nowhere.
   h.progress.set("s1", packaged({ manifestSha256: BB }));
   assert.deepEqual((await h.service.slotDecisions(CH)).get("s1"), { kind: "pending" });
@@ -334,7 +334,7 @@ test("AC-WP-60: the package (V73, vid1) moves from A to B and B is approved -> B
   assert.equal(slotOf(plan, "s2").approval, "approved");
   const decisions = await h.service.slotDecisions(CH);
   assert.deepEqual(decisions.get("s1"), { kind: "pending" });
-  assert.deepEqual(decisions.get("s2"), { kind: "approved", publishAt: B_TIME, package: { video: "V73", manifestSha256: AA, videoId: "vid1" } });
+  assert.deepEqual(decisions.get("s2"), { kind: "approved", publishAt: B_TIME, package: { video: "V73", manifestSha256: AA, videoId: "vid1" } , source: "owner" });
   assert.deepEqual(decisionForRow(rowOfOld, decisions), decisions.get("s2"));
 });
 
@@ -355,7 +355,7 @@ test("AC-WP-61: the package moves from X back to A -> X counts nowhere, vid1 pen
   assert.deepEqual(decisionForRow(rowOfOld, decisions), { kind: "pending" }, "nothing counts: the date stays (pending, BL-225)");
   await approve(h, "s1");
   decisions = await h.service.slotDecisions(CH);
-  assert.deepEqual(decisionForRow(rowOfOld, decisions), { kind: "approved", publishAt: A_TIME, package: { video: "V73", manifestSha256: AA, videoId: "vid1" } });
+  assert.deepEqual(decisionForRow(rowOfOld, decisions), { kind: "approved", publishAt: A_TIME, package: { video: "V73", manifestSha256: AA, videoId: "vid1" } , source: "owner" });
 });
 
 test("AC-WP-62: X approved naming vid1 and dated; an agent edits X (or the owner revokes X); the owner vetoes X -> vid1's date is removed", async () => {
@@ -396,11 +396,11 @@ test("AC-WP-63: X vetoed naming vid1, then the package moves to B and B is appro
   h.progress.set("s1", uploaded());
   await approve(h, "s1");
   let decisions = await h.service.slotDecisions(CH);
-  assert.deepEqual(decisionForRow(rowOfOld, decisions), { kind: "approved", publishAt: A_TIME, package: { video: "V73", manifestSha256: AA, videoId: "vid1" } }, "the newer approval beats the older veto");
+  assert.deepEqual(decisionForRow(rowOfOld, decisions), { kind: "approved", publishAt: A_TIME, package: { video: "V73", manifestSha256: AA, videoId: "vid1" } , source: "owner" }, "the newer approval beats the older veto");
   assert.equal(decisions.get("s2")?.kind, "vetoed", "X itself stays vetoed");
   await h.service.decide(CH, WEEK, { action: "restore", slots: [{ slotId: "s2" }] }, "u1");
   decisions = await h.service.slotDecisions(CH);
-  assert.deepEqual(decisionForRow(rowOfOld, decisions), { kind: "approved", publishAt: A_TIME, package: { video: "V73", manifestSha256: AA, videoId: "vid1" } });
+  assert.deepEqual(decisionForRow(rowOfOld, decisions), { kind: "approved", publishAt: A_TIME, package: { video: "V73", manifestSha256: AA, videoId: "vid1" } , source: "owner" });
   assert.deepEqual(decisions.get("s2"), { kind: "pending" });
 });
 
@@ -465,7 +465,7 @@ test("AC-WP-65: vid1 uploaded for A, A approved; the package moves to B, B appro
   const decisions = await h.service.slotDecisions(CH);
   assert.deepEqual(decisions.get("s1"), { kind: "vetoed" });
   const rowOfA = { slotId: "s1", videoId: "vid1", manifestSha256: AA };
-  assert.deepEqual(decisionForRow(rowOfA, decisions), { kind: "approved", publishAt: B_TIME, package: { video: "V73", manifestSha256: AA, videoId: "vid1" } }, "B keeps its date");
+  assert.deepEqual(decisionForRow(rowOfA, decisions), { kind: "approved", publishAt: B_TIME, package: { video: "V73", manifestSha256: AA, videoId: "vid1" } , source: "owner" }, "B keeps its date");
 });
 
 test("round 3 (b): the YouTube date shows on the slot whose current package names the video, not on a slot with only its upload row", async () => {

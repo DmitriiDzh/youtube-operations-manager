@@ -103,14 +103,14 @@ test("AC-RT-01: an unapproved slot moved to Tuesday 20:00 -- new time, still nee
 test("AC-RT-02: an approved, uploaded slot moved to 17:30 with approve -- approved again; the uploads date the video at 08:30Z", async () => {
   const h = await setup("vid1");
   await approve(h, "s1");
-  assert.deepEqual((await h.service.slotDecisions(CH)).get("s1"), { kind: "approved", publishAt: "2026-10-26T06:00:00.000Z", package: { video: "V64", manifestSha256: AA, videoId: "vid1" } });
+  assert.deepEqual((await h.service.slotDecisions(CH)).get("s1"), { kind: "approved", publishAt: "2026-10-26T06:00:00.000Z", package: { video: "V64", manifestSha256: AA, videoId: "vid1" } , source: "owner" });
   const { plan, approved } = await retime(h, "s1", "2026-10-26", "17:30", true);
   assert.equal(approved, true);
   const s1 = slotOf(plan, "s1");
   assert.equal(s1.approval, "approved");
   assert.equal(s1.changedAfterApproval, null);
   assert.equal(s1.contentHash, sha(["Asia/Tokyo", "2026-10-26", "2026-10-26T17:30", "≈ 10 мин", null, ["V64", AA, "vid1"]]));
-  const expected = { kind: "approved", publishAt: "2026-10-26T08:30:00.000Z", package: { video: "V64", manifestSha256: AA, videoId: "vid1" } };
+  const expected = { kind: "approved", publishAt: "2026-10-26T08:30:00.000Z", package: { video: "V64", manifestSha256: AA, videoId: "vid1" } , source: "owner" };
   const decisions = await h.service.slotDecisions(CH);
   assert.deepEqual(decisions.get("s1"), expected);
   // plan-schedule's rule for the finished upload of that video: the new time.
