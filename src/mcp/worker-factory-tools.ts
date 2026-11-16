@@ -63,6 +63,8 @@ export const WORKER_FACTORY_TOOLS: Readonly<Record<string, { agentName: string; 
   factory_localization_request_fail: { agentName: "agent_localization_request_fail", writes: true },
   factory_publishing_plan_get: { agentName: "agent_publishing_plan_get", writes: false },
   factory_publishing_plan_list: { agentName: "agent_publishing_plan_list", writes: false },
+  // BL-267 (ADR 0073 §1): the channel's week template, read-only (no propose or move tool for workers).
+  factory_publishing_template_get: { agentName: "agent_publishing_template_get", writes: false },
   // BL-235: which days ahead are covered on YouTube (video published or scheduled with every tracked translation), own channel only.
   factory_publishing_coverage: { agentName: "agent_publishing_coverage", writes: false },
   // BL-218 (stage 4, owner msg 3402 "может, как оператор"): paid work, exactly as the Operator does it -- a session the worker starts
@@ -352,6 +354,8 @@ export function pinFactoryDepsToChannel(
       save: byChannel((input) => deps().publishingPlans.save(input, "worker")),
       get: byChannel((input) => deps().publishingPlans.get(input)),
       list: byChannel((input) => deps().publishingPlans.list(input)),
+      // BL-267: the worker's own channel's week template, read-only.
+      templateGet: byChannel((input) => deps().publishingPlans.templateGet(input)),
     },
     // BL-261 / BL-263: renaming and recoding release folders are the Factory Operator's only.
     releaseFolders: { rename: refused, recode: refused },

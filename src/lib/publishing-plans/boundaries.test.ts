@@ -58,7 +58,10 @@ test("AC-WP-05: the owner's surface is used only by the Web UI's publishing-plan
 test("AC-WP-05 / AC-WP-17: the plan tools are exactly save/get/list for the Operator and the worker; only save writes", () => {
   assert.deepEqual(FACTORY_TOOL_NAMES.filter((name) => /plan_(save|get|list)$/.test(name) && name.includes("publishing")).sort(), ["factory_publishing_plan_get", "factory_publishing_plan_list", "factory_publishing_plan_save"]);
   assert.deepEqual((FACTORY_WRITE_TOOL_NAMES as readonly string[]).filter((name) => name.includes("publishing_plan")), ["factory_publishing_plan_save"]);
-  assert.deepEqual(Object.keys(MCP_TOOL_CLASSIFICATION).filter((name) => name.includes("publishing_plan")).sort(), ["agent_publishing_plan_get", "agent_publishing_plan_list", "agent_publishing_plan_save"]);
+  // BL-267 (owner TG 4630/4636, ADR 0073 §5 -- a new requirement): the Producer reads the plan and moves slots on its own endpoint
+  // (producer-only); the Operator and the workers still have exactly save/get/list (AC-WT-35/40).
+  assert.deepEqual(Object.keys(MCP_TOOL_CLASSIFICATION).filter((name) => name.includes("publishing_plan")).sort(), ["agent_publishing_plan_get", "agent_publishing_plan_list", "agent_publishing_plan_save", "producer_publishing_plan_get", "producer_publishing_plan_list", "producer_publishing_plan_move_slot"]);
+  for (const name of ["producer_publishing_plan_get", "producer_publishing_plan_list", "producer_publishing_plan_move_slot", "producer_week_template_get", "producer_week_template_propose"]) assert.equal(MCP_TOOL_CLASSIFICATION[name], "producer-only", name);
   assert.deepEqual(
     Object.entries(WORKER_FACTORY_TOOLS).filter(([name]) => name.includes("publishing_plan")).map(([name, t]) => [name, t.agentName, t.writes]).sort(),
     [

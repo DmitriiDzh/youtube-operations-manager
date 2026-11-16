@@ -90,6 +90,7 @@ function setup(initial: { enabled?: boolean } = {}) {
   const clipCalls: Array<[string, Record<string, unknown>]> = [];
   const thumbnailCalls: Array<Record<string, unknown>> = [];
   const metadataCalls: Array<Record<string, unknown>> = [];
+  const planCalls: Array<[string, unknown]> = [];
   const endpoint = createProducerMcpEndpoint({
     isConnectionEnabled: async () => state.enabled,
     verifyToken: (token) => tokens.verifyToken(token),
@@ -165,11 +166,18 @@ function setup(initial: { enabled?: boolean } = {}) {
         packageMetadata: {
           update: async (input) => (metadataCalls.push(input), { dryRun: input.dryRun === true, video: input.video, changed: false }),
         },
+        plans: {
+          templateGet: async (input) => (planCalls.push(["templateGet", input]), { template: null, proposal: null }),
+          templatePropose: async (input) => (planCalls.push(["templatePropose", input]), { template: null, proposal: null, proposed: true }),
+          get: async (input) => (planCalls.push(["get", input]), { plan: {} }),
+          list: async (input) => (planCalls.push(["list", input]), { plans: [] }),
+          move: async (input) => (planCalls.push(["move", input]), { moved: input.dryRun !== true, dryRun: input.dryRun === true }),
+        },
       };
       return createMcpServer(undefined, { connectionEnabled: true, producerSession });
     },
   });
-  return { endpoint, tokens, state, calls, refused, proposalCalls, queueCalls, clipCalls, thumbnailCalls, metadataCalls };
+  return { endpoint, tokens, state, calls, refused, proposalCalls, queueCalls, clipCalls, thumbnailCalls, metadataCalls, planCalls };
 }
 
 function rpc(body: unknown, headers: Record<string, string> = {}, method = "POST"): Request {
@@ -764,7 +772,9 @@ test("AC-PR-07 / AC-PR-10: the Producer's own tools -- its channels with their f
   // clip review get / list answers gain `attachments`; no tool added.
   // BL-255 (owner msgs 4380/4383, ADR 0069 -- the requirement changed: the owner allowed the Producer to replace an uploaded video's
   // thumbnail): 1.20.0 adds producer_video_thumbnail_replace, the permission THUMBNAIL_WRITE and thumbnailTools.
-  assert.equal(PRODUCER_API_VERSION, "1.24.0"); // 1.24.0 (BL-265, new requirement PRD-REQ-0195 B, ADR 0072): producer_video_metadata_update, METADATA_WRITE / metadataTools, calendar warnings, the media-keyed review gate; 1.23.0 (BL-263, new requirement PRD-REQ-0194, ADR 0071): S codes in the calendar, the queue tools and wake file names; 1.22.0 = PRD-REQ-0195 C (queue add after an approved, cancelled-before-approval version); 1.21.0 (BL-257, new requirement ADR 0070): calendar problem codes owner_review_pending / _returned; 1.20.0 (BL-255): producer_video_thumbnail_replace; 1.19.0 (BL-246): clip review answers carry the owner's attachments; 1.18.0 (BL-244): producer_upload_queue_cancel also stops a row being sent before its last chunk; 1.17.0 (BL-243): the calendar read's deleted_on_youtube / missingOnChannel, channel_video_list videoIds; 1.16.0 (BL-242): the add dates only the approved manifest in the packaged stage; 1.14.0 (BL-239): the upload queue tools; 1.13.0 (BL-235): the calendar read's due / gapDates from the daily coverage, published_pending; 1.12.0 (BL-221): a live sample without a count is 0 viewers; 1.10.0 (BL-209): the calendar read's uploads gain automatic / progressPercent / finishedAt; 1.8.0 (BL-182 stage 2): the calendar read lists packages and uploads
+  // BL-267 (owner TG 4569/4575/4620/4630-4636, ADR 0073 -- the requirement changed: the Producer reads the plan, proposes a week
+  // template and moves slots itself): 1.25.0 adds the five plan tools, PLAN_MOVE, planTools / planMoveTools; the propose is DRAFT.
+  assert.equal(PRODUCER_API_VERSION, "1.25.0"); // 1.24.0 (BL-265, new requirement PRD-REQ-0195 B, ADR 0072): producer_video_metadata_update, METADATA_WRITE / metadataTools, calendar warnings, the media-keyed review gate; 1.23.0 (BL-263, new requirement PRD-REQ-0194, ADR 0071): S codes in the calendar, the queue tools and wake file names; 1.22.0 = PRD-REQ-0195 C (queue add after an approved, cancelled-before-approval version); 1.21.0 (BL-257, new requirement ADR 0070): calendar problem codes owner_review_pending / _returned; 1.20.0 (BL-255): producer_video_thumbnail_replace; 1.19.0 (BL-246): clip review answers carry the owner's attachments; 1.18.0 (BL-244): producer_upload_queue_cancel also stops a row being sent before its last chunk; 1.17.0 (BL-243): the calendar read's deleted_on_youtube / missingOnChannel, channel_video_list videoIds; 1.16.0 (BL-242): the add dates only the approved manifest in the packaged stage; 1.14.0 (BL-239): the upload queue tools; 1.13.0 (BL-235): the calendar read's due / gapDates from the daily coverage, published_pending; 1.12.0 (BL-221): a live sample without a count is 0 viewers; 1.10.0 (BL-209): the calendar read's uploads gain automatic / progressPercent / finishedAt; 1.8.0 (BL-182 stage 2): the calendar read lists packages and uploads
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_stored_suggested_sources"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_publishing_calendar"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_video_comments"));
@@ -772,7 +782,9 @@ test("AC-PR-07 / AC-PR-10: the Producer's own tools -- its channels with their f
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_stored_breakdowns"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_stored_search_terms"));
   // BL-265 (ADR 0072 §8, owner TG 4578/4581): METADATA_WRITE for producer_video_metadata_update (1.24.0).
-  assert.deepEqual(capabilities.permissions, ["READ", "DRAFT", "UPLOAD_QUEUE", "THUMBNAIL_WRITE", "METADATA_WRITE"]);
+  assert.deepEqual(capabilities.permissions, ["READ", "DRAFT", "UPLOAD_QUEUE", "THUMBNAIL_WRITE", "METADATA_WRITE", "PLAN_MOVE"]);
+  assert.deepEqual(capabilities.planTools, ["producer_week_template_get", "producer_week_template_propose", "producer_publishing_plan_get", "producer_publishing_plan_list", "producer_publishing_plan_move_slot"]);
+  assert.deepEqual(capabilities.planMoveTools, ["producer_publishing_plan_move_slot"]);
   assert.deepEqual(capabilities.thumbnailTools, ["producer_video_thumbnail_replace"]);
   assert.deepEqual(capabilities.metadataTools, ["producer_video_metadata_update"]);
   assert.deepEqual([...PRODUCER_THUMBNAIL_TOOLS], ["producer_video_thumbnail_replace"]);
@@ -780,8 +792,8 @@ test("AC-PR-07 / AC-PR-10: the Producer's own tools -- its channels with their f
   assert.deepEqual([...PRODUCER_UPLOAD_QUEUE_TOOLS], ["producer_upload_queue_list", "producer_upload_queue_add", "producer_upload_queue_move", "producer_upload_queue_cancel"]);
   assert.deepEqual(capabilities.clipReviewTools, ["producer_clip_review_submit", "producer_clip_review_list", "producer_clip_review_get", "producer_clip_review_withdraw"]);
   assert.deepEqual([...PRODUCER_CLIP_REVIEW_TOOLS], ["producer_clip_review_submit", "producer_clip_review_list", "producer_clip_review_get", "producer_clip_review_withdraw"]);
-  assert.deepEqual(capabilities.draftTools, ["producer_propose", "producer_mark_proposals_done", "create_experiment_proposal", "producer_clip_review_submit", "producer_clip_review_withdraw"]);
-  assert.deepEqual([...PRODUCER_DRAFT_TOOLS], ["producer_propose", "producer_mark_proposals_done", "create_experiment_proposal", "producer_clip_review_submit", "producer_clip_review_withdraw"]);
+  assert.deepEqual(capabilities.draftTools, ["producer_propose", "producer_mark_proposals_done", "create_experiment_proposal", "producer_clip_review_submit", "producer_clip_review_withdraw", "producer_week_template_propose"]);
+  assert.deepEqual([...PRODUCER_DRAFT_TOOLS], ["producer_propose", "producer_mark_proposals_done", "create_experiment_proposal", "producer_clip_review_submit", "producer_clip_review_withdraw", "producer_week_template_propose"]);
   assert.deepEqual([...(capabilities.tools as string[])].sort(), [...PRODUCER_TOOL_NAMES].sort());
   assert.deepEqual(calls.map((entry) => [entry.tool, entry.channelId]), [
     ["producer_list_channels", null],
@@ -819,6 +831,7 @@ test("a token revoked mid-session is refused on its next call, before any channe
       clipReviews: { submit: async () => ({}), withdraw: async () => ({}), list: async () => ({}), get: async () => ({}) },
       thumbnails: { replace: async () => ({}) },
       packageMetadata: { update: async () => ({}) },
+      plans: { templateGet: async () => ({}), templatePropose: async () => ({}), get: async () => ({}), list: async () => ({}), move: async () => ({}) },
     },
   });
   const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<{ isError?: boolean }> }> })._registeredTools;
@@ -1008,6 +1021,7 @@ test("BL-163 AC-PR-05: no approve, reject or apply tool exists on any endpoint",
       clipReviews: { submit: async () => ({}), withdraw: async () => ({}), list: async () => ({}), get: async () => ({}) },
       thumbnails: { replace: async () => ({}) },
       packageMetadata: { update: async () => ({}) },
+      plans: { templateGet: async () => ({}), templatePropose: async () => ({}), get: async () => ({}), list: async () => ({}), move: async () => ({}) },
     },
   });
   const agent = createMcpServer(undefined, { connectionEnabled: true, agentSession: { tokenId: "t", channelId: "UC_PR_X", async reverify() {} } });
@@ -1193,4 +1207,23 @@ test("BL-265 AC-MG-34: producer_video_metadata_update reaches only the session's
   }
   assert.deepEqual(metadataCalls, [args, pinned]);
   assert.deepEqual([calls[0].tool, calls[0].channelId, calls[0].outcome], ["producer_video_metadata_update", "UC_PR_X", "ok"]);
+});
+
+// BL-267 (WEEK_TEMPLATE_PLAN.md §3.10, AC-WT-34/40; ADR 0073 §5): the Producer's plan tools reach only the session's `plans`; the move
+// takes a strict input (no extra field such as approve), passes dryRun through and is logged per call.
+test("BL-267 AC-WT-40: producer plan tools reach the session's plans only; strict move input; logged", async () => {
+  const { endpoint, tokens, planCalls, calls } = setup();
+  const token = (await tokens.issueToken({})).token;
+  const move = { channelId: "UC_PR_X", slotId: "L", contentHash: "a".repeat(64), toWeekStart: "2026-11-30", date: "2026-12-03", publishAt: "2026-12-03T00:00", dryRun: true };
+  const result = await toolResult(await endpoint.handle(rpc(call("producer_publishing_plan_move_slot", move), bearer(token))));
+  assert.equal(result.isError, false);
+  assert.deepEqual(planCalls[0], ["move", move]);
+  for (const bad of [{ ...move, approve: true }, { ...move, contentHash: "x" }]) {
+    const refusedResult = await toolResult(await endpoint.handle(rpc(call("producer_publishing_plan_move_slot", bad), bearer(token))));
+    assert.equal(refusedResult.isError, true, JSON.stringify(bad));
+  }
+  await toolResult(await endpoint.handle(rpc(call("producer_week_template_get", { channelId: "UC_PR_X" }), bearer(token))));
+  assert.deepEqual(planCalls.at(-1), ["templateGet", { channelId: "UC_PR_X" }]);
+  assert.equal(planCalls.length, 2, "refused inputs never reach the session");
+  assert.ok(calls.some((c) => c.tool === "producer_publishing_plan_move_slot" && c.outcome === "ok"));
 });

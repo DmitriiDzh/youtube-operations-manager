@@ -20,6 +20,7 @@ import { createLiveAnalyticsCore } from "@/lib/live-analytics";
 import { createPackageMetadataCore, createUploadQueueControlCore, type SlotDecision } from "@/lib/publishing";
 import { createClipReviewsProducerCore } from "@/lib/clip-reviews";
 import type { ProducerMcpSession } from "./index";
+import type { PublishingPlansProducerSurface } from "@/lib/publishing-plans";
 
 // BL-161 / BL-166: the real deps of a Producer session -- what `src/app/api/mcp/producer/route.ts` hands the MCP server. Kept here,
 // not in the route file (a route may only export its handlers), so the wiring is tested on a real database
@@ -41,7 +42,7 @@ const resolveChannelUser = resolveConnectedChannelUser;
  */
 export function createProducerSessionDeps(
   session: ProducerMcpSession,
-  options: { slotDecisions?: (channelId: string) => Promise<Map<string, SlotDecision>> } = {}
+  options: { slotDecisions?: (channelId: string) => Promise<Map<string, SlotDecision>>; publishingPlans?: () => PublishingPlansProducerSurface } = {}
 ): ProducerSession {
   const portfolio = createPortfolioOverviewServices({
     listChannels,
@@ -106,6 +107,10 @@ export function createProducerSessionDeps(
   // endpoint (no-agent-upload-tool.test.ts). "Connected here" is the Producer's own rule (Settings → Channels).
   const queue = () => createUploadQueueControlCore({ channelUser: resolveChannelUser, ...(options.slotDecisions ? { slotDecisions: options.slotDecisions } : {}) });
   const producer = { kind: "producer" as const, tokenId: session.tokenId };
+  const plansOf = (): PublishingPlansProducerSurface => {
+    if (!options.publishingPlans) throw new Error("The weekly plan is not wired to this Producer session.");
+    return options.publishingPlans();
+  };
   return {
     tokenId: session.tokenId,
     reverify: () => session.reverify(),
@@ -146,6 +151,18 @@ export function createProducerSessionDeps(
                 { kind: "producer" }
               )),
             },
+    },
+    // BL-267 (ADR 0073 §5, owner TG 4630/4636): the weekly plan -- reads, the template proposal and the immediate move; the only
+    // wiring of the plan's Producer surface to an MCP endpoint (no approve, veto or template decision is reachable).
+    plans: {
+      templateGet: async (input) => ({ ...(await plansOf().templateGet(input.channelId)) }),
+      templatePropose: async (input) => ({ ...(await plansOf().templatePropose(input.channelId, input.template)) }),
+      get: async (input) => ({ ...(await plansOf().get(input)) }),
+      list: async (input) => ({ ...(await plansOf().list(input)) }),
+      move: async (input) => {
+        const { channelId, ...rest } = input;
+        return { ...(await plansOf().move(channelId, rest)) };
+      },
     },
     // BL-241 (ADR 0061): the clips for review -- the module's Producer surface only (submit, withdraw, list, get); the owner's
     // decision is reachable only from the Web UI's clip-review routes (clip-reviews/boundaries.test.ts).

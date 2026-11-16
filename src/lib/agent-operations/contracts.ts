@@ -128,7 +128,9 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // Factory Operator's: validation_failed reason s_codes_factory_only). Additive.
 // 4.22.0 (BL-265, PRD-REQ-0195 B, ADR 0072): agent_get_publishing_calendar's packages and the plan's packages gain `warnings` (codes
 // that never block); the review gate's owner_review_* codes now follow the video (mp4), not the manifest. Additive.
-export const AGENT_API_VERSION = "4.22.0";
+// 4.23.0 (BL-267, ADR 0073): agent_publishing_template_get (READ, as factory_publishing_template_get 1.52.0); plan slots gain dating /
+// foreignPublishAt / movedFrom; agent_publishing_plan_save refuses slot_dated. Additive.
+export const AGENT_API_VERSION = "4.23.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry

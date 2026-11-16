@@ -94,6 +94,8 @@ import {
   PRODUCER_UPLOAD_QUEUE_TOOLS,
   PRODUCER_CLIP_REVIEW_TOOLS,
   PRODUCER_THUMBNAIL_TOOLS,
+  PRODUCER_PLAN_TOOLS,
+  PRODUCER_PLAN_MOVE_TOOLS,
   PRODUCER_METADATA_TOOLS,
 } from "./producer-tools";
 import { listProducerProposalsInputSchema, markProposalsDoneInputSchema, submitProducerProposalInputSchema } from "@/lib/agent-proposals/schemas";
@@ -542,6 +544,17 @@ export type ProducerSession = {
   packageMetadata: {
     update(input: { channelId: string; video: string; dryRun?: boolean; expectedManifestSha256?: string }): Promise<Record<string, unknown>>;
   };
+  /**
+   * BL-267 (ADR 0073 §5, owner TG 4630/4636): the weekly plan's Producer surface (`session-deps.ts` wires the composition's): the
+   * template read and proposal, plan reads, and the immediate move. No approve, veto or template decision.
+   */
+  plans: {
+    templateGet(input: { channelId: string }): Promise<Record<string, unknown>>;
+    templatePropose(input: { channelId: string; template: unknown }): Promise<Record<string, unknown>>;
+    get(input: { channelId: string; weekStart: string }): Promise<Record<string, unknown>>;
+    list(input: { channelId: string; limit?: number }): Promise<Record<string, unknown>>;
+    move(input: { channelId: string; slotId: string; contentHash: string; toWeekStart: string; date: string; publishAt: string; dryRun?: boolean }): Promise<Record<string, unknown>>;
+  };
 };
 
 /** A real calendar date as YYYY-MM-DD (`calendarDateSchema`, shared with the analytics module's tool inputs). */
@@ -618,6 +631,23 @@ export const producerUploadQueueMoveInputSchema = z
   .strict();
 export const producerUploadQueueCancelInputSchema = z.object({ channelId: producerQueueChannelId, uploadId: producerQueueUploadId }).strict();
 // BL-255 (ADR 0069): the thumbnail writer's input; every rule (path under 04 Videos/, image, size) is checked again by the module.
+// BL-267 (ADR 0073 §5, plan §3.10): the Producer's weekly-plan tools.
+export const producerTemplateGetInputSchema = z.object({ channelId: producerQueueChannelId }).strict();
+export const producerTemplateProposeInputSchema = z.object({ channelId: producerQueueChannelId, template: z.record(z.string(), z.unknown()).describe("A week-template/1 object (format, channelId, horizonWeeks, displayTimeZone?, days).") }).strict();
+export const producerPlanGetInputSchema = z.object({ channelId: producerQueueChannelId, weekStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }).strict();
+export const producerPlanListInputSchema = z.object({ channelId: producerQueueChannelId, limit: z.number().int().min(1).max(52).optional() }).strict();
+export const producerPlanMoveInputSchema = z
+  .object({
+    channelId: producerQueueChannelId,
+    slotId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/),
+    contentHash: z.string().regex(/^[0-9a-f]{64}$/).describe("The slot's contentHash as producer_publishing_plan_get showed it."),
+    toWeekStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe("The target week's Monday."),
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    publishAt: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/).describe("Local wall time in the target plan's zone (the source plan's zone when the target week has no plan)."),
+    dryRun: z.boolean().optional(),
+  })
+  .strict();
+
 export const producerVideoThumbnailReplaceInputSchema = z
   .object({
     channelId: producerQueueChannelId,
@@ -3127,14 +3157,14 @@ export function createMcpServer(
     "producer_get_capabilities",
     {
       description:
-        "The Producer role's own report: its API version, its permissions (READ; DRAFT for its proposals only; UPLOAD_QUEUE for this computer's upload queue) and the tools it can call. Every channel tool needs `channelId` -- one of producer_list_channels -- and answers with `forChannelId`. No tool here writes to YouTube or spends money by itself: the DRAFT tools (draftTools) store a proposal or mark one read, and a proposal changes nothing until the owner approves it in YT Manager; the UPLOAD_QUEUE tools (uploadQueueTools) list, order, cancel and add rows of this computer's upload queue -- the app's own uploader then uploads a queued row as private, with its identity check, and only while the owner's Live writes switch is on; a date comes only from a weekly-plan slot the owner approved. The clip review tools (clipReviewTools) submit a clip already in a channel's folder for the owner to watch, and read his answer: only the owner approves or returns a clip, in YT Manager. THUMBNAIL_WRITE (thumbnailTools, since 1.20.0): producer_video_thumbnail_replace writes a video's custom thumbnail on YouTube (owner's decision, any video of a connected channel), with backup, identity check, Live writes, read-back and audit. METADATA_WRITE (metadataTools, since 1.24.0): producer_video_metadata_update writes an uploaded video's title / description / tags from its package's current manifest, refusing any conflict, with the same safety steps. These two are the only YouTube writes a Producer tool makes itself.",
+        "The Producer role's own report: its API version, its permissions (READ; DRAFT for its proposals only; UPLOAD_QUEUE for this computer's upload queue) and the tools it can call. Every channel tool needs `channelId` -- one of producer_list_channels -- and answers with `forChannelId`. No tool here writes to YouTube or spends money by itself: the DRAFT tools (draftTools) store a proposal or mark one read, and a proposal changes nothing until the owner approves it in YT Manager; the UPLOAD_QUEUE tools (uploadQueueTools) list, order, cancel and add rows of this computer's upload queue -- the app's own uploader then uploads a queued row as private, with its identity check, and only while the owner's Live writes switch is on; a date comes only from a weekly-plan slot the owner approved. The clip review tools (clipReviewTools) submit a clip already in a channel's folder for the owner to watch, and read his answer: only the owner approves or returns a clip, in YT Manager. THUMBNAIL_WRITE (thumbnailTools, since 1.20.0): producer_video_thumbnail_replace writes a video's custom thumbnail on YouTube (owner's decision, any video of a connected channel), with backup, identity check, Live writes, read-back and audit. METADATA_WRITE (metadataTools, since 1.24.0): producer_video_metadata_update writes an uploaded video's title / description / tags from its package's current manifest, refusing any conflict, with the same safety steps. PLAN_MOVE (planMoveTools, since 1.25.0): producer_publishing_plan_move_slot moves a weekly-plan slot anywhere at once and, for a video already dated, writes the new date on YouTube with the same safety steps. These three are the only YouTube writes a Producer tool makes itself; producer_week_template_propose is a DRAFT the owner decides.",
       inputSchema: z.object({}).strict(),
     },
     async () =>
       toolSuccessResult({
         role: "producer",
         producerApiVersion: PRODUCER_API_VERSION,
-        permissions: ["READ", "DRAFT", "UPLOAD_QUEUE", "THUMBNAIL_WRITE", "METADATA_WRITE"],
+        permissions: ["READ", "DRAFT", "UPLOAD_QUEUE", "THUMBNAIL_WRITE", "METADATA_WRITE", "PLAN_MOVE"],
         channelRequired: true,
         tools: [...PRODUCER_TOOL_NAMES],
         draftTools: [...PRODUCER_DRAFT_TOOLS],
@@ -3142,6 +3172,8 @@ export function createMcpServer(
         clipReviewTools: [...PRODUCER_CLIP_REVIEW_TOOLS],
         thumbnailTools: [...PRODUCER_THUMBNAIL_TOOLS],
         metadataTools: [...PRODUCER_METADATA_TOOLS],
+        planTools: [...PRODUCER_PLAN_TOOLS],
+        planMoveTools: [...PRODUCER_PLAN_MOVE_TOOLS],
       })
   );
 
@@ -3275,6 +3307,56 @@ export function createMcpServer(
       inputSchema: producerVideoThumbnailReplaceInputSchema,
     },
     async (args: z.infer<typeof producerVideoThumbnailReplaceInputSchema>) => toolSuccessResult(await producerSession!.thumbnails.replace(args))
+  );
+
+  // BL-267 (ADR 0073 §5, plan §3.10; owner TG 4630/4636): the weekly plan -- the session's `plans` only.
+  registerTool(
+    "producer_week_template_get",
+    {
+      description:
+        "A channel's week template (1.25.0): { channelId } -> { template (the one in force, week-template/1: format, channelId, versionId, contentHash, horizonWeeks, displayTimeZone, days: { mon..sun: [{ kind: long | short, hours?, publishTimeUtc 'HH:MM' }] }) | null, proposal (your newest proposal the owner has not decided) | null, matchRules: { shortMaxSeconds: 180, hoursTolerance: 0.1, time: exact_minute_utc, position: first_created } }. Times and weekdays are UTC; displayTimeZone is for display only. A slot whose UTC weekday and exact minute match an entry, whose package fits its kind (short <= 180 s; long with hours within ±10 %), whose package is ready or uploaded and (on a channel whose owner reviews its packages) whose media the owner approved, gets its date from the template; two slots of one kind on one position: the first created takes it. Read-only.",
+      inputSchema: producerTemplateGetInputSchema,
+    },
+    async (args: z.infer<typeof producerTemplateGetInputSchema>) => toolSuccessResult(await producerSession!.plans.templateGet(args))
+  );
+
+  registerTool(
+    "producer_week_template_propose",
+    {
+      description:
+        "Propose a week template for a channel (1.25.0, DRAFT): { channelId, template: week-template/1 { format: 'week-template/1', channelId (the same), horizonWeeks (1-8), displayTimeZone? (IANA), days: { mon..sun?: [{ kind: long | short, hours? (long only, 0.25-12 in steps of 0.25), publishTimeUtc ('HH:MM' UTC, minutes a multiple of 5) }] (at most 6 a day) } } } -> the same answer as producer_week_template_get, plus proposed (false: the same as in force or as your pending proposal -- nothing written). Nothing is dated by a proposal: only the owner accepts, edits or rejects it in YT Manager (Контент → План → Шаблон недели). Errors: validation_failed (details.refused: [{ field, reason: unknown_field | invalid | channel_mismatch | time_zone_invalid | hours_on_short | hours_invalid | time_invalid | too_many_entries | template_duplicate_entry | horizon_invalid }]), publishing_plan_channel_unavailable.",
+      inputSchema: producerTemplateProposeInputSchema,
+    },
+    async (args: z.infer<typeof producerTemplateProposeInputSchema>) => toolSuccessResult(await producerSession!.plans.templatePropose(args))
+  );
+
+  registerTool(
+    "producer_publishing_plan_get",
+    {
+      description:
+        "One weekly publishing plan of a channel with every slot (1.25.0): { channelId, weekStart } -> { plan } as factory_publishing_plan_get: each slot carries contentHash (pass it to producer_publishing_plan_move_slot), dating { source: template | owner | null, state: dated | will_date | on_template_awaiting_package | awaiting_media_review | off_template | position_taken | foreign_date | vetoed | released, position?, heldBy? }, foreignPublishAt (a date YouTube carries that this computer did not set), movedFrom, youtubePublishAt, package, status. Read-only.",
+      inputSchema: producerPlanGetInputSchema,
+    },
+    async (args: z.infer<typeof producerPlanGetInputSchema>) => toolSuccessResult(await producerSession!.plans.get(args))
+  );
+
+  registerTool(
+    "producer_publishing_plan_list",
+    {
+      description: "A channel's weekly publishing plans, newest week first (1.25.0): { channelId, limit? (1-52, default 12) } -> { plans: [the plan's fields without slots] }. Read-only.",
+      inputSchema: producerPlanListInputSchema,
+    },
+    async (args: z.infer<typeof producerPlanListInputSchema>) => toolSuccessResult(await producerSession!.plans.list(args))
+  );
+
+  registerTool(
+    "producer_publishing_plan_move_slot",
+    {
+      description:
+        "Move a slot of a channel's weekly plan to any day, time or week (1.25.0, PLAN_MOVE) -- on or off the template, keeping its slot id, the package that names it and its media review. Immediate: it does not wait for the owner. When the slot's video already has a date on YouTube, the new date is written at once (this computer's finished upload row of the video, the channel identity check, a backup, the owner's Live writes switch immediately before videos.update, a read-back, audited with actor producer); it may change a date set by hand in Studio. A move never gives a first date: an undated slot only changes position, and the template rule decides whether it gets one. A dated video moved off the template keeps its new date. Input: channelId, slotId, contentHash (as producer_publishing_plan_get showed it), toWeekStart (a Monday), date, publishAt (local wall time in the target plan's zone), dryRun? (true: every check and read, nothing written). Returns { plan (the target week, null on dryRun), moved, dryRun, from, to { weekStart, date, publishAt, publishAtUtc, timeZone }, youtube: { effect: moves | plan_only | none, previous, result?: verified | failed, reason?, publishAt? } } and forChannelId. A failed YouTube write leaves the plan moved and reports youtube.result failed; moving to the same place again retries it. Errors: publishing_plan_slot_not_found, publishing_plan_slot_vetoed, publishing_plan_slot_past, publishing_plan_changed (stale contentHash), publishing_plan_already_published (the video is public or unlisted), publishing_plan_slot_too_soon (the slot or its date within 15 minutes), publishing_plan_move_not_here (a dated video with no finished upload here: move it on the computer that uploaded it), publishing_plan_move_youtube_unavailable (Live writes or Data API reads off), validation_failed (details.refused: toWeekStart / date / publishAt with week_start_not_monday | date_invalid | outside_week | publish_at_invalid | date_mismatch | in_past (less than 30 minutes ahead) | beyond_horizon (more than 52 weeks) | too_many_slots), publishing_plan_channel_unavailable.",
+      inputSchema: producerPlanMoveInputSchema,
+    },
+    async (args: z.infer<typeof producerPlanMoveInputSchema>) => toolSuccessResult(await producerSession!.plans.move(args))
   );
 
   // BL-265 (ADR 0072 §5, §8; owner TG 4578/4581): fix an uploaded video's packaging from its package -- the session's `packageMetadata` only.
