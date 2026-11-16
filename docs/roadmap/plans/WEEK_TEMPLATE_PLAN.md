@@ -31,7 +31,7 @@ reserved for the «Видео» tab redesign** (not in this plan).
 | `src/lib/publishing-plans/model.ts` `slotViewOf`, `standingPackageApprovalOf`, `fingerprintCovers` | A slot is `approved` only through an owner decision whose hash names the slot content plus the package fingerprint `[video, manifestSha256, videoId]` (ADR 0062). | A1: template match replaces the per-slot decision as the normal path. |
 | `services.ts` `slotDecisions` (l. 576) | The uploads' single source: `approved {publishAt, package}` / `vetoed` / `pending`. Consumed by `auto-upload.ts` l. 148, `upload-runner.ts` l. 559 and l. 839–846, `plan-schedule.ts` `decisionForRow`. | The one place the new rule plugs in (§3.4). |
 | `slot-decision.ts` `approvalNamesUpload` | An approval dates an upload only when its manifest SHA-256 (and video id) match. | After BL-265 a packaging-only re-package changes the manifest hash; a template date must bind to the media / video id (§3.4). |
-| `plan-schedule.ts` `desiredDate`, `change()` | Trusts the row's own `publishAt`; `change()` writes whenever YouTube's date differs from the wanted one. | **Risk today:** a date the owner set in Studio (V11/V18, 2026-11-16) is overwritten when its slot carries a standing approval at another time. §3.5 closes this first (stage 1). |
+| `plan-schedule.ts` `desiredDate`, `change()` | `desiredDate` (l. 92–105) compares the slot's approved time with `row.publishAt` (the date this row last wrote), not with YouTube's current date; `change()` then writes the wanted date over whatever YouTube has. | **Narrow risk today:** a hand-set Studio date is left alone while the slot's approval stays the same; it is overwritten only when a slot approval with a different time appears (re-approval or retime), or removed by a veto. A public video is refused by `change()` anyway (V11 is now public). §3.5 (stage 1) closes the gap. |
 | `services.ts` `save` (l. 140) | Refuses `slot_id_in_other_week`, `outside_week`; `slot_approved` / `unlocked` rules for approved slots. | A5 (move tool); a dated slot must not be re-timed by the Operator/worker (§3.7). |
 | `services.ts` `retime` (l. 460, ADR 0051 Am. 1) | Owner moves a slot within its week; refuses `outside_week`; `approve` flag. | A5: across weeks; `approve` is replaced by the template rule / explicit date (§3.6). |
 | `services.ts` `decideLocked` | Approve the week (many slots) or one slot; ADR 0060 §4: approving a replacing slot vetoes the replaced one. | A4: no bulk. Template dates have no owner event, so the implied veto needs a rule (§3.8). |
@@ -154,10 +154,13 @@ date step or the last `planSync`, equals YouTube's current date (read just befor
   removed; recorded once as `planSync.result: "foreign_date"` and shown on the slot as «дата задана вручную: …». This also covers
   V11/V18. It applies to every source, explicit approvals included, and is independent of the template.
 
-**It goes live only with the branch's one merge** (AGENTS.md §K.1), not at stage 1. Until then the risk stands on dev: per
-`desiredDate` / `change()`, a slot with a standing approval at a time other than a hand-set Studio date — for example the owner
-re-approving or retiming V11/V18's slot — overwrites that date on the next pass (≤ 1 min). §7 O11 asks whether to split this
-rule into its own small branch merged ahead.
+**Motivation and timing.** `desiredDate` compares the slot's approved time with `row.publishAt` — the date this row last wrote —
+not with YouTube's current date. So today a date set by hand in Studio is **not** overwritten on the next pass while the slot's
+approval stays the same. It is overwritten only when a slot approval with a different time appears (a re-approval or a retime:
+`change()` then writes over whatever YouTube has), and removed when a veto lands. A video already public is refused by `change()`
+(V11 is now public). Under the template, new time sources appear (a template match, a move by the Producer), so the plan must check
+YouTube's actual date itself. The rule goes live with the branch's one merge (AGENTS.md §K.1); stage 1 stays. No early merge is
+needed (§7 O11).
 
 ### 3.6 Slots off the template, and the owner's explicit actions
 
@@ -290,8 +293,9 @@ if another branch takes a bump first.
 - **O9** Approve the §F text in ADR 0073.
 - **O10** Should the template + media approval also authorize the package's social posts (`crossPost`)? Recommended: no for now —
   posts only for slots he dated explicitly (§3.8); otherwise captions he never saw go out.
-- **O11** Split the owned-date rule (§3.5) into its own small branch merged before BL-267, so V11/V18-like Studio dates are
-  protected now? Recommended: yes.
+- **O11** Split the owned-date rule (§3.5) into its own branch merged before BL-267? Recommended: no, no urgency. Today a
+  hand-set date is touched only by a re-approval / retime at another time or a veto of its slot; V11 is public (refused anyway),
+  and the owner was told not to retime or veto V18. It ships as stage 1 with the merge.
 
 **Producer**
 - **P1** `timezone` becomes `displayTimeZone` (display only), times are `publishTimeUtc`; `horizonWeeks` is informational. OK?
@@ -309,7 +313,7 @@ if another branch takes a bump first.
 
 0. **Plan + ADR 0073** (this commit).
 1. **Owned-date rule** (§3.5) in `plan-schedule.ts` (`foreign_date`), the slot's «дата задана вручную»; `SlotDecision.source`
-   with today's decisions as `owner`. No template yet. Live only with the merge, unless the owner splits it out ahead (§7 O11).
+   with today's decisions as `owner`. No template yet. Live with the merge (§7 O11: no early merge needed).
 2. **Template storage + model:** sync-family maps (immutable versions, decisions, conflict-merge reader), `template.ts` (strict
    schema, matcher, positions), owner services (save+approve, accept, reject, withdraw), audit, Producer wake; no date effect yet.
 3. **Date rule:** `publishing-plan-progress` adds the media key + `mediaReview` (§3.4); `slotDecisions` template source with the
@@ -427,7 +431,7 @@ Other consumers:
 ## 11. Deploy effects
 
 - After the merge and restart: per-slot approve buttons are gone; channels without an approved template get dates only from his
-  explicit «Дать дату вне шаблона»; existing dates stay (the owned-date rule goes live with this merge, or earlier if split out, §7 O11).
+  explicit «Дать дату вне шаблона»; existing dates stay (the owned-date rule goes live with this merge).
 - The owner then sets up the templates (WWE, Tropico, Japan) or accepts the Producer's proposals; dates appear on the next
   plan-schedule pass (≤ 1 min) for matching, media-approved, uploaded videos and with the next automatic upload otherwise.
 - Operator bundle 2.5.46 and the Producer pin the new API versions; Windows updates together with the Mac.

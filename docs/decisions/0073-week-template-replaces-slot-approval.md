@@ -19,8 +19,10 @@ The owner approves every weekly-plan slot (ADR 0051, then once per packaged vide
 at once by mistake and retimed two Shorts to the wrong day, and he set V11/V18 dates by hand in Studio. He wants to decide the
 *shape* of a channel's week once and edit it himself; the media review (BL-257/265) stays his per-video check. The Producer must be
 able to move a slot to another week, also an uploaded one, which `save` (`slot_id_in_other_week`) and the owner's retime
-(`outside_week`) refuse today. Separately, `plan-schedule` writes a slot's time over any YouTube date that differs, so a date set in
-Studio can be overwritten while a standing approval names another time.
+(`outside_week`) refuse today. Separately, `plan-schedule`'s `desiredDate` compares the slot's approved time with the date its own upload
+row last wrote, not with YouTube's current date: a date set by hand in Studio is left alone while the slot's approval stays the
+same, but is overwritten when an approval with a different time appears (re-approval, retime) and removed by a veto (a public
+video is refused anyway). Template matches and Producer moves add new time sources, so the plan must check YouTube's actual date.
 
 ## Decision
 
@@ -40,7 +42,7 @@ Studio can be overwritten while a standing approval names another time.
    condition reaches the plan module through the `publishing-plan-progress` port (`mediaReview`, computed with `package-reviews`
    for uploaded packages too; unreadable = not approved). Week approval and every bulk approve go away. A veto wins over both.
    Social posts stay on an explicit owner decision (ADR 0068 Am. 1); a template date posts nothing (plan §7 O10).
-4. **Owned-date rule (stage 1 of the branch; live with the merge unless split out ahead, plan §7 O11).** The plan moves or removes a YouTube date only when it equals the date this computer's upload
+4. **Owned-date rule (stage 1 of the branch; live with the merge, no early merge needed, plan §7 O11).** The plan moves or removes a YouTube date only when it equals the date this computer's upload
    row itself set; any other date is foreign — never moved or removed, shown as «дата задана вручную». A template change only gives
    first dates; it never moves or removes one.
 5. **Moving a slot, also across weeks**, keeps its id: one Automerge change (delete the old key, put the new one, `movedFrom`);
