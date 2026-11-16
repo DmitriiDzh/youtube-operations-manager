@@ -259,14 +259,18 @@ test("AC-CAP-27 the attempt mark is saved before the insert and handed to the re
 
 test("pending (YouTube still syncing) is read again later with the track as ours, then decided", async () => {
   const owns: Array<Array<{ trackId: string }>> = [];
+  const adopts: unknown[] = [];
   let calls = 0;
-  const h = harness(row(PKG), async (args) => {
+  const h = harness(row(PKG, { captionsAttempt: { at: NOW.toISOString(), trackIdsBefore: [] } }), async (args) => {
     owns.push(args.ownTracks);
+    adopts.push(args.adoptAfterAttempt);
     calls += 1;
     return calls === 1 ? { outcome: "pending", trackId: "T1", trackName: "", detail: "syncing" } : { outcome: "already_present", trackId: "T1", trackName: "", detail: null };
   });
   await h.runAll();
   assert.deepEqual(owns, [[], [{ trackId: "T1", sha256: CAPTIONS.sha256 }]]);
+  // The first pass may adopt (a mark is there); once the track is known it is ours by id, never adopted again.
+  assert.deepEqual(adopts, [{ trackIdsBefore: [] }, null]);
   assert.deepEqual([h.steps().captions, h.steps().captionsRereads, h.steps().publishAt], ["already_present", 1, "set"]);
 });
 

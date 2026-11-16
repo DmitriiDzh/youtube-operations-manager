@@ -146,15 +146,26 @@ test("AC-CAP-37 / AC-CAP-47 after a verified write the record lists the track (s
   const h = harness({ answer: result({ mode: "update", trackId: "F1", trackName: "Mine" }) });
   const r = await h.service.apply("UC_wwe", { video: "V27", overwrite: true }, producer);
   assert.deepEqual(h.recorded, [
-    { path: `${FOUND.folder}/V27_youtube.json`, entry: { trackId: "F1", language: "en", name: "Mine", sha256: SHA, at: "2026-11-17T12:00:00.000Z", by: "producer" } },
+    { path: `${FOUND.folder}/V27_youtube.json`, entry: { trackId: "F1", language: "en", name: "Mine", sha256: SHA, at: "2026-11-17T12:00:00.000Z", by: "producer", verified: true } },
   ]);
   assert.deepEqual([r.recorded, r.uploadStepsMarked], [true, 1]);
   // Not verified: recorded (it was written), no upload step marked.
   const unverified = harness({ answer: result({ verified: false, verificationDetail: "syncing" }) });
   const u = await unverified.service.apply("UC_wwe", { video: "V27" }, producer);
   assert.deepEqual([u.recorded, u.uploadStepsMarked, unverified.marked.length], [true, 0, 0]);
+  assert.equal((unverified.recorded[0] as { entry: { verified: boolean } }).entry.verified, false);
   // Already present as recorded: nothing rewritten.
   const present = harness({ record: [{ trackId: "T2", sha256: SHA }], answer: result({ mode: "none", written: false, alreadyPresent: true, trackId: "T2" }) });
   await present.service.apply("UC_wwe", { video: "V27" }, producer);
   assert.deepEqual(present.recorded, []);
+});
+
+test("AC-CAP-47 an unverified record entry (or a mismatched upload step) is ours but never 'already present': its sha256 is not trusted", async () => {
+  const rows = [{ status: "done", videoId: "vid27", stepsJson: JSON.stringify({ captions: "mismatch", captionsTrack: { trackId: "T1", sha256: SHA } }) }];
+  const h = harness({ rows, record: [{ trackId: "T2", sha256: SHA, verified: false }] });
+  await h.service.apply("UC_wwe", { video: "V27", overwrite: true }, producer);
+  assert.deepEqual(h.writes[0].ownTracks, [
+    { trackId: "T1", sha256: "unverified" },
+    { trackId: "T2", sha256: "unverified" },
+  ]);
 });

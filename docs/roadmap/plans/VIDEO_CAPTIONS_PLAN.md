@@ -327,3 +327,21 @@ Explicit overwrite (owner msg 4660)
 - **Format drift**: our parser is stricter than YouTube's; a file YouTube would accept may be refused (`format`) -- the Operator fixes
   it. YouTube may still fail processing (`status: failed`) → not verified, date withheld.
 - **Lost answer on the add path** leaves an unrecorded track that later looks foreign; reported as `unknown_outcome`.
+
+## 9. As built (deviations from the text above, 2026-11-17)
+
+- `captions_step_pending` refuses while **any** row of the video is active here (not only before its captions step): the runner's
+  record step rewrites `Vn_youtube.json` whole and would drop a `captions` entry written meanwhile.
+- The quota guard runs on real runs only (a dry run is not refused for quota); an `unknown` verdict is not judged (YouTube's own
+  `quotaExceeded` still pauses the runner / refuses the add path).
+- The runner passes no duration (the cues were checked against the video when the package was queued and on every re-package); the
+  add path uses the manifest's duration.
+- `syncing` after the write: one bounded re-read inside the writer, then the runner reads again up to `READ_BACK_RETRIES` times
+  (`steps.captionsRereads`) before `mismatch`.
+- The add path has no `unknown_outcome`: a lost answer leaves a track that later reads as foreign; the owner/Producer overwrite it.
+- A record entry carries `verified`; an unverified entry (or a `mismatch` upload step) is ours but its sha256 is not trusted, so an
+  explicit overwrite is retried rather than answered `already_present`.
+- A verified add/overwrite marks this computer's upload rows of the video whose captions step did not pass as `verified`
+  (`markUploadCaptionsSetLater`, like the thumbnail's), so the weekly plan may date the video.
+- The two client-side unit estimates (`publishing-packages.tsx`, `weekly-plan-panel.tsx`) do not add the 550; the server's approval
+  and pending sum do.

@@ -1521,7 +1521,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   `checksPassed` плана учитывает его. Запись `Vn_youtube.json`: `videoSha256`, `videoSizeBytes`, `captions`.
 - Уже загруженное видео: маршрут владельца `POST /api/channels/[channelId]/publishing/package-captions` (кнопки «Субтитры» →
   «Добавить» / «Перезаписать субтитры» в «Ролики и релизы») и `producer_video_captions_add` (Producer API 1.26.0, CAPTIONS_WRITE);
-  сервис `publishing/package-captions.ts`. Agent API 4.24.0, Factory API 1.53.0 (поля `captions`, коды проблем).
+  сервис `publishing/package-captions.ts`. Agent API 4.24.0, Factory API 1.53.0 (поля `captions`, коды проблем; `docs/interfaces.md`).
 
 ### 2.9bl Замена обложки загруженного видео (BL-255, ADR 0069) — **IMPLEMENTED** (dev 04bf5e08, a6ea8d43)
 - `src/lib/video-thumbnails/` — единственный писатель обложки уже загруженного видео (`thumbnails.set` через шлюз записи): владелец

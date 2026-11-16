@@ -13,6 +13,8 @@ import { captionsProblems, type CaptionFacts, type ReleasePackage } from "./pack
 
 const ACTIVE_UPLOAD = new Set(["queued", "uploading", "processing", "finishing", "paused"]);
 const OWN_STEP_OUTCOMES = new Set(["verified", "already_present", "mismatch"]);
+/** A sha256 no file has: the track is ours, but its content is not trusted to be the package's. */
+const UNVERIFIED = "unverified";
 
 export type PackageCaptionsActor = { kind: "owner"; userId: string } | { kind: "producer" };
 
@@ -25,9 +27,9 @@ export type PackageCaptionsDeps = {
   /** A workspace file's bytes (the workspace rule), or null when it is not there; at most `maxBytes` read. */
   readFile(channelId: string, relativePath: string, maxBytes: number): Promise<Uint8Array | "too_large" | null>;
   /** The `captions` entries of the release's `Vn_youtube.json` (unreadable: none). */
-  recordCaptions(channelId: string, recordPath: string): Promise<Array<{ trackId: string; sha256: string }>>;
+  recordCaptions(channelId: string, recordPath: string): Promise<Array<{ trackId: string; sha256: string; verified?: boolean }>>;
   /** Read-modify-write of `Vn_youtube.json`: only `captions` changes (an entry of the same track id is replaced), atomically. */
-  writeRecordCaptions(channelId: string, recordPath: string, entry: { trackId: string; language: string; name: string; sha256: string; at: string; by: "owner" | "producer" }): Promise<void>;
+  writeRecordCaptions(channelId: string, recordPath: string, entry: { trackId: string; language: string; name: string; sha256: string; at: string; by: "owner" | "producer"; verified: boolean }): Promise<void>;
   /** The frame this computer last read for the video code (the scan's memo), or null. */
   frameMemo(channelId: string, video: string): Promise<"vertical" | "horizontal" | null>;
   /** The captions writer. */
@@ -86,14 +88,17 @@ export function createPackageCaptions(deps: PackageCaptionsDeps) {
       throw refuse(first.code as DomainErrorCode, `${video}'s captions cannot be written (${first.code}${first.params?.reason ? `: ${first.params.reason}` : ""}).`, { channelId, video, problems: structural, ...(first.params ?? {}) });
     }
     const recordPath = `${found.folder}/${found.pkg.video}_youtube.json`;
-    const fromRecord = await deps.recordCaptions(channelId, recordPath).catch(() => []);
+    // An entry whose write was not verified is still ours, but never "already present": its sha256 is not trusted (an overwrite
+    // that did not take must be retried, not answered with already_present).
+    const fromRecord = (await deps.recordCaptions(channelId, recordPath).catch(() => [])).map((t) => (t.verified === false ? { trackId: t.trackId, sha256: UNVERIFIED } : t));
     const fromRows = rows
       .filter((row) => row.videoId === found.videoId)
       .map((row) => {
         try {
           const steps = JSON.parse(row.stepsJson) as { captions?: string; captionsTrack?: { trackId?: unknown; sha256?: unknown } };
           const track = steps.captionsTrack;
-          return steps.captions && OWN_STEP_OUTCOMES.has(steps.captions) && typeof track?.trackId === "string" && typeof track.sha256 === "string" ? { trackId: track.trackId, sha256: track.sha256 } : null;
+          if (!steps.captions || !OWN_STEP_OUTCOMES.has(steps.captions) || typeof track?.trackId !== "string" || typeof track.sha256 !== "string") return null;
+          return { trackId: track.trackId, sha256: steps.captions === "mismatch" ? UNVERIFIED : track.sha256 };
         } catch {
           return null;
         }
@@ -124,8 +129,9 @@ export function createPackageCaptions(deps: PackageCaptionsDeps) {
     const out: PackageCaptionsResult = { ...result, video: found.pkg.video, manifestSha256: found.manifestSha256, recorded: false, uploadStepsMarked: 0 };
     if (result.dryRun || !result.trackId) return out;
     // The track is the app's own from now on (AC-CAP-37, AC-CAP-47): its id with the SHA-256 sent (an already-present one: as it was).
-    const entry = { trackId: result.trackId, language: caption.language, name: result.trackName ?? caption.name, sha256: caption.sha256, at: deps.clock.now().toISOString(), by: actor.kind };
-    if (result.written || own.get(result.trackId) !== caption.sha256) {
+    // `verified`: read back (or still processing) -- only then is the sha256 trusted as "already present" next time (AC-CAP-47).
+    const entry = { trackId: result.trackId, language: caption.language, name: result.trackName ?? caption.name, sha256: caption.sha256, at: deps.clock.now().toISOString(), by: actor.kind, verified: result.verified === true || result.pending };
+    if (result.written || own.get(result.trackId) !== caption.sha256 || !entry.verified) {
       try {
         await deps.writeRecordCaptions(channelId, recordPath, entry);
         out.recorded = true;

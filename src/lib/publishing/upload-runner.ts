@@ -851,7 +851,8 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
           captions: pkg.captions,
           frameFallback: pkg.orientation ?? null,
           ownTracks: steps.captionsTrack ? [{ trackId: steps.captionsTrack.trackId, sha256: steps.captionsTrack.sha256 }] : [],
-          adoptAfterAttempt: steps.captionsAttempt ? { trackIdsBefore: steps.captionsAttempt.trackIdsBefore } : null,
+          // Once the track is known (a re-read of a syncing one), it is ours by id: no adoption again.
+          adoptAfterAttempt: steps.captionsAttempt && !steps.captionsTrack ? { trackIdsBefore: steps.captionsAttempt.trackIdsBefore } : null,
           // Saved before the insert: a lost answer is then adopted on the retry, never inserted twice (AC-CAP-27).
           onAttempt: async (trackIdsBefore) => {
             steps.captionsAttempt = { at: now().toISOString(), trackIdsBefore };
@@ -996,7 +997,7 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
             // BL-269 (ADR 0074 §9, the Operator's request): the mp4's identity, and the caption track this upload holds as its own.
             ...mediaIdentityOf(pkg),
             ...(steps.captionsTrack && (steps.captions === "verified" || steps.captions === "already_present" || steps.captions === "mismatch")
-              ? { captions: [{ ...steps.captionsTrack, by: "upload" }] }
+              ? { captions: [{ ...steps.captionsTrack, by: "upload", verified: steps.captions !== "mismatch" }] }
               : {}),
           });
           steps.record = "written";
