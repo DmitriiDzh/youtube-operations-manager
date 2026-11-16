@@ -28,6 +28,9 @@ export const PUBLISHED_RUNS_KEEP_DAYS = 120;
 export const UNLINKED_RUNS_KEEP_DAYS = 90;
 /** The report is written when it changed, and at least this often (so its age shows the computer is alive). */
 const REPUBLISH_MS = 10 * 60 * 1000;
+/** BL-270: the scheduled refresh walks every channel's videos and storyboards again at least this often, even when no report changed
+ * (a storyboard pick or a video's state moves a run to another file only rarely). */
+export const COST_FILES_REFRESH_SAFETY_MS = 30 * 60 * 1000;
 const UNITS = 10_000;
 
 const channelIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/, "a channel id");
@@ -377,15 +380,38 @@ export function createVideoCostsService(deps: VideoCostsDeps) {
 
   const costFilePath = (folder: string, video: string) => `${folder}/${video}_cost.json`;
 
+  async function publishIfChanged(report: VideoCostsReport): Promise<boolean> {
+    const body = JSON.stringify({ hostName: report.hostName, runs: report.runs });
+    if (lastPublished && lastPublished.body === body && deps.now().getTime() - lastPublished.at < REPUBLISH_MS) return false;
+    await deps.publishReport(report);
+    lastPublished = { body, at: deps.now().getTime() };
+    return true;
+  }
+
+  /**
+   * BL-270: what a cost file's content depends on that changes often -- every computer's runs (not the reports' `updatedAt`, which
+   * moves at each publish). The same inputs as at the last full refresh: no file can have changed since, so the scheduled tick skips
+   * the walk of the channels' videos and storyboards (until `COST_FILES_REFRESH_SAFETY_MS` passed).
+   */
+  let lastRefresh: { inputs: string; at: number } | null = null;
+  const refreshInputsOf = (own: VideoCostsReport, peers: VideoCostsReport[]) =>
+    JSON.stringify([own.deviceId, own.runs, ...peers.map((r) => [r.deviceId, r.hostName, r.runs]).sort((a, b) => String(a[0]).localeCompare(String(b[0])))]);
+
   return {
     /** Publishes this computer's report when it changed (and at least every 10 minutes). */
     async publishOwnReport(): Promise<boolean> {
-      const report = await ownReport();
-      const body = JSON.stringify({ hostName: report.hostName, runs: report.runs });
-      if (lastPublished && lastPublished.body === body && deps.now().getTime() - lastPublished.at < REPUBLISH_MS) return false;
-      await deps.publishReport(report);
-      lastPublished = { body, at: deps.now().getTime() };
-      return true;
+      return publishIfChanged(await ownReport());
+    },
+
+    /**
+     * BL-270: the scheduled tick -- this computer's report built ONCE (a walk of the channels' videos) for both the publish and the
+     * refresh, and the refresh's per-channel walk only when some computer's runs changed since the last one (or every 30 minutes).
+     */
+    async publishAndRefresh(): Promise<{ published: boolean; rewritten: number; refreshed: boolean }> {
+      const own = await ownReport();
+      const published = await publishIfChanged(own);
+      const result = await refreshWith(own, { onlyIfInputsChanged: true });
+      return { published, ...result };
     },
 
     /**
@@ -443,40 +469,52 @@ export function createVideoCostsService(deps: VideoCostsDeps) {
      * upload, a session split later). Only files the upload wrote: a video without one is never given one here. Returns how many.
      */
     async refreshCostFiles(): Promise<number> {
-      // Read once per tick: this computer's report, the peers', and per channel its videos and storyboards.
-      const [own, peers] = await Promise.all([ownReport(), peerReports()]);
-      // Without the other computers' reports a total could only be partial: the durable file is left as it is.
-      if (!peers.ok) return 0;
-      const channels = new Set<string>();
-      for (const report of [own, ...peers.reports]) for (const run of report.runs) if (run.video) channels.add(run.channelId);
-      let rewritten = 0;
-      for (const channelId of channels) {
-        try {
-          if (!(await deps.isChannelConnected(channelId))) continue;
-          const [states, storyboards] = await Promise.all([deps.videoStates(channelId), storyboardsOf(channelId)]);
-          const { runs, computers } = channelRunsFrom(channelId, own, peers.reports, storyboards, await aliasesOf(channelId, states));
-          for (const [video, info] of states) {
-            if (!info.folder || (info.state !== "packaged" && info.state !== "published")) continue;
-            if (!folderSchema.safeParse(info.folder).success) continue;
-            const path = costFilePath(info.folder, video);
-            const before = existingFile(await deps.costFiles.read(channelId, path).catch(() => null));
-            // Only the computer that wrote it at the upload writes it again (one writer per file in the synced folder).
-            if (!before || before.writtenBy !== own.deviceId) continue;
-            const mine = runs.filter((r) => r.video === video);
-            const merged = mergeIntoFile(before, { channelId, video, totals: totalsOf(mine), runs: mine, computers });
-            if (merged.added === 0 && merged.updated === 0) continue;
-            const total = totalsOf(merged.runs).totalUsd;
-            const note = `Written again: a later report added ${merged.added} runs and updated ${merged.updated}; the total went from ${before.totals.totalUsd} to ${total} USD.`;
-            await writeMerged(channelId, path, video, before, merged, note);
-            rewritten++;
-          }
-        } catch (error) {
-          log(`[video-costs] cost files of ${channelId} not refreshed: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
-      return rewritten;
+      return (await refreshWith(await ownReport(), { onlyIfInputsChanged: false })).rewritten;
     },
   };
+
+  async function refreshWith(own: VideoCostsReport, options: { onlyIfInputsChanged: boolean }): Promise<{ rewritten: number; refreshed: boolean }> {
+    // Read once per tick: this computer's report, the peers', and per channel its videos and storyboards.
+    const peers = await peerReports();
+    // Without the other computers' reports a total could only be partial: the durable file is left as it is.
+    if (!peers.ok) return { rewritten: 0, refreshed: false };
+    const inputs = refreshInputsOf(own, peers.reports);
+    if (options.onlyIfInputsChanged && lastRefresh && lastRefresh.inputs === inputs && deps.now().getTime() - lastRefresh.at < COST_FILES_REFRESH_SAFETY_MS) {
+      return { rewritten: 0, refreshed: false };
+    }
+    let failed = false;
+    const channels = new Set<string>();
+    for (const report of [own, ...peers.reports]) for (const run of report.runs) if (run.video) channels.add(run.channelId);
+    let rewritten = 0;
+    for (const channelId of channels) {
+      try {
+        if (!(await deps.isChannelConnected(channelId))) continue;
+        const [states, storyboards] = await Promise.all([deps.videoStates(channelId), storyboardsOf(channelId)]);
+        const { runs, computers } = channelRunsFrom(channelId, own, peers.reports, storyboards, await aliasesOf(channelId, states));
+        for (const [video, info] of states) {
+          if (!info.folder || (info.state !== "packaged" && info.state !== "published")) continue;
+          if (!folderSchema.safeParse(info.folder).success) continue;
+          const path = costFilePath(info.folder, video);
+          const before = existingFile(await deps.costFiles.read(channelId, path).catch(() => null));
+          // Only the computer that wrote it at the upload writes it again (one writer per file in the synced folder).
+          if (!before || before.writtenBy !== own.deviceId) continue;
+          const mine = runs.filter((r) => r.video === video);
+          const merged = mergeIntoFile(before, { channelId, video, totals: totalsOf(mine), runs: mine, computers });
+          if (merged.added === 0 && merged.updated === 0) continue;
+          const total = totalsOf(merged.runs).totalUsd;
+          const note = `Written again: a later report added ${merged.added} runs and updated ${merged.updated}; the total went from ${before.totals.totalUsd} to ${total} USD.`;
+          await writeMerged(channelId, path, video, before, merged, note);
+          rewritten++;
+        }
+      } catch (error) {
+        failed = true;
+        log(`[video-costs] cost files of ${channelId} not refreshed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    // A channel that failed is tried again at the next tick, not only after the safety interval.
+    lastRefresh = failed ? null : { inputs, at: deps.now().getTime() };
+    return { rewritten, refreshed: true };
+  }
 }
 
 export type VideoCostsService = ReturnType<typeof createVideoCostsService>;

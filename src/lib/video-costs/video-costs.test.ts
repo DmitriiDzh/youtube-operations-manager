@@ -401,3 +401,71 @@ test("BL-263 AC-SC-20: runs linked to a recoded V14 (any computer) count in S12'
   const blind = computer("mac", w, () => ({ ...none(), gemini: [gemini("g1", { video: "S12" })] }), { videoStates: async () => Promise.reject(new Error("no workspace")) });
   assert.equal((await blind.service.videoCost({ channelId: "UC1", video: "V14" })).totals.runs, 1);
 });
+
+// BL-270 (owner TG 4662/4665): the scheduled tick walks the channels' videos and storyboards again only when some computer's runs
+// changed (or every 30 minutes) -- a late run must still reach the cost file at the next tick.
+test("BL-270: the scheduled tick skips the per-channel walk while no run changed, and still rewrites the file when a late run arrives", async () => {
+  const w = world();
+  w.states = new Map([["V49", { state: "published", folder: "04 Videos/10 October/1017 V49" }]]);
+  const clock = { t: NOW.getTime() };
+  const counts = { states: 0, storyboards: 0 };
+  const over: Partial<VideoCostsDeps> = {
+    now: () => new Date(clock.t),
+    videoStates: async () => {
+      counts.states++;
+      return w.states;
+    },
+    storyboards: async () => {
+      counts.storyboards++;
+      return w.storyboards;
+    },
+  };
+  const mac = computer("mac", w, () => ({ ...none(), runpod: [runpod("a")] }), over);
+  await mac.service.writeCostFile({ channelId: "UC1", video: "V49", folder: "04 Videos/10 October/1017 V49" });
+  const first = await mac.service.publishAndRefresh();
+  assert.equal(first.refreshed, true);
+  assert.equal(first.rewritten, 0);
+  const afterFirst = { ...counts };
+  clock.t += 5 * 60_000;
+  const quiet = await mac.service.publishAndRefresh();
+  assert.equal(quiet.refreshed, false, "same runs everywhere: no walk");
+  // Only the report's own build read the videos (once); the refresh read neither the videos again nor the storyboards.
+  assert.equal(counts.states - afterFirst.states, 1);
+  assert.equal(counts.storyboards, afterFirst.storyboards);
+
+  // The other computer's run arrives: the very next tick refreshes and rewrites the file.
+  const win = computer("win", w, () => ({ ...none(), gemini: [gemini("g1")] }));
+  await win.service.publishOwnReport();
+  clock.t += 5 * 60_000;
+  const late = await mac.service.publishAndRefresh();
+  assert.equal(late.refreshed, true);
+  assert.equal(late.rewritten, 1);
+  assert.equal(w.files.get("04 Videos/10 October/1017 V49/V49_cost.json")!.totals.totalUsd, 1.4088);
+});
+
+test("BL-270: with no change at all, the scheduled tick still walks again once the 30-minute safety interval passed", async () => {
+  const w = world();
+  const clock = { t: NOW.getTime() };
+  const mac = computer("mac", w, () => ({ ...none(), runpod: [runpod("a")] }), { now: () => new Date(clock.t) });
+  assert.equal((await mac.service.publishAndRefresh()).refreshed, true);
+  clock.t += 30 * 60_000 - 1;
+  assert.equal((await mac.service.publishAndRefresh()).refreshed, false);
+  clock.t += 1;
+  assert.equal((await mac.service.publishAndRefresh()).refreshed, true);
+});
+
+test("BL-270 (negative): a channel whose refresh failed is tried again at the next tick, not only after the safety interval", async () => {
+  const w = world();
+  w.states = new Map([["V49", { state: "published", folder: "04 Videos/10 October/1017 V49" }]]);
+  let unreadable = true;
+  const mac = computer("mac", w, () => ({ ...none(), runpod: [runpod("a")] }), {
+    isChannelConnected: async () => {
+      if (unreadable) throw new Error("connections unreadable");
+      return true;
+    },
+  });
+  assert.equal((await mac.service.publishAndRefresh()).refreshed, true);
+  unreadable = false;
+  assert.equal((await mac.service.publishAndRefresh()).refreshed, true, "the failed pass is not remembered as done");
+  assert.equal((await mac.service.publishAndRefresh()).refreshed, false, "a successful pass is");
+});
