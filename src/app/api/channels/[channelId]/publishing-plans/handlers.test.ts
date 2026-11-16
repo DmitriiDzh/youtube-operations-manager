@@ -117,4 +117,3 @@ test("AC-WP-50: the stage route needs a session and the active channel; it passe
   assert.deepEqual(await res.json(), { approvalStage: "slot", changed: true });
   assert.deepEqual(calls, [["stage", "UC_active", { stage: "slot" }, "u1"]]);
 });
-
