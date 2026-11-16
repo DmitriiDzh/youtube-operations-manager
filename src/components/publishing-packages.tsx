@@ -13,6 +13,7 @@ import { ConfirmDialog } from "./confirm-dialog";
 import { LoadingIndicator } from "./operation-progress";
 import { PublishingNewPackage } from "./publishing-new-package";
 import { PackagingActions } from "./package-packaging-actions";
+import { CaptionsActions } from "./package-captions-actions";
 import { PublishingUploads } from "./publishing-uploads";
 import { parseQuotaBlock, QuotaBlockDialog, type QuotaBlock } from "./quota-block-dialog";
 import { useUiText } from "./ui-text-provider";
@@ -38,7 +39,7 @@ type PackageRow = {
   youtubeTextsDiffer?: Array<"title" | "description" | "tags"> | null;
   youtube: { videoId: string } | null;
   manifestSha256: string | null;
-  pkg: { defaultLanguage: string; defaultAudioLanguage: string; tags: string[] } | null;
+  pkg: { defaultLanguage: string; defaultAudioLanguage: string; tags: string[]; captions?: Array<{ file: string }> | null } | null;
 };
 type ScanResult = { status: "no_workspace" } | { status: "workspace_unavailable"; reason: string } | { status: "ok"; packages: PackageRow[] };
 
@@ -326,6 +327,10 @@ export function PublishingPackages({ channelId, visible }: { channelId: string |
                     {/* BL-265 (ADR 0072 §8, AC-MG-38): an uploaded package's packaging can still be fixed and commented, on any channel. */}
                     {p.youtube && p.state !== "deleted_on_youtube" && p.manifestSha256 && p.video && (
                       <PackagingActions channelId={channelId} video={p.video} manifestSha256={p.manifestSha256} differs={p.youtubeTextsDiffer ?? null} onChanged={() => void load()} />
+                    )}
+                    {/* BL-269 (ADR 0074 §8, §10): an uploaded package that states captions can add them, or overwrite the English track. */}
+                    {p.youtube && p.state !== "deleted_on_youtube" && p.video && (p.pkg?.captions?.length ?? 0) > 0 && (
+                      <CaptionsActions channelId={channelId} video={p.video} onChanged={() => void load()} />
                     )}
                   </div>
                 </li>

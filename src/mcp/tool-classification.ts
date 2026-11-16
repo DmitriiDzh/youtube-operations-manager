@@ -189,6 +189,7 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   producer_upload_queue_cancel: "producer-only",
   producer_video_thumbnail_replace: "producer-only",
   producer_video_metadata_update: "producer-only",
+  producer_video_captions_add: "producer-only",
   // BL-267 (ADR 0073 §5): the Producer's weekly-plan tools -- on its endpoint only; the factory and workers get no move or propose tool.
   producer_week_template_get: "producer-only",
   producer_week_template_propose: "producer-only",

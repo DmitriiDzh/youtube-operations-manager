@@ -9,6 +9,7 @@ import { hostname } from "node:os";
 import path from "node:path";
 import { YOUTUBE_READ_SCOPE, YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
 import { createPackageMetadata } from "./package-metadata";
+import { createPackageCaptions } from "./package-captions";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { createChannelVideoStoreAdapter } from "@/lib/channel-video-store";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
@@ -198,6 +199,13 @@ export function createPublishingCalendarCore(options: { dailyCoverage?: (channel
           existsOnChannel: p.existsOnChannel,
           checkedAt: p.checkedAt,
           removedAt: p.youtube?.removedAt ?? null,
+          // BL-269: the manifest's captions and why they are refused (the codes stay in `problems`).
+          captions: p.pkg?.captions?.[0]
+            ? {
+                ...p.pkg.captions[0],
+                problemReasons: p.problems.filter((problem) => problem.code === "captions_invalid" || problem.code === "captions_missing").map((problem) => String(problem.params?.reason ?? problem.code)),
+              }
+            : null,
         })),
       };
     },
@@ -1299,3 +1307,92 @@ export function createPackageMetadataCore() {
   });
 }
 export type { PackageMetadataActor, PackageMetadataApplyResult, PackageMetadataPreview } from "./package-metadata";
+
+/**
+ * BL-269 (owner msg 4396's rule, applied to captions; ADR 0074 §8): a caption track the captions writer added or overwrote later -- and
+ * read back -- completes the upload's captions step: every row of that video here whose `steps.captions` did not pass (failed,
+ * refused, mismatch) records "verified" with the track (and a note), so the weekly plan may date the video (`checksPassed`). Nothing
+ * else of the row changes; a row that changed meanwhile is left. Returns how many rows were marked.
+ */
+export async function markUploadCaptionsSetLater(channelId: string, videoId: string, track: { trackId: string; language: string; name: string; sha256: string }, at: Date): Promise<number> {
+  let marked = 0;
+  for (const row of await listPublishingUploads({ channelId, limit: 500 })) {
+    if (row.videoId !== videoId || (ACTIVE_UPLOAD_STATUSES as readonly string[]).includes(row.status)) continue;
+    let steps: Record<string, unknown>;
+    try {
+      steps = JSON.parse(row.stepsJson) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (!steps || typeof steps !== "object" || !["failed", "refused", "mismatch"].includes(String(steps.captions))) continue;
+    const notes = Array.isArray(steps.notes) ? [...(steps.notes as unknown[])] : [];
+    notes.push(`captions: written later by the captions writer at ${at.toISOString()} (track ${track.trackId})`);
+    const next = { ...steps, captions: "verified", captionsTrack: { ...track, at: at.toISOString() }, notes };
+    if (await updatePublishingUpload(row.id, row.status, { stepsJson: JSON.stringify(next), updatedAt: at })) marked++;
+  }
+  return marked;
+}
+
+/**
+ * BL-269 (ADR 0074 §8, §10; AGENTS.md §F captions writer): captions onto a video a package already put on YouTube -- the owner's
+ * route and the Producer's tool, one service. The write is the captions writer's; this wires the package scan, this computer's upload
+ * rows, the release's `Vn_youtube.json` and the frame memo.
+ */
+export function createPackageCaptionsCore() {
+  const scan = createPackageScanCore();
+  const workspaces = createChannelWorkspacesCore();
+  const readRecord = async (channelId: string, recordPath: string): Promise<Record<string, unknown> | null> => {
+    const file = await scan.resolvePackageFile(channelId, recordPath);
+    if (!file || file.bytes > 1024 * 1024) return null;
+    try {
+      const value = JSON.parse((await readFile(file.path, "utf8")).replace(/^﻿/, "")) as unknown;
+      return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  };
+  return createPackageCaptions({
+    async findPackage(channelId, video) {
+      const result = await scan.scan(channelId);
+      if (result.status !== "ok") return result.status;
+      const named = result.packages.filter((p) => p.video === video && p.pkg && p.manifestSha256);
+      if (named.length === 0) return "not_found";
+      if (named.length > 1) return "ambiguous";
+      const p = named[0];
+      return { pkg: p.pkg!, manifestSha256: p.manifestSha256!, manifestPath: p.manifestPath, folder: p.folder, videoId: p.youtube?.videoId ?? null };
+    },
+    async uploadRows(channelId, video) {
+      return (await listPublishingUploads({ channelId, limit: 5000 })).filter((row) => row.video === video).map((row) => ({ status: row.status, videoId: row.videoId, stepsJson: row.stepsJson }));
+    },
+    async readFile(channelId, relativePath, maxBytes) {
+      const file = await scan.resolvePackageFile(channelId, relativePath);
+      if (!file) return null;
+      if (file.bytes > maxBytes) return "too_large";
+      return new Uint8Array(await readFile(file.path));
+    },
+    async recordCaptions(channelId, recordPath) {
+      const list = (await readRecord(channelId, recordPath))?.captions;
+      if (!Array.isArray(list)) return [];
+      return list
+        .map((entry) => entry as { trackId?: unknown; sha256?: unknown })
+        .filter((entry): entry is { trackId: string; sha256: string } => typeof entry?.trackId === "string" && typeof entry.sha256 === "string")
+        .map(({ trackId, sha256 }) => ({ trackId, sha256 }));
+    },
+    async writeRecordCaptions(channelId, recordPath, entry) {
+      const record = await readRecord(channelId, recordPath);
+      if (!record) throw new Error(`${recordPath} cannot be read`);
+      const before = Array.isArray(record.captions) ? (record.captions as Array<{ trackId?: unknown }>) : [];
+      const workspace = await workspaces.getWorkspace({ channelId });
+      if (!workspace.configured) throw new Error("This channel has no workspace folder on this computer.");
+      // Only `captions` changes; every other key is written back as read (AC-CAP-37).
+      await writeUploadRecordFile(workspace.path, recordPath, { ...record, captions: [...before.filter((c) => c?.trackId !== entry.trackId), entry] });
+    },
+    async frameMemo(channelId, video) {
+      return (await getVideoOrientations(channelId))[video] ?? null;
+    },
+    write: (input, actor) => createVideoCaptionsCore({ captionsEnabled: captionsEnabledNow }).write(input, actor),
+    markUploadCaptionsLater: (channelId, videoId, track) => markUploadCaptionsSetLater(channelId, videoId, track, new Date()),
+    clock: { now: () => new Date() },
+  });
+}
+export type { PackageCaptionsActor, PackageCaptionsResult } from "./package-captions";

@@ -5,7 +5,7 @@ import test from "node:test";
 import { MCP_TOOL_CLASSIFICATION } from "@/mcp/tool-classification";
 import { FACTORY_TOOL_NAMES } from "@/mcp/factory-server";
 import { WORKER_FACTORY_TOOLS } from "@/mcp/worker-factory-tools";
-import { PRODUCER_METADATA_TOOLS, PRODUCER_THUMBNAIL_TOOLS, PRODUCER_UPLOAD_QUEUE_TOOLS } from "@/mcp/producer-tools";
+import { PRODUCER_CAPTIONS_TOOLS, PRODUCER_METADATA_TOOLS, PRODUCER_THUMBNAIL_TOOLS, PRODUCER_UPLOAD_QUEUE_TOOLS } from "@/mcp/producer-tools";
 
 // AC-UP-14 (FO-REQ-0023 §4 B9; ADR 0037 §1: "uploads or scheduling by an agent or the Producer, who get read-only tools" are out of
 // scope): no MCP tool uploads, schedules or cancels an upload, and no MCP or agent endpoint code reaches the upload approval, the
@@ -170,4 +170,27 @@ test("BL-265 AC-MG-34: createPackageMetadataCore is used only by the Producer se
     if (/\bcreatePackageMetadataCore\b/.test(await readFile(file, "utf8"))) callers.push(path.relative(SRC, file));
   }
   assert.deepEqual(callers.sort(), ["app/api/channels/[channelId]/publishing/package-metadata/handlers.ts", "lib/producer-mcp-endpoint/session-deps.ts", "lib/publishing/index.ts"]);
+});
+
+// BL-269 AC-CAP-35 (VIDEO_CAPTIONS_PLAN.md §3.5, ADR 0074 §8; owner TG 4590/4592/4660 -- a new requirement): the Producer's captions
+// tool is exactly one, producer-only; the factory and the channel workers have no caption tool; the package-captions service is
+// reached only by the Producer session wiring and the owner's route, and the captions writer only through publishing.
+test("BL-269 AC-CAP-35: one producer-only captions tool; the factory and workers have none; the services are reached only by those two", async () => {
+  assert.deepEqual([...PRODUCER_CAPTIONS_TOOLS], ["producer_video_captions_add"]);
+  assert.equal(MCP_TOOL_CLASSIFICATION.producer_video_captions_add, "producer-only");
+  const captionLike = (name: string) => /caption|subtitle/i.test(name);
+  assert.deepEqual(Object.keys(MCP_TOOL_CLASSIFICATION).filter(captionLike), ["producer_video_captions_add"]);
+  assert.deepEqual((FACTORY_TOOL_NAMES as readonly string[]).filter(captionLike), []);
+  assert.deepEqual(Object.keys(WORKER_FACTORY_TOOLS).filter(captionLike), []);
+  assert.deepEqual(Object.values(WORKER_FACTORY_TOOLS).map((tool) => tool.agentName).filter(captionLike), []);
+  const serviceCallers: string[] = [];
+  const writerCallers: string[] = [];
+  for (const file of await files(SRC)) {
+    const content = await readFile(file, "utf8");
+    const rel = path.relative(SRC, file);
+    if (/\bcreatePackageCaptionsCore\b/.test(content)) serviceCallers.push(rel);
+    if (/\bcreateVideoCaptionsCore\b/.test(content)) writerCallers.push(rel);
+  }
+  assert.deepEqual(serviceCallers.sort(), ["app/api/channels/[channelId]/publishing/package-captions/handlers.ts", "lib/producer-mcp-endpoint/session-deps.ts", "lib/publishing/index.ts"]);
+  assert.deepEqual(writerCallers.sort(), ["lib/publishing/index.ts", "lib/video-captions/index.ts"]);
 });
