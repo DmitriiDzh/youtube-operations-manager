@@ -15,6 +15,9 @@ const CH = "UC-IdugmwWRvRo9-j0yK5AbA";
 const WEEK = "2026-10-26";
 const NEXT = "2026-11-02";
 
+/** BL-267: a ready package for a slot (the slot stage these tests ran in is retired, AC-WT-38). */
+const READY = (id: string): PlanSlotProgress => ({ status: "packaged", code: null, videoId: null, package: { video: `V-${id}`, title: id, durationSeconds: 600, languages: [], containsSyntheticMedia: false, thumbnailPath: null, testThumbnails: 0, problems: [], manifestSha256: "f".repeat(64) } });
+
 function harness(progress?: Map<string, PlanSlotProgress>) {
   const clock = { now: new Date("2026-10-25T07:00:00Z") };
   const bytes = new Map<string, Uint8Array>();
@@ -34,7 +37,8 @@ function harness(progress?: Map<string, PlanSlotProgress>) {
     randomId: () => `id${++n}`,
     withLock: (fn) => fn(),
     audit: async (entry) => void audits.push(entry),
-    ...(progress ? { progress: async (_c: string, _w: string, ids: string[]) => ({ progress: new Map([...progress].filter(([id]) => ids.includes(id))), packagesUnavailable: false }) } : {}),
+    // BL-267 (ADR 0073, AC-WT-38): the slot stage is retired -- every slot gets a ready package here (READY), unless a test gives its own.
+    progress: async (_c: string, _w: string, ids: string[]) => ({ progress: new Map(ids.map((id) => [id, progress?.get(id) ?? READY(id)] as const).filter(([, p]) => p !== null) as Array<[string, PlanSlotProgress]>), packagesUnavailable: false }),
   });
   return { service, audits, core, clock };
 }
@@ -55,7 +59,9 @@ async function approve(h: ReturnType<typeof harness>, weekStart: string, slotId:
 test("AC-WP-40: a slot without replacesSlotId keeps the content hash it had before BL-240", async () => {
   const h = harness();
   const plan = await week(h);
-  const expected = createHash("sha256").update('["Asia/Tokyo","2026-10-26","2026-10-26T15:00","≈ 3 ч",null]').digest("hex");
+  // BL-267 (AC-WT-38): the slot stage is retired, so the hash a ready slot shows carries its package fingerprint (ADR 0062 §2); the
+  // slot part is unchanged by BL-240 (no replacesSlotId field in it).
+  const expected = createHash("sha256").update(`["Asia/Tokyo","2026-10-26","2026-10-26T15:00","≈ 3 ч",null,["V-s1","${"f".repeat(64)}",null]]`).digest("hex");
   assert.equal(slotOf(plan, "s1").contentHash, expected);
   assert.equal(slotOf(plan, "s1").replaces, null);
 });
@@ -115,7 +121,10 @@ test("AC-WP-45: adding replacesSlotId to an approved slot drops its approval", a
   assert.equal(slotOf(plan, "s2").replaces?.found, true);
 });
 
-test("AC-WP-46: approving a slot that replaces another vetoes that one in the same decision, audited, also across weeks", async () => {
+// BL-267 (owner O4 2026-11-16, ADR 0073 §6, AC-WT-27/36): there is no replacement concept any more -- ADR 0060 §4's implied veto
+// (approving a replacing slot vetoes the replaced one) is retired. These three AC-WP-46 tests asserted that veto; the requirement
+// changed, so they now assert that an explicit date on a slot with `replacesSlotId` vetoes nothing, here and across weeks.
+test("AC-WT-27/36 (was AC-WP-46): approving a slot with replacesSlotId vetoes no other slot, also across weeks", async () => {
   const h = harness();
   await week(h);
   await approve(h, WEEK, "s1");
@@ -123,45 +132,18 @@ test("AC-WP-46: approving a slot that replaces another vetoes that one in the sa
   const before = h.audits.length;
   const result = await approve(h, WEEK, "s3");
   assert.deepEqual(result.decided, ["s3"]);
-  assert.deepEqual(result.replacedVetoed, ["s1"]);
+  assert.deepEqual(result.replacedVetoed, []);
   assert.equal(slotOf(result.plan, "s3").approval, "approved");
-  assert.equal(slotOf(result.plan, "s1").vetoed?.replacedBy, "s3");
-  assert.equal(slotOf(result.plan, "s1").status, "vetoed");
-  const added = h.audits.slice(before).map((a) => [a.slotId, a.detail.event, a.detail.replacedBy ?? null]);
-  assert.deepEqual(added, [["s3", "publishing_plan.approved", null], ["s1", "publishing_plan.vetoed", "s3"]]);
+  assert.equal(slotOf(result.plan, "s1").vetoed, null);
+  assert.equal(slotOf(result.plan, "s1").approval, "approved", "the replaced slot keeps its own date");
+  assert.deepEqual(h.audits.slice(before).map((a) => [a.slotId, a.detail.event]), [["s3", "publishing_plan.approved"]]);
   const uploads = await h.service.slotDecisions(CH);
-  assert.deepEqual(uploads.get("s1"), { kind: "vetoed" });
-  assert.deepEqual(uploads.get("s3"), { kind: "approved", publishAt: "2026-10-28T09:00:00.000Z" , source: "owner" });
-
-  // Another week: n1 (2 Nov) replaces s2 (27 Oct).
+  assert.equal(uploads.get("s1")?.kind, "approved");
+  assert.equal(uploads.get("s3")?.kind, "approved");
   await h.service.save({ channelId: CH, weekStart: NEXT, timeZone: "Asia/Tokyo", slots: [slot("n1", "2026-11-02", "18:00", { replacesSlotId: "s2" })] }, "factory");
   const next = await approve(h, NEXT, "n1");
-  assert.deepEqual(next.replacedVetoed, ["s2"]);
-  assert.equal(slotOf(next.plan, "n1").replaces?.vetoed, true);
-  assert.equal(slotOf((await h.service.get({ channelId: CH, weekStart: WEEK })).plan, "s2").vetoed?.replacedBy, "n1");
-});
-
-test("AC-WP-46: a replaced slot already vetoed gets no second record; restoring it stays possible", async () => {
-  const h = harness();
-  await week(h);
-  await h.service.decide(CH, WEEK, { action: "veto", slots: [{ slotId: "s1" }] }, "u1");
-  await h.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s3", "2026-10-28", "18:00", { replacesSlotId: "s1" })] }, "worker");
-  const before = h.audits.length;
-  const result = await approve(h, WEEK, "s3");
-  assert.deepEqual(result.replacedVetoed, []);
-  assert.equal(h.audits.length - before, 1);
-  const restored = await h.service.decide(CH, WEEK, { action: "restore", slots: [{ slotId: "s1" }] }, "u1");
-  assert.equal(slotOf(restored.plan, "s1").vetoed, null);
-});
-
-test("AC-WP-46: a replaced slot whose time has passed gets no veto record", async () => {
-  const h = harness();
-  await week(h);
-  await h.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s3", "2026-10-28", "18:00", { replacesSlotId: "s1" })] }, "worker");
-  h.clock.now = new Date("2026-10-26T07:00:00Z"); // 16:00 JST on 26 Oct: s1 (15:00) is released, s3 (28 Oct) is not
-  const result = await approve(h, WEEK, "s3");
-  assert.deepEqual(result.replacedVetoed, []);
-  assert.equal(slotOf(result.plan, "s1").vetoed, null);
+  assert.deepEqual(next.replacedVetoed, []);
+  assert.equal(slotOf((await h.service.get({ channelId: CH, weekStart: WEEK })).plan, "s2").vetoed, null);
 });
 
 test("review: two slots replacing each other are refused replaces_cycle (one save, or against a stored slot)", async () => {

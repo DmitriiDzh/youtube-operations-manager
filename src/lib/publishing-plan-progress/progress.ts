@@ -2,7 +2,10 @@
 // composition between `publishing` (the scan) and `publishing-plans` (the plan), so neither feature module imports the other. Pure:
 // the scanned packages and the channel's AI-flag setting come in; the slot statuses go out.
 
-import type { PlanSlotProgress } from "@/lib/publishing-plans";
+import type { PlanMediaReview, PlanSlotProgress } from "@/lib/publishing-plans";
+
+/** BL-267 (plan §3.4): the owner's media review of a package by its key, as the composition computes it (package-reviews' rule). */
+export type MediaReviewOf = (key: { manifestSha256: string | null; video: string; videoSha256: string | null; videoSizeBytes: number | null }) => PlanMediaReview;
 import { uploadTimeOf, VIDEO_DELETED_ON_YOUTUBE } from "@/lib/shared-video-presence";
 import type { ScannedPackage } from "@/lib/publishing";
 
@@ -23,7 +26,7 @@ function reviewCommentOf(scanned: ScannedPackage): string | null {
   return typeof comment === "string" ? comment : null;
 }
 
-export function progressOfPackage(scanned: ScannedPackage, channelSyntheticMedia: boolean): PlanSlotProgress | null {
+export function progressOfPackage(scanned: ScannedPackage, channelSyntheticMedia: boolean, reviewOf?: MediaReviewOf): PlanSlotProgress | null {
   const pkg = scanned.pkg;
   if (!pkg) return null;
   let status: PlanSlotProgress["status"] | null;
@@ -49,9 +52,12 @@ export function progressOfPackage(scanned: ScannedPackage, channelSyntheticMedia
       status = "packaged";
   }
   if (!status) return null;
+  const videoSha256 = typeof pkg.sha256 === "string" ? pkg.sha256.toLowerCase() : null;
   return {
     status,
     code,
+    // BL-267 (plan §3.4): the media key and the owner's review of it, for uploaded packages too (absent without a review reader).
+    ...(reviewOf ? { media: { videoSha256, sizeBytes: pkg.sizeBytes ?? null, review: reviewOf({ manifestSha256: scanned.manifestSha256, video: pkg.video, videoSha256, videoSizeBytes: pkg.sizeBytes ?? null }) } } : {}),
     videoId: scanned.youtube?.videoId ?? null,
     publishAt: code === null ? (scanned.youtube?.publishAt ?? null) : null,
     package: {
@@ -85,7 +91,8 @@ export function progressOfSlots(
   packages: readonly ScannedPackage[],
   slotIds: readonly string[],
   channelSyntheticMedia: boolean,
-  uploadRows: readonly UploadRowForProgress[] = []
+  uploadRows: readonly UploadRowForProgress[] = [],
+  reviewOf?: MediaReviewOf
 ): Map<string, PlanSlotProgress> {
   const wanted = new Set(slotIds);
   const result = new Map<string, PlanSlotProgress>();
@@ -96,14 +103,14 @@ export function progressOfSlots(
     const slotId = scanned.pkg?.slotId;
     if (!slotId || !wanted.has(slotId)) continue;
     if (scanned.state === "deleted_on_youtube") {
-      const progress = progressOfPackage(scanned, channelSyntheticMedia);
+      const progress = progressOfPackage(scanned, channelSyntheticMedia, reviewOf);
       const at = uploadedAtOf(scanned);
       const before = deleted.get(slotId);
       if (progress && (!before || at > before.at)) deleted.set(slotId, { progress, at });
       continue;
     }
     named.add(slotId);
-    const progress = progressOfPackage(scanned, channelSyntheticMedia);
+    const progress = progressOfPackage(scanned, channelSyntheticMedia, reviewOf);
     if (!progress) continue;
     const before = result.get(slotId);
     if (!before || RANK[progress.status] > RANK[before.status]) result.set(slotId, progress);

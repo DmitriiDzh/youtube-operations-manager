@@ -4,7 +4,8 @@ import { createHash } from "node:crypto";
 import type { PublishingPlanApprovalStage, PublishingPlanDecision, PublishingPlanMeta, PublishingPlanPackageFingerprint, PublishingPlanSlot, PublishingPlanSlotContent } from "@/lib/sync-gateway";
 import { formatZonedDateAndTime, zonedInstant } from "@/lib/zoned-time";
 import { isDeletedOnYoutube } from "@/lib/shared-video-presence";
-import { type PlanSlotProgress, type PlanSlotView, type PlanState, type PlanSummary, type PlanView, type ReplacedSlot } from "./contracts";
+import { type PlanMediaKey, type PlanSlotDating, type PlanSlotProgress, type PlanSlotView, type PlanState, type PlanSummary, type PlanView, type ReplacedSlot } from "./contracts";
+import type { SlotMatch } from "./template";
 
 const DAY_MS = 86_400_000;
 
@@ -65,13 +66,46 @@ export function packageReady(progress: PlanSlotProgress | null): boolean {
   return progress!.videoId != null || (progress!.status === "packaged" && progress!.package!.problems.length === 0);
 }
 
+/** BL-267 (plan §3.4): the media of the slot's current package (video code, mp4 SHA-256, size), or null when not known. */
+export function mediaOfProgress(progress: PlanSlotProgress | null): PlanMediaKey | null {
+  const pkg = progress?.package;
+  const media = progress?.media;
+  if (!pkg || !media || !media.videoSha256 || media.sizeBytes === null || isDeletedOnYoutube(progress)) return null;
+  return { video: pkg.video, videoSha256: media.videoSha256.toLowerCase(), sizeBytes: media.sizeBytes };
+}
+
+/** The owner-review problems: the template evaluates the media review on its own (plan §3.4), not as a package problem. */
+const REVIEW_PROBLEMS = new Set(["owner_review_pending", "owner_review_returned"]);
+
+/**
+ * BL-267 (plan §3.4): the package may be dated by the template -- uploaded (a video id), or ready apart from the owner's media review
+ * (built/packaged with no other problem). The media condition is checked separately (`mediaAllows`).
+ */
+export function packageReadyForTemplate(progress: PlanSlotProgress | null): boolean {
+  if (!fingerprintOf(progress)) return false;
+  if (progress!.videoId != null) return true;
+  return (progress!.status === "packaged" || progress!.status === "built") && progress!.package!.problems.every((p) => REVIEW_PROBLEMS.has(p));
+}
+
+/** BL-267 (AC-WT-14/15/16/41): the owner approved the media, or the channel has no review gate; anything else (unknown too) does not. */
+export const mediaAllows = (progress: PlanSlotProgress | null): boolean => progress?.media?.review === "approved" || progress?.media?.review === "not_required";
+
 /**
  * BL-242: an approval made with `approved` names the package `current` is: the same video and manifest, and the same video id --
  * an approval made before the upload (no video id) also covers the video that upload made of that manifest.
  */
-export function fingerprintCovers(approved: PublishingPlanPackageFingerprint, current: PublishingPlanPackageFingerprint | null, recodedFrom: readonly string[] = []): boolean {
+export function fingerprintCovers(
+  approved: PublishingPlanPackageFingerprint,
+  current: PublishingPlanPackageFingerprint | null,
+  recodedFrom: readonly string[] = [],
+  media: { approved?: PlanMediaKey | null; current?: PlanMediaKey | null } = {}
+): boolean {
   if (current === null) return false;
   if (approved.video === current.video && approved.manifestSha256 === current.manifestSha256 && (approved.videoId === null || approved.videoId === current.videoId)) return true;
+  // BL-267 (AC-WT-42): an approval made with the media covers a packaging-only re-package of the same mp4 (same video, sha256, size).
+  const a = media.approved;
+  const c = media.current;
+  if (a && c && approved.video === current.video && a.video === c.video && a.videoSha256 === c.videoSha256 && a.sizeBytes === c.sizeBytes && (approved.videoId === null || approved.videoId === current.videoId)) return true;
   // BL-263 (ADR 0071 §5, plan §6.5): an approval naming a V that was recoded to the current S code still covers it when it names the
   // same, non-null video id (the video id is the identity, AGENTS.md §F); the manifest SHA-256 changed with the recode. An approval
   // made before the upload (no video id) is not carried: the slot asks again, which by ADR 0062 §4 changes no date.
@@ -169,6 +203,8 @@ export function slotViewOf(args: {
   now: Date;
   /** BL-240: the slot named by `replacesSlotId`, as it stands (null: no such slot, or none named). */
   replaces?: ReplacedSlot | null;
+  /** BL-267: the slot's place in the template in force; null/absent: no template in force. */
+  match?: SlotMatch | null;
 }): PlanSlotView {
   const { meta, slot, now } = args;
   const content = contentOf(slot);
@@ -183,7 +219,7 @@ export function slotViewOf(args: {
   if (args.stage === "packaged") {
     const current = fingerprintOf(args.progress);
     const standing = standingPackageApprovalOf(counted, meta.timeZone, content);
-    if (standing && fingerprintCovers(standing.package, current, args.progress?.recodedFrom ?? [])) {
+    if (standing && fingerprintCovers(standing.package, current, args.progress?.recodedFrom ?? [], { approved: standing.media ?? null, current: mediaOfProgress(args.progress) })) {
       contentHash = standing.contentHash;
       approval = "approved";
       fingerprint = standing.package;
@@ -216,10 +252,15 @@ export function slotViewOf(args: {
     state.superseded ? (instantOf(state.superseded.snapshot.publishAt, state.superseded.snapshot.timeZone)?.getTime() ?? 0) : 0,
     args.progress?.publishAt ? Date.parse(args.progress.publishAt) || 0 : 0
   );
+  const released = releaseMs <= now.getTime();
+  const youtubePublishAt = args.progress?.package ? (args.progress.publishAt ?? null) : null;
   return {
     slotId: slot.slotId,
     ...content,
     publishAtUtc: instant.toISOString(),
+    dating: datingOf({ approved: approval === "approved", vetoed: state.vetoed !== null, released, progress: args.progress, match: args.match ?? null, youtubePublishAt }),
+    foreignPublishAt: args.progress?.foreignPublishAt ?? null,
+    movedFrom: slot.movedFrom ? { ...slot.movedFrom } : null,
     contentHash,
     approval,
     fingerprint,
@@ -239,13 +280,32 @@ export function slotViewOf(args: {
     videoId: args.progress?.videoId ?? null,
     package: args.progress?.package ?? null,
     // Round 3 (b): only when the slot's CURRENT package names the video -- an upload row of the old slot alone does not count.
-    youtubePublishAt: args.progress?.package ? (args.progress.publishAt ?? null) : null,
+    youtubePublishAt,
     duplicateVideo: false,
-    released: releaseMs <= now.getTime(),
+    released,
     createdAt: slot.createdAt,
     updatedAt: slot.updatedAt,
     updatedBy: slot.updatedBy,
   };
+}
+
+/**
+ * BL-267 (ADR 0073 §3, plan §3.4/§3.10): what dates the slot and what it waits for. `source` is set whatever the release (cross-posting
+ * reads it for slots up to 36 h past); a veto clears it. An explicit owner approval wins over the template.
+ */
+export function datingOf(args: { approved: boolean; vetoed: boolean; released: boolean; progress: PlanSlotProgress | null; match: SlotMatch | null; youtubePublishAt: string | null }): PlanSlotDating {
+  const { match, progress } = args;
+  const position = match && "position" in match ? { position: { ...match.position } } : {};
+  if (args.vetoed) return { source: null, state: "vetoed", ...position };
+  const ready = packageReadyForTemplate(progress);
+  const source = args.approved ? "owner" : match?.state === "match" && ready && mediaAllows(progress) ? "template" : null;
+  if (args.released) return { source, state: "released", ...position };
+  if (progress?.foreignPublishAt) return { source, state: "foreign_date", ...position };
+  if (source) return { source, state: args.youtubePublishAt ? "dated" : "will_date", ...position };
+  if (match?.state === "match") return { source: null, state: ready ? "awaiting_media_review" : "on_template_awaiting_package", ...position };
+  if (match?.state === "on_template_awaiting_package") return { source: null, state: "on_template_awaiting_package", ...position };
+  if (match?.state === "position_taken") return { source: null, state: "position_taken", ...position, heldBy: match.heldBy };
+  return { source: null, state: "off_template" };
 }
 
 /**
@@ -272,6 +332,8 @@ export function planViewOf(args: {
   now: Date;
   /** BL-240: the replaced slots, by their id. */
   replaced?: Map<string, ReplacedSlot>;
+  /** BL-267: every slot's place in the template in force (by slot id); absent: no template in force. */
+  matches?: Map<string, SlotMatch>;
 }): PlanView {
   const views = args.slots
     .map((slot) =>
@@ -283,6 +345,7 @@ export function planViewOf(args: {
         progress: args.progress.get(slot.slotId) ?? null,
         now: args.now,
         replaces: slot.replacesSlotId ? (args.replaced?.get(slot.replacesSlotId) ?? null) : null,
+        match: args.matches?.get(slot.slotId) ?? null,
       })
     )
     .sort((a, b) => Date.parse(a.publishAtUtc) - Date.parse(b.publishAtUtc) || a.slotId.localeCompare(b.slotId));

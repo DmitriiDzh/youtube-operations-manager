@@ -56,7 +56,8 @@ export const ownerDecisionInputSchema = z
     if ((value.action === "approve" || value.action === "revoke") && value.slots.some((s) => !s.contentHash)) {
       ctx.addIssue({ code: "custom", path: ["slots"], message: "approve and revoke name the content hash each slot was shown with" });
     }
-    if ((value.action === "veto" || value.action === "restore" || value.action === "revoke") && value.slots.length !== 1) {
+    // BL-267 (ADR 0073 §3, AC-WT-26): no bulk date action -- an explicit date is one slot at a time.
+    if (value.slots.length !== 1) {
       ctx.addIssue({ code: "custom", path: ["slots"], message: `${value.action} takes exactly one slot` });
     }
   });

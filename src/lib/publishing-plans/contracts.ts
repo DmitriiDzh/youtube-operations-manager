@@ -119,7 +119,9 @@ export type PlanSaveRefusal = {
     | "slot_id_removed"
     | "replaces_self"
     | "replaces_unknown"
-    | "replaces_cycle";
+    | "replaces_cycle"
+    // BL-267 (ADR 0073 §5): the slot's video has a date on YouTube -- only the owner or the Producer moves it.
+    | "slot_dated";
 };
 
 /** BL-240 (ADR 0060): the slot a slot replaces, as it stands now. */
@@ -135,6 +137,29 @@ export type ReplacedSlot = {
   released: boolean;
   /** False: no slot with that id in the channel (any more). */
   found: boolean;
+};
+
+/**
+ * BL-267 (ADR 0073 §3, plan §3.10): how a slot gets its date. `source`: what dates it (or would, once its package and media allow)
+ * -- the owner's template or his explicit one-slot date; null: nothing. `state` is what the screen and the agents show.
+ */
+export type PlanSlotDatingState =
+  | "dated"
+  | "will_date"
+  | "on_template_awaiting_package"
+  | "awaiting_media_review"
+  | "off_template"
+  | "position_taken"
+  | "foreign_date"
+  | "vetoed"
+  | "released";
+export type PlanSlotDating = {
+  source: PlanDatingSource | null;
+  state: PlanSlotDatingState;
+  /** The template position the slot is on (match, awaiting package or media, taken). */
+  position?: { date: string; day: string; index: number };
+  /** With `position_taken`: the slot that holds the position. */
+  heldBy?: string;
 };
 
 /** BL-242: `planned` -- in the `packaged` stage, nothing waits for the owner but a live future slot still waits for its package. */
@@ -181,6 +206,12 @@ export type PlanSlotView = PublishingPlanSlotContent & {
   duplicateVideo: boolean;
   /** The slot's time has passed (it can no longer be approved, vetoed or restored). */
   released: boolean;
+  /** BL-267 (ADR 0073): how the slot is dated (template / explicit owner date) and what it waits for. */
+  dating: PlanSlotDating;
+  /** BL-267: the date YouTube carries that this computer did not set («дата задана вручную»), else null. */
+  foreignPublishAt: string | null;
+  /** BL-267 (ADR 0073 §5): where the slot was before its last move by the owner or the Producer, else null. */
+  movedFrom: { weekStart: string; publishAt: string; timeZone: string; at: string; by: "owner" | "producer" } | null;
   createdAt: string;
   updatedAt: string;
   updatedBy: PublishingPlanActor;
@@ -263,7 +294,7 @@ export type SocialSlotState = {
   publishAtUtc: string;
   released: boolean;
   vetoed: boolean;
-  /** A standing owner approval covering the slot's CURRENT package, not vetoed (packaged stage only). */
+  /** BL-267 (owner O10): the plan dates the slot (template or explicit owner date), not vetoed, no foreign date. */
   approved: boolean;
   /** The approved package (video number, manifest SHA-256, video id) when approved, else null. */
   package: PublishingPlanPackageFingerprint | null;

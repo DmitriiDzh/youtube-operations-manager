@@ -22,9 +22,28 @@ export type SlotMediaKey = { video: string; videoSha256: string; sizeBytes: numb
 /**
  * BL-242 (ADR 0062 §3): an approval dates an upload only of the package it names -- any package when it names none (the `slot`
  * stage), else the same manifest and, when it names a video id, that video (`videoId`: the upload's own, null before the insert).
+ * BL-267 (ADR 0073 §3, AC-WT-17/42): an approval that names the media (video code, mp4 SHA-256, size) also dates an upload of the
+ * same media under another manifest (a packaging-only re-package, BL-265); a different mp4 is not it.
  */
-export function approvalNamesUpload(decision: Extract<SlotDecision, { kind: "approved" }>, upload: { manifestSha256: string; videoId: string | null }): boolean {
+export function approvalNamesUpload(
+  decision: Extract<SlotDecision, { kind: "approved" }>,
+  upload: { manifestSha256: string; videoId: string | null; media?: { video: string; videoSha256: string | null; sizeBytes: number } | null }
+): boolean {
   const named = decision.package;
   if (!named) return true;
-  return named.manifestSha256 === upload.manifestSha256 && (named.videoId === null || named.videoId === upload.videoId);
+  const videoOk = named.videoId === null || named.videoId === upload.videoId;
+  if (named.manifestSha256 === upload.manifestSha256 && videoOk) return true;
+  const media = decision.media;
+  return Boolean(media && upload.media && upload.media.videoSha256 && media.video === upload.media.video && media.videoSha256 === upload.media.videoSha256.toLowerCase() && media.sizeBytes === upload.media.sizeBytes && videoOk);
+}
+
+/** BL-267: an upload row's media as `approvalNamesUpload` reads it (its frozen package JSON); null when it cannot be read. */
+export function mediaOfPackageJson(packageJson: string): { video: string; videoSha256: string | null; sizeBytes: number } | null {
+  try {
+    const pkg = JSON.parse(packageJson) as { video?: unknown; videoSha256?: unknown; sizeBytes?: unknown };
+    if (typeof pkg.video !== "string" || typeof pkg.sizeBytes !== "number") return null;
+    return { video: pkg.video, videoSha256: typeof pkg.videoSha256 === "string" ? pkg.videoSha256 : null, sizeBytes: pkg.sizeBytes };
+  } catch {
+    return null;
+  }
 }

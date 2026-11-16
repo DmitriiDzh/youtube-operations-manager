@@ -122,6 +122,11 @@ export type PublishingPlanDecision = {
    * Absent on a decision made in the `slot` stage (or before this field).
    */
   package?: PublishingPlanPackageFingerprint;
+  /**
+   * BL-267 (ADR 0073 §3, plan §3.4): on an approval made by this build, the media of that package (video code, the mp4's SHA-256 and
+   * size), so a packaging-only re-package keeps it. Not part of the hash; an older build ignores it (and keeps the manifest rule).
+   */
+  media?: { video: string; videoSha256: string; sizeBytes: number };
 };
 
 export type PublishingPlansDocument = {

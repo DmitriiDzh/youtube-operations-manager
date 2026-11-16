@@ -11,7 +11,9 @@ import { WORKER_FACTORY_TOOLS } from "@/mcp/worker-factory-tools";
 // call) -- and no MCP path can reach a decision: the owner's surface is used only by the Web UI's publishing-plans routes.
 
 const SRC = path.resolve(process.cwd(), "src");
-const FEATURE_MODULES = ["media-generation", "generation-plans", "gemini-media", "live-streams", "publishing", "batches", "changesets", "video-details", "playlist-management", "video-comments", "storyboards", "channel-branding", "channel-localizations"];
+const FEATURE_MODULES = ["media-generation", "generation-plans", "gemini-media", "live-streams", "publishing", "batches", "changesets", "video-details", "playlist-management", "video-comments", "storyboards", "channel-branding", "channel-localizations", "package-reviews", "cross-posting"];
+// BL-267 (AC-WT-41): `package-reviews` and `cross-posting` joined the list -- the media review reaches the plan only through the
+// `progress` port (publishing-plan-progress), and cross-posting reads the plan, never the other way round.
 
 async function files(dir: string): Promise<string[]> {
   const out: string[] = [];

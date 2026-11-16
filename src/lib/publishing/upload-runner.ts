@@ -12,7 +12,7 @@ import { CLOSED_OWNER_REVIEW_GATE, type OwnerReviewGate } from "./owner-review-g
 import { removedMarkFreesSlot, uploadTimeOf } from "@/lib/shared-video-presence";
 import { READ_BACK_RETRIES, READ_BACK_RETRY_DELAY_MS } from "@/lib/video-details/read-back";
 import type { PublishingSettings } from "./settings";
-import { approvalNamesUpload, type SlotDecision } from "./slot-decision";
+import { approvalNamesUpload, mediaOfPackageJson, type SlotDecision } from "./slot-decision";
 import { packagingDifferences } from "./package-text";
 import { parseReleasePackage, tagsLength, type PackageProblem } from "./packages";
 import { approvedPackageOf, changedPackageFields } from "./approved-package";
@@ -841,7 +841,7 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
         const decision = await deps.slotDecision(job.channelId, job.slotId);
         if (decision?.kind === "vetoed") slotWithheld = "the slot was vetoed";
         // BL-242 (ADR 0062 §3): the approval must name this upload's manifest (and video); one of another package is not this one's.
-        else if (decision?.kind === "approved" && approvalNamesUpload(decision, { manifestSha256: job.manifestSha256, videoId })) publishAtNow = new Date(decision.publishAt).toISOString();
+        else if (decision?.kind === "approved" && approvalNamesUpload(decision, { manifestSha256: job.manifestSha256, videoId, media: mediaOfPackageJson(job.packageJson) })) publishAtNow = new Date(decision.publishAt).toISOString();
         // BL-239 review #1: a Producer row's date also came only from the slot's approval (ADR 0059 §4).
         else if (job.automatic || job.queuedBy === "producer") slotWithheld = decision?.kind === "approved" ? "the slot's approval names another package" : "the slot is no longer approved";
       }

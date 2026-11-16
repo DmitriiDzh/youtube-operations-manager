@@ -79,29 +79,18 @@ async function approve(h: ReturnType<typeof harness>, slotId: string) {
   return h.service.decide(CH, WEEK, { action: "approve", slots: [{ slotId, contentHash: slotOf(plan, slotId).contentHash }] }, "u1");
 }
 
-test("AC-WP-50: a new document is in the packaged stage; the owner sets slot, then packaged -- each one audited change", async () => {
+// BL-267 (ADR 0073, plan §3.8, AC-WT-38): the approval stage is retired. AC-WP-50 asserted the owner's stage switch; the requirement
+// changed (owner msgs 4569/4575: no slot approval), so it now asserts that the switch writes nothing and a `slot` stage in the
+// document is ignored -- an older build is never put into the slot stage by this one.
+test("AC-WT-38 (was AC-WP-50): setApprovalStage validates and writes nothing; a document saying `slot` reads packaged", async () => {
   const h = harness();
   await week(h);
   assert.equal((await h.service.ownerList(CH)).approvalStage, "packaged");
+  assert.deepEqual(await h.service.setApprovalStage(CH, { stage: "slot" }, "u1"), { approvalStage: "packaged", changed: false });
+  assert.equal((await h.core.read(CH)).approvalStage, undefined);
+  assert.equal(h.audits.filter((a) => a.detail.event === "publishing_plan.approval_stage").length, 0);
+  await h.core.setApprovalStage(CH, "slot");
   assert.equal((await get(h)).approvalStage, "packaged");
-  assert.equal((await h.core.read(CH)).approvalStage, undefined, "nothing is written for the default");
-
-  assert.deepEqual(await h.service.setApprovalStage(CH, { stage: "slot" }, "u1"), { approvalStage: "slot", changed: true });
-  assert.equal((await h.core.read(CH)).approvalStage, "slot");
-  assert.equal((await get(h)).approvalStage, "slot");
-  assert.deepEqual(await h.service.setApprovalStage(CH, { stage: "slot" }, "u1"), { approvalStage: "slot", changed: false }, "the same stage again writes nothing");
-  assert.deepEqual(await h.service.setApprovalStage(CH, { stage: "packaged" }, "u1"), { approvalStage: "packaged", changed: true });
-  assert.equal((await h.core.read(CH)).approvalStage, "packaged");
-
-  const stageEvents = h.audits.filter((a) => a.detail.event === "publishing_plan.approval_stage");
-  assert.deepEqual(
-    stageEvents.map((a) => [a.weekStart, a.slotId, a.detail.from, a.detail.to, a.detail.by, a.detail.device]),
-    [
-      [null, null, "packaged", "slot", "u1", "Mac"],
-      [null, null, "slot", "packaged", "u1", "Mac"],
-    ]
-  );
-  // Only the two stages exist; an unknown one or an extra field is refused.
   for (const input of [{ stage: "week" }, { stage: "slot", by: "agent" }, {}]) {
     const error = await refusal(h.service.setApprovalStage(CH, input, "u1"));
     assert.ok(isDomainError(error) && error.code === "validation_failed", JSON.stringify(input));
@@ -186,11 +175,11 @@ test("AC-WP-53: approving a slot that awaits its package is refused publishing_p
   const plan = await week(h);
   const error = await refusal(h.service.decide(CH, WEEK, { action: "approve", slots: [{ slotId: "s1", contentHash: slotOf(plan, "s1").contentHash }] }, "u1"));
   assert.ok(isDomainError(error) && error.code === "publishing_plan_slot_not_packaged", String(error));
-  // The week at once: one slot waiting refuses the whole call, the ready one is not approved either.
+  // BL-267 (AC-WT-26): the week at once is refused outright (one slot per explicit date); nothing is approved.
   h.progress.set("s2", packaged({ video: "V65", manifestSha256: BB }));
   const both = await get(h);
   const week2 = await refusal(h.service.decide(CH, WEEK, { action: "approve", slots: both.slots.map((s) => ({ slotId: s.slotId, contentHash: s.contentHash })) }, "u1"));
-  assert.ok(isDomainError(week2) && week2.code === "publishing_plan_slot_not_packaged");
+  assert.ok(isDomainError(week2) && week2.code === "validation_failed");
   assert.deepEqual((await h.core.read(CH)).decisions, {});
   assert.deepEqual(h.audits, []);
 });
@@ -251,24 +240,19 @@ test("AC-WP-54: an approval made before the upload stands for the video that upl
   assert.equal(slotOf(await get(h), "s1").approval, "needs_approval");
 });
 
-test("AC-WP-55: an approval made in the slot stage does not count in the packaged stage -- needs approval, the uploads' decision pending", async () => {
+// BL-267 (AC-WT-38): the slot stage is retired. AC-WP-55 switched stages; now a slot-stage approval (no package) written by an older
+// build simply never counts: the slot needs the owner's explicit date with its package, the uploads see pending.
+test("AC-WT-38 (was AC-WP-55): a slot-stage approval in the document dates nothing; a packaged approval counts", async () => {
   const h = harness();
-  await week(h);
-  await h.service.setApprovalStage(CH, { stage: "slot" }, "u1");
-  await approve(h, "s1");
-  assert.equal(slotOf(await get(h), "s1").approval, "approved");
-  assert.deepEqual((await h.service.slotDecisions(CH)).get("s1"), { kind: "approved", publishAt: "2026-10-26T06:00:00.000Z" , source: "owner" });
-
-  await h.service.setApprovalStage(CH, { stage: "packaged" }, "u1");
+  const plan = await week(h);
+  const s1 = slotOf(plan, "s1");
+  await h.core.addDecisions(CH, [{ id: "old1", weekStart: WEEK, slotId: "s1", kind: "approved", contentHash: s1.contentHash, snapshot: { date: s1.date, publishAt: s1.publishAt, lengthHint: s1.lengthHint, note: s1.note, timeZone: "Asia/Tokyo" }, by: "owner", device: "Windows", at: "2026-10-25T07:00:00Z", seq: 1 }]);
   h.progress.set("s1", packaged());
-  const s1 = slotOf(await get(h), "s1");
-  assert.equal(s1.approval, "needs_approval");
-  assert.equal(s1.changedAfterApproval, null, "nothing changed: the old approval simply does not count here");
+  const after = slotOf(await get(h), "s1");
+  assert.equal(after.approval, "needs_approval");
   assert.deepEqual((await h.service.slotDecisions(CH)).get("s1"), { kind: "pending" });
-  // And the other way round: a packaged-stage approval does not count in the slot stage.
   await approve(h, "s1");
-  await h.service.setApprovalStage(CH, { stage: "slot" }, "u1");
-  assert.equal(slotOf(await get(h), "s1").approval, "approved", "its own slot-stage approval counts again");
+  assert.equal((await h.service.slotDecisions(CH)).get("s1")?.kind, "approved");
 });
 
 test("AC-WP-56: the uploads' decision for an approved packaged slot names the fingerprint; a veto carries it too", async () => {
@@ -365,7 +349,9 @@ test("AC-WP-62: X approved naming vid1 and dated; an agent edits X (or the owner
     await threeSlots(h);
     h.progress.set("s2", uploaded(B_TIME));
     await approve(h, "s2");
-    if (how === "edit") await h.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s2", "2026-10-27", "19:00")] }, "worker");
+    // BL-267 (AC-WT-35): an agent can no longer re-time a dated slot (slot_dated), so the agent's edit changes its note instead --
+    // still a change that leaves the approval behind.
+    if (how === "edit") await h.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s2", "2026-10-27", "18:00", { note: "другой вариант" })] }, "worker");
     else {
       const shown = slotOf(await get(h), "s2");
       await h.service.decide(CH, WEEK, { action: "revoke", slots: [{ slotId: "s2", contentHash: shown.contentHash }] }, "u1");
@@ -536,14 +522,7 @@ test("BL-243 AC-WP-70: a deleted video is nothing to approve; an earlier approva
     assert.ok(isDomainError(error) && error.code === "publishing_plan_slot_not_packaged");
   }
 
-  // `slot` stage: the approval does not depend on the package (BL-225); the plan schedule's guard keeps the date off (AC-WP-71).
-  const h = harness();
-  await week(h);
-  await h.service.setApprovalStage(CH, { stage: "slot" }, "u1");
-  h.progress.set("s1", deletedProgress());
-  await approve(h, "s1");
-  assert.equal(slotOf(await get(h), "s1").approval, "approved");
-  assert.equal(slotOf(await get(h), "s1").statusCode, "video_deleted_on_youtube");
+  // BL-267 (AC-WT-38): the `slot` stage part of this test is gone with the stage (no approval without a package any more).
 });
 
 test("BL-243 AC-WP-70: a vetoed slot whose video was deleted on YouTube can be removed (its video is not on YouTube)", async () => {
@@ -613,16 +592,7 @@ test("BL-243 AC-WP-77: save() reads progress once, for the approval rule, the re
   await h.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s2", "2026-10-27", "20:00")] }, "worker");
   assert.equal(reads(), before + 1, "packaged with a standing approval");
 
-  const slotStage = harness();
-  await week(slotStage);
-  await slotStage.service.setApprovalStage(CH, { stage: "slot" }, "u1");
-  await approve(slotStage, "s1");
-  const start = slotStage.progressCalls.length;
-  await slotStage.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s2", "2026-10-27", "20:00")] }, "worker");
-  assert.equal(slotStage.progressCalls.length, start + 1, "slot stage");
-  await slotStage.service.save({ channelId: CH, weekStart: WEEK, removeSlotIds: ["s2"] }, "worker");
-  assert.equal(slotStage.progressCalls.length, start + 2, "a removal: the same one read");
-  assert.ok(slotStage.progressCalls[start + 1].includes("s2"), "the removed slot is in it");
+  // BL-267 (AC-WT-38): the slot-stage half of this test is gone with the stage.
 });
 
 // BL-243 review round 4, item 2 (AC-WP-77): the workspace is unavailable, so the progress holds no packages (flag

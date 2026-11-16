@@ -6,7 +6,7 @@
 // (identity, backup, Live writes right before the write, read-back) and is read back again here before it is recorded.
 
 import type { StoredPublishingUpload } from "@/lib/db";
-import { approvalNamesUpload, type SlotDecision } from "./slot-decision";
+import { approvalNamesUpload, mediaOfPackageJson, type SlotDecision } from "./slot-decision";
 import type { UploadSteps } from "./upload-runner";
 
 /** video-details' rule: a date within 15 minutes is neither written nor removed (the video could publish meanwhile). */
@@ -66,7 +66,7 @@ export function checksPassed(steps: UploadSteps): boolean {
  * decides -- an approval naming a package (`packaged` stage) only when it names this upload: its video id, or (none named) its
  * manifest. Pure.
  */
-export function decisionForRow(row: Pick<StoredPublishingUpload, "slotId" | "videoId" | "manifestSha256">, decisions: ReadonlyMap<string, SlotDecision>): SlotDecision | undefined {
+export function decisionForRow(row: Pick<StoredPublishingUpload, "slotId" | "videoId" | "manifestSha256"> & { packageJson?: string }, decisions: ReadonlyMap<string, SlotDecision>): SlotDecision | undefined {
   if (row.videoId) {
     const naming = [...decisions.values()].filter((d) => d.kind !== "pending" && d.package?.videoId === row.videoId);
     const approved = naming.filter((d) => d.kind === "approved");
@@ -75,7 +75,7 @@ export function decisionForRow(row: Pick<StoredPublishingUpload, "slotId" | "vid
     if (naming.length > 0) return { kind: "vetoed" };
   }
   const own = row.slotId ? decisions.get(row.slotId) : undefined;
-  if (own?.kind === "approved" && !approvalNamesUpload(own, { manifestSha256: row.manifestSha256, videoId: row.videoId })) return { kind: "pending" };
+  if (own?.kind === "approved" && !approvalNamesUpload(own, { manifestSha256: row.manifestSha256, videoId: row.videoId, media: row.packageJson ? mediaOfPackageJson(row.packageJson) : null })) return { kind: "pending" };
   return own;
 }
 

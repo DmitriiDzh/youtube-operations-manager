@@ -233,8 +233,9 @@ test("AC-RT-12 (review 1): the margin counts the soonest date the video may carr
   assert.equal(codeOf(await refusal(retime(h, "s1", "2026-10-27", "20:00", true))), "publishing_plan_slot_too_soon");
   // A slot at 23:00 whose uploaded video carries 06:00Z on YouTube (no approval left): also too soon.
   const g = await setup("vid2");
-  g.progress.set("s1", { status: "scheduled", code: null, videoId: "vid2", package: pkg(), publishAt: "2026-10-26T06:00:00.000Z" });
+  // BL-267 (AC-WT-35): an agent cannot re-time a dated slot, so the slot is moved to 23:00 before its video carries the date.
   await g.service.save({ channelId: CH, weekStart: WEEK, slots: [slot("s1", "2026-10-26", "23:00")] }, "worker");
+  g.progress.set("s1", { status: "scheduled", code: null, videoId: "vid2", package: pkg(), publishAt: "2026-10-26T06:00:00.000Z" });
   g.clock.now = new Date("2026-10-26T05:50:00Z");
   assert.equal(codeOf(await refusal(retime(g, "s1", "2026-10-27", "20:00", false))), "publishing_plan_slot_too_soon");
 });
@@ -253,8 +254,8 @@ test("AC-RT-14 (review 2): re-approving a moved slot that replaces another does 
   await h.service.save({ channelId: CH, weekStart: WEEK, slots: [{ ...slot("s3", "2026-10-28", "18:00"), replacesSlotId: "s2" }] }, "factory");
   h.progress.set("s3", { status: "packaged", code: null, videoId: null, package: pkg({ video: "V65", manifestSha256: "c".repeat(64) }) });
   await approve(h, "s3");
-  assert.ok(slotOf(await get(h), "s2").vetoed);
-  await h.owner.decide(CH, WEEK, { action: "restore", slots: [{ slotId: "s2" }] }, "u1");
+  // BL-267 (owner O4, AC-WT-36): no replacement -- the approval of s3 vetoes nothing (was: vetoed s2, then restored).
+  assert.equal(slotOf(await get(h), "s2").vetoed, null);
   await retime(h, "s3", "2026-10-28", "19:00", true);
   const plan = await get(h);
   assert.equal(slotOf(plan, "s3").approval, "approved");
