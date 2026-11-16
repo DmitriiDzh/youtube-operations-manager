@@ -37,7 +37,7 @@ test("bell: one entry per other channel that is due, linking to the calendar; th
     "UC_A"
   );
   assert.equal(entries.length, 1);
-  assert.deepEqual([entries[0].key, entries[0].channelId, entries[0].href], ["UC_B:publishing:coverage", "UC_B", "/content/calendar"]);
+  assert.deepEqual([entries[0].key, entries[0].channelId, entries[0].href], ["UC_B:publishing:coverage", "UC_B", "/content/week-plan"]); // BL-267 (owner msg 4572): «Календарь» became «План» → «Месяц»
   // Changed 2026-11-16 (BL-262, owner msgs 4541/4542 -- a requirement change, AGENTS.md §L): the row says only «Ничего не
   // запланировано»; the data age moved into the hover text (`detail`).
   assert.equal(entries[0].text, "Ничего не запланировано");

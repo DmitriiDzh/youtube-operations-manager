@@ -8,12 +8,16 @@ import { VideoPlayButton } from "./video-popup";
 import { estimateUploadUnits } from "@/lib/publishing/publish-dates";
 import type { UiTextKey } from "@/lib/ui-text";
 import { ActionButton, SkeletonLines } from "./busy-feedback";
-import { ToggleSwitch } from "./toggle-switch";
+import { ConfirmDialog } from "./confirm-dialog";
+import { PublishingCalendar } from "./publishing-calendar";
 import { useT, useUiText } from "./ui-text-provider";
+import { WeekTemplateEditor } from "./week-template-editor";
+import { freePositions, localAndUtc, type TemplateAnswerDto } from "./week-template-model";
 import { useUserTimezone } from "./use-user-timezone";
 import {
   canApprove,
   canRetime,
+  type DatingState,
   deletedOnYoutube,
   changedField,
   defaultWeek,
@@ -21,11 +25,9 @@ import {
   pipelineOf,
   replacedToPull,
   shiftWeek,
-  slotsToApprove,
   splitVetoed,
   ownerReviewOf,
   duplicateWarningOf,
-  stageOf,
   strayDateOf,
   tileCounts,
   wallParts,
@@ -33,7 +35,6 @@ import {
   weekDays,
   parseClock,
   zonedParts,
-  type ApprovalStage,
   type PipelineStep,
   type PipelineStepState,
   type PlanDto,
@@ -48,16 +49,54 @@ import {
 // veto, confirmed in its own row -- never a browser dialog). «Всю неделю / По одному» is how he approves, not a setting: both write
 // the same per-slot approvals; the browser only remembers which one he used last.
 
-type Mode = "week" | "one";
-const MODE_KEY = "ytom.weekPlan.mode";
+// BL-267 (WEEK_TEMPLATE_PLAN.md §3.6/§3.7/§3.9, ADR 0073; owner msgs 4569/4572/4575, 4630-4636): no slot approval any more -- the
+// week approval, «Всю неделю / По одному» and the approval-stage switch are gone. «План» has three views: «Неделя» (the slots, how
+// each is dated, the template's free positions as ghost rows), «Месяц» (the month calendar) and «Шаблон недели» (the editor). Every
+// date-changing action is one slot behind a dialog that names the exact change; every time shows the owner's own time beside UTC.
+type Mode = "one";
+type View = "week" | "month" | "template";
+const VIEW_KEY = "ytom.plan.view";
 
-function readMode(): Mode {
+function readView(): View {
   try {
-    return window.localStorage.getItem(MODE_KEY) === "one" ? "one" : "week";
+    const v = window.localStorage.getItem(VIEW_KEY);
+    return v === "month" || v === "template" ? v : "week";
   } catch {
     return "week";
   }
 }
+
+const DATING_KEYS: Record<DatingState, UiTextKey> = {
+  dated: "weekTemplate.dating.dated",
+  will_date: "weekTemplate.dating.willDate",
+  on_template_awaiting_package: "weekTemplate.dating.awaitingPackage",
+  awaiting_media_review: "weekTemplate.dating.awaitingMedia",
+  off_template: "weekTemplate.dating.offTemplate",
+  position_taken: "weekTemplate.dating.positionTaken",
+  foreign_date: "weekTemplate.dating.foreignDate",
+  vetoed: "weekTemplate.dating.vetoed",
+  released: "weekTemplate.dating.released",
+};
+const DATING_STYLES: Record<DatingState, string> = {
+  dated: "bg-emerald-500/15 text-emerald-300 ring-emerald-500/30",
+  will_date: "bg-emerald-500/10 text-emerald-200 ring-emerald-500/20",
+  on_template_awaiting_package: "bg-sky-500/15 text-sky-300 ring-sky-500/30",
+  awaiting_media_review: "bg-amber-500/15 text-amber-300 ring-amber-500/30",
+  off_template: "bg-zinc-700/40 text-zinc-300 ring-zinc-600/40",
+  position_taken: "bg-amber-500/15 text-amber-300 ring-amber-500/30",
+  foreign_date: "bg-violet-500/15 text-violet-300 ring-violet-500/30",
+  vetoed: "bg-red-500/10 text-red-300 ring-red-500/20",
+  released: "bg-zinc-700/40 text-zinc-400 ring-zinc-600/40",
+};
+
+/** BL-267: a move's answer (dry run or done). */
+type MoveAnswer = {
+  moved: boolean;
+  dryRun: boolean;
+  from: { weekStart: string; date: string; publishAt: string; publishAtUtc: string; timeZone: string };
+  to: { weekStart: string; date: string; publishAt: string; publishAtUtc: string; timeZone: string };
+  youtube: { effect: "moves" | "plan_only" | "none"; previous: string | null; result?: string; reason?: string; publishAt?: string | null };
+};
 
 const STEP_KEYS: Record<PipelineStep, UiTextKey> = {
   plan: "weekPlan.step.plan",
@@ -86,6 +125,9 @@ const ERROR_KEYS: Record<string, UiTextKey> = {
   publishing_plan_slot_vetoed: "weekPlan.error.vetoed",
   publishing_plan_slot_not_packaged: "weekPlan.error.notPackaged",
   publishing_plan_slot_too_soon: "weekPlan.retime.error.tooSoon",
+  publishing_plan_already_published: "weekTemplate.move.error.published",
+  publishing_plan_move_not_here: "weekTemplate.move.error.notHere",
+  publishing_plan_move_youtube_unavailable: "weekTemplate.move.error.switches",
 };
 // BL-256: why a new day/time was refused (`validation_failed`, `details.refused[].reason`).
 const RETIME_REASON_KEYS: Record<string, UiTextKey> = {
@@ -94,6 +136,9 @@ const RETIME_REASON_KEYS: Record<string, UiTextKey> = {
   publish_at_invalid: "weekPlan.retime.error.noSuchTime",
   date_invalid: "weekPlan.retime.error.noSuchTime",
   date_mismatch: "weekPlan.retime.error.noSuchTime",
+  beyond_horizon: "weekTemplate.move.error.beyond",
+  week_start_not_monday: "weekPlan.retime.error.noSuchTime",
+  too_many_slots: "weekTemplate.move.error.full",
 };
 
 /** The slot's channel time reads the same on the owner's clock (same date and time). */
@@ -103,22 +148,25 @@ function sameClock(slot: Pick<PlanSlotDto, "date" | "publishAt" | "publishAtUtc"
 }
 
 const weekdayKey = (n: number) => `weekPlan.weekday.${n}` as UiTextKey;
-const actorKey = (actor: "factory" | "worker" | "owner", capital = false) => (capital ? `weekPlan.actorCap.${actor}` : `weekPlan.actor.${actor}`) as UiTextKey;
+const actorKey = (actor: "factory" | "worker" | "owner" | "producer", capital = false) => (capital ? `weekPlan.actorCap.${actor}` : `weekPlan.actor.${actor}`) as UiTextKey;
 
 export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | null; visible: boolean }) {
   const t = useT();
   const { language } = useUiText();
   const ownerZone = useUserTimezone();
   const [summaries, setSummaries] = useState<PlanSummaryDto[] | null>(null);
-  // BL-242 (ADR 0062 §1): the channel's approval stage -- the switch «Одобрять пустые слоты» (`slot`); null until the list is read.
-  const [stage, setStage] = useState<ApprovalStage | null>(null);
   const [week, setWeek] = useState<string | null>(null);
   const [plan, setPlan] = useState<PlanDto | "none" | null>(null);
   // BL-235: what YouTube has for the shown week (the shared coverage), next to the approvals; null when unknown.
   const [coverage, setCoverage] = useState<{ weekStart: string; value: WeekCoverageDto } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [mode, setMode] = useState<Mode>("week");
+  const mode: Mode = "one";
+  const [view, setView] = useState<View>("week");
+  // BL-267: the week template (ghost rows of free positions); null until read or when unreadable.
+  const [template, setTemplate] = useState<TemplateAnswerDto | null>(null);
+  // BL-267 (AC-WT-27/28): «Дать дату вне шаблона» waits for its dialog.
+  const [confirmDate, setConfirmDate] = useState<PlanSlotDto | null>(null);
   const [confirmVeto, setConfirmVeto] = useState<string | null>(null);
   // BL-256: the slot whose day/time editor is open (one at a time).
   const [editing, setEditing] = useState<string | null>(null);
@@ -133,11 +181,11 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
   const [showVetoed, setShowVetoed] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
 
-  useEffect(() => setMode(readMode()), []);
-  const chooseMode = (next: Mode) => {
-    setMode(next);
+  useEffect(() => setView(readView()), []);
+  const chooseView = (next: View) => {
+    setView(next);
     try {
-      window.localStorage.setItem(MODE_KEY, next);
+      window.localStorage.setItem(VIEW_KEY, next);
     } catch {
       // A private window or blocked storage: the choice lasts for this page only.
     }
@@ -150,9 +198,13 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
     try {
       const res = await fetch(base);
       if (!res.ok) throw new Error(String(res.status));
-      const body = (await res.json()) as { plans: PlanSummaryDto[]; approvalStage?: ApprovalStage };
+      const body = (await res.json()) as { plans: PlanSummaryDto[] };
       setSummaries(body.plans);
-      setStage(stageOf(body));
+      // BL-267: the template, for the week's ghost rows (a failed read just shows none).
+      void fetch(`${base}/template`)
+        .then((r) => (r.ok ? (r.json() as Promise<TemplateAnswerDto>) : null))
+        .then((answer) => setTemplate(answer))
+        .catch(() => setTemplate(null));
       setWeek((current) => current ?? defaultWeek(body.plans, zonedParts(new Date().toISOString(), null).ymd));
       setError(null);
     } catch {
@@ -217,59 +269,45 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
     }
   }
 
-  /** BL-256 (owner msgs 4380/4383): the owner moves a slot; `approve` approves the new time in the same step. */
-  async function retime(slot: PlanSlotDto, shownHash: string, date: string, time: string, approve: boolean) {
-    if (!base || !week) return;
-    const busyKey = `${approve ? "retimeApprove" : "retime"}:${slot.slotId}`;
-    setBusy(busyKey);
+  /**
+   * BL-267 (ADR 0073 §5, plan §3.7; owner 4630/4636): the owner moves a slot anywhere -- `dryRun` first (what would change, also on
+   * YouTube), then the move itself after his confirmation. A dated video's date moves on YouTube at once.
+   */
+  async function move(slot: PlanSlotDto, shownHash: string, toWeekStart: string, date: string, time: string, dryRun: boolean): Promise<MoveAnswer | null> {
+    if (!base) return null;
+    setBusy(`move:${slot.slotId}`);
     setActionError(null);
     try {
-      const res = await fetch(`${base}/${week}/retime`, {
+      const res = await fetch(`${base}/move`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ slotId: slot.slotId, contentHash: shownHash, date, publishAt: `${date}T${time}`, approve }),
+        body: JSON.stringify({ slotId: slot.slotId, contentHash: shownHash, toWeekStart, date, publishAt: `${date}T${time}`, dryRun }),
       });
-      const body = (await res.json().catch(() => ({}))) as { plan?: PlanDto; error?: string; details?: { refused?: Array<{ reason: string }> } };
+      const body = (await res.json().catch(() => ({}))) as MoveAnswer & { error?: string; details?: { refused?: Array<{ reason: string }> } };
       if (!res.ok) {
         const reason = body.details?.refused?.[0]?.reason;
         const key = (reason ? RETIME_REASON_KEYS[reason] : undefined) ?? (body.error ? ERROR_KEYS[body.error] : undefined);
         setActionError(key ? t(key) : t("weekPlan.error.generic", { code: reason ?? body.error ?? String(res.status) }));
         await loadPlan();
-        return;
+        return null;
       }
-      if (body.plan) setPlan(body.plan);
-      setEditing(null);
-      void loadList();
+      if (!dryRun) {
+        if (body.youtube?.result === "failed") setActionError(t("weekTemplate.move.youtubeFailed", { reason: body.youtube.reason ?? "?" }));
+        setEditing(null);
+        if (body.to.weekStart !== week) setWeek(body.to.weekStart);
+        await Promise.all([loadPlan(), loadList()]);
+      }
+      return body;
     } catch {
       setActionError(t("weekPlan.error.generic", { code: "network" }));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  /** BL-242: the owner switches the channel's approval stage; both the list and the shown week are read again. */
-  async function chooseStage(next: ApprovalStage) {
-    if (!base) return;
-    setBusy("stage");
-    setActionError(null);
-    try {
-      const res = await fetch(`${base}/approval-stage`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ stage: next }) });
-      const body = (await res.json().catch(() => ({}))) as { approvalStage?: ApprovalStage; error?: string };
-      if (!res.ok) {
-        setActionError(t("weekPlan.stage.failed", { code: body.error ?? String(res.status) }));
-        return;
-      }
-      setStage(stageOf(body));
-      await Promise.all([loadList(), loadPlan()]);
-    } catch {
-      setActionError(t("weekPlan.stage.failed", { code: "network" }));
+      return null;
     } finally {
       setBusy(null);
     }
   }
 
   const shown = plan && plan !== "none" && plan.weekStart === week ? plan : null;
-  const toApprove = useMemo(() => (shown ? slotsToApprove(shown) : []), [shown]);
+  const ghosts = useMemo(() => (shown && template?.template && nowMs > 0 ? freePositions(template.template.days, shown.weekStart, shown.slots, nowMs) : []), [shown, template, nowMs]);
   // The owner's own time is shown only where it differs from the channel's (also when his zone is unknown and the browser's is used).
   const sameZone = shown ? shown.slots.every((s) => sameClock(s, ownerZone)) : true;
 
@@ -298,7 +336,8 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
           setEditing(slot.slotId);
         }}
         onCancelEdit={() => setEditing(null)}
-        onRetime={(shownHash, date, time, approve) => retime(slot, shownHash, date, time, approve)}
+        onMove={(shownHash, toWeekStart, date, time, dryRun) => move(slot, shownHash, toWeekStart, date, time, dryRun)}
+        onAskDate={() => setConfirmDate(slot)}
       />
     ) : null;
 
@@ -319,16 +358,40 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
   const tiles = shown ? tileCounts(shown) : { packaged: 0, scheduled: 0 };
   const firstRelease = shown?.slots.find((s) => !s.vetoed);
   const vetoedCount = shown ? shown.counts.vetoed : 0;
-  const units = toApprove.length * estimateUploadUnits({ playlist: true, deferredPublishAt: true });
+  const units = estimateUploadUnits({ playlist: true, deferredPublishAt: true });
   const groups = shown ? splitVetoed(shown.slots) : { live: [], vetoed: [] };
-  // BL-240 (C): the old slots «Одобрить неделю» would pull because a slot it approves replaces them.
-  const weekPulls = shown ? replacedToPull(shown.slots.filter((s) => toApprove.some((a) => a.slotId === s.slotId))) : [];
   const weekCoverage = shown && coverage?.weekStart === shown.weekStart ? weekCoverageLine(coverage.value) : null;
   const dayLabel = (date: string) => new Intl.DateTimeFormat(language, { day: "numeric", month: "short", timeZone: "UTC" }).format(new Date(`${date}T00:00:00Z`));
 
+  const viewSwitch = (
+    <div className="inline-flex rounded-lg border border-zinc-700 bg-zinc-950 p-0.5" role="group" aria-label={t("weekTemplate.view.label")}>
+      {(["week", "month", "template"] as const).map((value) => (
+        <button key={value} type="button" aria-pressed={view === value} onClick={() => chooseView(value)} className={`rounded-md px-3 py-1 text-sm transition-colors ${view === value ? "bg-zinc-100 font-medium text-zinc-900" : "text-zinc-300 hover:text-white"}`}>
+          {t(value === "week" ? "weekTemplate.view.week" : value === "month" ? "weekTemplate.view.month" : "weekTemplate.view.template")}
+        </button>
+      ))}
+    </div>
+  );
+  if (view === "month")
+    return (
+      <div className="space-y-3">
+        {viewSwitch}
+        <PublishingCalendar channelId={channelId} visible={visible} />
+      </div>
+    );
+  if (view === "template")
+    return (
+      <div className="space-y-3">
+        {viewSwitch}
+        <WeekTemplateEditor channelId={channelId} visible={visible} />
+      </div>
+    );
+
   return (
+    <div className="space-y-3">
+    {viewSwitch}
     <section className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4 sm:p-5">
-      {/* Week header: arrows, the range, the state; the approval mode on the right. */}
+      {/* Week header: arrows, the range, the state. */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <button type="button" onClick={() => week && setWeek(shiftWeek(week, -1))} disabled={!week} aria-label={t("weekPlan.prevWeek")} title={t("weekPlan.prevWeek")} className="rounded-md border border-zinc-700 px-2 py-1 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-40">
@@ -340,34 +403,7 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
           </button>
           {week && <span className={`ml-1 rounded-md px-2 py-0.5 text-xs font-medium ring-1 ${stateStyle}`}>{t(stateKey)}</span>}
         </div>
-        <div className="flex items-center gap-2 text-sm text-zinc-400">
-          <span>{t("weekPlan.mode.label")}</span>
-          <div className="inline-flex rounded-lg border border-zinc-700 bg-zinc-950 p-0.5" role="group" aria-label={t("weekPlan.mode.label")}>
-            {(["week", "one"] as const).map((value) => (
-              <button
-                key={value}
-                type="button"
-                aria-pressed={mode === value}
-                onClick={() => chooseMode(value)}
-                className={`rounded-md px-3 py-1 text-sm transition-colors ${mode === value ? "bg-zinc-100 font-medium text-zinc-900" : "text-zinc-300 hover:text-white"}`}
-              >
-                {t(value === "week" ? "weekPlan.mode.week" : "weekPlan.mode.one")}
-              </button>
-            ))}
-          </div>
-        </div>
       </div>
-
-      {stage && (
-        // BL-242 (ADR 0062 §1): how the owner approves -- the package (one approval per video, the default) or the empty slot.
-        <div className="flex flex-wrap items-center gap-3 text-sm">
-          <label className="flex items-center gap-2 text-zinc-300">
-            <ToggleSwitch tone="violet" checked={stage === "slot"} disabled={busy !== null} onChange={(on) => void chooseStage(on ? "slot" : "packaged")} label={t("weekPlan.stage.toggle")} />
-            <span>{t("weekPlan.stage.toggle")}</span>
-          </label>
-          <span className="text-xs text-zinc-500">{t(stage === "slot" ? "weekPlan.stage.hintSlot" : "weekPlan.stage.hintPackaged")}</span>
-        </div>
-      )}
 
       {error && <p className="rounded-md border border-red-900 bg-red-950/40 px-3 py-2 text-sm text-red-300">{error}</p>}
       {!summaries && !error && <SkeletonLines lines={4} />}
@@ -438,32 +474,39 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
             </div>
           )}
 
-          {mode === "week" && shown.slots.length > 0 && (
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-violet-900/60 bg-violet-950/30 px-4 py-3">
-              <p className="text-sm text-zinc-200">
-                {toApprove.length > 0
-                  ? t(vetoedCount > 0 ? "weekPlan.bar.summaryVetoed" : "weekPlan.bar.summary", { count: toApprove.length, vetoed: vetoedCount, units })
-                  : shown.state === "approved"
-                    ? t("weekPlan.bar.allApproved")
-                    : shown.state === "planned"
-                      ? t("weekPlan.bar.waitingPackages")
-                      : t("weekPlan.bar.nothing")}
-                {weekPulls.length > 0 && <span className="block text-xs text-amber-300">{t("weekPlan.bar.replaces", { slots: weekPulls.map((r) => replacedLabel(t, r)).join(", ") })}</span>}
-              </p>
-              <ActionButton
-                busy={busy === "week"}
-                busyLabel={t("weekPlan.action.saving")}
-                disabled={toApprove.length === 0 || busy !== null}
-                onClick={() => void decide("approve", toApprove, "week")}
-                className="rounded-md bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {t(shown.approvalStage === "packaged" ? "weekPlan.action.approveReady" : "weekPlan.action.approveWeek")}
-              </ActionButton>
-            </div>
+          {ghosts.length > 0 && (
+            // BL-267 (AC-WT-30): the template's free positions this week -- nothing is dated there until a slot takes one.
+            <ul className="divide-y divide-zinc-800/70 overflow-hidden rounded-lg border border-dashed border-zinc-700">
+              {ghosts.map((g) => {
+                const p = localAndUtc(g.instantUtc, ownerZone);
+                return (
+                  <li key={`${g.date}|${g.index}`} className="flex flex-wrap items-center gap-3 px-4 py-2 text-sm text-zinc-500">
+                    <span className="w-28">{dayLabel(p.localYmd)}</span>
+                    <span>{t("weekTemplate.time", { local: p.local, utc: p.utc })}</span>
+                    <span>{t(g.entry.kind === "short" ? "weekTemplate.ghost.short" : g.entry.hours !== undefined ? "weekTemplate.ghost.longHours" : "weekTemplate.ghost.long", { hours: g.entry.hours ?? 0 })}</span>
+                  </li>
+                );
+              })}
+            </ul>
           )}
         </>
       )}
+      {confirmDate && (
+        // BL-267 (AC-WT-27/28): one slot's explicit date, with exactly what it gives on YouTube.
+        <ConfirmDialog
+          title={t("weekTemplate.date.title")}
+          description={(() => {
+            const p = localAndUtc(confirmDate.publishAtUtc, ownerZone);
+            return t(confirmDate.videoId ? "weekTemplate.date.textUploaded" : "weekTemplate.date.text", { day: dayLabel(p.localYmd), local: p.local, utc: p.utc, zone: shown?.timeZone ?? "", units });
+          })()}
+          confirmLabel={t("weekTemplate.date.confirm")}
+          confirmBusyLabel={busy === `approve:${confirmDate.slotId}` ? t("weekPlan.action.saving") : null}
+          onCancel={() => setConfirmDate(null)}
+          onConfirm={() => void decide("approve", [{ slotId: confirmDate.slotId, contentHash: confirmDate.contentHash }], `approve:${confirmDate.slotId}`).then(() => setConfirmDate(null))}
+        />
+      )}
     </section>
+    </div>
   );
 }
 
@@ -501,7 +544,8 @@ function SlotRow(props: {
   editing: boolean;
   onAskEdit: () => void;
   onCancelEdit: () => void;
-  onRetime: (shownHash: string, date: string, time: string, approve: boolean) => Promise<void>;
+  onMove: (shownHash: string, toWeekStart: string, date: string, time: string, dryRun: boolean) => Promise<MoveAnswer | null>;
+  onAskDate: () => void;
 }) {
   const t = useT();
   const { slot, plan, mode, at } = props;
@@ -582,8 +626,9 @@ function SlotRow(props: {
       <div className="grid grid-cols-[6.5rem_1fr] items-center gap-3 px-4 py-3 md:grid-cols-[6.5rem_6rem_minmax(0,1fr)_auto_auto]">
         <div className={slot.vetoed ? "text-zinc-500" : "text-zinc-100"}>
           <div className={`text-sm font-medium ${slot.vetoed ? "line-through" : ""}`}>{dayLabel}</div>
-          <div className="text-sm">
-            {wall.time}
+          {/* BL-267 (O6, AC-WT-43): the owner's own time with UTC beside it; the channel's time on hover. */}
+          <div className="text-sm" title={t("weekTemplate.channelTime", { time: wall.time, zone: plan.timeZone })}>
+            {t("weekTemplate.time", { local: owner.time, utc: localAndUtc(slot.publishAtUtc, props.ownerZone).utc })}
             {!sameClock(slot, props.ownerZone) && !slot.vetoed && <span className="ml-1 text-zinc-500">{t("weekPlan.ownerTime", { time: ownerLabel })}</span>}
           </div>
         </div>
@@ -616,6 +661,16 @@ function SlotRow(props: {
             </div>
           )}
           {meta.text && <div className={`truncate text-xs ${meta.tone}`}>{meta.text}</div>}
+          {/* BL-267 (ADR 0073 §3): how the slot is dated -- by the template, by the owner's explicit date, or what it waits for. */}
+          {slot.dating && (
+            <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs">
+              <span className={`rounded px-1.5 py-0.5 ring-1 ${DATING_STYLES[slot.dating.state]}`}>
+                {t(DATING_KEYS[slot.dating.state], { slot: slot.dating.heldBy ?? "", at: slot.foreignPublishAt ? at(slot.foreignPublishAt) : "" })}
+              </span>
+              {slot.dating.source && slot.dating.state !== "vetoed" && <span className="text-zinc-500">{t(slot.dating.source === "template" ? "weekTemplate.source.template" : "weekTemplate.source.owner")}</span>}
+              {slot.movedFrom && <span className="text-zinc-500">{t(slot.movedFrom.by === "producer" ? "weekTemplate.movedByProducer" : "weekTemplate.movedByOwner", { at: at(slot.movedFrom.at) })}</span>}
+            </div>
+          )}
           {/* BL-242 R3: a date on YouTube no approval of this slot counts for -- approving moves it, vetoing removes it. */}
           {strayDateOf(slot) && <div className="truncate text-xs text-amber-300">{t("weekPlan.onYoutube", { at: at(strayDateOf(slot)!) })}</div>}
           {/* BL-242 round 3: two packages with one video number -- the uploads date neither. */}
@@ -653,10 +708,11 @@ function SlotRow(props: {
               {t("weekPlan.action.revoke")}
             </ActionButton>
           )}
-          {canAct && mode === "one" && canApprove(slot) && (
-            <ActionButton busy={props.busy === `approve:${slot.slotId}`} busyLabel={t("weekPlan.action.saving")} disabled={anyBusy} onClick={() => void props.onDecide("approve", [{ slotId: slot.slotId, contentHash: slot.contentHash }], `approve:${slot.slotId}`)} className="rounded-md bg-violet-600 px-3 py-1 text-sm font-semibold text-white hover:bg-violet-500 disabled:opacity-40">
-              {t("weekPlan.action.approve")}
-            </ActionButton>
+          {/* BL-267 (AC-WT-27): the explicit one-slot date, only where the template gives none; behind a dialog. */}
+          {canAct && mode === "one" && canApprove(slot) && slot.dating?.source !== "template" && (
+            <button type="button" disabled={anyBusy} onClick={props.onAskDate} className="rounded-md bg-violet-600 px-3 py-1 text-sm font-semibold text-white hover:bg-violet-500 disabled:opacity-40">
+              {t("weekTemplate.date.action")}
+            </button>
           )}
           {/* BL-256: move the slot to another day of the week or another time (not within 15 minutes of its time). */}
           {props.nowMs > 0 && canRetime(slot, props.nowMs) && !props.editing && (
@@ -685,7 +741,7 @@ function SlotRow(props: {
         </div>
       )}
       {props.editing && !slot.vetoed && (
-        <RetimeEditor slot={slot} plan={plan} afterUpload={afterUpload} busy={props.busy} onCancel={props.onCancelEdit} onSave={props.onRetime} />
+        <MoveEditor slot={slot} plan={plan} ownerZone={props.ownerZone} busy={props.busy} onCancel={props.onCancelEdit} onMove={props.onMove} />
       )}
       {pkg && <SlotSocialPreview channelId={props.channelId} video={pkg.video} manifestSha256={pkg.manifestSha256 ?? null} slotTime={wall.time} />}
     </li>
@@ -693,34 +749,51 @@ function SlotRow(props: {
 }
 
 /**
- * BL-256 (owner msgs 4380/4383): the slot's day (one of the plan's seven) and time (typed `HH:MM`, the channel's zone -- never a
- * native picker). An approved slot keeps its approval only through «Сохранить и одобрить» (then the plan moves an uploaded video's
- * date on YouTube); «Сохранить без одобрения» leaves it waiting for the owner. A slot still waiting for its package only saves.
+ * BL-267 (ADR 0073 §5, plan §3.7; owner 4630/4636): move a slot anywhere -- the week (arrows), one of its seven days and the time
+ * (typed `HH:MM` in the plan's zone, never a native picker). «Проверить» asks the server what would change (dry run, also on YouTube);
+ * the dialog then names from -> to in his own time and UTC and the YouTube effect, and only its button moves the slot.
  */
-function RetimeEditor(props: { slot: PlanSlotDto; plan: PlanDto; afterUpload: boolean; busy: string | null; onCancel: () => void; onSave: (shownHash: string, date: string, time: string, approve: boolean) => Promise<void> }) {
+function MoveEditor(props: { slot: PlanSlotDto; plan: PlanDto; ownerZone: string | null; busy: string | null; onCancel: () => void; onMove: (shownHash: string, toWeekStart: string, date: string, time: string, dryRun: boolean) => Promise<MoveAnswer | null> }) {
   const t = useT();
   const { slot, plan } = props;
-  // Review 3: the slot as it was when the editor opened -- a change by an agent meanwhile is refused (publishing_plan_changed).
   const [shownHash] = useState(slot.contentHash);
+  const [weekStart, setWeekStart] = useState(plan.weekStart);
   const [date, setDate] = useState(slot.date);
   const [time, setTime] = useState(slot.publishAt.slice(11, 16));
+  const [preview, setPreview] = useState<MoveAnswer | null>(null);
   const clock = parseClock(time);
-  const unchanged = clock !== null && date === slot.date && clock === slot.publishAt.slice(11, 16);
-  const canApproveNew = slot.approval !== "awaiting_package";
+  const days = weekDays(weekStart);
+  const day = days.includes(date) ? date : days[0];
+  const unchanged = clock !== null && day === slot.date && clock === slot.publishAt.slice(11, 16) && weekStart === plan.weekStart;
   const anyBusy = props.busy !== null;
-  const wasApproved = slot.approval === "approved";
-  const hadApproval = wasApproved || slot.changedAfterApproval !== null;
-  const hint = !canApproveNew ? "weekPlan.retime.hintAwaitingPackage" : hadApproval ? (props.afterUpload ? "weekPlan.retime.hintApprovedUploaded" : "weekPlan.retime.hintApproved") : "weekPlan.retime.hintNotApproved";
+  const shift = (n: number) => {
+    const next = shiftWeek(weekStart, n);
+    setWeekStart(next);
+    setDate(weekDays(next)[weekDays(weekStart).indexOf(day)] ?? weekDays(next)[0]);
+  };
+  const both = (iso: string) => {
+    const p = localAndUtc(iso, props.ownerZone);
+    return t("weekTemplate.move.when", { day: p.localYmd, local: p.local, utc: p.utc });
+  };
   return (
     <div className="space-y-2 border-t border-zinc-700 bg-zinc-950/60 px-4 py-3 text-sm">
       <div className="flex flex-wrap items-end gap-3">
+        <div className="flex items-center gap-1 text-xs text-zinc-400">
+          <button type="button" onClick={() => shift(-1)} disabled={anyBusy} aria-label={t("weekPlan.prevWeek")} className="rounded-md border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800 disabled:opacity-40">
+            ‹
+          </button>
+          <span className="px-1">{t("weekTemplate.move.week", { week: weekStart })}</span>
+          <button type="button" onClick={() => shift(1)} disabled={anyBusy} aria-label={t("weekPlan.nextWeek")} className="rounded-md border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800 disabled:opacity-40">
+            ›
+          </button>
+        </div>
         <label className="flex flex-col gap-1 text-xs text-zinc-400">
           {t("weekPlan.retime.day")}
-          <select value={date} onChange={(e) => setDate(e.target.value)} disabled={anyBusy} className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-100">
-            {weekDays(plan.weekStart).map((day) => {
-              const wall = wallParts(`${day}T00:00`);
+          <select value={day} onChange={(e) => setDate(e.target.value)} disabled={anyBusy} className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-100">
+            {days.map((d) => {
+              const wall = wallParts(`${d}T00:00`);
               return (
-                <option key={day} value={day}>
+                <option key={d} value={d}>
                   {t("weekPlan.slotDay", { weekday: t(weekdayKey(wall.weekday)), day: wall.day })}
                 </option>
               );
@@ -729,37 +802,17 @@ function RetimeEditor(props: { slot: PlanSlotDto; plan: PlanDto; afterUpload: bo
         </label>
         <label className="flex flex-col gap-1 text-xs text-zinc-400">
           {t("weekPlan.retime.time", { zone: plan.timeZone })}
-          <input
-            type="text"
-            inputMode="numeric"
-            value={time}
-            onChange={(e) => setTime(e.target.value)}
-            disabled={anyBusy}
-            placeholder="18:00"
-            aria-invalid={clock === null}
-            className={`w-24 rounded-md border bg-zinc-900 px-2 py-1 text-sm text-zinc-100 ${clock === null ? "border-red-700" : "border-zinc-700"}`}
-          />
+          <input type="text" inputMode="numeric" value={time} onChange={(e) => setTime(e.target.value)} disabled={anyBusy} placeholder="18:00" aria-invalid={clock === null} className={`w-24 rounded-md border bg-zinc-900 px-2 py-1 text-sm text-zinc-100 ${clock === null ? "border-red-700" : "border-zinc-700"}`} />
         </label>
         <div className="flex flex-wrap gap-2">
-          {canApproveNew && (
-            <ActionButton
-              busy={props.busy === `retimeApprove:${slot.slotId}`}
-              busyLabel={t("weekPlan.action.saving")}
-              disabled={anyBusy || clock === null || (unchanged && wasApproved)}
-              onClick={() => void props.onSave(shownHash, date, clock!, true)}
-              className="rounded-md bg-violet-600 px-3 py-1 font-semibold text-white hover:bg-violet-500 disabled:opacity-40"
-            >
-              {t("weekPlan.retime.saveApprove")}
-            </ActionButton>
-          )}
           <ActionButton
-            busy={props.busy === `retime:${slot.slotId}`}
+            busy={props.busy === `move:${slot.slotId}` && preview === null}
             busyLabel={t("weekPlan.action.saving")}
             disabled={anyBusy || clock === null || unchanged}
-            onClick={() => void props.onSave(shownHash, date, clock!, false)}
-            className="rounded-md border border-zinc-600 px-3 py-1 text-zinc-200 hover:bg-zinc-800 disabled:opacity-40"
+            onClick={() => void props.onMove(shownHash, weekStart, day, clock!, true).then((answer) => setPreview(answer))}
+            className="rounded-md bg-violet-600 px-3 py-1 font-semibold text-white hover:bg-violet-500 disabled:opacity-40"
           >
-            {t(canApproveNew ? "weekPlan.retime.saveOnly" : "weekPlan.retime.save")}
+            {t("weekTemplate.move.check")}
           </ActionButton>
           <button type="button" onClick={props.onCancel} disabled={anyBusy} className="rounded-md px-3 py-1 text-zinc-400 hover:text-zinc-100 disabled:opacity-40">
             {t("weekPlan.confirm.cancel")}
@@ -767,7 +820,25 @@ function RetimeEditor(props: { slot: PlanSlotDto; plan: PlanDto; afterUpload: bo
         </div>
       </div>
       {clock === null && <p className="text-xs text-red-300">{t("weekPlan.retime.badTime")}</p>}
-      <p className="text-xs text-zinc-500">{t(hint)}</p>
+      <p className="text-xs text-zinc-500">{t("weekTemplate.move.hint")}</p>
+      {preview && (
+        <ConfirmDialog
+          title={t("weekTemplate.move.title", { video: slot.package?.video ?? slot.slotId })}
+          description={t("weekTemplate.move.fromTo", { from: both(preview.from.publishAtUtc), to: both(preview.to.publishAtUtc) })}
+          confirmLabel={t("weekTemplate.move.confirm", { to: both(preview.to.publishAtUtc) })}
+          confirmBusyLabel={props.busy === `move:${slot.slotId}` ? t("weekPlan.action.saving") : null}
+          onCancel={() => setPreview(null)}
+          onConfirm={() => void props.onMove(shownHash, weekStart, day, clock!, false).then(() => setPreview(null))}
+        >
+          <p className="text-sm text-zinc-300">
+            {preview.youtube.effect === "moves"
+              ? t("weekTemplate.move.effect.moves", { from: preview.youtube.previous ? both(preview.youtube.previous) : "", to: both(preview.to.publishAtUtc) })
+              : preview.youtube.effect === "plan_only"
+                ? t("weekTemplate.move.effect.planOnly")
+                : t("weekTemplate.move.effect.none")}
+          </p>
+        </ConfirmDialog>
+      )}
     </div>
   );
 }

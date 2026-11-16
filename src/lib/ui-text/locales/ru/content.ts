@@ -601,6 +601,8 @@ export const content: Record<keyof typeof en, string> = {
   "weekPlan.actorCap.worker": "Агент канала",
   "weekPlan.actor.owner": "вы",
   "weekPlan.actorCap.owner": "Вы",
+  "weekPlan.actor.producer": "Продюсер",
+  "weekPlan.actorCap.producer": "Продюсер",
   "weekPlan.action.retime": "Изменить время",
   "weekPlan.retime.day": "День",
   "weekPlan.retime.time": "Время ({zone})",
