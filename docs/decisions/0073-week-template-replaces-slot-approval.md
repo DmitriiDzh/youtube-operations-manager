@@ -5,10 +5,11 @@ Status: Proposed. The requirement is the owner's (PRD-REQ-0195 part A via the Pr
 questions and the AGENTS.md §F wording wait for the owner (plan §7).
 
 **Date:** 2026-11-16.
-- **Plan:** `docs/roadmap/plans/WEEK_TEMPLATE_PLAN.md`, acceptance AC-WT-01..40. Backlog BL-267.
+- **Plan:** `docs/roadmap/plans/WEEK_TEMPLATE_PLAN.md`, acceptance AC-WT-01..42. Backlog BL-267.
 - **Amends:** ADR 0051 §3–§4 (what dates a slot; week approval), §7 and Amendment 1 (retime across weeks, no `approve` flag);
   ADR 0059 §4 (the Producer add's date source); ADR 0060 §4 (replaced slots under a template); ADR 0062 §1–§2 (`approvalStage`
-  retired; the fingerprinted approval stays only as the explicit owner date). Keeps ADR 0046 (private uploads), ADR 0070/0072
+  retired; the fingerprinted approval stays only as the explicit owner date, now also bound to the media); ADR 0068 Am. 1 (a
+  template date is not a social approval: cross-posts stay on an explicit owner decision). Keeps ADR 0046 (private uploads), ADR 0070/0072
   (the media gate) and BL-224's date order.
 - **Factory contract:** the Operator's ADR-0003 draft (`factory_publishing_template_get`, `week-template/1`), bundle 2.5.46.
 
@@ -34,9 +35,12 @@ Studio can be overwritten while a standing approval names another time.
 3. **The date rule.** A slot is dated (`slotDecisions` → `approved`, `source: "template"`) when it is not vetoed, not released,
    unique, matches the template in force, its package is ready or uploaded, and — on a channel with the review gate on — the
    owner approved its media key. The template source binds to the media key / video id, so a packaging-only re-package keeps the
-   date. The existing fingerprinted owner approval stays as **«Дать дату вне шаблона»**, one slot at a time (`source: "owner"`).
-   Week approval and every bulk approve go away. A veto wins over both.
-4. **Owned-date rule (ships first).** The plan moves or removes a YouTube date only when it equals the date this computer's upload
+   date. The existing fingerprinted owner approval stays as **«Дать дату вне шаблона»**, one slot at a time (`source: "owner"`);
+   new ones also carry the mp4 `sha256` + `sizeBytes` (additive), so they too survive a packaging-only re-package. The media
+   condition reaches the plan module through the `publishing-plan-progress` port (`mediaReview`, computed with `package-reviews`
+   for uploaded packages too; unreadable = not approved). Week approval and every bulk approve go away. A veto wins over both.
+   Social posts stay on an explicit owner decision (ADR 0068 Am. 1); a template date posts nothing (plan §7 O10).
+4. **Owned-date rule (stage 1 of the branch; live with the merge unless split out ahead, plan §7 O11).** The plan moves or removes a YouTube date only when it equals the date this computer's upload
    row itself set; any other date is foreign — never moved or removed, shown as «дата задана вручную». A template change only gives
    first dates; it never moves or removes one.
 5. **Moving a slot, also across weeks**, keeps its id: one Automerge change (delete the old key, put the new one, `movedFrom`);

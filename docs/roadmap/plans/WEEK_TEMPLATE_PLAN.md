@@ -36,7 +36,7 @@ reserved for the «Видео» tab redesign** (not in this plan).
 | `services.ts` `retime` (l. 460, ADR 0051 Am. 1) | Owner moves a slot within its week; refuses `outside_week`; `approve` flag. | A5: across weeks; `approve` is replaced by the template rule / explicit date (§3.6). |
 | `services.ts` `decideLocked` | Approve the week (many slots) or one slot; ADR 0060 §4: approving a replacing slot vetoes the replaced one. | A4: no bulk. Template dates have no owner event, so the implied veto needs a rule (§3.8). |
 | `approvalStage` (ADR 0062 §1) | `packaged` (default) / `slot`, switch «Одобрять пустые слоты». | Retired (§3.8). |
-| `socialSlotStates` + `src/composition/cross-posting-plan.ts` | Cross-posts go out for slots with a standing package approval, bound to its manifest SHA-256. | Must read the same "dated by the plan" fact (§3.8). |
+| `socialSlotStates` + `src/composition/cross-posting-plan.ts` | Cross-posts go out for slots with a standing package approval, bound to its manifest SHA-256 (ADR 0068 Am. 1). | A template date must not silently become a social approval (§3.8). |
 | `src/app/(app)/content/layout.tsx` | Tabs «Видео», «Публикация», «План недели» (+ `WeeklyBuildCard` «Сборка недели» below it), «Календарь» (`publishing-calendar.tsx`), «Трансляции». | A4. |
 | `weekly-plan-panel.tsx` / `weekly-plan-model.ts` | «Всю неделю / По одному», «Одобрить все готовые», per-slot approve, «Изменить время». | A4 (§3.9). |
 | Producer endpoint (`src/mcp/producer-tools.ts`) | No plan tool at all. | A5 needs a plan read + move tool; A1 a template propose tool (§3.10). |
@@ -122,18 +122,28 @@ possible until rules 2–3 hold.
   for a package not yet uploaded) or uploaded, and **on a channel with the review gate on**, the package's media key `(video,
   sha256, sizeBytes)` has the owner's standing `approved` media decision — also when the package is uploaded (§7 O3 for videos
   uploaded before the gate). On a channel with the gate off, a ready or uploaded package suffices (§7 O1); or
-- **explicit owner date:** a standing owner `approved` decision covering the slot's current package (today's ADR 0062 rule, §3.6).
+- **explicit owner date:** a standing owner `approved` decision covering the slot's current package (ADR 0062's rule, §3.6), with
+  the media binding below.
 
-`SlotDecision` (`slot-decision.ts`, restated per §M) gains `source: "template" | "owner"` and, for `template`, `media: { video,
-videoSha256, sizeBytes, videoId|null }` instead of a manifest fingerprint. `approvalNamesUpload` for `template` compares the media
-key (or the video id once uploaded), so a packaging-only re-package (BL-265) keeps the date. `owner` keeps the manifest rule
-(ADR 0062, unchanged). `vetoed` and `pending` are unchanged; a veto always wins.
+**Where the media condition comes from.** `publishing-plans` never imports `package-reviews` or `publishing` (§M). The composition
+module `src/lib/publishing-plan-progress/` (already the `progress` port) adds to `PlanSlotProgress.package` the manifest's video
+`sha256` + `sizeBytes` and `mediaReview: "approved" | "pending" | "returned" | "not_required" | "unreadable"`, computed with
+`package-reviews`' own `standingDecision` for **every** package, uploaded ones included (the scan's gate covers only packages not
+yet uploaded). `unreadable` (review document unreadable) and an absent field count as not approved on a gated channel (fail
+closed, AC-WT-41).
+
+`SlotDecision` (`slot-decision.ts`, restated per §M) gains `source: "template" | "owner"` and `media: { video, videoSha256,
+sizeBytes, videoId|null }`. `approvalNamesUpload` compares the media key (or the video id once uploaded), so a packaging-only
+re-package (BL-265) keeps the date. **Explicit owner dates bind to the media too** (the slot-approval leftover of MEDIA_GATE_PLAN §6
+Q1): a new explicit decision's fingerprint gains `videoSha256` + `sizeBytes` (additive; an older build ignores them and keeps the
+stricter manifest rule); a decision without them (made before this build) keeps the manifest rule (AC-WT-42). `vetoed` and
+`pending` are unchanged; a veto always wins.
 
 Consumers (no new path, only the decision's source widens): the automatic upload's queue date (`auto-upload.ts`), the Producer's
 queue add (ADR 0059 §4), the runner's re-check before start and before the date step, the plan-schedule pass, cross-posting
 (§3.8).
 
-### 3.5 Dates set elsewhere are never moved (owned-date rule; stage 1)
+### 3.5 Dates set elsewhere are never moved (owned-date rule; stage 1 of the branch)
 
 The plan acts on a YouTube date only when it is **this computer's own**: the upload row's `publishAt`, as verified by the runner's
 date step or the last `planSync`, equals YouTube's current date (read just before, as `change()` already does).
@@ -142,7 +152,12 @@ date step or the last `planSync`, equals YouTube's current date (read just befor
   (veto).
 - YouTube's date ≠ the row's own date (set in Studio, in «Видео», by the other computer) → **foreign date**: never moved, never
   removed; recorded once as `planSync.result: "foreign_date"` and shown on the slot as «дата задана вручную: …». This also covers
-  V11/V18. It applies to every source, explicit approvals included, so it ships first (stage 1), independent of the template.
+  V11/V18. It applies to every source, explicit approvals included, and is independent of the template.
+
+**It goes live only with the branch's one merge** (AGENTS.md §K.1), not at stage 1. Until then the risk stands on dev: per
+`desiredDate` / `change()`, a slot with a standing approval at a time other than a hand-set Studio date — for example the owner
+re-approving or retiming V11/V18's slot — overwrites that date on the next pass (≤ 1 min). §7 O11 asks whether to split this
+rule into its own small branch merged ahead.
 
 ### 3.6 Slots off the template, and the owner's explicit actions
 
@@ -188,8 +203,12 @@ The decide route accepts `approve` with exactly one slot (the week-approve and �
   slots; `unlocked` lists explicit approvals a save dropped.
 - **`approvalStage`** is retired: the switch disappears, the field is ignored; only fingerprinted (packaged) explicit approvals
   count, as in the default stage today. Slot-stage approvals (no fingerprint) stop counting for new dates; dates on YouTube stay.
-- **Cross-posting** (`socialSlotStates`): `approved` = "dated by the plan" (either source) covering the slot's current package;
-  `cross-posting-plan.ts` keeps checking the manifest bytes it reads against the package it is given (current manifest).
+- **Cross-posting stays on an explicit owner decision** (ADR 0068 Am. 1: the owner's approval of one manifest SHA-256 authorizes
+  the `crossPost` captions, networks and times, and the runner re-checks it before each Meta call). A template date is **not** a
+  social approval: `crossPost` is packaging an agent can re-package, and the owner never saw it. So `socialSlotStates.approved`
+  stays true only for a standing explicit owner decision naming the slot's current manifest (unchanged rule); template-dated slots
+  post nothing (AC-WT-37). A hand-dated slot (§3.5) would post at the slot's time, not the video's real date, so a slot whose video
+  has a foreign date posts nothing either. Whether the template + media approval should also authorize social posts is §7 O10.
 - **Badges / wake files.** The «План» tab badge counts live future slots that are «не по шаблону» with a ready package, plus «ждёт
   проверки медиа»; template decisions and explicit dates wake the Producer (`REVIEW-DECISION-template-…`, existing slot kinds).
 
@@ -260,11 +279,19 @@ if another branch takes a bump first.
 - **O3** WWE videos uploaded before the gate have no media decision, so the template never dates them. Recommended: allow «Одобрить»
   in Media review for an uploaded, undated package (today refused `package_review_uploaded`); else «Дать дату вне шаблона».
 - **O4** A replacing slot waits until he vetoes the replaced one. Recommended: yes (no agent-made date removal, no double release).
-- **O5** The Producer moves only into a free template position; the Operator/worker cannot re-time a dated slot. Recommended: yes.
-- **O6** Template times and weekdays in UTC. Recommended: yes.
+- **O5** **This narrows msg 4620** (the Producer moves a slot to another week): as proposed, the Producer moves only into a free
+  template position, so with no template in force it cannot move at all; the Operator/worker cannot re-time a dated slot.
+  Recommended: yes (an agent then never chooses a release time the owner did not put in his template). Alternative: the Producer
+  moves anywhere, and an off-template target leaves the slot «не по шаблону» with its old date removed or kept — his choice.
+- **O6** Template times and weekdays in UTC. Recommended: yes. The editor shows the UTC weekday and time, labelled UTC, with the
+  display-zone time beside it (e.g. «пн 15:00 UTC · вт 00:00 JST»), so a day shift is visible.
 - **O7** «Сборка недели»: remove the card only, retire the module later as its own item. Recommended: yes.
 - **O8** A 2-minute «Отменить» window before his own date change reaches YouTube. Recommended: not now (the confirm dialog covers it).
 - **O9** Approve the §F text in ADR 0073.
+- **O10** Should the template + media approval also authorize the package's social posts (`crossPost`)? Recommended: no for now —
+  posts only for slots he dated explicitly (§3.8); otherwise captions he never saw go out.
+- **O11** Split the owned-date rule (§3.5) into its own small branch merged before BL-267, so V11/V18-like Studio dates are
+  protected now? Recommended: yes.
 
 **Producer**
 - **P1** `timezone` becomes `displayTimeZone` (display only), times are `publishTimeUtc`; `horizonWeeks` is informational. OK?
@@ -282,11 +309,12 @@ if another branch takes a bump first.
 
 0. **Plan + ADR 0073** (this commit).
 1. **Owned-date rule** (§3.5) in `plan-schedule.ts` (`foreign_date`), the slot's «дата задана вручную»; `SlotDecision.source`
-   with today's decisions as `owner`. No template yet; protects V11/V18 under the current approvals.
+   with today's decisions as `owner`. No template yet. Live only with the merge, unless the owner splits it out ahead (§7 O11).
 2. **Template storage + model:** sync-family maps (immutable versions, decisions, conflict-merge reader), `template.ts` (strict
    schema, matcher, positions), owner services (save+approve, accept, reject, withdraw), audit, Producer wake; no date effect yet.
-3. **Date rule:** `slotDecisions` template source with the media condition (§3.4); media-key binding in `approvalNamesUpload`;
-   replaced-slot rule; `approvalStage` retired; single-slot explicit date; `socialSlotStates`; `save` `slot_dated`.
+3. **Date rule:** `publishing-plan-progress` adds the media key + `mediaReview` (§3.4); `slotDecisions` template source with the
+   media condition; media-key binding in `approvalNamesUpload` and in new explicit decisions; replaced-slot rule; `approvalStage`
+   retired; single-slot explicit date; `socialSlotStates` (explicit only, §3.8); `save` `slot_dated`.
 4. **Moves across weeks:** one-change move in the family, decisions by slot id, owner retime across weeks without `approve`;
    refusals of §3.7.
 5. **UI:** remove «Календарь» tab and `WeeklyBuildCard`; «План» with «Неделя | Месяц | Шаблон недели»; confirm dialogs; badge;
@@ -294,8 +322,10 @@ if another branch takes a bump first.
 6. **Producer + Operator contract:** `factory_publishing_template_get`, `agent_publishing_template_get`, Producer template
    get/propose, plan get/list/move (`PLAN_MOVE`); `dating`/`movedFrom` in views; API bumps (§6); boundary tests;
    `docs/interfaces.md`.
-7. **Docs + review:** AGENTS §F (owner-approved text) and PROJECT_SPEC §21, SYSTEM_MAP, ARCHITECTURE, TECHNICAL_DEBT;
-   independent review; ADR 0073 → Accepted at the merge.
+7. **Docs + review:** AGENTS §F (owner-approved text) and PROJECT_SPEC §21 (the weekly-plan date paragraph), SYSTEM_MAP,
+   ARCHITECTURE, `docs/interfaces.md`, TECHNICAL_DEBT (RISK-150 closed: `approvalStage` retired; RISK-148 amended: moves read
+   decisions by slot id; RISK-154 amended: a forged template decision in the synced folder; a new risk for mixed builds and the
+   template maps' first-write conflict); ADR 0068 Am. 1 note; independent review; ADR 0073 → Accepted at the merge.
 
 ## 9. Acceptance criteria (written before the code, from the requirements; values by hand)
 
@@ -336,7 +366,7 @@ Date rule:
   plan-schedule pass makes no YouTube call for it.
 - **AC-WT-22** Slot within 15 min or released → no new date (unchanged margins).
 
-Owned dates (stage 1):
+Owned dates (stage 1 of the branch):
 - **AC-WT-23** Row `publishAt` null, YouTube date set by hand, slot approved at another time → no `videos.update`;
   `planSync.result: foreign_date`; the slot shows the YouTube date.
 - **AC-WT-24** Row date = YouTube date, slot moved → the date moves (read back); YouTube date ≠ row date → never written, also
@@ -366,13 +396,19 @@ Moves (A5):
 Other consumers:
 - **AC-WT-36** Replacing slot at the replaced slot's position: no date while the replaced one is live; after the owner's veto of the
   replaced slot it matches. Explicit date on a replacing slot still vetoes the replaced one.
-- **AC-WT-37** `socialSlotStates.approved` is true for a template-dated slot with its current package; cross-posting reads the
-  current manifest.
+- **AC-WT-37** `socialSlotStates.approved` is false for a slot dated only by the template, and false for a slot whose video has a
+  foreign date; true for a standing explicit owner decision naming the current manifest (unchanged); the runner's
+  `stillApproved` re-check gives the same answers.
 - **AC-WT-38** `approvalStage: "slot"` in a document → ignored; a slot-stage approval dates nothing new.
 - **AC-WT-39** Migration fixture (the §4 table, one slot per row): after the switch no plan-schedule pass writes for any row that
   had a date; V11/V18-like rows (hand-set) are `foreign_date`.
 - **AC-WT-40** Factory/agent/Producer views carry `dating` and `movedFrom`; `approval` is still present; the three API versions
   are 1.52.0 / 4.23.0 / 1.25.0; worker and factory endpoints have no move or propose tool.
+- **AC-WT-41** Gated channel: an uploaded package whose media key has a standing approval → `mediaReview: approved`, dated by a
+  match; no decision → `pending`; review document unreadable → `unreadable`, nothing dated by the template (fail closed);
+  gate-off channel → `not_required`. `publishing-plans` imports neither `package-reviews` nor `publishing` (boundaries test).
+- **AC-WT-42** An explicit date made by this build, then a packaging-only re-package (same `sha256` + `sizeBytes`) → still
+  `approved`; a different mp4 → `pending`. An explicit decision without the media fields (older) → manifest rule as today.
 
 ## 10. Risks
 
@@ -391,7 +427,7 @@ Other consumers:
 ## 11. Deploy effects
 
 - After the merge and restart: per-slot approve buttons are gone; channels without an approved template get dates only from his
-  explicit «Дать дату вне шаблона»; existing dates stay (owned-date rule live from stage 1).
+  explicit «Дать дату вне шаблона»; existing dates stay (the owned-date rule goes live with this merge, or earlier if split out, §7 O11).
 - The owner then sets up the templates (WWE, Tropico, Japan) or accepts the Producer's proposals; dates appear on the next
   plan-schedule pass (≤ 1 min) for matching, media-approved, uploaded videos and with the next automatic upload otherwise.
 - Operator bundle 2.5.46 and the Producer pin the new API versions; Windows updates together with the Mac.
