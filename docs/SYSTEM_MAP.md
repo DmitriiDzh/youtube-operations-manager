@@ -1025,6 +1025,10 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
     (`failed` + `video_deleted_on_youtube`, «Ролик удалён на YouTube»), одобрять нечего, прежнее одобрение не считается;
     план-расписание не трогает удалённые видео. Агентам: `missingOnChannel` в календаре, `videoIds` в `channel_video_list`.
     Factory API 1.43.0, Agent API 4.17.0, Producer API 1.17.0.
+  - BL-256 (ADR 0051 Amendment 1): владелец переносит слот на другой день недели и/или время («Изменить время» в строке слота,
+    маршрут `/publishing-plans/[weekStart]/retime`, `retime()` в модуле): не снятый, не прошедший, не ближе 15 минут; старое
+    одобрение отзывается, «Сохранить и одобрить» одобряет новое время тем же шагом — дату загруженного видео на YouTube переносит
+    цикл plan-schedule. `updatedBy: owner`; аудит `publishing_plan.retimed`. Factory API 1.47.0, Agent API 4.20.0.
   - Этап 3: автозагрузка (BL-209) ставит пакет одобренного и не снятого слота с его временем, снятый пропускает (решения слотов —
     `src/composition/publishing-plan-slots.ts`); загрузчик пишет переводы пакета первым шагом после обработки общим писателем
     `src/lib/shared-video-localizations/` (вынесен из live-localizations) и ИИ-метку пакета; дата — только после переводов, обложки,

@@ -119,3 +119,26 @@ what is published?
   like storyboards. A computer without this build ignores the folder.
 - Stage 2: `yt-release-package/2` is additive (v1 manifests parse unchanged); `publishing_uploads.slot_id` (schema v110, additive
   per ADR 0001).
+
+## Amendment 1 -- the owner moves a slot himself (BL-256, owner msgs 4380/4383, 2026-11-16)
+
+- The owner may move a slot to another day of its week and/or another time from the Web UI (`POST
+  /api/channels/[channelId]/publishing-plans/[weekStart]/retime`, `{ slotId, contentHash, date, publishAt, approve }`); no MCP path.
+  The slot keeps its length, note and replaced slot; the plan and the slot record `updatedBy: owner` (a third actor next to the
+  agents).
+- Refused: a slot not found, vetoed, released, changed since the editor opened (`publishing_plan_changed`), or whose video may come
+  out within 15 minutes -- its time, an approved time an agent's change still stands on, or the date on YouTube
+  (`publishing_plan_slot_too_soon`); a new time outside the week, non-existent in the zone, or under 15 minutes away (30 with
+  `approve`, so it is still ahead when the decision reaches the uploading computer) (`validation_failed`, the agents' reasons).
+  15 minutes is video-details' and plan-schedule's margin.
+- His move **revokes** every approval of the slot no revocation of the same content cancelled: an approval stands while its hash
+  matches the slot, so without it an agent saving an old time back would restore it. The move is written first, then the
+  revocations.
+- Re-approving a moved slot that replaces another (it had an approval before) does not veto the replaced slot again: the owner may
+  have restored it on purpose.
+- `approve: true` approves the new content in the same step (one ordinary approval decision). The uploaded video's date on YouTube
+  then moves through the plan-schedule pass (§7) -- this call writes nothing to YouTube. Without it the slot waits for the owner and
+  the video keeps its date. A slot still waiting for its package (`packaged` stage) can be moved, not approved.
+- Audit `publishing_plan.retimed` (from, to, the revoked decision ids, by, device) on the computer it was made on; the revocations
+  nudge the Producer's Inbox writer like any owner decision (BL-248).
+- Agents: Factory API 1.47.0, Agent API 4.20.0 (`updatedBy` may be `owner`; additive).
