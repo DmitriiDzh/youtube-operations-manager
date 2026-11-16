@@ -50,8 +50,8 @@ A 409 `captionExists` guards only the same language **and** name.
 7. **Upload step.** Order `localizations → captions → thumbnail → playlist → verify → publishAt`. `steps.captions` `none` |
    `verified` | `already_present` | `mismatch` | `failed` | `refused`; the date is written only after `none`/`verified`/
    `already_present` and the read-back, otherwise withheld (private). Quota short (guard or YouTube) → a `quota_exceeded` pause, never
-   a failure. A lost insert answer: a track with the package's name absent from the backup list, or a 409, is the upload's own and is
-   adopted. `estimateUploadUnits` adds 550.
+   a failure. A lost insert answer: a track with the package's name absent from the backup list and updated at or after the attempt
+   mark (review #3), or a 409, is the upload's own and is adopted; a mark whose insert was provably not sent is taken back. `estimateUploadUnits` adds 550.
 8. **Already uploaded videos.** The owner («Добавить субтитры» on the uploaded package's row) and the Producer
    (`producer_video_captions_add { channelId, video, dryRun?, overwrite? }`, its endpoint only) add the track from the package's **current
    manifest** for the video its upload record names -- no free file path, the mp4 need not be on disk. Refused while this computer's

@@ -345,3 +345,22 @@ Explicit overwrite (owner msg 4660)
   (`markUploadCaptionsSetLater`, like the thumbnail's), so the weekly plan may date the video.
 - The two client-side unit estimates (`publishing-packages.tsx`, `weekly-plan-panel.tsx`) do not add the 550; the server's approval
   and pending sum do.
+- Independent review fixes (2026-11-17):
+  - #1 the step's outcome: only a `serving` track passes -- "already present" with `syncing` is `pending` (read again), with `failed` or
+    any other status `mismatch` (date withheld, the reason in the notes). The runner's `writeCaptions` lives in `caption-step.ts`.
+  - #2 the attempt mark keeps the row's retry count: an insert that keeps failing gives up after MAX_RETRIES (`failed`, date withheld).
+  - #3 an error the adapter flags as not sent (the client or Live writes) takes the mark back (an earlier run's mark is restored); the
+    lost-answer adoption takes only a same-name track absent from `trackIdsBefore` and updated at or after the mark's time (an unknown
+    `lastUpdated` is not adopted). The mark is this computer's clock and `lastUpdated` YouTube's: no skew allowance is added -- a clock
+    ahead of YouTube's makes the retry re-insert, YouTube answers 409 `captionExists`, and the step ends `failed` (never two tracks;
+    the date withheld; the owner or the Producer then overwrites that track explicitly).
+  - #4 `pending` only when `syncing` is the read-back's sole problem; the add path records a pending track `verified: false,
+    pending: true` -- its sha256 kept, so the next plain add re-checks its status (already present only once serving) and rewrites the
+    entry as verified; an entry without `pending` stays untrusted.
+  - #5 the runner's record step keeps the record's existing `captions` entries (one per track id, the later `at` wins). The add path
+    refuses `captions_upload_unfinished` while the record is still the runner's first (`result: "uploaded"`), unless this computer's
+    own rows of the video have all ended (a row that failed after its first record leaves it so for good).
+  - #6 known limitation (RISK-157): a captions (or thumbnail) step done later dates only a slot row -- the weekly plan's pass re-checks
+    `checksPassed`; a row dated by the owner's own approval (no slot) keeps its date withheld, and the owner sets it in Studio or
+    through a slot. A re-check of the runner's date step would be a new `publishAt` write path, out of scope here.
+  - #7 WebVTT: only cue settings (`vertical`, `line`, `position`, `size`, `align`, `region` as `name:value`) may follow the end time.

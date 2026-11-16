@@ -5271,11 +5271,15 @@ replaced track's content from `captions.download` -- a failed download stops the
 name, standard, not draft, serving / one re-read on syncing, an overwrite's `lastUpdated` advanced, other tracks unchanged) → audit
 `source: video_captions`. Quota context `video_captions`.
 
-Callers (publishing): the upload runner's `captions` step (after `localizations`, before `thumbnail`; refusals → `steps.captions:
-refused`, pauses/unknown answers → the runner; lost answer adopted via `steps.captionsAttempt` or a 409 `captionExists`; `syncing` read
-again up to READ_BACK_RETRIES) and `package-captions.ts` (owner route, Producer tool; package + upload record, current manifest,
-`captions_step_pending` while a row of the video is active, then the record's `captions` and `markUploadCaptionsSetLater`). The date
-waits for `captionsPassed`; `plan-schedule.checksPassed` too.
+Callers (publishing): the upload runner's `captions` step through `caption-step.ts` (DB-free; after `localizations`, before
+`thumbnail`; refusals → `steps.captions: refused`, pauses/unknown answers → the runner; only a `serving` track passes -- `syncing` is
+`pending` and read again up to READ_BACK_RETRIES, anything else `mismatch`; lost answer adopted via `steps.captionsAttempt` -- a
+same-name track not listed before and updated at or after the mark -- or a 409 `captionExists`; the mark is taken back when the adapter
+flags the error as not sent; the mark keeps the retry count, so a failing insert gives up after MAX_RETRIES) and `package-captions.ts`
+(owner route, Producer tool; package + upload record, current manifest, `captions_step_pending` while a row of the video is active,
+`captions_upload_unfinished` while the record is still the runner's first, then the record's `captions` -- a pending track recorded
+`verified: false, pending: true` -- and `markUploadCaptionsSetLater`). The runner's record step merges the record's existing `captions`
+(the other computer's add). The date waits for `captionsPassed`; `plan-schedule.checksPassed` too.
 
 ## BL-257 — the owner's review of final release packages (ADR 0070)
 
