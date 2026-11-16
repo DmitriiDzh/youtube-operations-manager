@@ -1,17 +1,20 @@
 # 0073. An owner-approved week template replaces slot approval
 
-Status: Proposed. The requirement is the owner's (PRD-REQ-0195 part A via the Producer; owner msgs 4569 / 4575 «Одобрение слота
-вообще не нужно», Media review stays; 4572 the screens; 4620 the Producer moves a slot to another week keeping its id). Open
-questions and the AGENTS.md §F wording wait for the owner (plan §7).
+Status: Proposed (accepted at the merge). The requirement is the owner's (PRD-REQ-0195 part A via the Producer; owner msgs 4569 /
+4575 «Одобрение слота вообще не нужно», Media review stays; 4572 the screens; 4620 the Producer moves a slot to another week keeping
+its id; 4630–4636 the answers: moves anywhere and at once, no replacement, one plan for YouTube and the social networks, «Собрать
+неделю по шаблону»). The AGENTS.md §F wording below is shown to the owner before the merge (plan §7 O9).
 
 **Date:** 2026-11-16.
 - **Plan:** `docs/roadmap/plans/WEEK_TEMPLATE_PLAN.md`, acceptance AC-WT-01..42. Backlog BL-267.
 - **Amends:** ADR 0051 §3–§4 (what dates a slot; week approval), §7 and Amendment 1 (retime across weeks, no `approve` flag);
   ADR 0059 §4 (the Producer add's date source); ADR 0060 §4 (replaced slots under a template); ADR 0062 §1–§2 (`approvalStage`
-  retired; the fingerprinted approval stays only as the explicit owner date, now also bound to the media); ADR 0068 Am. 1 (a
-  template date is not a social approval: cross-posts stay on an explicit owner decision). Keeps ADR 0046 (private uploads), ADR 0070/0072
+  retired; the fingerprinted approval stays only as the explicit owner date, now also bound to the media); ADR 0060 §4 (no
+  replacement: `replacesSlotId` gates nothing, no implied veto); ADR 0068 Am. 1 (a slot dated by the plan, template or explicit,
+  authorizes its social posts: one plan for all, owner O10). Keeps ADR 0046 (private uploads), ADR 0070/0072
   (the media gate) and BL-224's date order.
-- **Factory contract:** the Operator's ADR-0003 draft (`factory_publishing_template_get`, `week-template/1`), bundle 2.5.46.
+- **Factory contract:** the Operator's ADR-0003 draft (`factory_publishing_template_get`, `week-template/1`), bundle **2.5.48**
+  (reads `template.days[*][*].kind/hours/publishTimeUtc`, `horizonWeeks`, `displayTimeZone`, `matchRules`; `slot_dated` is final).
 
 ## Context
 
@@ -33,7 +36,8 @@ video is refused anyway). Template matches and Producer moves add new time sourc
    Web UI approves, edits (a new version + its approval in one change) or withdraws; the Producer only proposes. Missing,
    unreadable or withdrawn = nothing is dated by the template (fail closed, §M).
 2. **Match.** UTC weekday and exact UTC minute of the slot's instant; kind from the package (short = ≤ 180 s, an `S<n>` over 180 s
-   matches nothing); `hours` = ±10 %; one slot per position (two candidates → neither).
+   matches nothing); `hours` = ±10 %; one slot per position: of two same-kind candidates the first created (then smaller `slotId`)
+   takes it, the other is «не по шаблону» (`position_taken`). Long and short positions are separate; two videos may share an instant.
 3. **The date rule.** A slot is dated (`slotDecisions` → `approved`, `source: "template"`) when it is not vetoed, not released,
    unique, matches the template in force, its package is ready or uploaded, and — on a channel with the review gate on — the
    owner approved its media key. The template source binds to the media key / video id, so a packaging-only re-package keeps the
@@ -41,19 +45,29 @@ video is refused anyway). Template matches and Producer moves add new time sourc
    new ones also carry the mp4 `sha256` + `sizeBytes` (additive), so they too survive a packaging-only re-package. The media
    condition reaches the plan module through the `publishing-plan-progress` port (`mediaReview`, computed with `package-reviews`
    for uploaded packages too; unreadable = not approved). Week approval and every bulk approve go away. A veto wins over both.
-   Social posts stay on an explicit owner decision (ADR 0068 Am. 1); a template date posts nothing (plan §7 O10).
-4. **Owned-date rule (stage 1 of the branch; live with the merge, no early merge needed, plan §7 O11).** The plan moves or removes a YouTube date only when it equals the date this computer's upload
-   row itself set; any other date is foreign — never moved or removed, shown as «дата задана вручную». A template change only gives
-   first dates; it never moves or removes one.
-5. **Moving a slot, also across weeks**, keeps its id: one Automerge change (delete the old key, put the new one, `movedFrom`);
-   decisions are read by slot id; explicit approvals are revoked; a vetoed slot cannot be moved. The owner moves anywhere (confirm
-   dialog with the exact change); the Producer (`producer_publishing_plan_move_slot`, permission `PLAN_MOVE`, `dryRun`) only into a
-   free template position; the Operator / worker saves keep `slot_id_in_other_week` and gain `slot_dated` (no re-timing of a slot
-   whose video has a date).
-6. **Replaced slots** under a template: the replacing slot waits until the owner vetoes the replaced one; an explicit date on it
-   still vetoes the replaced one (ADR 0060 §4).
-7. **Screens.** «Календарь» and «Сборка недели» leave the page; «План» has «Неделя», «Месяц» and «Шаблон недели»; no bulk date
-   action; every date change states from → to and the YouTube effect before it is confirmed.
+   **Social posts follow the plan** (owner O10): a slot dated by this rule (also up to 36 h after its time) authorizes its current
+   manifest's `crossPost`; the runner re-checks it before each call; a slot no longer dated by the rule posts nothing.
+4. **Owned-date rule, automatic changes only (stage 1; live with the merge, plan §7 O11).** The plan-schedule pass moves or
+   removes a YouTube date only when it equals the date this computer's upload row itself set; any other date is foreign — never
+   moved or removed by the pass, shown as «дата задана вручную». A template change only gives first dates; it never moves or removes
+   one. Explicit moves (item 5) may change any date.
+5. **Moving a slot, anywhere and at once**, keeps its id: one Automerge change (delete the old key, put the new one, `movedFrom`);
+   decisions are read by slot id; explicit approvals are revoked; a vetoed slot cannot be moved. The owner (Web UI, confirm dialog
+   with the exact change) and the **Producer** (`producer_publishing_plan_move_slot`, permission `PLAN_MOVE`, `dryRun`) move any
+   live slot to any day, time or week, on or off the template, including uploaded and dated videos and dates set in Studio. When the
+   video has a date on YouTube, the move writes the new date at once through video-details' write path (identity check, backup,
+   Live writes immediately before, read-back, audit), via plan-schedule's one change function in explicit mode, composed outside
+   both modules; every refusal (public video, date within 15 min, switches off, no finished upload row here) comes before the
+   Automerge change; the row's `publishAt` takes the new date. A move never gives a first date (an undated slot only changes
+   position; the template rule then decides). A dated video moved off the template keeps its date (`pending` never removes one).
+   The Operator / worker saves keep `slot_id_in_other_week` and gain `slot_dated`; they have no move tool.
+6. **No replacement** (owner O4): every slot has its own id; `replacesSlotId` is still accepted and hashed (older saves and
+   approvals keep working) but holds no position and no explicit date vetoes the replaced slot.
+7. **Screens.** «Календарь» leaves the page; «Сборка недели» becomes «Собрать неделю по шаблону» on channels whose template in
+   force is a music template (every entry `long` with `hours`): YTM writes the template to `05 Docs/publishing/week-template.json`,
+   starts `13 Weekly_Plan v1 auto --template`, saves the job's `payloads` as the factory with the same checks and runs `13 push
+   --sent` for the accepted ones. «План» has «Неделя», «Месяц» and «Шаблон недели»; no bulk date action; every date change states
+   from → to and the YouTube effect before it is confirmed; every time shows the owner's browser-zone time beside UTC.
 8. **APIs** (additive): Factory 1.52.0 (`factory_publishing_template_get`, `dating` / `movedFrom` in plan views, `slot_dated`),
    Agent 4.23.0 (`agent_publishing_template_get`, same view fields), Producer 1.25.0 (template get / propose, plan get / list /
    move).
@@ -65,7 +79,11 @@ video is refused anyway). Template matches and Producer moves add new time sourc
   disagree with them between reads. Rejected; the matcher is pure and the plan module's own.
 - **Mergeable template fields:** a merge of two edits could yield a template nobody approved. Rejected for immutable versions.
 - **Times in the channel zone:** summer time would move UTC release times twice a year; the owner's values are in Z. Kept as
-  display only (open question P1).
+  display only (P1, O6).
+- **Producer moves only into free template positions** (the earlier proposal): narrowed msg 4620; the owner chose moves anywhere,
+  at once (4630/4636).
+- **A move recorded as a decision, written later by the pass:** not "at once", and the pass's owned-date rule would need an
+  exception per decision. Rejected for the immediate write through the same change function.
 - **Let the template move existing dates:** a template edit would silently re-schedule public plans. Rejected; first dates only.
 
 ## Consequences
@@ -73,7 +91,8 @@ video is refused anyway). Template matches and Producer moves add new time sourc
 - AGENTS.md §F changes (text below, for the owner's approval); PROJECT_SPEC §21 follows. ADR 0059 §4's "a date only from a slot
   the owner approved" reads "a date only by the weekly-plan rule".
 - The owner's per-video act is the media review (gated channels) or nothing (gate-off channels, plan §7 O1); the template is his
-  standing approval of *when*.
+  standing approval of *when*, for YouTube and the social networks (O10).
+- The Producer changes release dates of dated videos on its own (owner 4630/4636); every such write is audited with `by: producer`.
 - Explicit approvals made before the switch keep counting (plan §7 O2); V11/V18-like hand-set dates are never touched.
 
 ## Proposed AGENTS.md §F text (for the owner's approval; AGENTS.md is not edited until then)
@@ -83,15 +102,19 @@ slot (on the computer whose automatic-upload switch is on); a veto removes an up
 `src/lib/video-details/`. Agents never approve a slot» with:
 
 > A weekly-plan slot's date reaches a video only (a) when the slot matches the channel's **week template that the owner approved or
-> edited himself in the Web UI** (`week-template/1`, 2026-11-16, owner msgs 4569/4575/4620, BL-267, ADR 0073) and, on a channel whose
-> owner reviews its packages, the owner approved that video's media in Media → «Видео на проверку»; or (b) through the owner's
-> explicit one-slot «Дать дату вне шаблона» in the Web UI. In both cases only on the computer whose automatic-upload switch is on,
-> only more than 15 minutes ahead, and only as a first date of an undated private video or a move of a date that computer itself
-> set; a date set elsewhere (YouTube Studio, «Видео», the other computer) is never moved or removed by the plan, and a template
-> change never moves or removes a date. A veto removes a date the app set (still private) through `src/lib/video-details/`. Agents
-> never approve or withdraw a template, give a date or veto: the Producer may propose a template and move a slot, keeping its id,
-> into a free position of the approved template (`producer_publishing_plan_move_slot`, its own endpoint only); the Operator and
-> channel workers cannot re-time a slot whose video has a date.
+> edited himself in the Web UI** (`week-template/1`, 2026-11-16, owner msgs 4569/4575/4620/4630–4636, BL-267, ADR 0073) and, on a
+> channel whose owner reviews its packages, the owner approved that video's media in Media → «Видео на проверку»; or (b) through the
+> owner's explicit one-slot «Дать дату вне шаблона» in the Web UI; or (c) by an explicit **move** of a slot whose video already has
+> a date, by the owner (Web UI) or the Producer (`producer_publishing_plan_move_slot`, its own endpoint only), to any day, time or
+> week -- written at once through `src/lib/video-details/` (identity check, backup, Live writes immediately before, read-back,
+> audit), never for a public video, never within 15 minutes, and never as a first date. Always only on the computer whose
+> automatic-upload switch is on (a move: the computer that uploaded the video). Automatic changes (template matches, the
+> plan-schedule pass) give only first dates of undated private videos or move or remove a date that computer itself set; a date set
+> elsewhere (YouTube Studio, «Видео», the other computer) is changed only by an explicit move, and a template change never moves or
+> removes a date. A veto removes a date the app set (still private) through `src/lib/video-details/`. A slot dated by (a) or (b)
+> also authorizes its release package's social posts (`crossPost`, ADR 0068): one plan for YouTube and the social networks. Agents
+> never approve or withdraw a template, give a first date or veto: the Producer may propose a template and move slots as above; the
+> Operator and channel workers cannot move a slot or re-time a slot whose video has a date.
 
 In the «Producer upload queue» bullet, replace «a date only from a slot the owner approved» with «a date only by the weekly-plan
 rule above».
