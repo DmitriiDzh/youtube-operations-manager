@@ -60,7 +60,7 @@ function result(over: Partial<CaptionWriteResult> = {}): CaptionWriteResult {
   };
 }
 
-function harness(over: { found?: PackageCaptionsFound | "not_found"; rows?: Array<{ status: string; videoId: string | null; stepsJson: string }>; file?: Uint8Array | null; record?: Array<{ trackId: string; sha256: string; verified?: boolean; pending?: boolean }>; answer?: CaptionWriteResult } = {}) {
+function harness(over: { found?: PackageCaptionsFound | "not_found"; rows?: Array<{ status: string; videoId: string | null; stepsJson: string }>; file?: Uint8Array | null; record?: Array<{ trackId: string; sha256: string; verified?: boolean; pending?: boolean }>; answer?: CaptionWriteResult; recordResult?: string | null } = {}) {
   const writes: CaptionWriteInput[] = [];
   const recorded: unknown[] = [];
   const marked: unknown[] = [];
@@ -68,6 +68,7 @@ function harness(over: { found?: PackageCaptionsFound | "not_found"; rows?: Arra
     findPackage: async () => over.found ?? FOUND,
     uploadRows: async () => over.rows ?? [],
     readFile: async (_c, path) => (path === `${FOUND.folder}/V27_captions.en.vtt` ? (over.file === undefined ? VTT : over.file) : null),
+    recordResult: async () => (over.recordResult === undefined ? "verified" : over.recordResult),
     recordCaptions: async () => over.record ?? [],
     writeRecordCaptions: async (_c, path, entry) => void recorded.push({ path, entry }),
     frameMemo: async () => "horizontal",
@@ -183,4 +184,22 @@ test("review #4 a write YouTube still processes is recorded NOT verified (pendin
   assert.equal((later.recorded[0] as { entry: Record<string, unknown> }).entry.verified, true);
   assert.equal("pending" in (later.recorded[0] as { entry: Record<string, unknown> }).entry, false);
   assert.deepEqual([r.recorded, r.uploadStepsMarked], [true, 1]);
+});
+
+test("review #5 the upload record still the runner's first one (result uploaded) -> captions_upload_unfinished, nothing written", async () => {
+  const elsewhere = harness({ recordResult: "uploaded" });
+  await assert.rejects(elsewhere.service.apply("UC_wwe", { video: "V27" }, producer), { code: "captions_upload_unfinished" });
+  await assert.rejects(elsewhere.service.preview("UC_wwe", { video: "V27" }, owner), { code: "captions_upload_unfinished" });
+  assert.equal(elsewhere.writes.length, 0);
+  // This computer's own upload of the video ended (it failed after its first record): the record stays "uploaded" for good, and
+  // the captions can still be added.
+  const ended = harness({ recordResult: "uploaded", rows: [{ status: "failed", videoId: "vid27", stepsJson: "{}" }] });
+  await ended.service.apply("UC_wwe", { video: "V27" }, producer);
+  assert.equal(ended.writes.length, 1);
+  // A finished record (verified / mismatch) or an unreadable result: allowed as before.
+  for (const recordResult of ["verified", "mismatch", null]) {
+    const h = harness({ recordResult });
+    await h.service.apply("UC_wwe", { video: "V27" }, producer);
+    assert.equal(h.writes.length, 1);
+  }
 });

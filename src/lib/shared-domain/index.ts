@@ -459,6 +459,7 @@ export type DomainErrorCode =
   | "captions_track_changed"
   | "captions_scope_missing"
   | "captions_step_pending"
+  | "captions_upload_unfinished"
   | "captions_not_in_package"
   | "video_in_dispute"
   // BL-263 (ADR 0071 §2): a given S code is already known on the channel (details.source).

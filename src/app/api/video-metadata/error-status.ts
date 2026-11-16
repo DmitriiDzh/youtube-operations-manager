@@ -334,6 +334,7 @@ const DOMAIN_ERROR_STATUS = {
   captions_track_changed: 409,
   captions_scope_missing: 403,
   captions_step_pending: 409,
+  captions_upload_unfinished: 409,
   captions_not_in_package: 400,
   video_in_dispute: 409,
   video_number_taken: 409,

@@ -33,6 +33,11 @@ export type PackageCaptionsDeps = {
   uploadRows(channelId: string, video: string): Promise<Array<{ status: string; videoId: string | null; stepsJson: string }>>;
   /** A workspace file's bytes (the workspace rule), or null when it is not there; at most `maxBytes` read. */
   readFile(channelId: string, relativePath: string, maxBytes: number): Promise<Uint8Array | "too_large" | null>;
+  /**
+   * The `result` of the release's `Vn_youtube.json`: `"uploaded"` while only the runner's first record is there (its steps still to
+   * run, on either computer), then `verified` / `mismatch`; null when unreadable.
+   */
+  recordResult(channelId: string, recordPath: string): Promise<string | null>;
   /** The `captions` entries of the release's `Vn_youtube.json` (unreadable: none). */
   recordCaptions(channelId: string, recordPath: string): Promise<Array<{ trackId: string; sha256: string; verified?: boolean; pending?: boolean }>>;
   /** Read-modify-write of `Vn_youtube.json`: only `captions` changes (an entry of the same track id is replaced), atomically. */
@@ -80,6 +85,14 @@ export function createPackageCaptions(deps: PackageCaptionsDeps) {
     if (rows.some((row) => ACTIVE_UPLOAD.has(row.status))) {
       throw refuse("captions_step_pending", `${video}'s upload on this computer has not finished its steps yet: add the captions after it is done.`, { channelId, video });
     }
+    // Review #5: the upload record is still the runner's first one (`result: "uploaded"`) -- that upload (maybe on the other computer)
+    // has not finished its steps, and its record step rewrites the record. Refused, unless this computer's own rows of the video all
+    // ended (a row that failed after its first record leaves it so for good; the owner must still be able to add the captions).
+    const recordPath = `${found.folder}/${found.pkg.video}_youtube.json`;
+    const ownRowsEnded = rows.some((row) => row.videoId === found.videoId);
+    if ((await deps.recordResult(channelId, recordPath).catch(() => null)) === "uploaded" && !ownRowsEnded) {
+      throw refuse("captions_upload_unfinished", `${video}'s upload has not finished its steps yet (its upload record is still the first one): add the captions once it is done, or on the computer that uploaded it.`, { channelId, video, videoId: found.videoId });
+    }
     // The package's own captions checks on the files as they are now (the switch, the frame and the video are the writer's, read now).
     const caption = captions[0];
     const relative = `${found.folder}/${caption.file}`;
@@ -94,7 +107,6 @@ export function createPackageCaptions(deps: PackageCaptionsDeps) {
       const first = structural[0];
       throw refuse(first.code as DomainErrorCode, `${video}'s captions cannot be written (${first.code}${first.params?.reason ? `: ${first.params.reason}` : ""}).`, { channelId, video, problems: structural, ...(first.params ?? {}) });
     }
-    const recordPath = `${found.folder}/${found.pkg.video}_youtube.json`;
     // An entry whose write was not verified is still ours, but never "already present": its sha256 is not trusted (an overwrite
     // that did not take must be retried, not answered with already_present).
     // A pending entry (sent, YouTube still processing) keeps its sha256: the writer then re-checks the track's status (review #4).

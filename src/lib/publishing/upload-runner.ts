@@ -233,6 +233,11 @@ export type UploadRunnerDeps = {
     sha256(path: string): Promise<string>;
     /** Writes `Vn_youtube.json` next to the package (atomically). */
     writeRecord(channelId: string, relativePath: string, record: unknown): Promise<void>;
+    /**
+     * BL-269 (review #5): the `captions` entries of the `Vn_youtube.json` there now (none or unreadable: []), so the record step keeps
+     * a track the other computer added meanwhile. Absent: the record step writes only this upload's own track.
+     */
+    readRecordCaptions?(channelId: string, relativePath: string): Promise<unknown[]>;
   };
   audit(args: { channelId: string; videoId: string | null; detail: Record<string, unknown> }): Promise<void>;
   /**
@@ -403,6 +408,25 @@ const mediaIdentityOf = (pkg: ApprovedPackage) => ({ videoSha256: pkg.videoSha25
 /** BL-269: the captions step lets the date through -- none, verified, already present, or a row from before the step. */
 export function captionsPassed(steps: Pick<UploadSteps, "captions">): boolean {
   return steps.captions === undefined || steps.captions === "none" || steps.captions === "verified" || steps.captions === "already_present";
+}
+
+/**
+ * BL-269 (review #5): the record's `captions` -- the entries already there (another computer's add) kept, one per track id; for the
+ * same id the later `at` wins (an overwrite after the upload is newer than the upload's own entry). Pure.
+ */
+export function mergeRecordCaptions(existing: unknown[], own: Record<string, unknown> | null): Array<Record<string, unknown>> {
+  const byId = new Map<string, Record<string, unknown>>();
+  const atOf = (entry: Record<string, unknown>) => (typeof entry.at === "string" ? Date.parse(entry.at) : Number.NaN);
+  for (const entry of existing) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const e = entry as Record<string, unknown>;
+    if (typeof e.trackId === "string" && !byId.has(e.trackId)) byId.set(e.trackId, e);
+  }
+  if (own && typeof own.trackId === "string") {
+    const there = byId.get(own.trackId);
+    if (!there || !(atOf(there) > atOf(own))) byId.set(own.trackId, own);
+  }
+  return [...byId.values()];
 }
 
 const recordPath = (pkg: ApprovedPackage) => `${pkg.manifestPath.slice(0, pkg.manifestPath.lastIndexOf("/"))}/${pkg.video}_youtube.json`;
@@ -998,6 +1022,13 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
       step = "record";
       if (steps.record === undefined) {
         try {
+          // Review #5: the record is rewritten whole -- a caption track the other computer added meanwhile is kept.
+          const ownCaption =
+            steps.captionsTrack && (steps.captions === "verified" || steps.captions === "already_present" || steps.captions === "mismatch")
+              ? { ...steps.captionsTrack, by: "upload", verified: steps.captions !== "mismatch" }
+              : null;
+          const existingCaptions = deps.files.readRecordCaptions ? await deps.files.readRecordCaptions(job.channelId, recordPath(pkg)).catch(() => []) : [];
+          const captions = mergeRecordCaptions(existingCaptions, ownCaption);
           await deps.files.writeRecord(job.channelId, recordPath(pkg), {
             schema: "yt-release-upload/1",
             channelId: job.channelId,
@@ -1010,9 +1041,7 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
             mismatches: steps.verify.mismatches,
             // BL-269 (ADR 0074 §9, the Operator's request): the mp4's identity, and the caption track this upload holds as its own.
             ...mediaIdentityOf(pkg),
-            ...(steps.captionsTrack && (steps.captions === "verified" || steps.captions === "already_present" || steps.captions === "mismatch")
-              ? { captions: [{ ...steps.captionsTrack, by: "upload", verified: steps.captions !== "mismatch" }] }
-              : {}),
+            ...(captions.length > 0 ? { captions } : {}),
           });
           steps.record = "written";
         } catch (error) {

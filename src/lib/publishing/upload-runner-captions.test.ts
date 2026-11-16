@@ -9,7 +9,7 @@ import { captionStepOutcome, createCaptionStepWriter } from "./caption-step";
 import { checksPassed } from "./plan-schedule";
 import { estimateUploadUnits } from "./publish-dates";
 import { DEFAULT_PUBLISHING_SETTINGS } from "./settings";
-import { createUploadRunner, type ApprovedPackage, type UploadRunnerDeps, type UploadSteps } from "./upload-runner";
+import { createUploadRunner, mergeRecordCaptions, type ApprovedPackage, type UploadRunnerDeps, type UploadSteps } from "./upload-runner";
 
 // BL-269 upload step (VIDEO_CAPTIONS_PLAN.md §3.3, §3.4, §7: AC-CAP-24..30, AC-CAP-38; ADR 0074 §7, §9). Requirements:
 // - order after processing: translations -> captions -> thumbnail -> playlist -> read-back -> date -> record -> sync;
@@ -77,7 +77,7 @@ function row(pkg: ApprovedPackage, steps: UploadSteps = {}): StoredPublishingUpl
 
 type CaptionsAnswer = Awaited<ReturnType<NonNullable<UploadRunnerDeps["writeCaptions"]>>>;
 
-function harness(start: StoredPublishingUpload, writeCaptions?: UploadRunnerDeps["writeCaptions"]) {
+function harness(start: StoredPublishingUpload, writeCaptions?: UploadRunnerDeps["writeCaptions"], extraFiles: Partial<UploadRunnerDeps["files"]> = {}) {
   let current = { ...start };
   const order: string[] = [];
   const records: Array<Record<string, unknown>> = [];
@@ -139,6 +139,7 @@ function harness(start: StoredPublishingUpload, writeCaptions?: UploadRunnerDeps
       readChunk: async () => Buffer.from("0123456789"),
       sha256: async () => "x",
       writeRecord: async (_c, _p, record) => void records.push(record as Record<string, unknown>),
+      ...extraFiles,
     },
     audit: async () => undefined,
     syncChannel: async () => undefined,
@@ -426,4 +427,33 @@ test("review #3 the insert never sent (Live writes off after the mark) -> the ma
   });
   await retry.runAll(1);
   assert.deepEqual(retry.steps().captionsAttempt, earlier);
+});
+
+test("review #5 the record step keeps a caption entry the other computer added meanwhile (the record is rewritten whole)", async () => {
+  const theirs = { trackId: "B1", language: "en", name: "Other", sha256: "b".repeat(64), at: "2026-11-17T12:05:00.000Z", by: "owner", verified: true };
+  const h = harness(row(PKG), async () => verified, { readRecordCaptions: async (_c, path) => (path === "04 Videos/11 November/1120 V27/V27_youtube.json" ? [theirs] : []) });
+  await h.runAll();
+  const captions = h.records.at(-1)!.captions as Array<Record<string, unknown>>;
+  assert.deepEqual(captions.map((c) => c.trackId).sort(), ["B1", "T1"]);
+  assert.deepEqual(captions.find((c) => c.trackId === "B1"), theirs, "kept byte for byte");
+  // A package without captions: the other computer's entry still survives.
+  const old = { ...PKG };
+  delete old.captions;
+  const none = harness(row(old), undefined, { readRecordCaptions: async () => [theirs] });
+  await none.runAll();
+  assert.deepEqual(none.records.at(-1)!.captions, [theirs]);
+  // Unreadable record: the upload's own entry only (as before).
+  const broken = harness(row(PKG), async () => verified, { readRecordCaptions: async () => Promise.reject(new Error("bad JSON")) });
+  await broken.runAll();
+  assert.deepEqual((broken.records.at(-1)!.captions as Array<{ trackId: string }>).map((c) => c.trackId), ["T1"]);
+});
+
+test("review #5 mergeRecordCaptions: one entry per track id; for the same id the later `at` wins", () => {
+  const upload = { trackId: "T1", sha256: "1", at: "2026-11-17T12:00:00Z", by: "upload" };
+  const newerOverwrite = { trackId: "T1", sha256: "2", at: "2026-11-17T13:00:00Z", by: "owner" };
+  const olderEntry = { trackId: "T1", sha256: "0", at: "2026-11-17T11:00:00Z", by: "producer" };
+  assert.deepEqual(mergeRecordCaptions([newerOverwrite], upload), [newerOverwrite]);
+  assert.deepEqual(mergeRecordCaptions([olderEntry], upload), [upload]);
+  assert.deepEqual(mergeRecordCaptions([null, "x", { name: "no id" }, olderEntry], null), [olderEntry]);
+  assert.deepEqual(mergeRecordCaptions([], null), []);
 });

@@ -1580,7 +1580,9 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
   mode: insert | update | none, target, englishTracks, units: 51, writeUnits, manifestSha256, ... }`; real `{ mode, written, alreadyPresent,
   trackId, trackName, verified, verificationDetail, pending, backupPath, recorded, uploadStepsMarked, ... }` plus `forChannelId`. Other errors:
   `upload_package_not_ready`, `package_metadata_not_uploaded`, `package_metadata_manifest_changed`, `captions_not_in_package`,
-  `captions_missing`, `captions_invalid`, `captions_step_pending`, `captions_track_changed`, `captions_scope_missing`, `video_not_in_channel`,
+  `captions_missing`, `captions_invalid`, `captions_step_pending`, `captions_upload_unfinished` (the upload record is still the runner's first,
+  `result: "uploaded"` -- that upload, maybe on the other computer, has not finished its steps; allowed when this computer's own rows of the
+  video all ended), `captions_track_changed`, `captions_scope_missing`, `video_not_in_channel`,
   `youtube_quota_exceeded`, `backup_item_failed`, `WRITE_CHANNEL_MISMATCH`, `live_writes_disabled`, `operation_lock_held` / `device_in_recovery_mode`.
 - **Metadata tool (BL-265, ADR 0072, owner TG 4578/4581; Producer 1.24.0):** `producer_video_metadata_update` `{ channelId, video, dryRun? }`
   (strict: no text of the caller's) → dry run `{ dryRun: true, video, videoId, manifestSha256, etag, baseline: upload_row | metadata_apply | unknown,

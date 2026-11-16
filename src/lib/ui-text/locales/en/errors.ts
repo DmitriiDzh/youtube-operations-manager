@@ -119,6 +119,7 @@ export const errors = {
   "errors.captions_track_changed": "The video's captions changed since the preview. Preview again.",
   "errors.captions_scope_missing": "The channel's Google connection does not allow captions. Reconnect the channel (Settings → Channels).",
   "errors.captions_step_pending": "This video's upload on this computer has not finished its steps yet. Try again once it is done.",
+  "errors.captions_upload_unfinished": "This video's upload has not finished its steps yet. Add the captions once it is done, or on the computer that uploaded it.",
   "errors.captions_not_in_package": "The package states no captions.",
   "errors.video_in_dispute": "This video number was taken on two computers at once. Nothing is linked to it until the computer that lost takes another number (Content → Publishing).",
   "errors.video_costs_unavailable": "The cost of a channel's videos is shown only for a channel connected on this computer.",

@@ -558,6 +558,13 @@ export function createUploadRunnerCore(options: { slotDecisions?: (channelId: st
       async writeRecord(channelId, relativePath, record) {
         await writeUploadRecordFile(await workspaceOf(channelId), relativePath, record);
       },
+      // BL-269 (review #5): the record's `captions` now, kept by the record step (the other computer's add).
+      async readRecordCaptions(channelId, relativePath) {
+        const file = await deps.files.resolve(channelId, relativePath);
+        if (!file || file.bytes > 1024 * 1024) return [];
+        const value = JSON.parse((await readFile(file.path, "utf8")).replace(/^\uFEFF/, "")) as { captions?: unknown } | null;
+        return value && typeof value === "object" && Array.isArray(value.captions) ? value.captions : [];
+      },
     },
     // BL-194 stage 3 (ADR 0041): the video's cost next to its package -- the video-costs module, loaded only here and only when used
     // (AGENTS.md §M: uploads never depend on it; a failure is a note).
@@ -1326,6 +1333,10 @@ export function createPackageCaptionsCore() {
       if (!file) return null;
       if (file.bytes > maxBytes) return "too_large";
       return new Uint8Array(await readFile(file.path));
+    },
+    async recordResult(channelId, recordPath) {
+      const result = (await readRecord(channelId, recordPath))?.result;
+      return typeof result === "string" ? result : null;
     },
     async recordCaptions(channelId, recordPath) {
       const list = (await readRecord(channelId, recordPath))?.captions;
