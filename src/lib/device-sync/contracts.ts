@@ -135,7 +135,9 @@ export type DivergencePreview = {
 
 /** §3.5 cadence. */
 export const DEVICE_SYNC_TICK_MS = 30_000;
-export const DEVICE_SYNC_MIN_EXPORT_INTERVAL_MS = 60_000;
+/** BL-270 (owner TG 4662/4665): at most one automatic export per 10 minutes (was 60 s). A change made inside the window is not
+ * lost -- the data stays dirty and the first tick after the window exports it; "Sync now" and the idle-shutdown flush are forced. */
+export const DEVICE_SYNC_MIN_EXPORT_INTERVAL_MS = 10 * 60_000;
 /** §3.4: how long a snapshot may stay unreadable (Syncthing still transferring) before a notice. */
 export const DEVICE_SYNC_TRANSFER_GRACE_MS = 10 * 60_000;
 /** §3.8 retention. */

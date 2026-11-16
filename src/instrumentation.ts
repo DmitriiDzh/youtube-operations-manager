@@ -880,9 +880,11 @@ async function startServerSession() {
   const onIdle = createIdleHandler(idleAction, {
     // A running generation pod is terminated BEFORE the process goes away (AC-P14-09; bounded inside).
     stopPods: () => media.stopForShutdown(),
+    // BL-270: straight to the runner (it runs one action at a time), never through `tickQuietly`, which would hand back an
+    // unforced tick already in flight and skip the forced export -- with a 10-minute export interval that would leave the last
+    // changes unpublished until the next start.
     flush: async () => {
-      await (ticking ?? undefined);
-      await tickQuietly({ force: true, exportOnly: true });
+      await deviceSync.tick({ force: true, exportOnly: true }).catch(() => undefined);
     },
     exit: () => process.exit(0),
     onSessionEnded: () => idleLogger.info({ event: "idle_shutdown.session_ended", context: {} }),

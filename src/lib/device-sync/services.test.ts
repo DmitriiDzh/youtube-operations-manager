@@ -5,7 +5,7 @@ import path from "node:path";
 import { type Client } from "@libsql/client";
 import { createLibsqlClient } from "@/lib/libsql-client";
 import { initializeDatabaseSchema, SCHEMA_CURRENT_VERSION } from "@/lib/db";
-import { readLineageState } from "@/lib/snapshot";
+import { computeContentFingerprint, createCachedContentFingerprint, readLineageState } from "@/lib/snapshot";
 import { withTempDir } from "@/test-support/temp-dir";
 import { EMPTY_DEVICE_SYNC_STATUS, type DeviceSyncStatus, type SnapshotEntry } from "./contracts";
 import { createDeviceSyncRunner, decideSyncAction, pruneAutoImportBackups, pruneOwnSnapshots } from "./services";
@@ -41,7 +41,7 @@ type Device = {
 async function makeDevice(
   root: string,
   name: string,
-  opts: { folder?: string | null; activeOperation?: { value: boolean } } = {}
+  opts: { folder?: string | null; activeOperation?: { value: boolean }; fullFingerprints?: { n: number } } = {}
 ): Promise<Device> {
   const client = await makeClient(root, `${name}.db`);
   let status: DeviceSyncStatus = { ...EMPTY_DEVICE_SYNC_STATUS };
@@ -63,13 +63,23 @@ async function makeDevice(
     },
     now: () => clock.t,
     hasActiveLocalOperation: opts.activeOperation ? () => opts.activeOperation!.value : undefined,
+    // BL-270: a test may count the tick's full fingerprint reads.
+    contentFingerprint: opts.fullFingerprints
+      ? createCachedContentFingerprint(client, {
+          now: () => clock.t,
+          compute: (c) => {
+            opts.fullFingerprints!.n++;
+            return computeContentFingerprint(c);
+          },
+        })
+      : undefined,
   });
   return { client, runner, status: () => status, clock, setEnabled: (v) => (enabled = v) };
 }
 
-/** Advances past the minimum export interval. */
+/** Advances past the minimum export interval (BL-270: 10 minutes, was 60 s). */
 function later(device: Device) {
-  device.clock.t += 5 * 60_000;
+  device.clock.t += 11 * 60_000;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1314,3 +1324,81 @@ test("AC-FD-07: boot wires the sync-preserving hooks around its migrations, on t
   assert.match(source, /beforeMigrations\(destPath\)/);
   assert.match(source, /afterMigrations\(\)/);
 });
+
+// ---------------------------------------------------------------------------------------------
+// BL-270 (owner TG 4662/4665): a cheap change check before the full fingerprint, at most one export per 10 minutes
+// ---------------------------------------------------------------------------------------------
+
+test("BL-270: quiet ticks of an in-sync device do not read the whole transferred data again", () =>
+  withTempDir("device-sync-", async (root) => {
+    const calls = { n: 0 };
+    const a = await makeDevice(root, "a", { fullFingerprints: calls });
+    await addResearchChannel(a.client, "UC1");
+    assert.equal((await a.runner.tick()).state, "exported");
+    const afterExport = calls.n;
+    for (let i = 0; i < 5; i++) {
+      a.clock.t += 30_000;
+      assert.equal((await a.runner.tick()).state, "synced");
+    }
+    // At most one full read for the first tick after the export (the export moved the counters); none for the quiet ones.
+    assert.ok(calls.n - afterExport <= 1, `full reads on quiet ticks: ${calls.n - afterExport}`);
+    a.client.close();
+  }));
+
+test("BL-270 (negative): a write after a cached clean tick is seen at the very next tick and exported", () =>
+  withTempDir("device-sync-", async (root) => {
+    const a = await makeDevice(root, "a", { fullFingerprints: { n: 0 } });
+    await addResearchChannel(a.client, "UC1");
+    await a.runner.tick();
+    later(a);
+    assert.equal((await a.runner.tick()).state, "synced"); // the cache now holds the clean value
+    await addResearchChannel(a.client, "UC2");
+    later(a);
+    assert.equal((await a.runner.tick()).state, "exported");
+    a.client.close();
+  }));
+
+test("BL-270 (negative, AC-AS-01): a local write after a cached clean tick still refuses the other computer's fast-forward", () =>
+  withTempDir("device-sync-", async (root) => {
+    const a = await makeDevice(root, "a", { fullFingerprints: { n: 0 } });
+    const b = await makeDevice(root, "b");
+    await addResearchChannel(a.client, "UC1");
+    await a.runner.tick();
+    await b.runner.tick();
+    later(a);
+    assert.equal((await a.runner.tick()).state, "synced"); // cached clean
+    await addResearchChannel(b.client, "UC-b");
+    later(b);
+    assert.equal((await b.runner.tick()).state, "exported"); // a direct child of a's head
+    await addResearchChannel(a.client, "UC-a"); // a changes locally after its cached clean tick
+    const status = await a.runner.tick();
+    assert.equal(status.state, "attention");
+    assert.equal(status.notices[0]?.kind, "divergence");
+    assert.deepEqual(await researchIds(a.client), ["UC-a", "UC1"]);
+    a.client.close();
+    b.client.close();
+  }));
+
+test("BL-270: at most one automatic export per 10 minutes; a change made inside the window is exported after it, never lost", () =>
+  withTempDir("device-sync-", async (root) => {
+    const a = await makeDevice(root, "a");
+    const b = await makeDevice(root, "b");
+    await addResearchChannel(a.client, "UC1");
+    assert.equal((await a.runner.tick()).state, "exported");
+    const first = a.status().lastExportSnapshotId;
+    await addResearchChannel(a.client, "UC2");
+    // Every tick inside the 10 minutes waits (9 min 30 s after the export is the last one inside).
+    for (let elapsed = 30_000; elapsed < 10 * 60_000; elapsed += 30_000) {
+      a.clock.t += 30_000;
+      assert.equal((await a.runner.tick()).state, "waiting", `at +${elapsed / 1000} s`);
+    }
+    assert.equal(a.status().lastExportSnapshotId, first);
+    a.clock.t += 30_000; // exactly 10 minutes after the export
+    assert.equal((await a.runner.tick()).state, "exported");
+    assert.notEqual(a.status().lastExportSnapshotId, first);
+    // The other computer receives both channels.
+    assert.equal((await b.runner.tick()).state, "imported");
+    assert.deepEqual(await researchIds(b.client), ["UC1", "UC2"]);
+    a.client.close();
+    b.client.close();
+  }));

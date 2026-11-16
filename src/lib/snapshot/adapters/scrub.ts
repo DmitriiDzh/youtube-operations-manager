@@ -1,5 +1,6 @@
 import type { SqlExecutor } from "../contracts";
 import { SNAPSHOT_TRANSFERRED_TABLES } from "../contracts";
+import { TRANSFERRED_CHANGE_TRIGGER_PREFIX } from "./change-counter";
 
 const ALLOWLIST = new Set<string>(SNAPSHOT_TRANSFERRED_TABLES);
 
@@ -14,7 +15,7 @@ type ExecuteResult = { rows: Array<Record<string, unknown>> };
  * released by the OS before the next filesystem call). Attach/detach on one already-live
  * connection has no such lifecycle to race.
  *
- * Drops every table not on the explicit transfer allowlist (INV-CP.1: no snapshot ever
+ * Drops this device's change-counter triggers (BL-270) and every table not on the explicit transfer allowlist (INV-CP.1: no snapshot ever
  * contains `users`/`ai_connection_credentials`/etc.), then `VACUUM`s the attached database so
  * the dropped tables' data pages are actually reclaimed/overwritten, not merely unreferenced.
  */
@@ -33,6 +34,16 @@ export async function scrubDatabaseCopy(client: SqlExecutor, dbPath: string): Pr
     // never queried again after this function returns.
     await client.execute("PRAGMA foreign_keys = OFF");
     try {
+      // BL-270: the change-counter triggers on the transferred tables write into `transferred_change_counters`, a device-local
+      // table dropped just below. Left in the copy they would make any later write to it (a staged import's purge, a migration)
+      // fail with "no such table", so they never leave this device; each device installs its own.
+      const triggers = (await client.execute(
+        `SELECT name FROM scrub_target.sqlite_master WHERE type = 'trigger' AND name LIKE '${TRANSFERRED_CHANGE_TRIGGER_PREFIX}%'`
+      )) as ExecuteResult;
+      for (const row of triggers.rows) {
+        await client.execute(`DROP TRIGGER IF EXISTS scrub_target."${String(row.name)}"`);
+      }
+
       const tables = (await client.execute(
         "SELECT name FROM scrub_target.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
       )) as ExecuteResult;

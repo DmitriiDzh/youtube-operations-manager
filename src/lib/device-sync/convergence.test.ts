@@ -93,7 +93,8 @@ async function create(device: Device, id: string) {
 }
 
 async function tick(device: Device) {
-  device.clock.t += 5 * 60_000;
+  // Past the minimum export interval (BL-270: 10 minutes, was 60 s).
+  device.clock.t += 11 * 60_000;
   return device.runner.tick();
 }
 

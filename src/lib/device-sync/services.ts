@@ -9,6 +9,7 @@ import { getOperationLock, OperationLockError, releaseStaleExportLock } from "@/
 import {
   addLineageAncestorsIfHeadUnchanged,
   computeFileContentFingerprint,
+  createCachedContentFingerprint,
   diffTransferredContent,
   hasUnfinishedBatch,
   hasUnpublishedLocalChanges,
@@ -20,6 +21,7 @@ import {
   readManifestFromDir,
   SnapshotError,
   verifySnapshotForImport,
+  type CachedContentFingerprint,
   type SqlExecutor,
 } from "@/lib/snapshot";
 import { SchemaVersionError } from "@/lib/schema-versioning";
@@ -241,6 +243,10 @@ export type DeviceSyncDeps = {
    * device-availability gate before every video, and an automatic export holds the operation lock, so
    * an export started mid-run would abort it. Optional: omitted = never blocks. */
   hasActiveLocalOperation?: () => boolean;
+  /** BL-270: the content fingerprint the tick's dirty check uses, recomputed only when the transferred tables' change counters
+   * moved (or every 10 minutes). Optional: omitted = one over `client` with the runner's clock. The in-lock checks before an export
+   * or an import always compute it in full. */
+  contentFingerprint?: CachedContentFingerprint;
 };
 
 async function isExistingDirectory(dir: string): Promise<boolean> {
@@ -301,6 +307,19 @@ function divergenceNotice(snapshot: SnapshotEntry, localDirty: boolean, multiple
 
 export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
   const now = deps.now ?? (() => Date.now());
+  const contentFingerprint = deps.contentFingerprint ?? createCachedContentFingerprint(deps.client, { now });
+
+  /**
+   * BL-270: the tick's "has this computer unpublished changes?" -- the same rule as `hasUnpublishedLocalChanges`, with the current
+   * fingerprint taken from the change-counter cache instead of a full read of every transferred table every 30 s. The lineage is
+   * read fresh each time (an export, an absorb or a re-baseline moves it). Only the decision uses this: the export's and the
+   * import's in-lock checks (AC-AS-05/07) still compute the fingerprint in full.
+   */
+  async function localChangesUnpublished(): Promise<boolean> {
+    const lineage = await readLineageState(deps.client);
+    if (lineage.lastSnapshotId === null || !lineage.contentFingerprint) return hasUnpublishedLocalChanges(deps.client);
+    return hasUnpublishedLocalChanges(deps.client, await contentFingerprint.fingerprint());
+  }
 
   async function loadStatusSafe(): Promise<DeviceSyncStatus> {
     try {
@@ -600,7 +619,7 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
         olderThan: apiDataExpiryCutoff(now()),
       }).catch(() => [] as string[]);
       const snapshots = scanned.snapshots.filter((s) => !aged.includes(s.snapshotId));
-      const localDirty = await hasUnpublishedLocalChanges(deps.client);
+      const localDirty = await localChangesUnpublished();
       const unsupported = new Set(
         status.unsupportedForSchemaVersion === deps.currentSchemaVersion ? (status.unsupportedSnapshotIds ?? []) : []
       );
