@@ -124,6 +124,8 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
         estimateUploadUnits({
           playlist: view.settings.playlistId !== null,
           deferredPublishAt: isDeferredPublishAt(c.item.publishAt),
+          // BL-269 (AC-CAP-28): the captions step's budget for a package with captions.
+          captions: Boolean(c.pkg.captions && c.pkg.captions.length > 0),
         }),
       0
     );

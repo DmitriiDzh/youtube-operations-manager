@@ -61,6 +61,7 @@ import { readOwnerReviewState, reviewGateOf, triedKeysOf } from "@/lib/package-r
 import { mediaKeyOf, type TriedPackages } from "./owner-review-gate";
 import { createVideoDetailsCore } from "@/lib/video-details";
 import { createVideoLocalizationsWriterCore } from "@/lib/shared-video-localizations";
+import { createVideoCaptionsCore } from "@/lib/video-captions";
 import { createQuotaGuardCore } from "@/lib/quota-guard";
 import { getQuotaLedgerSyncCore } from "@/lib/quota-ledger-sync";
 import { nextYoutubeQuotaReset, startOfYoutubeQuotaDay } from "@/lib/youtube-quota";
@@ -427,6 +428,28 @@ export async function publishUploadsReportNow(): Promise<void> {
   await writeUploadsReport(await ownUploadsForReport());
 }
 
+/** BL-269: the captions writer's refusals that end the upload's captions step as `refused` (never retried by themselves). */
+const CAPTION_STEP_REFUSALS = new Set<string>([
+  "captions_invalid",
+  "captions_missing",
+  "captions_foreign_track",
+  "captions_own_track_differs",
+  "captions_track_ambiguous",
+  "captions_track_forced",
+  "captions_track_draft",
+  "captions_scope_missing",
+  "video_not_in_channel",
+  "validation_failed",
+]);
+
+/** BL-269 (ADR 0074 §2): the channel's captions switch now (unreadable: off -- nothing is written then). */
+async function captionsEnabledNow(channelId: string): Promise<boolean> {
+  return createPublishingSettingsCore()
+    .read(channelId)
+    .then((view) => view.settings.captionsEnabled === true)
+    .catch(() => false);
+}
+
 /**
  * BL-182 stage 2 (ADR 0037): the background upload runner of this computer. Every write goes through the write gateway right after
  * the Live writes check; every read through the read gateway; the deferred publish time through video-details' own write path.
@@ -497,6 +520,41 @@ export function createUploadRunnerCore(options: { slotDecisions?: (channelId: st
     ...(options.slotDecisions
       ? { slotDecision: async (channelId: string, slotId: string) => (await options.slotDecisions!(channelId)).get(slotId) ?? null }
       : {}),
+    // BL-269 (ADR 0074 §7): the captions writer; the file is read once here (the workspace rule) and re-hashed by the writer.
+    async writeCaptions({ channelId, videoId, video, uploadId, captions, frameFallback, ownTracks, adoptAfterAttempt, onAttempt, credentialRef }) {
+      const file = await deps.files.resolve(channelId, captions.file);
+      if (!file) return { outcome: "refused", code: "captions_missing", detail: `${captions.file} is not in the channel's workspace.` };
+      if (file.bytes === 0 || file.bytes > 10 * 1024 * 1024) return { outcome: "refused", code: "captions_invalid", detail: `size ${file.bytes} bytes` };
+      const bytes = await deps.files.readChunk(file.path, 0, file.bytes);
+      try {
+        const result = await createVideoCaptionsCore({ captionsEnabled: captionsEnabledNow, markAttempt: ({ trackIdsBefore }) => onAttempt(trackIdsBefore) }).write(
+          {
+            channelId,
+            videoId,
+            video,
+            file: { name: captions.file.slice(captions.file.lastIndexOf("/") + 1), bytes },
+            language: captions.language,
+            name: captions.name,
+            sha256: captions.sha256,
+            // The cues were checked against the video's duration when the package was queued (the scan); not again here.
+            durationSeconds: null,
+            ownTracks,
+            frameFallback,
+            adoptAfterAttempt,
+          },
+          { kind: "upload", uploadId, userId: credentialRef.userId }
+        );
+        const outcome = result.alreadyPresent ? "already_present" : result.verified ? "verified" : result.pending ? "pending" : "mismatch";
+        return { outcome, trackId: result.trackId as string, trackName: result.trackName, detail: result.verificationDetail };
+      } catch (error) {
+        // A refusal is the step's outcome (shown with the job, the date withheld); a pause or an unknown answer goes to the runner.
+        if (isDomainError(error) && CAPTION_STEP_REFUSALS.has(error.code)) {
+          const reason = (error.details as { reason?: unknown } | undefined)?.reason;
+          return { outcome: "refused", code: typeof reason === "string" ? `${error.code}:${reason}` : error.code, detail: error.message };
+        }
+        throw error;
+      }
+    },
     // BL-225 stage 3 (AGENTS.md §F «Upload localizations», ADR 0051 §8): the shared video translations writer, named in the audit.
     async writeLocalizations({ channelId, videoId, localizations, expected, credentialRef }) {
       const result = await createVideoLocalizationsWriterCore("upload_localizations").apply({ credentialRef, channelId, videoId, localizations, expected });
@@ -651,7 +709,15 @@ export function createUploadApprovalCore() {
             return {};
           }
         })();
-        units += estimateUploadUnits({ playlist: Boolean(settings.playlistId), deferredPublishAt: !row.publishAtAtInsert && isDeferredPublishAt(row.publishAt) });
+        // BL-269 (AC-CAP-28): a queued row whose package has captions (and whose captions step has not run yet) budgets the step.
+        const captions = (() => {
+          try {
+            return Boolean((JSON.parse(row.packageJson) as { captions?: unknown }).captions) && (JSON.parse(row.stepsJson) as { captions?: unknown }).captions === undefined;
+          } catch {
+            return false;
+          }
+        })();
+        units += estimateUploadUnits({ playlist: Boolean(settings.playlistId), deferredPublishAt: !row.publishAtAtInsert && isDeferredPublishAt(row.publishAt), captions });
       }
       return { inserts: rows.filter((row) => row.videoId === null).length, units };
     },

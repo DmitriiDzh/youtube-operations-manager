@@ -94,6 +94,19 @@ export type UploadSteps = {
    */
   localizations?: "verified" | "mismatch" | "failed" | "none";
   /**
+   * BL-269 (VIDEO_CAPTIONS_PLAN.md §3.3, ADR 0074 §7): the package's English captions, after the translations and before the
+   * thumbnail, by the captions writer (never an overwrite). `none`: the package has none (every row from before BL-269 too).
+   * `refused`: the switch is off now, the video is not horizontal, an English track is already there (foreign, or ours with another
+   * file), or the grant lacks youtube.force-ssl. Anything but `none` / `verified` / `already_present` withholds the date.
+   */
+  captions?: "none" | "verified" | "already_present" | "mismatch" | "failed" | "refused";
+  /** BL-269: an insert was attempted (saved before it) with the track ids listed before it -- the lost-answer rule on a retry. */
+  captionsAttempt?: { at: string; trackIdsBefore: string[] };
+  /** BL-269: the track holding the package's captions (the record's `captions` and "ours" on a retry). */
+  captionsTrack?: { trackId: string; language: string; name: string; sha256: string; at: string };
+  /** BL-269: read-backs of a track YouTube was still processing (`syncing`), read again later up to READ_BACK_RETRIES times. */
+  captionsRereads?: number;
+  /**
    * BL-225 stage 3 (ADR 0051 §5, §10): the last change the plan made to the video's date after the upload -- a veto removed it, an
    * approval (or a re-approval with a new time) set it. Read back before it is stored.
    */
@@ -185,6 +198,26 @@ export type UploadRunnerDeps = {
    * only, the owner gate's included); "changed" when the manifest is no longer that SHA-256. Absent: a re-package fails the row.
    */
   packageProblemsNow?(channelId: string, manifestPath: string, manifestSha256: string): Promise<{ problems: PackageProblem[] } | "changed">;
+  /**
+   * BL-269 (AGENTS.md §F captions writer, ADR 0074 §7): the package's captions onto the video this upload made -- the file read and
+   * hashed again, the channel's switch now, the frame, the tracks by language (never an overwrite), quota guard, backup, identity,
+   * the attempt mark (`onAttempt`), Live writes right before the one insert, read-back, audit. A refusal is returned (`refused`); a
+   * pause or an unknown answer is thrown. Absent: a package with captions gets `failed` and its date withheld.
+   */
+  writeCaptions?(args: {
+    channelId: string;
+    videoId: string;
+    video: string;
+    uploadId: string;
+    captions: NonNullable<ApprovedPackage["captions"]>;
+    frameFallback: "vertical" | "horizontal" | null;
+    ownTracks: Array<{ trackId: string; sha256: string }>;
+    adoptAfterAttempt: { trackIdsBefore: string[] } | null;
+    onAttempt(trackIdsBefore: string[]): Promise<void>;
+  } & UploadCredentials): Promise<
+    | { outcome: "verified" | "already_present" | "mismatch" | "pending"; trackId: string; trackName: string | null; detail: string | null }
+    | { outcome: "refused"; code: string; detail: string }
+  >;
   writeLocalizations?(args: {
     channelId: string;
     videoId: string;
@@ -362,6 +395,14 @@ export function readBackMismatches(after: VideoReadBack, pkg: ApprovedPackage, s
   return mismatches;
 }
 
+/** BL-269 (ADR 0074 §9): the record's mp4 identity -- the frozen SHA-256 (null when the package stated none) and size. */
+const mediaIdentityOf = (pkg: ApprovedPackage) => ({ videoSha256: pkg.videoSha256 ?? null, videoSizeBytes: pkg.sizeBytes });
+
+/** BL-269: the captions step lets the date through -- none, verified, already present, or a row from before the step. */
+export function captionsPassed(steps: Pick<UploadSteps, "captions">): boolean {
+  return steps.captions === undefined || steps.captions === "none" || steps.captions === "verified" || steps.captions === "already_present";
+}
+
 const recordPath = (pkg: ApprovedPackage) => `${pkg.manifestPath.slice(0, pkg.manifestPath.lastIndexOf("/"))}/${pkg.video}_youtube.json`;
 
 export function createUploadRunner(deps: UploadRunnerDeps) {
@@ -433,7 +474,7 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
     if (!ok) return;
     await deps.audit({ channelId: job.channelId, videoId, detail: { event: how === "uploaded" ? "publishing.uploaded" : "publishing.adopted_after_lost_answer", uploadId: job.id, video: job.video } });
     await deps.files
-      .writeRecord(job.channelId, recordPath(pkg), { schema: "yt-release-upload/1", channelId: job.channelId, video: pkg.video, videoId, uploadedAt, device: await deps.device(), result: "uploaded" })
+      .writeRecord(job.channelId, recordPath(pkg), { schema: "yt-release-upload/1", channelId: job.channelId, video: pkg.video, videoId, uploadedAt, device: await deps.device(), result: "uploaded", ...mediaIdentityOf(pkg) })
       .catch(() => undefined); // the record step writes it again, and notes it if it still cannot
   }
 
@@ -748,9 +789,9 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
     const steps = stepsOf(job);
     const note = (text: string) => (steps.notes = [...(steps.notes ?? []), text.slice(0, 300)]);
     const videoId = job.videoId;
-    let step: "localizations" | "thumbnail" | "playlist" | "verify" | "publishAt" | "record" | "sync" = "thumbnail";
+    let step: "localizations" | "captions" | "thumbnail" | "playlist" | "verify" | "publishAt" | "record" | "sync" = "thumbnail";
     const giveUp = async (message: string) => {
-      if (step === "publishAt" || step === "thumbnail" || step === "playlist" || step === "localizations") steps[step] = "failed";
+      if (step === "publishAt" || step === "thumbnail" || step === "playlist" || step === "localizations" || step === "captions") steps[step] = "failed";
       else if (step === "verify") steps.verify = { result: "mismatch", mismatches: ["unreadable"] };
       else if (step === "record") steps.record = "failed";
       else steps.sync = "failed";
@@ -766,7 +807,7 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
         return void (await saveSteps(job, steps));
       }
       // The writes below check the channel first, like the upload (review should-fix 1; PUBLISHING_PLAN §3).
-      const creds = publishAtDue || steps.thumbnail === undefined || steps.playlist === undefined || steps.localizations === undefined ? await identity(job) : await deps.credentials(job);
+      const creds = publishAtDue || steps.thumbnail === undefined || steps.playlist === undefined || steps.localizations === undefined || steps.captions === undefined ? await identity(job) : await deps.credentials(job);
       // BL-225 stage 3 (ADR 0051 §8): the package's translations first, onto this upload's own video; the writer reads back.
       step = "localizations";
       const translations = pkg.localizations && Object.keys(pkg.localizations).length > 0 ? pkg.localizations : null;
@@ -790,6 +831,51 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
             steps.localizations = "mismatch";
             note(`translations read back differently: ${result.detail}`);
           }
+        }
+        return void (await saveSteps(job, steps));
+      }
+      // BL-269 (ADR 0074 §7): the package's captions next, before the thumbnail; the writer reads back. Never an overwrite.
+      step = "captions";
+      if (steps.captions === undefined && !pkg.captions) steps.captions = "none";
+      if (steps.captions === undefined && pkg.captions) {
+        if (!deps.writeCaptions) {
+          steps.captions = "failed";
+          note("captions: no writer on this computer");
+          return void (await saveSteps(job, steps));
+        }
+        const result = await deps.writeCaptions({
+          channelId: job.channelId,
+          videoId,
+          video: pkg.video,
+          uploadId: job.id,
+          captions: pkg.captions,
+          frameFallback: pkg.orientation ?? null,
+          ownTracks: steps.captionsTrack ? [{ trackId: steps.captionsTrack.trackId, sha256: steps.captionsTrack.sha256 }] : [],
+          adoptAfterAttempt: steps.captionsAttempt ? { trackIdsBefore: steps.captionsAttempt.trackIdsBefore } : null,
+          // Saved before the insert: a lost answer is then adopted on the retry, never inserted twice (AC-CAP-27).
+          onAttempt: async (trackIdsBefore) => {
+            steps.captionsAttempt = { at: now().toISOString(), trackIdsBefore };
+            if (!(await saveSteps(job, steps))) throw new Error("The upload row changed while its captions were written.");
+            // An error after this point is handled on the row as saved (onError reads its steps), so the mark survives a lost answer.
+            job = { ...job, stepsJson: JSON.stringify({ ...steps, retries: 0 }) };
+          },
+          ...creds,
+        });
+        if (result.outcome === "refused") {
+          steps.captions = "refused";
+          note(`captions not written (${result.code}): ${result.detail}`);
+          return void (await saveSteps(job, steps));
+        }
+        steps.captionsTrack = { trackId: result.trackId, language: pkg.captions.language, name: result.trackName ?? pkg.captions.name, sha256: pkg.captions.sha256, at: steps.captionsTrack?.at ?? now().toISOString() };
+        if (result.outcome === "pending" && (steps.captionsRereads ?? 0) < READ_BACK_RETRIES) {
+          // YouTube is still processing the track: read again later (the step stays open), never decided on one read.
+          const stepsJson = JSON.stringify({ ...steps, captionsRereads: (steps.captionsRereads ?? 0) + 1, retries: 0 });
+          return void (await deps.store.update(job.id, "finishing", { stepsJson, nextAttemptAt: new Date(now().getTime() + READ_BACK_RETRY_DELAY_MS), updatedAt: now() }));
+        }
+        if (result.outcome === "verified" || result.outcome === "already_present") steps.captions = result.outcome;
+        else {
+          steps.captions = "mismatch";
+          note(`captions read back differently: ${result.detail ?? "still processing"}`);
         }
         return void (await saveSteps(job, steps));
       }
@@ -865,6 +951,8 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
         const failedBefore = [
           // BL-225 stage 3: a package's translations must be on the video, read back, before it gets a date.
           steps.localizations === undefined || steps.localizations === "none" || steps.localizations === "verified" ? null : "translations",
+          // BL-269 (ADR 0074 §7, R3): the package's captions on the video, read back, before it gets a date.
+          captionsPassed(steps) ? null : "captions",
           steps.thumbnail === "set" ? null : "thumbnail",
           steps.playlist === "failed" ? "playlist" : null,
           steps.verify.result === "verified" ? null : "read-back",
@@ -905,6 +993,11 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
             device: await deps.device(),
             result: steps.verify.result,
             mismatches: steps.verify.mismatches,
+            // BL-269 (ADR 0074 §9, the Operator's request): the mp4's identity, and the caption track this upload holds as its own.
+            ...mediaIdentityOf(pkg),
+            ...(steps.captionsTrack && (steps.captions === "verified" || steps.captions === "already_present" || steps.captions === "mismatch")
+              ? { captions: [{ ...steps.captionsTrack, by: "upload" }] }
+              : {}),
           });
           steps.record = "written";
         } catch (error) {
@@ -932,7 +1025,7 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
           note(`sync after the upload failed: ${errorInfo(error).message}`);
         }
       }
-      const problem = steps.verify.result === "mismatch" || steps.localizations === "mismatch" ? "verify_mismatch" : [steps.publishAt, steps.thumbnail, steps.playlist, steps.record, steps.localizations].includes("failed") ? "step_failed" : steps.publishAt === "skipped_too_soon" ? "publish_at_too_soon" : null;
+      const problem = steps.verify.result === "mismatch" || steps.localizations === "mismatch" || steps.captions === "mismatch" ? "verify_mismatch" : [steps.publishAt, steps.thumbnail, steps.playlist, steps.record, steps.localizations, steps.captions].includes("failed") || steps.captions === "refused" ? "step_failed" : steps.publishAt === "skipped_too_soon" ? "publish_at_too_soon" : null;
       if (await deps.store.update(job.id, "finishing", { status: "done", stepsJson: JSON.stringify(steps), errorCode: problem, finishedAt: now(), updatedAt: now() })) {
         await deps.audit({ channelId: job.channelId, videoId, detail: { event: "publishing.upload_done", uploadId: job.id, video: job.video, steps } });
       }
