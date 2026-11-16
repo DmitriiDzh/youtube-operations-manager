@@ -36,6 +36,8 @@ import {
   rawSqlClient,
   rewritePublishingUploadPaths,
   listSocialPostJobs,
+  listLiveStreamVideos,
+  listLiveStreamSources,
   removeLocalVideoRowIfUnreferenced,
   savePublishingG1Probe,
   stopPublishingUploadBeforeYoutube,
@@ -917,6 +919,11 @@ export function createReleaseFolderRenameCore(options: { invalidate?: (channelId
     async socialBusy(channelId, video) {
       return (await listSocialPostJobs(channelId)).some((job) => job.video === video && (job.status === "uploading" || job.status === "processing"));
     },
+    async livePaths(channelId) {
+      const [videos, sources] = await Promise.all([listLiveStreamVideos(channelId), listLiveStreamSources(channelId)]);
+      return [...videos, ...sources].map((row) => row.originalPath).filter((p): p is string => typeof p === "string");
+    },
+    now: () => new Date(),
     exists: (absolutePath) => lstat(absolutePath).then(() => true, () => false),
     async isRealFolder(workspace, relativeFolder) {
       const absolute = path.join(workspace, ...relativeFolder.split("/"));

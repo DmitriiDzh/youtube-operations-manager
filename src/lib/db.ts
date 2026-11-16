@@ -12376,7 +12376,15 @@ export async function rewritePublishingUploadPaths(
       const result = await tx
         .update(publishingUploads)
         .set({ manifestPath: update.manifestPath, packageJson: update.packageJson, updatedAt: new Date() })
-        .where(and(eq(publishingUploads.id, update.id), eq(publishingUploads.manifestPath, update.fromManifestPath), inArray(publishingUploads.status, ["queued", "done", "failed", "cancelled"])))
+        .where(
+          and(
+            eq(publishingUploads.id, update.id),
+            eq(publishingUploads.manifestPath, update.fromManifestPath),
+            inArray(publishingUploads.status, ["queued", "done", "failed", "cancelled"]),
+            // Review: never under the runner's lease (it prepares a queued row with the old paths in hand).
+            or(isNull(publishingUploads.leaseUntil), lte(publishingUploads.leaseUntil, new Date()))
+          )
+        )
         .returning({ id: publishingUploads.id });
       if (result.length !== 1) throw new Error(`upload ${update.id} changed while the folder was renamed`);
       changed += 1;

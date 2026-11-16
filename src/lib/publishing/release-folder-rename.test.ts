@@ -20,6 +20,7 @@ const row = (id: string, status: string, manifestPath = `${FROM}/V1_release.json
     video: "V1",
     status,
     resumeStatus: null,
+    leaseUntil: null,
     manifestPath,
     packageJson: JSON.stringify({ video: "V1", manifestPath, videoFile: `${FROM}/V1 Short.mp4`, thumbnailFile: `${FROM}/Thumbnail_V1.jpg`, title: `${FROM} is not a path here` }),
   }) as unknown as StoredPublishingUpload;
@@ -34,7 +35,9 @@ function harness(over: Partial<ReleaseFolderRenameDeps> = {}, rows: StoredPublis
     uploads: async () => stored,
     peerUploads: async () => new Map(),
     socialBusy: async () => false,
-    exists: async (abs) => [...folders].some((f) => `${WS}/${f}` === abs) || abs === `${WS}/04 Videos/11 November/taken V1`,
+    livePaths: async () => [],
+    now: () => new Date("2026-11-16T03:00:00Z"),
+    exists: async (abs) => [...folders].some((f) => `${WS}/${f}` === abs) || abs === `${WS}/04 Videos/11 November/1115 V1 taken`,
     isRealFolder: async () => true,
     rename: async (from, to) => {
       calls.push(`rename:${from}->${to}`);
@@ -61,15 +64,19 @@ const codeOf = (p: Promise<unknown>) => p.then(() => "ok", (e: unknown) => (isDo
 
 test("BL-261: name rules -- one folder name valid on macOS and Windows that still names the video", () => {
   assert.equal(folderNameProblem("1115 V1 Short", "V1"), null);
-  assert.equal(folderNameProblem("V1", "V1"), null);
+  // Review: the name must still read as this video's release folder (`MMDD V1 …`, videoNumberOfFolder).
+  assert.equal(folderNameProblem("V1", "V1"), "missing_video");
+  assert.equal(folderNameProblem("1115_V1", "V1"), "missing_video");
+  assert.equal(folderNameProblem("1115 V1-Short", "V1"), "missing_video");
+  assert.equal(folderNameProblem("Short V1 1115", "V1"), "missing_video");
   assert.equal(folderNameProblem("1115 V12 Short", "V1"), "missing_video");
   assert.equal(folderNameProblem("1115 Short", "V1"), "missing_video");
-  assert.equal(folderNameProblem("a/V1", "V1"), "characters");
-  assert.equal(folderNameProblem("V1:x", "V1"), "characters");
-  assert.equal(folderNameProblem(" V1", "V1"), "edges");
-  assert.equal(folderNameProblem("V1.", "V1"), "edges");
+  assert.equal(folderNameProblem("1115 V1/x", "V1"), "characters");
+  assert.equal(folderNameProblem("1115 V1:x", "V1"), "characters");
+  assert.equal(folderNameProblem(" 1115 V1", "V1"), "edges");
+  assert.equal(folderNameProblem("1115 V1.", "V1"), "edges");
   assert.equal(folderNameProblem("", "V1"), "length");
-  assert.equal(folderNameProblem(`V1 ${"x".repeat(120)}`, "V1"), "length");
+  assert.equal(folderNameProblem(`1115 V1 ${"x".repeat(120)}`, "V1"), "length");
 });
 
 test("BL-261: rewritePaths changes only strings under the old folder", () => {
@@ -112,7 +119,15 @@ test("BL-261: refused while busy here, elsewhere or by a cross-post; a taken nam
   const social = harness({ socialBusy: async () => true });
   assert.equal(await codeOf(social.core.rename({ channelId: "UC1", video: "V1", newName: "1115 V1 Short" })), "release_folder_busy:cross_post");
   const taken = harness();
-  assert.equal(await codeOf(taken.core.rename({ channelId: "UC1", video: "V1", newName: "taken V1" })), "release_folder_target_exists:");
+  assert.equal(await codeOf(taken.core.rename({ channelId: "UC1", video: "V1", newName: "1115 V1 taken" })), "release_folder_target_exists:");
+  // Review: a queued row the runner leased is being prepared; an expired lease is not.
+  const leased = harness({}, [{ ...row("u2", "queued"), leaseUntil: new Date("2026-11-16T03:01:00Z") } as unknown as StoredPublishingUpload]);
+  assert.equal(await codeOf(leased.core.rename({ channelId: "UC1", video: "V1", newName: "1115 V1 Short" })), "release_folder_busy:upload_here");
+  const expired = harness({}, [{ ...row("u2", "queued"), leaseUntil: new Date("2026-11-16T02:59:00Z") } as unknown as StoredPublishingUpload]);
+  assert.equal(await codeOf(expired.core.rename({ channelId: "UC1", video: "V1", newName: "1115 V1 Short", dryRun: true })), "ok");
+  // Review: the file is in the live rotation (the encoder reads it by path).
+  const live = harness({ livePaths: async () => [`${FROM}/V1 Short.mp4`] });
+  assert.equal(await codeOf(live.core.rename({ channelId: "UC1", video: "V1", newName: "1115 V1 Short" })), "release_folder_busy:live_rotation");
   assert.deepEqual([...peer.calls, ...social.calls, ...taken.calls], []);
 });
 
@@ -124,6 +139,9 @@ test("BL-261: not found, several folders, a bad name; the same name is a no-op",
   assert.equal(await codeOf(two.core.rename({ channelId: "UC1", video: "V1", newName: "1115 V1 Short" })), "release_folder_ambiguous:");
   const outside = harness({ scan: async () => ({ status: "ok", packages: [{ video: "V1", folder: "Other/1115 V1" }] as never }) });
   assert.equal(await codeOf(outside.core.rename({ channelId: "UC1", video: "V1", newName: "1115 V1 Short" })), "release_folder_not_found:");
+  // Review: a manifest lying in the month folder itself -- renaming would move the whole month.
+  const month = harness({ scan: async () => ({ status: "ok", packages: [{ video: "V1", folder: "04 Videos/11 November" }] as never }) });
+  assert.equal(await codeOf(month.core.rename({ channelId: "UC1", video: "V1", newName: "1115 V1 Short" })), "release_folder_not_found:");
   const same = await h.core.rename({ channelId: "UC1", video: "V1", newName: "1115 V1" });
   assert.equal(same.changed, false);
   assert.deepEqual(h.calls, []);
@@ -135,7 +153,17 @@ test("BL-261: a failed row rewrite moves the folder back; the rows still name th
       throw new Error("upload u2 changed while the folder was renamed");
     },
   });
-  await assert.rejects(h.core.rename({ channelId: "UC1", video: "V1", newName: "1115 V1 Short" }), /changed while/);
-  assert.deepEqual(h.calls, ["gate", `rename:${WS}/${FROM}->${WS}/${TO}`, `rename:${WS}/${TO}->${WS}/${FROM}`, "invalidate"]);
+  assert.equal(await codeOf(h.core.rename({ channelId: "UC1", video: "V1", newName: "1115 V1 Short" })), "release_folder_busy:upload_here");
+  assert.deepEqual(h.calls, ["gate", `rename:${WS}/${FROM}->${WS}/${TO}`, `rename:${WS}/${TO}->${WS}/${FROM}`, "invalidate", "audit:release_folder.rename_failed:undefined"]);
   assert.ok(h.rows().every((r) => r.manifestPath.startsWith(`${FROM}/`)));
+});
+
+test("BL-261 review: a file-system refusal of the rename is a busy folder (no 500), nothing rewritten", async () => {
+  const h = harness({
+    rename: async () => {
+      throw Object.assign(new Error("resource busy"), { code: "EBUSY" });
+    },
+  });
+  assert.equal(await codeOf(h.core.rename({ channelId: "UC1", video: "V1", newName: "1115 V1 Short" })), "release_folder_busy:file_system");
+  assert.deepEqual(h.calls, ["gate"]);
 });
