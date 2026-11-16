@@ -247,6 +247,11 @@ const DOMAIN_ERROR_STATUS = {
   publishing_plan_slot_past: 409,
   // BL-256: the slot comes out in less than 15 minutes -- it can no longer be moved.
   publishing_plan_slot_too_soon: 409,
+  publishing_plan_template_not_found: 404,
+  publishing_plan_already_published: 409,
+  publishing_plan_move_not_here: 409,
+  publishing_plan_video_missing: 409,
+  publishing_plan_move_youtube_unavailable: 409,
   // BL-261: renaming a release folder.
   release_folder_not_found: 404,
   release_folder_ambiguous: 409,

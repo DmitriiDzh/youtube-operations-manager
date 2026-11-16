@@ -4,6 +4,7 @@ import { isValidIanaTimezone } from "@/lib/zoned-time";
 import { isDeletedOnYoutube } from "@/lib/shared-video-presence";
 import { DEFAULT_APPROVAL_STAGE, DomainError, PUBLISHING_PLAN_LIMITS, type PlanSaveRefusal, type PlanSlotDecision, type PlanProgressResult, type PlanSlotProgress, type PlanSummary, type PlanView, type PublishingPlanActor, type PublishingPlanApprovalStage, type PublishingPlansPorts, type ReplacedSlot, type SocialSlotState, SOCIAL_LOOKBACK_MS } from "./contracts";
 import { addDays, approvalStandsOn, contentHashOf, contentOf, decisionsForStage, decisionStateOf, instantOf, isCalendarDate, isMonday, planViewOf, slotViewOf, standingPackageApprovalOf, standingVetoOf, decisionOrder, lastApprovedPackageOf } from "./model";
+import { createTemplateServices } from "./template-services";
 import { approvalStageInputSchema, getPlanInputSchema, listPlansInputSchema, ownerDecisionInputSchema, ownerRetimeInputSchema, PLAN_LIST_DEFAULT_LIMIT, savePlanInputSchema, type OwnerDecisionInput } from "./schemas";
 
 // BL-225 (FO-REQ-0040 items 1, 5, 6; WEEKLY_PUBLISHING_PLAN.md stage 1 items 3-5; ADR 0051): what agents and the owner may do with a
@@ -675,10 +676,17 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
     return out.map((s) => ((seen.get(s.slotId) ?? 0) > 1 || (s.package && (videos.get(s.package.video) ?? 0) > 1) ? { ...s, approved: false, package: null } : s));
   }
 
+  const template = createTemplateServices(ports, assertChannel);
+
   return {
     save,
     get,
     list: agentList,
+    templateGet: template.get,
+    templatePropose: template.propose,
+    templateOwnerSave: template.ownerSave,
+    templateOwnerDecide: template.ownerDecide,
+    templateOwnerWithdraw: template.ownerWithdraw,
     slotDecisions,
     socialSlotStates,
     ownerList: async (channelId: string): Promise<{ plans: PlanSummary[]; waiting: number; approvalStage: PublishingPlanApprovalStage }> => {
@@ -698,16 +706,20 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
 
 export type PublishingPlansService = ReturnType<typeof createPublishingPlansService>;
 
-/** What agents get (MCP): save, get, list -- never a decision (ADR 0051 §6, AC-WP-05). */
-export type PublishingPlansAgentSurface = Pick<PublishingPlansService, "save" | "get" | "list">;
+/** What agents get (MCP): save, get, list, the template read (BL-267) -- never a decision (ADR 0051 §6, AC-WP-05, AC-WT-06). */
+export type PublishingPlansAgentSurface = Pick<PublishingPlansService, "save" | "get" | "list" | "templateGet">;
 export function agentSurface(service: PublishingPlansAgentSurface): PublishingPlansAgentSurface {
-  return { save: (input, by) => service.save(input, by), get: (input) => service.get(input), list: (input) => service.list(input) };
+  return { save: (input, by) => service.save(input, by), get: (input) => service.get(input), list: (input) => service.list(input), templateGet: (channelId) => service.templateGet(channelId) };
 }
 
 /** What the owner's Web UI routes get: the plans, one plan, the decisions and (BL-242) the approval stage. */
-export type PublishingPlansOwnerSurface = Pick<PublishingPlansService, "ownerList" | "ownerGet" | "decide" | "retime" | "setApprovalStage">;
+export type PublishingPlansOwnerSurface = Pick<PublishingPlansService, "ownerList" | "ownerGet" | "decide" | "retime" | "setApprovalStage" | "templateGet" | "templateOwnerSave" | "templateOwnerDecide" | "templateOwnerWithdraw">;
 export function ownerSurface(service: PublishingPlansOwnerSurface): PublishingPlansOwnerSurface {
   return {
+    templateGet: (channelId) => service.templateGet(channelId),
+    templateOwnerSave: (channelId, input, userId) => service.templateOwnerSave(channelId, input, userId),
+    templateOwnerDecide: (channelId, input, userId) => service.templateOwnerDecide(channelId, input, userId),
+    templateOwnerWithdraw: (channelId, userId) => service.templateOwnerWithdraw(channelId, userId),
     ownerList: (channelId) => service.ownerList(channelId),
     ownerGet: (channelId, weekStart) => service.ownerGet(channelId, weekStart),
     decide: (channelId, weekStart, input, userId) => service.decide(channelId, weekStart, input, userId),
@@ -726,4 +738,10 @@ export function socialSurface(service: PublishingPlansSocialSurface): Publishing
 export type PublishingPlansUploadSurface = Pick<PublishingPlansService, "slotDecisions">;
 export function uploadSurface(service: PublishingPlansUploadSurface): PublishingPlansUploadSurface {
   return { slotDecisions: (channelId) => service.slotDecisions(channelId) };
+}
+
+/** BL-267 (ADR 0073 §5, plan §3.10): what the Producer gets -- reads, its template proposal (stage 6 adds the move). Never a decision. */
+export type PublishingPlansProducerSurface = Pick<PublishingPlansService, "get" | "list" | "templateGet" | "templatePropose">;
+export function producerSurface(service: PublishingPlansProducerSurface): PublishingPlansProducerSurface {
+  return { get: (input) => service.get(input), list: (input) => service.list(input), templateGet: (channelId) => service.templateGet(channelId), templatePropose: (channelId, input) => service.templatePropose(channelId, input) };
 }

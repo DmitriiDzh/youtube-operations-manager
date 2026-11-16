@@ -119,7 +119,8 @@ test("AC-WP-50: an agent cannot set the stage -- the save schema has no such fie
     assert.ok(isDomainError(error) && error.code === "validation_failed", JSON.stringify(input));
   }
   assert.equal((await h.core.read(CH)).approvalStage, undefined);
-  assert.deepEqual(Object.keys(agentSurface(h.service)).sort(), ["get", "list", "save"]);
+  // BL-267 (ADR 0073 §1, plan §3.10): agents also READ the week template (agent_publishing_template_get) -- still no decision.
+  assert.deepEqual(Object.keys(agentSurface(h.service)).sort(), ["get", "list", "save", "templateGet"]);
   assert.ok("setApprovalStage" in ownerSurface(h.service), "the owner's surface has it");
 });
 

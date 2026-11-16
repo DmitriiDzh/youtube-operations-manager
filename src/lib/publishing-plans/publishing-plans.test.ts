@@ -117,7 +117,8 @@ test("AC-WP-05: an agent's save cannot carry an approval or a veto; the agents' 
   ];
   for (const input of bad) await assert.rejects(h.service.save(input, "factory"), rejectsWith("validation_failed"), JSON.stringify(input));
   await assert.rejects(h.service.get({ channelId: CH, weekStart: WEEK }), rejectsWith("publishing_plan_not_found"));
-  assert.deepEqual(Object.keys(agentSurface(h.service)).sort(), ["get", "list", "save"]);
+  // BL-267 (ADR 0073 §1, plan §3.10): agents also READ the week template (agent_publishing_template_get) -- still no decision.
+  assert.deepEqual(Object.keys(agentSurface(h.service)).sort(), ["get", "list", "save", "templateGet"]);
 });
 
 test("AC-WP-06: approving the week with the hashes shown approves every slot, audited; one stale hash approves nothing", async () => {

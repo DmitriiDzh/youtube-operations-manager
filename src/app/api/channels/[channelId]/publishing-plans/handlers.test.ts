@@ -18,6 +18,10 @@ function make(options: { session?: { user: { id: string } } | null; refuse?: Dom
       if (channelId !== "UC_active") throw new DomainError({ code: "CHANNEL_NOT_ACTIVE", message: "not the active channel" });
     },
     service: () => ({
+      templateGet: async () => ({ template: null, proposal: null, matchRules: {} as never }),
+      templateOwnerSave: async () => ({ template: null, proposal: null, matchRules: {} as never, changed: false }),
+      templateOwnerDecide: async () => ({ template: null, proposal: null, matchRules: {} as never }),
+      templateOwnerWithdraw: async () => ({ template: null, proposal: null, matchRules: {} as never, changed: false }),
       ownerList: async (...args) => (calls.push(["list", ...args]), { plans: [], waiting: 0, approvalStage: "packaged" as const }),
       ownerGet: async (...args) => {
         calls.push(["get", ...args]);
@@ -78,6 +82,10 @@ test("BL-235: the plan's week coverage is read for weekStart in the plan's zone 
     getSession: async () => ({ user: { id: "u1" } }),
     assertActiveChannel: async () => undefined,
     service: () => ({
+      templateGet: async () => ({ template: null, proposal: null, matchRules: {} as never }),
+      templateOwnerSave: async () => ({ template: null, proposal: null, matchRules: {} as never, changed: false }),
+      templateOwnerDecide: async () => ({ template: null, proposal: null, matchRules: {} as never }),
+      templateOwnerWithdraw: async () => ({ template: null, proposal: null, matchRules: {} as never, changed: false }),
       ownerList: async () => ({ plans: [], waiting: 0, approvalStage: "packaged" as const }),
       ownerGet: async () => ({ plan: { weekStart: "2026-11-02", timeZone: "Asia/Tokyo" } as never }),
       decide: async () => ({ plan: {} as never, decided: [], replacedVetoed: [] }),

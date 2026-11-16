@@ -329,6 +329,14 @@ export type DomainErrorCode =
   | "publishing_plan_slot_not_packaged"
   | "publishing_plan_slot_past"
   | "publishing_plan_slot_too_soon"
+  // BL-267 (WEEK_TEMPLATE_PLAN.md, ADR 0073): TEMPLATE_NOT_FOUND: no such template version; ALREADY_PUBLISHED: a move of a video that
+  // is not private; MOVE_NOT_HERE: a dated video with no finished upload row on this computer; VIDEO_MISSING: YouTube has no such
+  // video; MOVE_YOUTUBE_UNAVAILABLE: Live writes or Data API reads are off (a dated video's move writes at once).
+  | "publishing_plan_template_not_found"
+  | "publishing_plan_already_published"
+  | "publishing_plan_move_not_here"
+  | "publishing_plan_video_missing"
+  | "publishing_plan_move_youtube_unavailable"
   | "release_folder_not_found"
   | "release_folder_ambiguous"
   | "release_folder_name_invalid"

@@ -176,7 +176,14 @@ export type {
   PublishingPlansCore,
   PublishingPlansDocument,
   PublishingPlansSnapshot,
+  PublishingPlanMove,
+  PublishingPlanTemplateDecision,
+  PublishingPlanTemplateVersion,
+  WeekTemplateDay,
+  WeekTemplateDays,
+  WeekTemplateEntry,
 } from "./publishing-plans";
+export { WEEK_TEMPLATE_DAYS } from "./publishing-plans";
 export { createPublishingPlansSyncRunnerForProduction } from "./publishing-plans-sync";
 // BL-241 (ADR 0061): a channel's clips for review (the Producer's submissions, the owner's approvals and returns), one document per channel.
 export { createClipReviewsCoreForProduction, createClipReviewsCore, emptyDocument as emptyClipReviewsDocument } from "./clip-reviews";

@@ -214,7 +214,7 @@ export type PlanAuditEntry = { channelId: string; weekStart: string | null; slot
 
 export type PublishingPlansPorts = {
   /** The sync family's operations the module uses (one document per channel, merged between the computers). */
-  store: Pick<PublishingPlansCore, "read" | "savePlan" | "addDecisions" | "setApprovalStage">;
+  store: Pick<PublishingPlansCore, "read" | "savePlan" | "addDecisions" | "setApprovalStage" | "addTemplateRecords" | "moveSlot">;
   /** Whether the channel is connected on this computer. */
   isChannelConnected(channelId: string): Promise<boolean>;
   /** This computer's name for decisions ("Mac", a host name), or null. */
