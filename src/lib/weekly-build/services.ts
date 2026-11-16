@@ -451,7 +451,17 @@ export function createWeeklyBuildServices(deps: WeeklyBuildDeps) {
       let pushed = false;
       let pushError: string | null = null;
       if (results.some((r) => r.status === "accepted") && job.result.plan) {
-        const push = await runLauncher(ctx, ["run", WEEKLY_PLAN_WORKFLOW, "push", "--sent", "--plan", job.result.plan]);
+        // The Operator (2026-11-16): every payload saved → no `--accepted` (the whole plan is pushed); some refused → `--accepted` with
+        // the slot ids of the saved payloads only (a save is all-or-nothing per payload); nothing saved → no push at all.
+        const payloads = job.result.payloads;
+        const partial = results.some((r) => r.status === "refused");
+        const acceptedIds = results
+          .filter((r) => r.status === "accepted")
+          .flatMap((r) => {
+            const slots = obj(payloads[r.index])?.slots;
+            return Array.isArray(slots) ? slots.map((x) => str(obj(x)?.slotId)).filter((id): id is string => id !== null) : [];
+          });
+        const push = await runLauncher(ctx, ["run", WEEKLY_PLAN_WORKFLOW, "push", "--sent", "--plan", job.result.plan, ...(partial ? ["--accepted", acceptedIds.join(",")] : [])]);
         pushed = push.exitCode === 0;
         if (!pushed) pushError = tail(`${push.stdout}\n${push.stderr}`) || `exit ${push.exitCode}`;
       }

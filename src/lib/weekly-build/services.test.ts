@@ -372,7 +372,7 @@ test("AC-WT-47: template build writes the file and starts auto --template --week
 test("AC-WT-48: a done template job's payloads are saved; refused keep their code; push runs once for the accepted; collected once", async () => {
   const ch = await channel("2.5.48");
   try {
-    const job = { jobId: "j1", state: "done", args: [], startedAt: null, finishedAt: null, exitCode: 0, result: { plan: "plan-2026-11-23.json", payloads: [{ channelId: "UC", weekStart: "2026-11-23" }, { channelId: "UC", weekStart: "2026-11-30" }] } };
+    const job = { jobId: "j1", state: "done", args: [], startedAt: null, finishedAt: null, exitCode: 0, result: { plan: "plan-2026-11-23.json", payloads: [{ channelId: "UC", weekStart: "2026-11-23", slots: [{ slotId: "a1" }, { slotId: "a2" }] }, { channelId: "UC", weekStart: "2026-11-30", slots: [{ slotId: "b1" }] }] } };
     const answer = factory({ status: STATUS({ job }) });
     const h = harness(ch.ws, (args) => (args[0] === "run" && args[2] === "push" ? ok("pushed\n") : answer(args)));
     const saved: unknown[] = [];
@@ -382,7 +382,7 @@ test("AC-WT-48: a done template job's payloads are saved; refused keep their cod
     });
     assert.deepEqual(result?.results.map((r) => [r.weekStart, r.status, r.code]), [["2026-11-23", "accepted", null], ["2026-11-30", "refused", "validation_failed"]]);
     assert.equal(result?.pushed, true);
-    assert.deepEqual(h.calls.filter((c) => c.args[4] === "push").map((c) => c.args.slice(2)), [["run", WF, "push", "--sent", "--plan", "plan-2026-11-23.json"]]);
+    assert.deepEqual(h.calls.filter((c) => c.args[4] === "push").map((c) => c.args.slice(2)), [["run", WF, "push", "--sent", "--plan", "plan-2026-11-23.json", "--accepted", "a1,a2"]], "partial: only the saved payload's slot ids (Operator 2026-11-16)");
     const again = await h.core.collectTemplateBuild("UC", async (p) => void saved.push(p));
     assert.equal(saved.length, 2, "nothing saved twice");
     assert.equal(again?.jobId, "j1");
@@ -409,6 +409,7 @@ test("AC-WT-48 (Operator 2026-11-16): the result is collected while the job stil
     assert.equal(saved.length, 1);
     assert.equal(r?.pushed, true);
     assert.equal(r?.error, undefined);
+    assert.deepEqual(h.calls.filter((c) => c.args[4] === "push").map((c) => c.args.slice(2)), [["run", WF, "push", "--sent", "--plan", "plan-2026-11-23.json"]], "all saved: no --accepted");
 
     const refusedJob = { jobId: "j4", state: "failed", args: [], startedAt: null, finishedAt: null, exitCode: 3, result: { error: "week_has_plan", message: "week 2026-11-23 already has a plan" } };
     const rh = harness(ch.ws, factory({ status: STATUS({ job: refusedJob }) }));
