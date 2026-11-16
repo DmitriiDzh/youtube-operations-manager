@@ -74,3 +74,13 @@ test("BL-221 routes: «Привязать к видео» takes the channel and 
   assert.equal((await handlers.link(post({ videoId: "abcdefghijk" }), ctx({ channelId: "UC_B", video: "V52" }))).status, 403);
   assert.deepEqual(calls, ['suggest:{"channelId":"UC_A","video":"V52"}', 'link:{"videoId":"abcdefghijk","channelId":"UC_A","video":"V52"}']);
 });
+
+// BL-263 (ADR 0071 §2, decision 2026-11-16): a given S code is accepted only through factory_video_create -- the owner's «Новый ролик»
+// route refuses a `video` field before the module.
+test("BL-263 routes: «Новый ролик» refuses a given video code (s_codes_factory_only)", async () => {
+  const { handlers, calls } = setup();
+  const res = await handlers.create(post({ video: "S23" }), ctx({ channelId: "UC_A" }));
+  assert.equal(res.status, 400);
+  assert.equal((await res.json()).details.reason, "s_codes_factory_only");
+  assert.deepEqual(calls, []);
+});

@@ -340,8 +340,15 @@ Recode
   so every V package scans exactly as before (AC-SC-04); a V manifest naming another V is not newly refused.
 - Row 29/30 (MCP inputs) take the shared strict pattern; `factory-server.ts` may import `@/lib/shared-video-code` (pure, like
   `shared-domain`; the boundary test names it).
-- §6.4: the alias reaches costs through `video-costs`' existing `videoStates` port (`recodedTo`), and the plan through a new optional
-  `recodedFrom` on the progress port's slot progress (filled by `publishing-plan-progress` from the video list).
+- §6.4: the alias is read by `video-projects.recodeAliasesOf` (reservations of every computer only, no workspace walk); `video-costs`
+  takes it through a new optional `recodeAliases` port, the plan through a new optional `recodedFrom` on the progress port's slot
+  progress (filled by `publishing-plan-progress`).
+- §4: `reserveGiven` checks reservations (every computer), folders, records, this computer's upload rows and the registry; a peer's
+  upload report is not consulted at reservation time (the recode's own target check does consult it).
+- The owner's Web «Новый ролик» route also refuses `video` (`s_codes_factory_only`), so an S is given only through `factory_video_create`.
+- The undo verifies the disk afterwards (old folder and every old name back, the new folder gone); otherwise
+  `release_recode_rollback_failed` and the journal stays. A manifest or record naming another channel is `release_recode_not_found`
+  (`channel_mismatch`). A dry run ignores a pending journal (it changes nothing; the next real call recovers it).
 - §6.2: the journal holds the backups (original manifest and record texts) and the DB snapshot itself; the undo of each step is
   idempotent, so a crash is undone the same way whichever step was running. The uploads report is written at once by a new
   `publishUploadsReportNow` (the runner's own publisher refactored onto the same function).

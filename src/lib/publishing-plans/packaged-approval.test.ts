@@ -676,3 +676,30 @@ test("BL-263 AC-SC-14b: an approval naming V1 + vid1 covers the recoded S1 packa
   h.progress.set("s2", { ...packaged({ video: "S2", manifestSha256: BB }, "vid2"), recodedFrom: ["V2"] });
   assert.equal(slotOf(await get(h), "s2").approval, "needs_approval");
 });
+
+// BL-263 AC-SC-14b (the plan schedule side): after V1/V2 are recoded to S1/S2 the upload rows carry the new manifest hash and the same
+// video ids. The schedule's decision for each row changes no date: a released/scheduled S1 whose approval names vid1 stays approved at
+// the same instant (nothing to set), and S2 -- approved before its upload, so the approval is not carried -- is pending (nothing done,
+// its date on YouTube is unchanged).
+test("BL-263 AC-SC-14b: the plan schedule sets or removes no date for a recoded video", async () => {
+  const { desiredDate } = await import("@/lib/publishing/plan-schedule");
+  const h = harness();
+  await week(h);
+  h.progress.set("s1", packaged({ video: "V1" }, "vid1"));
+  await approve(h, "s1");
+  h.progress.set("s2", packaged({ video: "V2" }));
+  await approve(h, "s2");
+  const at1 = "2026-10-26T06:00:00.000Z";
+  const at2 = "2026-10-27T09:00:00.000Z";
+  h.progress.set("s1", { ...packaged({ video: "S1", manifestSha256: BB }, "vid1"), recodedFrom: ["V1"] });
+  h.progress.set("s2", { ...packaged({ video: "S2", manifestSha256: BB }, "vid2"), recodedFrom: ["V2"] });
+  const decisions = await h.service.slotDecisions(CH);
+  assert.equal(decisions.get("s1")?.kind, "approved");
+  assert.deepEqual(decisions.get("s2"), { kind: "pending" });
+  const now = h.clock.now.getTime();
+  const row1 = { slotId: "s1", videoId: "vid1", manifestSha256: BB, publishAt: at1, stepsJson: "{}" };
+  const row2 = { slotId: "s2", videoId: "vid2", manifestSha256: BB, publishAt: at2, stepsJson: "{}" };
+  assert.deepEqual(decisionForRow(row1, decisions as never)?.kind, "approved");
+  assert.equal(desiredDate(row1, decisionForRow(row1, decisions as never), now), null, "the same date: nothing to write");
+  assert.equal(desiredDate(row2, decisionForRow(row2, decisions as never), now), null, "pending: the date is left as it is");
+});

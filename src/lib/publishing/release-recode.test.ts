@@ -623,3 +623,40 @@ test("BL-263 AC-SC-14: the recode module and its composition import no YouTube g
     assert.equal(/youtube-(read|write)-gateway|googleapis|adapters\/youtube-writes/.test(text), false, file);
   }
 });
+
+test("BL-263 AC-SC-16: a manifest or record naming another channel is refused release_recode_not_found (channel_mismatch); nothing changes", async () => {
+  const files = initialFiles();
+  files.set(`${WS}/${FROM}/V14_release.json`, manifestText.replace(`"channelId": "${CH}"`, `"channelId": "UC_other"`));
+  const h = harness({ files });
+  assert.equal(await codeOf(h.core.recode({ channelId: CH, video: "V14", newCode: "S12" })), "release_recode_not_found:channel_mismatch");
+  const files2 = initialFiles();
+  files2.set(`${WS}/${FROM}/V14_youtube.json`, recordText.replace(`"channelId": "${CH}"`, `"channelId": "UC_other"`));
+  const h2 = harness({ files: files2 });
+  assert.equal(await codeOf(h2.core.recode({ channelId: CH, video: "V14", newCode: "S12" })), "release_recode_not_found:channel_mismatch");
+  assert.deepEqual([...h.calls, ...h2.calls], []);
+});
+
+test("BL-263 AC-SC-19: a journal whose workspace cannot be seen (every file check false) is not reported recovered -- rollback_failed, journal kept", async () => {
+  const h = harness();
+  const crashing = {
+    ...h.deps,
+    rows: {
+      ...h.deps.rows,
+      recode: async () => {
+        throw new Error("killed");
+      },
+      undo: async () => {
+        throw new Error("gone");
+      },
+    },
+  };
+  await createReleaseRecode(crashing).recode({ channelId: CH, video: "V14", newCode: "S12" }).catch(() => undefined);
+  assert.equal(h.journals.size, 1);
+  // The drive is not mounted: nothing can be seen or renamed.
+  const blind = { ...h.deps, exists: async () => false };
+  const error = await createReleaseRecode(blind)
+    .recode({ channelId: CH, video: "V14", newCode: "S12" })
+    .then(() => null, (e: unknown) => e);
+  assert.ok(isDomainError(error) && error.code === "release_recode_rollback_failed", String(error));
+  assert.equal(h.journals.size, 1, "the journal stays for a manual restore");
+});

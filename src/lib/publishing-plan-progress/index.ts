@@ -30,9 +30,8 @@ async function recodedBySCode(channelId: string): Promise<Map<string, string[]>>
   try {
     const { createVideoProjectsServiceForProduction } = await import("@/lib/video-projects");
     const out = new Map<string, string[]>();
-    for (const v of (await createVideoProjectsServiceForProduction().listVideos({ channelId })).videos) {
-      if (v.state === "recoded" && v.recodedTo) out.set(v.recodedTo, [...(out.get(v.recodedTo) ?? []), v.video]);
-    }
+    // A light read of the reservations (no workspace walk): this port runs on every plan poll.
+    for (const [v, s] of await createVideoProjectsServiceForProduction().recodeAliasesOf(channelId)) out.set(s, [...(out.get(s) ?? []), v]);
     return out;
   } catch {
     return new Map();

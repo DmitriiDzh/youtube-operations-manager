@@ -5294,7 +5294,8 @@ from the channel's own workspace images, behind the same identity check and Live
 - **Recode alias.** `recodeAliases` (numbering.ts): a V that any computer reports cancelled with `replacedBy` an S (a conflict renumber
   is always V→V). Such a V is `recoded` (+ `recodedTo`), never in dispute, names no YouTube video, refuses links (`video_not_found`
   reason `recoded`, also on the fast path of `assertAttachable`), and counts toward the next V. `video-costs` maps runs of a recoded V
-  to the S (from `videoStates`); the weekly plan's progress port adds `recodedFrom` so `fingerprintCovers` accepts an approval naming
+  to the S (port `recodeAliases`, wired to `video-projects.recodeAliasesOf` -- a light read of the reservations, no workspace walk);
+  the weekly plan's progress port adds `recodedFrom` (same light read) so `fingerprintCovers` accepts an approval naming
   the old V when it names the same non-null video id.
 - **Sync.** The three per-device reports carrying a code are written as version 2 only when they hold an S (else version 1 byte for
   byte); the schemas accept 1 and 2 and refuse a v1 report holding an S. An older build reading a v2 report says "newer than this app

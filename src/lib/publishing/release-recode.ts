@@ -235,6 +235,15 @@ export function createReleaseRecode(deps: ReleaseRecodeDeps) {
       }
     }
     deps.invalidate(journal.channelId);
+    // Verify on disk: every guard above skips what it cannot see, so an unreachable workspace (not mounted, mid-sync) would otherwise
+    // look like a finished undo. The old folder must be back with every old name, the new folder gone.
+    if (touched("folder") || touched("files") || touched("manifest") || touched("records")) {
+      const missing: string[] = [];
+      if (!(await deps.exists(abs(journal.from)))) missing.push(journal.from);
+      if (await deps.exists(abs(journal.to))) missing.push(`${journal.to} (still there)`);
+      for (const file of journal.files) if (!(await deps.exists(inOld(file.from)))) missing.push(`${journal.from}/${file.from}`);
+      if (missing.length > 0) throw new Error(`the undo could not restore: ${missing.slice(0, 5).join(", ")}`);
+    }
   }
 
   /** A journal left by a crashed recode of this channel: undone from its backups, then removed. */
@@ -361,6 +370,8 @@ export function createReleaseRecode(deps: ReleaseRecodeDeps) {
     // -- What will be written: the manifest and records (text and hash), the rows, the storyboards.
     const manifestOld = await deps.readText(deps.join(fromAbs, manifestName));
     const manifestJson = JSON.parse(stripBom(manifestOld)) as Record<string, unknown>;
+    // §6.1: every record the recode rewrites must name this channel -- another channel's package is never touched.
+    if (manifestJson.channelId !== channelId) throw refuse("release_recode_not_found", `${manifestName} names another channel`, { ...details, reason: "channel_mismatch", file: manifestName });
     const rewritten = rewriteManifest(manifestJson, newCode, renames);
     const manifestNew = jsonText(rewritten.manifest, manifestOld.startsWith("﻿"));
     const oldSha256 = sha256(manifestOld);
@@ -373,6 +384,7 @@ export function createReleaseRecode(deps: ReleaseRecodeDeps) {
       if (!renames.has(oldName)) continue;
       const text = await deps.readText(deps.join(fromAbs, oldName));
       const json = JSON.parse(stripBom(text)) as Record<string, unknown>;
+      if (json.channelId !== undefined && json.channelId !== channelId) throw refuse("release_recode_not_found", `${oldName} names another channel`, { ...details, reason: "channel_mismatch", file: oldName });
       backups[oldName] = text;
       written[renames.get(oldName)!] = jsonText({ ...json, ...(json.video !== undefined ? { video: newCode } : {}) }, text.startsWith("﻿"));
       records[kind] = true;

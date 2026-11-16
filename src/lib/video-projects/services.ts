@@ -338,6 +338,15 @@ export function createVideoProjectsService(deps: VideoProjectsDeps) {
     assertAttachable,
 
     /**
+     * BL-263 (ADR 0071 §5): the channel's recode aliases (V → S) from every computer's reservations only -- a light read (no workspace
+     * walk) for the hot paths that only need the alias (costs, the weekly plan's progress).
+     */
+    async recodeAliasesOf(channelId: string): Promise<Map<string, string>> {
+      const [device, own, peers] = await Promise.all([deps.ownDevice(), deps.store.list(channelId), deps.peers()]);
+      return recodeAliases(channelId, [own, ...peers.filter((p) => p.deviceId !== device.deviceId).map((p) => p.reservations)]);
+    },
+
+    /**
      * The video a new job is made for (VIDEO_COST_PLAN.md §2): an explicit `videoNumber` must be attachable (else the job is
      * refused); otherwise the job inherits its storyboard's video, else its plan's. An inherited video that cannot be linked, or a
      * lookup that fails, leaves the job unlinked -- the media modules keep working when this module fails (criterion 8).

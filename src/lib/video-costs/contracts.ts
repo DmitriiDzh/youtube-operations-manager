@@ -102,6 +102,8 @@ export type VideoCostsDeps = {
   storyboards(channelId: string): Promise<StoryboardPicks[]>;
   /** The channel's videos by number (state, folder); throws when they cannot be listed (then nothing is dropped from the report). */
   videoStates(channelId: string): Promise<Map<string, VideoStateInfo>>;
+  /** BL-263: the channel's recode aliases V → S (a light read of the reservations); absent: taken from `videoStates`. */
+  recodeAliases?(channelId: string): Promise<Map<string, string>>;
   costFiles: {
     /** The parsed file, or null when it is not there. */
     read(channelId: string, relativePath: string): Promise<unknown | null>;

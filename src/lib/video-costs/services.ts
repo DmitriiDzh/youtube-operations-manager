@@ -253,6 +253,7 @@ export function createVideoCostsService(deps: VideoCostsDeps) {
    * counts under the S. A list that cannot be read: no alias (every run stays under its own code).
    */
   async function aliasesOf(channelId: string, known?: Map<string, VideoStateInfo>): Promise<Map<string, string>> {
+    if (!known && deps.recodeAliases) return deps.recodeAliases(channelId).catch(() => new Map<string, string>());
     const states = known ?? (await deps.videoStates(channelId).catch(() => new Map<string, VideoStateInfo>()));
     const out = new Map<string, string>();
     for (const [video, info] of states) if (info.state === "recoded" && info.recodedTo) out.set(video, info.recodedTo);
