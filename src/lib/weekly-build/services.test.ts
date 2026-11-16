@@ -340,3 +340,60 @@ test("a wake alone names neither dates nor days", async () => {
     await c.cleanup();
   }
 });
+
+// BL-267 (WEEK_TEMPLATE_PLAN.md §3.9, AC-WT-47/48; ADR 0073 §7; owner O7 agreed with the Operator): the template is written to
+// `05 Docs/publishing/week-template.json` exactly as given, the start is `start "13 Weekly_Plan v1" auto --template [--week W] --json`,
+// the job's own refusals are weekly_build_refused with details.code; a done job's payloads are saved by the caller, refused ones keep
+// their code, `run 13 push --sent --plan <plan>` runs only when one was accepted, and a second collect saves nothing.
+test("AC-WT-47: template build writes the file and starts auto --template --week; job refusals carry their code", async () => {
+  const ch = await channel("2.5.48");
+  try {
+    const h = harness(ch.ws, factory());
+    h.deps.fs.writeFile = async (p, text) => {
+      await mkdir(path.dirname(p), { recursive: true });
+      await writeFile(p, text);
+    };
+    const json = '{"format":"week-template/1"}\n';
+    await h.core.startByTemplate("UC", { templateJson: json, week: "2026-11-23" });
+    assert.equal(await readFile(path.join(ch.ws, "05 Docs", "publishing", "week-template.json"), "utf8"), json);
+    const start = h.calls.find((c) => c.args[2] === "start")!;
+    assert.deepEqual(start.args.slice(2), ["start", WF, "auto", "--template", "--week", "2026-11-23", "--json"]);
+    await assert.rejects(h.core.startByTemplate("UC", { templateJson: json, week: "2026-11-24" }), (e) => isDomainError(e) && e.code === "validation_failed");
+    for (const code of ["no_template", "week_has_plan", "outside_horizon", "job_running"]) {
+      const r = harness(ch.ws, factory({ start: { exitCode: 3, stdout: JSON.stringify({ error: code, message: code }), stderr: "", timedOut: false } }));
+      r.deps.fs.writeFile = async () => undefined;
+      await assert.rejects(r.core.startByTemplate("UC", { templateJson: json }), (e) => isDomainError(e) && e.code === "weekly_build_refused" && (e.details as { code: string }).code === code, code);
+    }
+  } finally {
+    await ch.cleanup();
+  }
+});
+
+test("AC-WT-48: a done template job's payloads are saved; refused keep their code; push runs once for the accepted; collected once", async () => {
+  const ch = await channel("2.5.48");
+  try {
+    const job = { jobId: "j1", state: "done", args: [], startedAt: null, finishedAt: null, exitCode: 0, result: { plan: "plan-2026-11-23.json", payloads: [{ channelId: "UC", weekStart: "2026-11-23" }, { channelId: "UC", weekStart: "2026-11-30" }] } };
+    const answer = factory({ status: STATUS({ job }) });
+    const h = harness(ch.ws, (args) => (args[0] === "run" && args[2] === "push" ? ok("pushed\n") : answer(args)));
+    const saved: unknown[] = [];
+    const result = await h.core.collectTemplateBuild("UC", async (p) => {
+      saved.push(p);
+      if ((p as { weekStart: string }).weekStart === "2026-11-30") throw Object.assign(new Error("refused"), { code: "validation_failed", details: { refused: [{ reason: "slot_dated" }] } });
+    });
+    assert.deepEqual(result?.results.map((r) => [r.weekStart, r.status, r.code]), [["2026-11-23", "accepted", null], ["2026-11-30", "refused", "validation_failed"]]);
+    assert.equal(result?.pushed, true);
+    assert.deepEqual(h.calls.filter((c) => c.args[4] === "push").map((c) => c.args.slice(2)), [["run", WF, "push", "--sent", "--plan", "plan-2026-11-23.json"]]);
+    const again = await h.core.collectTemplateBuild("UC", async (p) => void saved.push(p));
+    assert.equal(saved.length, 2, "nothing saved twice");
+    assert.equal(again?.jobId, "j1");
+    // Nothing accepted: no push.
+    const none = harness(ch.ws, factory({ status: STATUS({ job: { ...job, jobId: "j2" } }) }));
+    const r2 = await none.core.collectTemplateBuild("UC", async () => {
+      throw Object.assign(new Error("x"), { code: "validation_failed" });
+    });
+    assert.equal(r2?.pushed, false);
+    assert.equal(none.calls.some((c) => c.args[4] === "push"), false);
+  } finally {
+    await ch.cleanup();
+  }
+});

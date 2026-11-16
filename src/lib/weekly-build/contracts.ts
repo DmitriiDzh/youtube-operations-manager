@@ -40,6 +40,11 @@ export type WeeklyBuildSlot = {
 
 export type WeeklyBuildJob = {
   jobId: string;
+  /**
+   * BL-267 (ADR 0073 §7, owner O7, agreed with the Operator): a finished `auto --template` job's result -- the factory plan file and
+   * its `payloads` (each an `agent_publishing_plan_save` body), which YT Manager saves as the factory. Absent otherwise.
+   */
+  result?: { plan: string | null; payloads: unknown[] } | null;
   /** The launcher's own job_state(): running / done / failed / stopped (…) / starting. */
   state: string;
   args: string[];
@@ -79,3 +84,12 @@ export type WeeklyBuildBadDate = { date: string; error: "out_of_range" | "date_t
 export type WeeklyBuildStarted = { jobId: string; log: string; pid: number | null; clearedStop: boolean };
 
 export type WeeklyBuildSettings = { pythonPath: string | null };
+
+/** BL-267 (O7): where YT Manager writes the template in force for the factory (relative to the channel's workspace). */
+export const WEEK_TEMPLATE_FILE = ["05 Docs", "publishing", "week-template.json"] as const;
+
+/** BL-267 (O7): one payload of a template build, saved (or refused with its code) by YT Manager. */
+export type WeeklyTemplatePayloadResult = { index: number; weekStart: string | null; status: "accepted" | "refused"; code: string | null; refused?: unknown };
+
+/** BL-267 (O7): what collecting a finished template build did. */
+export type WeeklyTemplateCollect = { jobId: string; plan: string | null; results: WeeklyTemplatePayloadResult[]; pushed: boolean; pushError: string | null };

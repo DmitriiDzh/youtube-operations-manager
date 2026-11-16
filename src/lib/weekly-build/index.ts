@@ -1,4 +1,5 @@
-import { realpath, readFile, stat } from "node:fs/promises";
+import { mkdir, realpath, readFile, stat, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { getWeeklyBuildSettingsJson, setWeeklyBuildSettingsJson } from "@/lib/db";
 import { isPathInsideOrEqual } from "@/lib/local-path-validation";
@@ -35,6 +36,11 @@ export function createWeeklyBuildCore(): WeeklyBuildService {
         return { isFile: s.isFile(), size: s.size, mtimeMs: s.mtimeMs };
       },
       readFile: (p) => readFile(p, "utf8"),
+      // BL-267 (O7): the template file for `auto --template` (05 Docs/publishing/week-template.json).
+      writeFile: async (p, text) => {
+        await mkdir(path.dirname(p), { recursive: true });
+        await writeFile(p, text, "utf8");
+      },
     },
     isPathInsideOrEqual,
     now: () => Date.now(),

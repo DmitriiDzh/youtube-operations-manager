@@ -26,8 +26,13 @@ test("AC 11: only the weekly-build Web routes import @/lib/weekly-build", async 
     if (file.startsWith(path.join(SRC, "lib", "weekly-build") + path.sep)) continue;
     if (IMPORTS_MODULE.test(await readFile(file, "utf8"))) callers.push(path.relative(SRC, file).split(path.sep).join("/"));
   }
-  const allowed = (rel: string) => rel.startsWith("app/api/channels/[channelId]/weekly-build/") || rel.startsWith("app/api/weekly-build/") || rel.startsWith("components/");
+  // BL-267 (owner O7, ADR 0073 §7): the composition of «Собрать неделю по шаблону» -- itself imported only by the weekly-build routes
+  // (checked below).
+  const allowed = (rel: string) => rel.startsWith("app/api/channels/[channelId]/weekly-build/") || rel.startsWith("app/api/weekly-build/") || rel.startsWith("components/") || rel === "composition/weekly-build-template.ts";
   assert.deepEqual(callers.filter((rel) => !allowed(rel)), []);
   const agentRoots = ["mcp/", "app/api/mcp/", "lib/agent-mcp-endpoint/", "lib/producer-mcp-endpoint/", "lib/factory-mcp-endpoint/", "lib/agent-operations/"];
   assert.deepEqual(callers.filter((rel) => agentRoots.some((root) => rel.startsWith(root))), []);
+  const compositionCallers: string[] = [];
+  for (const file of await files(SRC)) if (/@\/composition\/weekly-build-template/.test(await readFile(file, "utf8"))) compositionCallers.push(path.relative(SRC, file).split(path.sep).join("/"));
+  assert.deepEqual(compositionCallers.filter((rel) => !rel.startsWith("app/api/channels/[channelId]/weekly-build/")), []);
 });

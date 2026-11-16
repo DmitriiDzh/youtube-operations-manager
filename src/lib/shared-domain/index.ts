@@ -108,6 +108,10 @@ export type DomainErrorCode =
   | "weekly_build_job_running"
   | "weekly_build_failed"
   | "weekly_build_bad_dates"
+  // BL-267 (ADR 0073 §7, owner O7): «Собрать неделю по шаблону» -- NO_TEMPLATE: no template in force; REFUSED: the job's own
+  // refusal (details.code: no_template | week_has_plan | outside_horizon | job_running).
+  | "weekly_build_no_template"
+  | "weekly_build_refused"
   | "runtime_repo_private_needs_token"
   | "runtime_repo_not_visible_to_token"
   | "media_runtime_incompatible"
