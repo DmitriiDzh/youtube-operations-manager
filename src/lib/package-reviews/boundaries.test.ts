@@ -58,7 +58,10 @@ test("AC-PR-08: the owner's surface is created only by the composition file, whi
     if (content.includes("@/composition/package-reviews")) composers.push(rel);
   }
   assert.deepEqual(creators.sort(), ["composition/package-reviews.ts", "lib/package-reviews/index.ts"]);
+  // Owner TG 4584: the recode's composition imports only `afterReviewCarried` (the media memo and the Inbox nudge), never the surface.
   assert.deepEqual(composers.sort(), ["app/api/channels/[channelId]/package-reviews/handlers.ts"]);
+  const recodeComposition = await readFile(path.join(SRC, "composition", "release-recode.ts"), "utf8");
+  assert.deepEqual([...recodeComposition.matchAll(/import\s*\{([^}]*)\}\s*from\s*["']\.\/package-reviews["']/g)].map((m) => m[1].trim()), ["afterReviewCarried"]);
 });
 
 // Owner TG 4584 (BL-263 fix): the one writer outside the owner's surface -- the carry of the owner's existing decision to a recoded

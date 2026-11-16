@@ -70,7 +70,12 @@ recoded to S1–S22, including four published and two uploaded private ones. The
    `src/composition/release-recode.ts`. The mp4 and thumbnail bytes do not change, so an approved package stays approved and a returned
    one keeps its comment. A copy for a manifest no package has yet is inert, so a failed or undone recode leaves nothing that acts; a
    retry writes no second copy. A review document that cannot be read or written refuses the recode (`release_recode_busy` reason
-   `review_carry_failed`). The result gains `review: { carried }`, the `release.recoded` audit `carriedReview`.
+   `review_carry_failed`). The copy is taken from the SHA-256 of the manifest text actually read, which must equal the scan's hash
+   (else `release_recode_busy` `manifest_changed`: the owner's decision is never moved onto content he did not see). The copy runs
+   again after the folder step, so a decision the owner made on the old package during the recode is the one that stands on the new
+   one; that second copy failing never undoes the recode (warning + read-back problem `review_carry`). After a copy that wrote, the
+   review screen's media memo is dropped and the Producer's Inbox writer nudged (`afterReviewCarried`, as the owner path does). The
+   result gains `review: { carried }`, the `release.recoded` audit `carriedReview`.
 5. **Recode alias.** A V cancelled with `replacedBy` an S on any computer is "recoded": shown as such (no video id, so Content shows
    the S), its runs counted under the S, no new links, still counted toward the next V. A weekly-plan approval naming the V matches
    the S package when its video id equals the current one; an approval made before the upload is not carried (the slot asks

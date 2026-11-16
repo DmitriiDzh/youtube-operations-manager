@@ -69,7 +69,7 @@ export function readOwnerReviewState(channelId: string): Promise<OwnerReviewStat
  * (only an existing owner decision is copied, see `carryDecision`). Under the same per-process lock as the owner's decisions; throws
  * when the document cannot be read or written. Only `src/composition/release-recode.ts` calls it (boundaries.test.ts).
  */
-export function carryReviewDecisionForRecode(channelId: string, input: { fromSha256: string; toSha256: string; video: string }): Promise<{ carried: "approved" | "returned" | null }> {
+export function carryReviewDecisionForRecode(channelId: string, input: { fromSha256: string; toSha256: string; video: string }): Promise<{ carried: "approved" | "returned" | null; wrote: boolean }> {
   return service(NO_PACKAGES).carryDecision(channelId, input);
 }
 

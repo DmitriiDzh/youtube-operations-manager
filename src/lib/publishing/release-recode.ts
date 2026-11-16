@@ -39,7 +39,8 @@ export type ReleaseRecodeResult = {
   changed: boolean;
   /** `mismatch`: STOP and inspect the folder, the rows and the list before anything else (see `readBackProblems`). */
   readBack: "verified" | "mismatch" | null;
-  /** With `mismatch`: which checks failed (package_not_found | leftover_names | rows | video_list | old_folder_exists). */
+  /** With `mismatch`: which checks failed (package_not_found | leftover_names | rows | video_list | old_folder_exists | review_carry -- the second
+   * carry of the owner's review decision, after the folder step, failed: see `warnings`). */
   readBackProblems?: string[];
   /** The journal of an earlier recode of this channel that crashed and was undone first. */
   recoveredFrom?: string;
@@ -49,7 +50,8 @@ export type ReleaseRecodeResult = {
   warnings?: string[];
   /**
    * A real run only (owner TG 4584): the owner's latest package-review decision on the old manifest carried to the new manifest's
-   * SHA-256 (`approved` | `returned`), or null when there was none.
+   * SHA-256 (`approved` | `returned`), or null when there was none. Carried before any change and again after the folder step (a
+   * decision made during the recode); this is the later carry's answer (the first one's when the later carry failed).
    */
   review?: { carried: "approved" | "returned" | null };
 };
@@ -429,6 +431,11 @@ export function createReleaseRecode(deps: ReleaseRecodeDeps) {
     const manifestNew = jsonText(rewritten.manifest, manifestOld.startsWith("﻿"));
     const oldSha256 = sha256(manifestOld);
     const newSha256 = sha256(manifestNew);
+    // The manifest read now must be the one the scan saw (and the owner reviewed): the factory rewrote it in between -> refused, so an
+    // old approval is never carried onto content the owner did not see.
+    if (pkg.manifestSha256 !== null && pkg.manifestSha256 !== undefined && pkg.manifestSha256 !== oldSha256) {
+      throw refuse("release_recode_busy", `${manifestName} changed while the recode was being prepared; run it again`, { ...details, reason: "manifest_changed", scanned: pkg.manifestSha256, read: oldSha256 });
+    }
     const backups: Record<string, string> = { [manifestName]: manifestOld };
     const written: Record<string, string> = { [newManifestName]: manifestNew };
     const records = { youtube: false, cost: false };
@@ -496,9 +503,9 @@ export function createReleaseRecode(deps: ReleaseRecodeDeps) {
     // inert, so a failed or undone recode leaves nothing that acts; a retry finds the copy and writes no second one. A review document
     // that cannot be read or written refuses the recode (an approval or a comment must never be lost silently).
     let carriedReview: "approved" | "returned" | null = null;
-    const reviewFrom = pkg.manifestSha256 ?? oldSha256;
+    const carry = () => deps.carryReviewDecision(channelId, { fromSha256: oldSha256, toSha256: newSha256, video: newCode });
     try {
-      carriedReview = (await deps.carryReviewDecision(channelId, { fromSha256: reviewFrom, toSha256: newSha256, video: newCode })).carried;
+      carriedReview = (await carry()).carried;
     } catch (error) {
       throw refuse("release_recode_busy", `The owner's package review of ${video} cannot be carried to ${newCode} now; nothing changed. Try again`, { ...details, reason: "review_carry_failed", message: error instanceof Error ? error.message : String(error) });
     }
@@ -527,6 +534,7 @@ export function createReleaseRecode(deps: ReleaseRecodeDeps) {
       await deps.journal.write(journalPath, journal);
     };
     let step: ReleaseRecodeStep = "files";
+    let secondCarryFailed: string | null = null;
     try {
       step = "files";
       for (const file of files) await deps.rename(deps.join(fromAbs, ...file.from.split("/")), deps.join(fromAbs, ...file.to.split("/")));
@@ -540,6 +548,14 @@ export function createReleaseRecode(deps: ReleaseRecodeDeps) {
       step = "folder";
       await deps.rename(fromAbs, toAbs);
       await mark("folder");
+      // A decision the owner made on the old manifest while the recode ran (after the first carry, before the old package left the
+      // scan) is carried too: the carry re-reads the latest decision and copies it only when it differs (a later copy orders last).
+      // Its failure never undoes the recode -- the files have moved; it is reported (warning + read-back problem review_carry).
+      try {
+        carriedReview = (await carry()).carried;
+      } catch (error) {
+        secondCarryFailed = error instanceof Error ? error.message : String(error);
+      }
       step = "rows";
       await deps.rows.recode(snapshot, plan);
       await mark("rows");
@@ -569,6 +585,7 @@ export function createReleaseRecode(deps: ReleaseRecodeDeps) {
       throw refuse("release_recode_busy", `The recode failed at ${step} (${reason}); everything was put back. Try again`, { ...details, reason: "step_failed", step });
     }
     const warnings: string[] = [];
+    if (secondCarryFailed !== null) warnings.push(`review_carry_failed: ${secondCarryFailed} (a decision the owner made during the recode may be missing on ${newCode}: check Media → «Видео на проверку»)`);
     await deps.journal.remove(journalPath).catch(() => warnings.push(`journal_not_removed: ${journalPath}`));
     deps.invalidate(channelId);
     await deps.publishReports().catch(() => undefined);
@@ -594,6 +611,7 @@ export function createReleaseRecode(deps: ReleaseRecodeDeps) {
       ...(rowsOk ? [] : ["rows"]),
       ...(listOk ? [] : ["video_list"]),
       ...(oldFolderLeft ? ["old_folder_exists"] : []),
+      ...(secondCarryFailed !== null ? ["review_carry"] : []),
     ];
     const readBack = problems.length === 0 ? "verified" : "mismatch";
     await deps.audit({ channelId, video, detail: { event: "release.recoded", newCode, from, to, files: files.length, oldSha256, newSha256, uploads: uploadPlans.map((u) => u.id), readBack, carriedReview, ...(problems.length > 0 ? { problems } : {}), ...(warnings.length > 0 ? { warnings } : {}) } });

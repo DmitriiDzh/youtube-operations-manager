@@ -161,7 +161,9 @@ orientation }, peerLinks, changed, readBack: verified | mismatch | null, recover
   a package-review approval is no refusal any more (the `package_review` reason is gone; eight WWE Shorts V6, V7, V9, V10, V12, V13,
   V15, V16 are approved and must be recoded) -- the owner's decision is carried instead, see §6.5.
 - `release_recode_busy` reason `review_carry_failed` (1.50.0): the owner's package-review document cannot be read or written here;
-  nothing changed.
+  nothing changed. Reason `manifest_changed` (1.50.0): the manifest read differs from the one the scan hashed; nothing changed. The
+  decision is carried again after the folder step (a decision made during the recode); that failing is a warning and the read-back
+  problem `review_carry`, never an undo.
 
 ### 6.2 What changes, in order (journal + backups, compensated in reverse on failure)
 

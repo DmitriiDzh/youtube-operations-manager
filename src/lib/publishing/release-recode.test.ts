@@ -86,7 +86,7 @@ type Reservation = { channelId: string; video: string; workingTitle: string | nu
 
 type Fail = { op: "rename-file" | "write-manifest" | "write-record" | "rename-folder" | "rows" | "storyboard" | "undo"; after?: number };
 
-function harness(options: { uploads?: StoredPublishingUpload[]; frame?: "vertical" | "horizontal" | null; fail?: Fail; slots?: Map<string, SlotDecision>; review?: Map<string, "approved" | "returned">; reviewFails?: boolean; peer?: Map<string, { host: string | null; uploaded: boolean }>; files?: Map<string, string>; activeJobs?: number } = {}) {
+function harness(options: { uploads?: StoredPublishingUpload[]; frame?: "vertical" | "horizontal" | null; fail?: Fail; slots?: Map<string, SlotDecision>; review?: Map<string, "approved" | "returned">; reviewFails?: boolean | ((call: number) => boolean); peer?: Map<string, { host: string | null; uploaded: boolean }>; files?: Map<string, string>; activeJobs?: number } = {}) {
   const files = options.files ?? initialFiles();
   let uploads = options.uploads ?? [uploadRow()];
   const reservations: Reservation[] = [
@@ -180,7 +180,8 @@ function harness(options: { uploads?: StoredPublishingUpload[]; frame?: "vertica
     async carryReviewDecision(channelId, input) {
       carries.push({ channelId, ...input, journals: journals.size, renamedYet: files.has(`${WS}/${TO}/S12_release.json`) || files.has(`${WS}/${FROM}/S12_release.json`) });
       calls.push("review:carry");
-      if (options.reviewFails) throw new Error("review document unreadable");
+      const failing = typeof options.reviewFails === "function" ? options.reviewFails(carries.length) : options.reviewFails;
+      if (failing) throw new Error("review document unreadable");
       return { carried: options.review?.get(input.fromSha256) ?? null };
     },
     peerLinks: async (_c, video) => (video === "V14" ? [{ deviceId: "win", hostName: "WIN-PC", kind: "cost_run" as const, count: 2 }] : []),
@@ -751,7 +752,7 @@ test("BL-263 fix (owner TG 4584): an approved, not uploaded Short is recoded, no
   const result = await h.core.recode({ channelId: CH, video: "V14", newCode: "S12" });
   assert.equal(result.readBack, "verified");
   assert.deepEqual(result.review, { carried: "approved" });
-  assert.deepEqual(h.carries, [{ channelId: CH, fromSha256: sha(manifestText), toSha256: sha(EXPECTED_NEW_MANIFEST), video: "S12", journals: 0, renamedYet: false }]);
+  assert.deepEqual(h.carries[0], { channelId: CH, fromSha256: sha(manifestText), toSha256: sha(EXPECTED_NEW_MANIFEST), video: "S12", journals: 0, renamedYet: false });
   // After the device gate, before the first rename or write.
   assert.equal(h.calls[0], "gate");
   assert.equal(h.calls[1], "review:carry");
@@ -790,4 +791,52 @@ test("BL-263 fix (owner TG 4584): a dry run and every refusal carry nothing; an 
   assert.deepEqual(broken.state(), before);
   assert.equal(broken.journals.size, 0);
   assert.deepEqual(broken.calls, ["gate", "review:carry"]);
+});
+
+test("BL-263 fix (review): a manifest rewritten between the scan and the read is refused manifest_changed before anything is carried", async () => {
+  const h = harness({ files: unpublishedFiles(), uploads: [], review: new Map([[sha(manifestText), "approved"]]) });
+  const realScan = h.deps.scan;
+  // The scan saw an earlier version of the manifest (another hash); the file read now is the current one.
+  h.deps.scan = async (c) => {
+    const r = await realScan(c);
+    return r.status === "ok" ? { ...r, packages: r.packages.map((p) => (p.video === "V14" ? { ...p, manifestSha256: "e".repeat(64) } : p)) } : r;
+  };
+  const before = h.state();
+  assert.equal(await codeOf(createReleaseRecode(h.deps).recode({ channelId: CH, video: "V14", newCode: "S12" })), "release_recode_busy:manifest_changed");
+  assert.equal(await codeOf(createReleaseRecode(h.deps).recode({ channelId: CH, video: "V14", newCode: "S12", dryRun: true })), "release_recode_busy:manifest_changed");
+  assert.deepEqual(h.carries, []);
+  assert.deepEqual(h.state(), before);
+  assert.deepEqual(h.calls, []);
+});
+
+test("BL-263 fix (review): the decision is carried again after the folder step -- a return made during the recode is the one reported", async () => {
+  const review = new Map<string, "approved" | "returned">([[sha(manifestText), "approved"]]);
+  const h = harness({ files: unpublishedFiles(), uploads: [], review });
+  const realRename = h.deps.rename;
+  // The owner presses «Вернуть» on the old package after the first carry, before the folder moves.
+  h.deps.rename = async (from, to) => {
+    if (from === `${WS}/${FROM}`) review.set(sha(manifestText), "returned");
+    return realRename(from, to);
+  };
+  const result = await createReleaseRecode(h.deps).recode({ channelId: CH, video: "V14", newCode: "S12" });
+  assert.equal(h.carries.length, 2);
+  assert.equal(h.calls.indexOf(`rename:${FROM}->${TO}`) < h.calls.lastIndexOf("review:carry"), true, "the second carry runs after the folder step");
+  assert.equal(h.calls.lastIndexOf("review:carry") < h.calls.indexOf("rows:recode"), true);
+  assert.deepEqual(h.carries[1], { channelId: CH, fromSha256: sha(manifestText), toSha256: sha(EXPECTED_NEW_MANIFEST), video: "S12", journals: 1, renamedYet: true });
+  assert.deepEqual(result.review, { carried: "returned" });
+  assert.equal(result.readBack, "verified");
+});
+
+test("BL-263 fix (review): a failing second carry does not undo the recode -- warning and read-back problem review_carry", async () => {
+  const h = harness({ files: unpublishedFiles(), uploads: [], review: new Map([[sha(manifestText), "approved"]]), reviewFails: (call) => call === 2 });
+  const result = await h.core.recode({ channelId: CH, video: "V14", newCode: "S12" });
+  assert.equal(result.changed, true);
+  assert.ok(h.files.has(`${WS}/${TO}/S12_release.json`), "the recode stands");
+  assert.equal(h.uploads().length, 0);
+  assert.deepEqual(result.review, { carried: "approved" }, "the first carry's answer");
+  assert.equal(result.readBack, "mismatch");
+  assert.deepEqual(result.readBackProblems, ["review_carry"]);
+  assert.equal(result.warnings?.length, 1);
+  assert.ok(result.warnings![0].startsWith("review_carry_failed: review document unreadable"));
+  assert.equal(h.calls.includes("rows:undo"), false);
 });

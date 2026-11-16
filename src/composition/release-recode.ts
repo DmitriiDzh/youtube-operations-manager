@@ -1,4 +1,5 @@
 import { carryReviewDecisionForRecode } from "@/lib/package-reviews";
+import { afterReviewCarried } from "./package-reviews";
 import { createReleaseRecodeCore, type ReleaseRecodeInput, type ReleaseRecodeResult } from "@/lib/publishing";
 import { invalidatePlanPackages } from "@/lib/publishing-plan-progress";
 import { createStoryboardsCoreForProduction, createVideoCostsShareCoreForProduction, createVideoReservationsShareCoreForProduction } from "@/lib/sync-gateway";
@@ -22,7 +23,11 @@ export async function recodeRelease(input: ReleaseRecodeInput): Promise<ReleaseR
     approvals: async (channelId) => ({ slots: await planSlotDecisions(channelId) }),
     // Owner TG 4584: the owner's latest package-review decision follows the package to its new manifest (package-reviews' own rule and
     // write lock). The weekly plan's package cache is dropped by `invalidate` once the recode finished.
-    carryReviewDecision: (channelId, input) => carryReviewDecisionForRecode(channelId, input),
+    async carryReviewDecision(channelId, input) {
+      const out = await carryReviewDecisionForRecode(channelId, input);
+      if (out.wrote) afterReviewCarried(channelId);
+      return { carried: out.carried };
+    },
     async peerLinks(channelId, video) {
       const out: ReleaseRecodeResult["peerLinks"] = [];
       for (const report of await createVideoReservationsShareCoreForProduction().listPeerReports()) {

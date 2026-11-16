@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { isDomainError, type PackageReviewDecision, type PackageReviewRequired, type PackageReviewsSnapshot, type ReviewPackage } from "./contracts";
-import { ownerReviewProblemOf, triedExceptionsOf } from "./model";
+import { latestOwnerDecision, ownerReviewProblemOf, triedExceptionsOf } from "./model";
 import { createPackageReviewsService, packageReviewsOwnerSurface, type PackageReviewsDeps } from "./services";
 
 // BL-257 (PACKAGE_REVIEW_PLAN.md AC-PR-03/04/05/06/07/09/10; ADR 0070 §3-§4, §6). The expected values come from the plan: an
@@ -214,7 +214,7 @@ test("TG 4584: an approval is carried to the recoded manifest with its original 
   await h.service.setRequired(CH, { required: true });
   await h.service.decide(CH, { manifestSha256: MANIFEST, kind: "approved" });
   h.later();
-  assert.deepEqual(await h.service.carryDecision(CH, { fromSha256: MANIFEST, toSha256: NEW_MANIFEST, video: "S11" }), { carried: "approved" });
+  assert.deepEqual(await h.service.carryDecision(CH, { fromSha256: MANIFEST, toSha256: NEW_MANIFEST, video: "S11" }), { carried: "approved", wrote: true });
   const copy = h.decisions().find((d) => d.manifestSha256 === NEW_MANIFEST);
   assert.deepEqual(copy, { id: "pr_id2", manifestSha256: NEW_MANIFEST, video: "S11", thumbnailSha256: THUMB_SHA, kind: "approved", comment: null, by: "owner", device: "Mac", at: "2026-11-15T12:00:00.000Z", carriedFrom: MANIFEST });
   h.recode();
@@ -234,7 +234,7 @@ test("TG 4584: a return is carried with its comment -- the latest decision only 
   await h.service.decide(CH, { manifestSha256: MANIFEST, kind: "approved" });
   h.later();
   await h.service.decide(CH, { manifestSha256: MANIFEST, kind: "returned", comment: "the intro is cut" });
-  assert.deepEqual(await h.service.carryDecision(CH, { fromSha256: MANIFEST, toSha256: NEW_MANIFEST, video: "S11" }), { carried: "returned" });
+  assert.deepEqual(await h.service.carryDecision(CH, { fromSha256: MANIFEST, toSha256: NEW_MANIFEST, video: "S11" }), { carried: "returned", wrote: true });
   h.recode();
   const item = (await h.service.view(CH)).items[0];
   assert.deepEqual([item.video, item.state, item.comment, item.decidedAt], ["S11", "returned", "the intro is cut", "2026-11-16T09:30:00.000Z"]);
@@ -242,11 +242,11 @@ test("TG 4584: a return is carried with its comment -- the latest decision only 
 
 test("TG 4584: no decision carries nothing; a retry writes no second copy; bad input or an unreadable document throws and writes nothing", async () => {
   const h = recodeHarness();
-  assert.deepEqual(await h.service.carryDecision(CH, { fromSha256: MANIFEST, toSha256: NEW_MANIFEST, video: "S11" }), { carried: null });
+  assert.deepEqual(await h.service.carryDecision(CH, { fromSha256: MANIFEST, toSha256: NEW_MANIFEST, video: "S11" }), { carried: null, wrote: false });
   assert.deepEqual(h.decisions(), []);
   await h.service.decide(CH, { manifestSha256: MANIFEST, kind: "returned", comment: "redo" });
   await h.service.carryDecision(CH, { fromSha256: MANIFEST, toSha256: NEW_MANIFEST, video: "S11" });
-  assert.deepEqual(await h.service.carryDecision(CH, { fromSha256: MANIFEST, toSha256: NEW_MANIFEST, video: "S11" }), { carried: "returned" });
+  assert.deepEqual(await h.service.carryDecision(CH, { fromSha256: MANIFEST, toSha256: NEW_MANIFEST, video: "S11" }), { carried: "returned", wrote: false });
   assert.equal(h.decisions().filter((d) => d.manifestSha256 === NEW_MANIFEST).length, 1);
   await assert.rejects(h.service.carryDecision(CH, { fromSha256: MANIFEST, toSha256: MANIFEST, video: "S11" }));
   await assert.rejects(h.service.carryDecision(CH, { fromSha256: "../x", toSha256: NEW_MANIFEST, video: "S11" }));
@@ -255,6 +255,19 @@ test("TG 4584: no decision carries nothing; a retry writes no second copy; bad i
   const unreadable = harness({ unreadable: true });
   await assert.rejects(unreadable.service.carryDecision(CH, { fromSha256: MANIFEST, toSha256: NEW_MANIFEST, video: "S11" }));
   assert.deepEqual(unreadable.decisions(), []);
+});
+
+test("TG 4584 (review fix): a return made on the old manifest after the first carry is carried by the second one and stands on the new manifest", async () => {
+  const h = recodeHarness();
+  await h.service.decide(CH, { manifestSha256: MANIFEST, kind: "approved" });
+  assert.deepEqual(await h.service.carryDecision(CH, { fromSha256: MANIFEST, toSha256: NEW_MANIFEST, video: "S11" }), { carried: "approved", wrote: true });
+  h.later();
+  await h.service.decide(CH, { manifestSha256: MANIFEST, kind: "returned", comment: "cut the outro" });
+  assert.deepEqual(await h.service.carryDecision(CH, { fromSha256: MANIFEST, toSha256: NEW_MANIFEST, video: "S11" }), { carried: "returned", wrote: true });
+  const latest = latestOwnerDecision(NEW_MANIFEST, h.decisions());
+  assert.deepEqual([latest?.kind, latest?.comment, latest?.at, latest?.carriedFrom], ["returned", "cut the outro", "2026-11-16T09:30:00.000Z", MANIFEST]);
+  h.recode();
+  assert.deepEqual([(await h.service.view(CH)).items[0].state], ["returned"]);
 });
 
 test("TG 4584: the owner's surface has no carry (only the recode's composition reaches it)", () => {

@@ -1135,7 +1135,8 @@ A second agent role, separate from the channel agents. Technical contract only (
   every tool call, so a revocation applies to the next call. A factory token on `/api/mcp` is rejected the same way.
 - **Factory API version:** `1.50.0` since the BL-263 fix (owner TG 4584, ADR 0071 §4 amendment, additive: `factory_release_recode`
   carries the owner's package-review decision to the new manifest instead of refusing -- `release_recode_approval_standing` reason
-  `package_review` gone; result `review: { carried }`; `release_recode_busy` reason `review_carry_failed`); `1.49.0` = BL-263 (ADR 0071, additive: video codes `V<n>` or `S<n>` -- `^(V|S)[1-9][0-9]{0,5}$`, `S` = a
+  `package_review` gone; result `review: { carried }`; `release_recode_busy` reasons `review_carry_failed`, `manifest_changed`;
+  read-back problem `review_carry`); `1.49.0` = BL-263 (ADR 0071, additive: video codes `V<n>` or `S<n>` -- `^(V|S)[1-9][0-9]{0,5}$`, `S` = a
   WWE Short whose number is the factory's piece number -- wherever a video number is taken or returned; `factory_video_create.video`
   (an S code reserved as given; `video_number_taken` 409 with `details.source`; a given V -> `validation_failed` reason
   `v_numbers_are_given`); `factory_video_list` state `recoded` + `recodedTo`, `series`; new WRITE tool `factory_release_recode`, see
@@ -1443,7 +1444,7 @@ A second agent role, separate from the channel agents. Technical contract only (
       (S), dryRun? }` → `{ dryRun, video, newCode, from, to, files: [{ from, to }], manifest: { fields, oldSha256, newSha256 }, records:
       { youtube, cost }, rows: { uploads, reservations, jobs, plans, storyboards, socialJobs, orientation }, frame, peerLinks: [{ deviceId,
       hostName, kind: reservation | cost_run, count }], changed, readBack: verified | mismatch | null, readBackProblems? (with mismatch:
-      package_not_found | leftover_names | rows | video_list | old_folder_exists -- stop and inspect), recoveredFrom?, clearedJournals?
+      package_not_found | leftover_names | rows | video_list | old_folder_exists | review_carry (1.50.0) -- stop and inspect), recoveredFrom?, clearedJournals?
       (finished journals removed, never undone), warnings? (`journal_not_removed: <path>`), review? (1.50.0, real runs only: `{ carried:
       approved | returned | null }`) }`. **Precondition:** both computers run this
       build before the first real run (an older build freezes this computer's v2 reports; the peer's build is not visible here). Renames the
@@ -1454,12 +1455,16 @@ A second agent role, separate from the channel agents. Technical contract only (
       memo; storyboards follow. **Package review (1.50.0, owner TG 4584):** after every check and before the journal or any file
       changes, the owner's latest decision on the old manifest SHA-256 (approved or returned) is copied to the new SHA-256 -- same kind,
       comment, thumbnail hash, device and original `at`, `video` the S code, `carriedFrom` the old SHA-256 (no decision: nothing; a retry
-      writes no second copy); the mp4 and thumbnail bytes are unchanged, so an approved Short stays approved and a returned one keeps its
+      writes no second copy); copied again after the folder step, so a decision the owner made during the recode stands (`review.carried`
+      is that copy's answer; its failure never undoes the recode -- warning `review_carry_failed: ...` and `readBackProblems`
+      `review_carry`); the manifest read must be the one the scan hashed, else `release_recode_busy` `manifest_changed` before anything
+      is carried; the mp4 and thumbnail bytes are unchanged, so an approved Short stays approved and a returned one keeps its
       comment; audit `release.recoded` gains `carriedReview`. Journal + backups first; a failure undoes every done step. Errors: `release_recode_invalid` (400),
       `_not_found` (404), `_ambiguous`, `_not_short` (reason `folder | horizontal`), `_target_exists`, `_busy` (reason `upload_here | upload_queued |
       job_running | cross_post | live_rotation | video_list_unavailable | step_failed` (`details.step`) `| recovery_pending`
       (`details.journal`: an unfinished journal; a dry run is refused, the next real call undoes it) `| review_carry_failed` (1.50.0: the
-      package-review document cannot be read or written; nothing changed)), `_elsewhere`, `_approval_standing` (reason
+      package-review document cannot be read or written; nothing changed) `| manifest_changed` (1.50.0: the manifest changed between
+      the scan and the read; nothing changed, run again)), `_elsewhere`, `_approval_standing` (reason
       `plan_slot | plan_slot_date`; `package_review` until 1.49.0) (409), `_rollback_failed` (500, `details.journal`).
     - Sync: the `publishing-uploads`, `video-reservations` and `video-costs` reports are version 2 only when they hold an S code (else
       version 1 exactly as before); this build reads both.
