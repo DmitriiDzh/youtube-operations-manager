@@ -60,7 +60,7 @@ function result(over: Partial<CaptionWriteResult> = {}): CaptionWriteResult {
   };
 }
 
-function harness(over: { found?: PackageCaptionsFound | "not_found"; rows?: Array<{ status: string; videoId: string | null; stepsJson: string }>; file?: Uint8Array | null; record?: Array<{ trackId: string; sha256: string; verified?: boolean }>; answer?: CaptionWriteResult } = {}) {
+function harness(over: { found?: PackageCaptionsFound | "not_found"; rows?: Array<{ status: string; videoId: string | null; stepsJson: string }>; file?: Uint8Array | null; record?: Array<{ trackId: string; sha256: string; verified?: boolean; pending?: boolean }>; answer?: CaptionWriteResult } = {}) {
   const writes: CaptionWriteInput[] = [];
   const recorded: unknown[] = [];
   const marked: unknown[] = [];
@@ -168,4 +168,19 @@ test("AC-CAP-47 an unverified record entry (or a mismatched upload step) is ours
     { trackId: "T1", sha256: "unverified" },
     { trackId: "T2", sha256: "unverified" },
   ]);
+});
+
+test("review #4 a write YouTube still processes is recorded NOT verified (pending); the next plain add re-checks it, then records it verified", async () => {
+  const pending = harness({ answer: result({ verified: false, pending: true, verificationDetail: "YouTube is still processing the track (syncing)" }) });
+  const p = await pending.service.apply("UC_wwe", { video: "V27" }, producer);
+  const entry = (pending.recorded[0] as { entry: Record<string, unknown> }).entry;
+  assert.deepEqual([entry.verified, entry.pending, p.uploadStepsMarked], [false, true, 0]);
+  // Next call: the track is the app's own from this very file (sha256 kept, so no "own track differs" refusal) -- the writer
+  // re-checks it; now serving -> already present, the entry rewritten as verified, the upload rows marked.
+  const later = harness({ record: [{ trackId: "NEW", sha256: SHA, verified: false, pending: true }], answer: result({ mode: "none", written: false, alreadyPresent: true, trackId: "NEW", verified: true }) });
+  const r = await later.service.apply("UC_wwe", { video: "V27" }, producer);
+  assert.deepEqual(later.writes[0].ownTracks, [{ trackId: "NEW", sha256: SHA }]);
+  assert.equal((later.recorded[0] as { entry: Record<string, unknown> }).entry.verified, true);
+  assert.equal("pending" in (later.recorded[0] as { entry: Record<string, unknown> }).entry, false);
+  assert.deepEqual([r.recorded, r.uploadStepsMarked], [true, 1]);
 });

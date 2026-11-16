@@ -308,13 +308,14 @@ export function createVideoCaptionsServices(deps: VideoCaptionsDeps) {
       }
       const status = statusProblem(track);
       if (status.problem) problems.push(status.problem);
-      pending = status.pending && problems.length === 1;
       for (const old of args.tracksBefore) {
         if (old.id === args.trackId) continue;
         const still = after.find((t) => t.id === old.id);
         if (!still) problems.push(`track ${old.id} (${String(old.language)}) disappeared`);
         else if (still.language !== old.language || still.name !== old.name || still.lastUpdated !== old.lastUpdated) problems.push(`track ${old.id} (${String(old.language)}) changed`);
       }
+      // Pending only when YouTube still processing the track is the SOLE problem -- after every other track was checked (review #4).
+      pending = status.pending && problems.length === 1;
       return { problems, pending, name: track.name };
     };
     let outcome = await once();

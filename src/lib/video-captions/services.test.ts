@@ -249,6 +249,15 @@ test("AC-CAP-19 failed -> not verified with the reason; syncing -> one bounded r
   assert.equal((await thenServing.services.write(input(), owner)).verified, true);
 });
 
+test("review #4 syncing AND another track disappeared -> not pending (syncing is not the only problem), no re-read", async () => {
+  const de = track({ id: "DE", language: "de" });
+  const h = harness({ tracks: [de], afterTracks: [[track({ id: "NEW", status: "syncing" })]] });
+  const r = await h.services.write(input(), owner);
+  assert.deepEqual([r.written, r.verified, r.pending], [true, false, false]);
+  assert.match(r.verificationDetail ?? "", /DE \(de\) disappeared/);
+  assert.equal(h.calls.includes("sleep"), false, "a re-read cannot fix a missing track");
+});
+
 test("AC-CAP-19 read-back of a draft, a wrong name or an ASR kind -> not verified", async () => {
   for (const after of [track({ id: "NEW", isDraft: true }), track({ id: "NEW", name: "Other" }), track({ id: "NEW", trackKind: "asr" })]) {
     const h = harness({ tracks: [], afterTracks: [[after]] });

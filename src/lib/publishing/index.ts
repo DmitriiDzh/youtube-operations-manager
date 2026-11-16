@@ -1331,9 +1331,9 @@ export function createPackageCaptionsCore() {
       const list = (await readRecord(channelId, recordPath))?.captions;
       if (!Array.isArray(list)) return [];
       return list
-        .map((entry) => entry as { trackId?: unknown; sha256?: unknown; verified?: unknown })
-        .filter((entry): entry is { trackId: string; sha256: string; verified?: unknown } => typeof entry?.trackId === "string" && typeof entry.sha256 === "string")
-        .map(({ trackId, sha256, verified }) => ({ trackId, sha256, ...(verified === false ? { verified: false } : {}) }));
+        .map((entry) => entry as { trackId?: unknown; sha256?: unknown; verified?: unknown; pending?: unknown })
+        .filter((entry): entry is { trackId: string; sha256: string; verified?: unknown; pending?: unknown } => typeof entry?.trackId === "string" && typeof entry.sha256 === "string")
+        .map(({ trackId, sha256, verified, pending }) => ({ trackId, sha256, ...(verified === false ? { verified: false } : {}), ...(verified === false && pending === true ? { pending: true } : {}) }));
     },
     async writeRecordCaptions(channelId, recordPath, entry) {
       const record = await readRecord(channelId, recordPath);

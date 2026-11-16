@@ -18,6 +18,13 @@ const UNVERIFIED = "unverified";
 
 export type PackageCaptionsActor = { kind: "owner"; userId: string } | { kind: "producer" };
 
+/**
+ * One `captions` entry of `Vn_youtube.json` written by this path. `verified`: read back serving. `pending` (with `verified: false`):
+ * sent and read back except that YouTube was still processing it -- its sha256 is the file sent, so the next call re-checks the
+ * track's status (already present only once it serves) instead of trusting it (review #4).
+ */
+export type RecordCaptionEntry = { trackId: string; language: string; name: string; sha256: string; at: string; by: "owner" | "producer"; verified: boolean; pending?: true };
+
 export type PackageCaptionsFound = { pkg: ReleasePackage; manifestSha256: string; manifestPath: string; folder: string; videoId: string | null };
 
 export type PackageCaptionsDeps = {
@@ -27,9 +34,9 @@ export type PackageCaptionsDeps = {
   /** A workspace file's bytes (the workspace rule), or null when it is not there; at most `maxBytes` read. */
   readFile(channelId: string, relativePath: string, maxBytes: number): Promise<Uint8Array | "too_large" | null>;
   /** The `captions` entries of the release's `Vn_youtube.json` (unreadable: none). */
-  recordCaptions(channelId: string, recordPath: string): Promise<Array<{ trackId: string; sha256: string; verified?: boolean }>>;
+  recordCaptions(channelId: string, recordPath: string): Promise<Array<{ trackId: string; sha256: string; verified?: boolean; pending?: boolean }>>;
   /** Read-modify-write of `Vn_youtube.json`: only `captions` changes (an entry of the same track id is replaced), atomically. */
-  writeRecordCaptions(channelId: string, recordPath: string, entry: { trackId: string; language: string; name: string; sha256: string; at: string; by: "owner" | "producer"; verified: boolean }): Promise<void>;
+  writeRecordCaptions(channelId: string, recordPath: string, entry: RecordCaptionEntry): Promise<void>;
   /** The frame this computer last read for the video code (the scan's memo), or null. */
   frameMemo(channelId: string, video: string): Promise<"vertical" | "horizontal" | null>;
   /** The captions writer. */
@@ -90,7 +97,10 @@ export function createPackageCaptions(deps: PackageCaptionsDeps) {
     const recordPath = `${found.folder}/${found.pkg.video}_youtube.json`;
     // An entry whose write was not verified is still ours, but never "already present": its sha256 is not trusted (an overwrite
     // that did not take must be retried, not answered with already_present).
-    const fromRecord = (await deps.recordCaptions(channelId, recordPath).catch(() => [])).map((t) => (t.verified === false ? { trackId: t.trackId, sha256: UNVERIFIED } : t));
+    // A pending entry (sent, YouTube still processing) keeps its sha256: the writer then re-checks the track's status (review #4).
+    const stored = await deps.recordCaptions(channelId, recordPath).catch(() => []);
+    const notYetVerified = new Set(stored.filter((t) => t.verified === false).map((t) => t.trackId));
+    const fromRecord = stored.map((t) => (t.verified === false && t.pending !== true ? { trackId: t.trackId, sha256: UNVERIFIED } : { trackId: t.trackId, sha256: t.sha256 }));
     const fromRows = rows
       .filter((row) => row.videoId === found.videoId)
       .map((row) => {
@@ -129,9 +139,20 @@ export function createPackageCaptions(deps: PackageCaptionsDeps) {
     const out: PackageCaptionsResult = { ...result, video: found.pkg.video, manifestSha256: found.manifestSha256, recorded: false, uploadStepsMarked: 0 };
     if (result.dryRun || !result.trackId) return out;
     // The track is the app's own from now on (AC-CAP-37, AC-CAP-47): its id with the SHA-256 sent (an already-present one: as it was).
-    // `verified`: read back (or still processing) -- only then is the sha256 trusted as "already present" next time (AC-CAP-47).
-    const entry = { trackId: result.trackId, language: caption.language, name: result.trackName ?? caption.name, sha256: caption.sha256, at: deps.clock.now().toISOString(), by: actor.kind, verified: result.verified === true || result.pending };
-    if (result.written || own.get(result.trackId) !== caption.sha256 || !entry.verified) {
+    // `verified`: read back serving -- only then is it trusted as "already present" (AC-CAP-47). Still processing: not verified, but
+    // `pending`, so the next call re-checks its status rather than trusting it or refusing it as another file (review #4). A stored
+    // entry not yet verified is rewritten once the track reads back serving.
+    const entry: RecordCaptionEntry = {
+      trackId: result.trackId,
+      language: caption.language,
+      name: result.trackName ?? caption.name,
+      sha256: caption.sha256,
+      at: deps.clock.now().toISOString(),
+      by: actor.kind,
+      verified: result.verified === true,
+      ...(result.verified !== true && result.pending ? { pending: true as const } : {}),
+    };
+    if (result.written || own.get(result.trackId) !== caption.sha256 || !entry.verified || notYetVerified.has(result.trackId)) {
       try {
         await deps.writeRecordCaptions(channelId, recordPath, entry);
         out.recorded = true;
