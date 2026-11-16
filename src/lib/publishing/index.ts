@@ -907,6 +907,29 @@ export function createPlanScheduleCore(options: { slotDecisions: (channelId: str
     nextQuotaReset: (now) => nextYoutubeQuotaReset(now),
   });
 }
+/**
+ * BL-267 (ADR 0073 §5, plan §3.7): the YouTube side of an explicit move by the owner or the Producer -- this computer's newest finished
+ * upload row of the video, then plan-schedule's one change function in explicit mode (video-details' write path: identity check,
+ * backup, Live writes right before, read-back, audit). No second writer. Without such a row the video is not this computer's to move.
+ */
+export function createPlanMoveYoutubeCore(options: { slotDecisions: (channelId: string) => Promise<Map<string, SlotDecision>> }) {
+  const schedule = createPlanScheduleCore(options);
+  const rowOf = async (channelId: string, videoId: string) =>
+    (await listPublishingUploads({ channelId, statuses: ["done"], limit: 2000 })).filter((row) => row.videoId === videoId).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0] ?? null;
+  return {
+    async precheck(channelId: string, videoId: string) {
+      const row = await rowOf(channelId, videoId);
+      if (!row) return { outcome: "refused" as const, code: "publishing_plan_move_not_here", reason: "no finished upload of this video on this computer" };
+      return schedule.explicitPrecheck(row);
+    },
+    async write(channelId: string, videoId: string, slotId: string, publishAtUtc: string, by: "owner" | "producer") {
+      const row = await rowOf(channelId, videoId);
+      if (!row) return { result: "refused", reason: "no finished upload of this video on this computer", publishAt: null };
+      const result = await schedule.explicitMove(row, publishAtUtc, by, slotId);
+      return { result: result.result, ...(result.reason ? { reason: result.reason } : {}), publishAt: result.publishAt };
+    },
+  };
+}
 export type { PlanSchedule } from "./plan-schedule";
 export { checksPassed, decisionForRow, desiredDate } from "./plan-schedule";
 export { approvalNamesUpload } from "./slot-decision";

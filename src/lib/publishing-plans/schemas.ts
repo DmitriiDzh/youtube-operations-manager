@@ -82,3 +82,20 @@ export const ownerRetimeInputSchema = z
   })
   .strict();
 export type OwnerRetimeInput = z.infer<typeof ownerRetimeInputSchema>;
+
+/**
+ * BL-267 (ADR 0073 §5, plan §3.7): a move by the owner (Web UI) or the Producer (its tool) -- the slot by id (any week), the content
+ * hash the mover was shown, the target week (a Monday), date and local wall time in the target plan's zone (the source plan's zone
+ * when the target week has no plan yet). `dryRun`: checked and described, nothing written.
+ */
+export const moveSlotInputSchema = z
+  .object({
+    slotId,
+    contentHash: z.string().regex(/^[0-9a-f]{64}$/),
+    toWeekStart: day,
+    date: day,
+    publishAt: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/),
+    dryRun: z.boolean().optional(),
+  })
+  .strict();
+export type MoveSlotInput = z.infer<typeof moveSlotInputSchema>;

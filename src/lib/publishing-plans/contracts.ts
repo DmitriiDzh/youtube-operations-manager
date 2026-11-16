@@ -96,7 +96,7 @@ export type PlanMediaReview = "approved" | "pending" | "returned" | "not_require
 /** Why an agent's save was refused, one entry per problem (`validation_failed`, `details.refused`). */
 export type PlanSaveRefusal = {
   slotId?: string;
-  field: "weekStart" | "timeZone" | "slots" | "date" | "publishAt" | "removeSlotIds" | "replacesSlotId";
+  field: "weekStart" | "timeZone" | "slots" | "date" | "publishAt" | "removeSlotIds" | "replacesSlotId" | "toWeekStart";
   reason:
     | "week_start_invalid"
     | "week_start_not_monday"
@@ -121,7 +121,9 @@ export type PlanSaveRefusal = {
     | "replaces_unknown"
     | "replaces_cycle"
     // BL-267 (ADR 0073 §5): the slot's video has a date on YouTube -- only the owner or the Producer moves it.
-    | "slot_dated";
+    | "slot_dated"
+    // BL-267: a move's target more than 52 weeks ahead.
+    | "beyond_horizon";
 };
 
 /** BL-240 (ADR 0060): the slot a slot replaces, as it stands now. */
@@ -264,6 +266,29 @@ export type PublishingPlansPorts = {
   progress?(channelId: string, weekStart: string, slotIds: string[]): Promise<PlanProgressResult>;
   /** BL-248 (ADR 0066): "the owner just decided" -- the review-notify writer runs in a moment. Optional, never throws, never awaited. */
   notifyOwnerDecision?(): void;
+  /**
+   * BL-267 (ADR 0073 §5, plan §3.7): the YouTube side of an explicit move, composed outside this module (publishing's plan-schedule
+   * change in explicit mode, through video-details' write path). Absent: a dated video cannot be moved here (`publishing_plan_move_not_here`).
+   */
+  moveYoutube?: PlanMoveYoutubePort;
+};
+
+/** BL-267: what a move may do to a slot's video on YouTube (read first, write after the plan change). */
+export type PlanMoveYoutubePort = {
+  /** Read only: `moves` -- private and dated (the move writes the new date); `plan_only` -- private, no date; else refused with a code. */
+  precheck(channelId: string, videoId: string): Promise<{ outcome: "moves" | "plan_only"; youtubePublishAt: string | null } | { outcome: "refused"; code: string; reason: string }>;
+  /** The write + read-back for this computer's upload row of the video; never a first date. */
+  write(channelId: string, videoId: string, slotId: string, publishAtUtc: string, by: "owner" | "producer"): Promise<{ result: string; reason?: string; publishAt: string | null }>;
+};
+
+/** BL-267: a move's answer -- the plan of the target week, what moved, and what happened on YouTube. */
+export type PlanMoveResult = {
+  plan: PlanView | null;
+  moved: boolean;
+  dryRun: boolean;
+  from: { weekStart: string; date: string; publishAt: string; publishAtUtc: string; timeZone: string };
+  to: { weekStart: string; date: string; publishAt: string; publishAtUtc: string; timeZone: string };
+  youtube: { effect: "moves" | "plan_only" | "none"; previous: string | null; result?: string; reason?: string; publishAt?: string | null };
 };
 
 /**

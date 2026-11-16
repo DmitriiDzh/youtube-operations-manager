@@ -22,7 +22,7 @@ function hostLabel(): string | null {
   }
 }
 
-function service(progress?: PublishingPlansPorts["progress"]): PublishingPlansService {
+function service(progress?: PublishingPlansPorts["progress"], moveYoutube?: PublishingPlansPorts["moveYoutube"]): PublishingPlansService {
   const holder = globalThis as GlobalWithLock;
   const lock = (holder[LOCK_KEY] ??= { queue: Promise.resolve() });
   return createPublishingPlansService({
@@ -41,6 +41,7 @@ function service(progress?: PublishingPlansPorts["progress"]): PublishingPlansSe
     audit: ({ channelId, weekStart, slotId, detail }) =>
       insertVideoEditAuditEvent({ channelId, videoId: weekStart && slotId ? `plan:${weekStart}:${slotId}` : String(detail.event ?? "").startsWith("publishing_plan.template") ? "plan:template" : "plan:approval_stage", eventType: "RESULT", detail }),
     ...(progress ? { progress } : {}),
+    ...(moveYoutube ? { moveYoutube } : {}),
     // BL-248 (ADR 0066): the owner's slot decisions nudge the Producer's Inbox writer (review-notify).
     notifyOwnerDecision: () => nudgeReviewNotify(),
   });
@@ -52,8 +53,8 @@ export function createPublishingPlansAgentCore(progress?: PublishingPlansPorts["
 }
 
 /** The owner's surface: used only by the Web UI's publishing-plans routes (AC-WP-05 source scan). */
-export function createPublishingPlansOwnerCore(progress?: PublishingPlansPorts["progress"]): PublishingPlansOwnerSurface {
-  return ownerSurface(service(progress));
+export function createPublishingPlansOwnerCore(progress?: PublishingPlansPorts["progress"], moveYoutube?: PublishingPlansPorts["moveYoutube"]): PublishingPlansOwnerSurface {
+  return ownerSurface(service(progress, moveYoutube));
 }
 
 /**
@@ -72,8 +73,8 @@ export type { MatchSlot, SlotMatch, TemplatePosition, WeekTemplateView, WeekTemp
 export type { TemplateAnswer } from "./template-services";
 
 /** BL-267 (ADR 0073 §5): the Producer's surface (its own endpoint): plan reads, the template read and its proposal. */
-export function createPublishingPlansProducerCore(progress?: PublishingPlansPorts["progress"]): import("./services").PublishingPlansProducerSurface {
-  return producerSurfaceOf(service(progress));
+export function createPublishingPlansProducerCore(progress?: PublishingPlansPorts["progress"], moveYoutube?: PublishingPlansPorts["moveYoutube"]): import("./services").PublishingPlansProducerSurface {
+  return producerSurfaceOf(service(progress, moveYoutube));
 }
 export { contentHashOf, instantOf, isMonday, weekEndOf, addDays, planViewOf, slotViewOf, decisionStateOf, needsOwner, fingerprintOf, packageReady, lastApprovedPackageOf } from "./model";
 export * from "./contracts";

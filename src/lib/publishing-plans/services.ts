@@ -2,10 +2,11 @@ import { parseWithSchema } from "@/lib/shared-domain";
 import type { PublishingPlanDecision, PublishingPlanMeta, PublishingPlanPackageFingerprint, PublishingPlanSlot, PublishingPlansSnapshot } from "@/lib/sync-gateway";
 import { isValidIanaTimezone } from "@/lib/zoned-time";
 import { isDeletedOnYoutube } from "@/lib/shared-video-presence";
-import { DEFAULT_APPROVAL_STAGE, DomainError, PUBLISHING_PLAN_LIMITS, type PlanSaveRefusal, type PlanSlotDecision, type PlanProgressResult, type PlanSlotProgress, type PlanSummary, type PlanView, type PublishingPlanActor, type PublishingPlanApprovalStage, type PublishingPlansPorts, type ReplacedSlot, type SocialSlotState, SOCIAL_LOOKBACK_MS } from "./contracts";
+import { DEFAULT_APPROVAL_STAGE, DomainError, PUBLISHING_PLAN_LIMITS, type PlanMoveResult, type PlanSaveRefusal, type PlanSlotDecision, type PlanProgressResult, type PlanSlotProgress, type PlanSummary, type PlanView, type PublishingPlanActor, type PublishingPlanApprovalStage, type PublishingPlansPorts, type ReplacedSlot, type SocialSlotState, SOCIAL_LOOKBACK_MS } from "./contracts";
 import { addDays, approvalStandsOn, contentHashOf, contentOf, decisionsForStage, decisionStateOf, fingerprintOf, instantOf, isCalendarDate, isMonday, mediaOfProgress, planViewOf, slotViewOf, standingPackageApprovalOf, standingVetoOf, decisionOrder, lastApprovedPackageOf } from "./model";
 import { matchSlots, templateInForce, type MatchSlot, type SlotMatch } from "./template";
 import { createTemplateServices } from "./template-services";
+import { moveSlotInputSchema } from "./schemas";
 import { approvalStageInputSchema, getPlanInputSchema, listPlansInputSchema, ownerDecisionInputSchema, ownerRetimeInputSchema, PLAN_LIST_DEFAULT_LIMIT, savePlanInputSchema, type OwnerDecisionInput } from "./schemas";
 
 // BL-225 (FO-REQ-0040 items 1, 5, 6; WEEKLY_PUBLISHING_PLAN.md stage 1 items 3-5; ADR 0051): what agents and the owner may do with a
@@ -58,8 +59,14 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
   function slotsOf(snapshot: PublishingPlansSnapshot, weekStart: string): PublishingPlanSlot[] {
     return Object.values(snapshot.slots).filter((s) => s.weekStart === weekStart);
   }
+  /**
+   * The decisions of a week's slots. BL-267 (ADR 0073 §5, AC-WT-32): read by slot id across weeks (a moved slot keeps its decisions;
+   * ids are unique in a channel), plus the week's own decisions of slots no longer anywhere (a removed vetoed slot).
+   */
   function decisionsOf(snapshot: PublishingPlansSnapshot, weekStart: string): PublishingPlanDecision[] {
-    return Object.values(snapshot.decisions).filter((d) => d.weekStart === weekStart);
+    const ids = new Set(slotsOf(snapshot, weekStart).map((s) => s.slotId));
+    const anywhere = new Set(Object.values(snapshot.slots).map((s) => s.slotId));
+    return Object.values(snapshot.decisions).filter((d) => ids.has(d.slotId) || (d.weekStart === weekStart && !anywhere.has(d.slotId)));
   }
 
   /** BL-240: a slot of the channel by its id, in whichever week holds it (ids are unique in a channel). */
@@ -708,6 +715,115 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
     return out.map((s) => ((seen.get(s.slotId) ?? 0) > 1 || (s.package && (videos.get(s.package.video) ?? 0) > 1) ? { ...s, approved: false, package: null } : s));
   }
 
+  /** The approvals of a slot that no later revocation of the same content cancelled -- revoked by a move (as by retime). */
+  function revocationsFor(snapshot: PublishingPlansSnapshot, slotId: string, weekStart: string, device: string | null, at: string, seq: number): PublishingPlanDecision[] {
+    const ordered = Object.values(snapshot.decisions).filter((d) => d.slotId === slotId).sort(decisionOrder);
+    const out: PublishingPlanDecision[] = [];
+    const seenHashes = new Set<string>();
+    for (const record of [...ordered].reverse()) {
+      if (record.kind !== "approved" && record.kind !== "revoked") continue;
+      if (seenHashes.has(record.contentHash)) continue;
+      seenHashes.add(record.contentHash);
+      if (record.kind !== "approved") continue;
+      out.push({ seq, id: `pd_${ports.randomId()}`.slice(0, 40), weekStart, slotId, kind: "revoked", contentHash: record.contentHash, snapshot: { ...record.snapshot }, by: "owner", device, at, ...(record.package ? { package: { ...record.package } } : {}) });
+    }
+    return out;
+  }
+
+  /**
+   * BL-267 (ADR 0073 §5, plan §3.7; owner TG 4630/4636): the owner or the Producer moves a live slot anywhere -- another day, time or
+   * week, on or off the template -- keeping its id. When its video has a date on YouTube, the new date is written at once through
+   * the `moveYoutube` port (every refusal before the plan changes). A move never gives a first date. `dryRun`: checked, nothing written.
+   */
+  async function move(channelId: string, input: unknown, by: "owner" | "producer", userId: string): Promise<PlanMoveResult> {
+    const parsed = parseWithSchema(moveSlotInputSchema, input, "slot move");
+    await assertChannel(channelId);
+    return ports.withLock(async () => {
+      const snapshot = await ports.store.read(channelId);
+      const stored = findSlot(snapshot, parsed.slotId);
+      const details = { channelId, slotId: parsed.slotId };
+      const sourceMeta = stored ? snapshot.plans[stored.weekStart] : undefined;
+      if (!stored || !sourceMeta) throw new DomainError({ code: "publishing_plan_slot_not_found", message: `No slot ${parsed.slotId} in this channel`, details });
+      const state = await channelState(channelId, snapshot, [stored.slotId]);
+      const view = (await viewOf(channelId, snapshot, sourceMeta, state)).slots.find((s) => s.slotId === stored.slotId)!;
+      if (view.released) throw new DomainError({ code: "publishing_plan_slot_past", message: `Slot ${parsed.slotId}'s time has passed`, details });
+      if (view.vetoed) throw new DomainError({ code: "publishing_plan_slot_vetoed", message: `Slot ${parsed.slotId} is vetoed; restore it first`, details });
+      if (parsed.contentHash !== view.contentHash) throw new DomainError({ code: "publishing_plan_changed", message: `Slot ${parsed.slotId} changed since it was shown; reload the plan`, details });
+      const nowMs = ports.now().getTime();
+      const youtubeAt = view.foreignPublishAt ?? view.youtubePublishAt;
+      const soonest = Math.min(Date.parse(view.publishAtUtc), youtubeAt ? Date.parse(youtubeAt) || Infinity : Infinity);
+      if (soonest - nowMs < RETIME_MARGIN_MS) throw new DomainError({ code: "publishing_plan_slot_too_soon", message: `Slot ${parsed.slotId} comes out in less than 15 minutes; it can no longer be moved`, details });
+      const targetMeta = snapshot.plans[parsed.toWeekStart];
+      const timeZone = targetMeta?.timeZone ?? sourceMeta.timeZone;
+      const refused: PlanSaveRefusal[] = [];
+      const instant = instantOf(parsed.publishAt, timeZone);
+      if (!isCalendarDate(parsed.toWeekStart) || !isMonday(parsed.toWeekStart)) refused.push({ slotId: parsed.slotId, field: "toWeekStart", reason: "week_start_not_monday" });
+      else if (!isCalendarDate(parsed.date)) refused.push({ slotId: parsed.slotId, field: "date", reason: "date_invalid" });
+      else if (parsed.date < parsed.toWeekStart || parsed.date > addDays(parsed.toWeekStart, 6)) refused.push({ slotId: parsed.slotId, field: "date", reason: "outside_week" });
+      else if (!instant) refused.push({ slotId: parsed.slotId, field: "publishAt", reason: "publish_at_invalid" });
+      else if (parsed.publishAt.slice(0, 10) !== parsed.date) refused.push({ slotId: parsed.slotId, field: "publishAt", reason: "date_mismatch" });
+      else if (instant.getTime() - nowMs < RETIME_APPROVE_MARGIN_MS) refused.push({ slotId: parsed.slotId, field: "publishAt", reason: "in_past" });
+      else if (instant.getTime() - nowMs > 52 * 7 * 86_400_000) refused.push({ slotId: parsed.slotId, field: "publishAt", reason: "beyond_horizon" });
+      if (!refused.length && parsed.toWeekStart !== stored.weekStart && slotsOf(snapshot, parsed.toWeekStart).length >= PUBLISHING_PLAN_LIMITS.slots) refused.push({ slotId: parsed.slotId, field: "slots", reason: "too_many_slots" });
+      if (refused.length > 0) throw refusedError(refused, parsed.toWeekStart);
+      const targetUtc = instant!.toISOString();
+
+      // The YouTube side, read before anything is written (plan §3.7 order).
+      const progress = state.progress.get(stored.slotId) ?? null;
+      const videoId = progress && !isDeletedOnYoutube(progress) ? progress.videoId : null;
+      let effect: PlanMoveResult["youtube"]["effect"] = "none";
+      let previous: string | null = youtubeAt ?? null;
+      if (videoId) {
+        const check = ports.moveYoutube ? await ports.moveYoutube.precheck(channelId, videoId) : { outcome: "refused" as const, code: "publishing_plan_move_not_here", reason: "no YouTube writer on this surface" };
+        if (check.outcome === "refused") {
+          const dated = Boolean(youtubeAt) || progress?.status === "published";
+          // An undated video uploaded elsewhere only changes position (D1: a move never dates it anyway).
+          if (!(check.code === "publishing_plan_move_not_here" && !dated)) {
+            const code = check.code === "live_writes_disabled" || check.code === "data_api_reads_disabled" ? "publishing_plan_move_youtube_unavailable" : check.code;
+            throw new DomainError({ code: code as "publishing_plan_move_not_here", message: `The move was refused: ${check.reason}`, details: { ...details, reason: check.code } });
+          }
+          effect = "plan_only";
+        } else {
+          effect = check.outcome;
+          previous = check.youtubePublishAt;
+        }
+      }
+      const from = { weekStart: stored.weekStart, date: stored.date, publishAt: stored.publishAt, publishAtUtc: view.publishAtUtc, timeZone: sourceMeta.timeZone };
+      const to = { weekStart: parsed.toWeekStart, date: parsed.date, publishAt: parsed.publishAt, publishAtUtc: targetUtc, timeZone };
+      const samePlace = stored.weekStart === parsed.toWeekStart && stored.publishAt === parsed.publishAt && timeZone === sourceMeta.timeZone;
+      const youtubeWouldChange = effect === "moves" && (previous === null || Date.parse(previous) !== Date.parse(targetUtc));
+      if (parsed.dryRun) return { plan: null, moved: false, dryRun: true, from, to, youtube: { effect: effect === "moves" && !youtubeWouldChange ? "none" : effect, previous } };
+
+      const at = stamp();
+      if (!samePlace) {
+        const device = await ports.deviceLabel();
+        const seq = Math.max(0, ...Object.values(snapshot.decisions).map((d) => d.seq ?? 0)) + 1;
+        const slot: PublishingPlanSlot = {
+          ...contentOf({ ...contentOf(stored), date: parsed.date, publishAt: parsed.publishAt }),
+          weekStart: parsed.toWeekStart,
+          slotId: stored.slotId,
+          createdAt: stored.createdAt,
+          updatedAt: at,
+          updatedBy: by,
+          movedFrom: { weekStart: stored.weekStart, publishAt: stored.publishAt, timeZone: sourceMeta.timeZone, at, by },
+        };
+        await ports.store.moveSlot(channelId, { fromWeekStart: stored.weekStart, slot, createTarget: targetMeta ? null : { weekStart: parsed.toWeekStart, timeZone, createdAt: at, createdBy: by, updatedAt: at, updatedBy: by } });
+        const revocations = revocationsFor(snapshot, stored.slotId, parsed.toWeekStart, device, at, seq);
+        if (revocations.length > 0) await ports.store.addDecisions(channelId, revocations);
+        await ports.audit({ channelId, weekStart: parsed.toWeekStart, slotId: stored.slotId, detail: { event: "publishing_plan.moved", at, from, to, revoked: revocations.map((r) => r.id), youtube: effect, by: by === "owner" ? userId : "producer", actor: by, device } });
+        if (by === "owner") ports.notifyOwnerDecision?.();
+      }
+      let youtube: PlanMoveResult["youtube"] = { effect, previous };
+      if (effect === "moves" && youtubeWouldChange && videoId && ports.moveYoutube) {
+        const written = await ports.moveYoutube.write(channelId, videoId, stored.slotId, targetUtc, by).catch((error: unknown) => ({ result: "refused", reason: error instanceof Error ? error.message : String(error), publishAt: null }));
+        youtube = { effect, previous, result: written.result === "verified" ? "verified" : "failed", ...(written.reason ? { reason: written.reason } : {}), publishAt: written.result === "verified" ? targetUtc : previous };
+      }
+      const after = await ports.store.read(channelId);
+      const meta = after.plans[parsed.toWeekStart];
+      return { plan: meta ? await viewOf(channelId, after, meta) : null, moved: !samePlace, dryRun: false, from, to, youtube };
+    });
+  }
+
   const template = createTemplateServices(ports, assertChannel);
 
   return {
@@ -733,6 +849,7 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
     },
     decide,
     retime,
+    move,
   };
 }
 
@@ -745,9 +862,13 @@ export function agentSurface(service: PublishingPlansAgentSurface): PublishingPl
 }
 
 /** What the owner's Web UI routes get: the plans, one plan, the decisions and (BL-242) the approval stage. */
-export type PublishingPlansOwnerSurface = Pick<PublishingPlansService, "ownerList" | "ownerGet" | "decide" | "retime" | "setApprovalStage" | "templateGet" | "templateOwnerSave" | "templateOwnerDecide" | "templateOwnerWithdraw">;
-export function ownerSurface(service: PublishingPlansOwnerSurface): PublishingPlansOwnerSurface {
+export type PublishingPlansOwnerSurface = Pick<PublishingPlansService, "ownerList" | "ownerGet" | "decide" | "retime" | "setApprovalStage" | "templateGet" | "templateOwnerSave" | "templateOwnerDecide" | "templateOwnerWithdraw"> & {
+  /** BL-267 (ADR 0073 §5): the owner's move -- always as the owner. */
+  move(channelId: string, input: unknown, userId: string): Promise<PlanMoveResult>;
+};
+export function ownerSurface(service: Omit<PublishingPlansOwnerSurface, "move"> & Pick<PublishingPlansService, "move">): PublishingPlansOwnerSurface {
   return {
+    move: (channelId, input, userId) => service.move(channelId, input, "owner", userId),
     templateGet: (channelId) => service.templateGet(channelId),
     templateOwnerSave: (channelId, input, userId) => service.templateOwnerSave(channelId, input, userId),
     templateOwnerDecide: (channelId, input, userId) => service.templateOwnerDecide(channelId, input, userId),
@@ -773,7 +894,16 @@ export function uploadSurface(service: PublishingPlansUploadSurface): Publishing
 }
 
 /** BL-267 (ADR 0073 §5, plan §3.10): what the Producer gets -- reads, its template proposal (stage 6 adds the move). Never a decision. */
-export type PublishingPlansProducerSurface = Pick<PublishingPlansService, "get" | "list" | "templateGet" | "templatePropose">;
-export function producerSurface(service: PublishingPlansProducerSurface): PublishingPlansProducerSurface {
-  return { get: (input) => service.get(input), list: (input) => service.list(input), templateGet: (channelId) => service.templateGet(channelId), templatePropose: (channelId, input) => service.templatePropose(channelId, input) };
+export type PublishingPlansProducerSurface = Pick<PublishingPlansService, "get" | "list" | "templateGet" | "templatePropose"> & {
+  /** BL-267 (ADR 0073 §5, owner TG 4630/4636): the Producer's move -- always as the Producer, immediate. */
+  move(channelId: string, input: unknown): Promise<PlanMoveResult>;
+};
+export function producerSurface(service: Pick<PublishingPlansService, "get" | "list" | "templateGet" | "templatePropose" | "move">): PublishingPlansProducerSurface {
+  return {
+    get: (input) => service.get(input),
+    list: (input) => service.list(input),
+    templateGet: (channelId) => service.templateGet(channelId),
+    templatePropose: (channelId, input) => service.templatePropose(channelId, input),
+    move: (channelId, input) => service.move(channelId, input, "producer", "producer"),
+  };
 }
