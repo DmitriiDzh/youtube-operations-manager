@@ -203,7 +203,58 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
     return file ? { path: file.path, bytes: file.bytes, type } : null;
   }
 
-  return { ownerReviewState, view, setRequired, decide, mediaFile };
+  /**
+   * Owner TG 4584 (BL-263 fix; ADR 0070 amendment, ADR 0071 §4): a local recode V -> S rewrites the manifest (new SHA-256) but not
+   * the video or the thumbnail bytes, so the owner's LATEST decision on the old manifest (approved or returned) is copied to the new
+   * one -- never a decision of the caller's own: only an existing owner decision is copied, with its `kind`, `comment`,
+   * `thumbnailSha256`, `device` and original `at` (AC-PR-11 compares it with the upload rows' times), `video` set to the new code and
+   * `carriedFrom` the old SHA-256. Nothing to copy: nothing written. When the new manifest's latest decision is already that copy (a
+   * retried recode), nothing is written either and its kind is returned. A decision for a manifest no package has yet is inert, so
+   * the caller copies BEFORE its own change. Throws when the document cannot be read or written (the caller then changes nothing).
+   */
+  async function carryDecision(channelId: string, input: { fromSha256: string; toSha256: string; video: string }): Promise<{ carried: "approved" | "returned" | null }> {
+    const from = manifestSha256Schema.parse(input.fromSha256);
+    const to = manifestSha256Schema.parse(input.toSha256);
+    if (from === to) throw new Error("the manifest SHA-256 did not change: nothing to carry");
+    if (typeof input.video !== "string" || input.video.trim() === "") throw new Error("video is required");
+    return deps.withLock(async () => {
+      const snapshot = await deps.store.read(channelId);
+      if (!snapshot.exists) return { carried: null };
+      const decisions = Object.values(snapshot.decisions ?? {});
+      const latest = latestOwnerDecision(from, decisions);
+      if (!latest) return { carried: null };
+      const already = latestOwnerDecision(to, decisions);
+      if (
+        already &&
+        already.carriedFrom === from &&
+        already.kind === latest.kind &&
+        already.comment === latest.comment &&
+        already.thumbnailSha256 === latest.thumbnailSha256 &&
+        already.at === latest.at
+      ) {
+        return { carried: latest.kind };
+      }
+      const copy: PackageReviewDecision = {
+        id: `pr_${deps.randomId()}`.slice(0, 40),
+        manifestSha256: to,
+        video: input.video,
+        thumbnailSha256: latest.thumbnailSha256,
+        kind: latest.kind,
+        comment: latest.comment,
+        by: "owner",
+        device: latest.device,
+        at: latest.at,
+        carriedFrom: from,
+      };
+      await deps.store.addDecision(channelId, copy);
+      await deps
+        .audit({ channelId, video: input.video, detail: { event: "package_review.carried", decisionId: copy.id, from: latest.id, kind: copy.kind, manifestSha256: to, carriedFrom: from, fromVideo: latest.video } })
+        .catch(() => undefined);
+      return { carried: copy.kind };
+    });
+  }
+
+  return { ownerReviewState, view, setRequired, decide, mediaFile, carryDecision };
 }
 
 export type PackageReviewsService = ReturnType<typeof createPackageReviewsService>;

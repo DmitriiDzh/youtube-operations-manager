@@ -86,7 +86,7 @@ type Reservation = { channelId: string; video: string; workingTitle: string | nu
 
 type Fail = { op: "rename-file" | "write-manifest" | "write-record" | "rename-folder" | "rows" | "storyboard" | "undo"; after?: number };
 
-function harness(options: { uploads?: StoredPublishingUpload[]; frame?: "vertical" | "horizontal" | null; fail?: Fail; slots?: Map<string, SlotDecision>; reviewApproved?: Set<string>; peer?: Map<string, { host: string | null; uploaded: boolean }>; files?: Map<string, string>; activeJobs?: number } = {}) {
+function harness(options: { uploads?: StoredPublishingUpload[]; frame?: "vertical" | "horizontal" | null; fail?: Fail; slots?: Map<string, SlotDecision>; review?: Map<string, "approved" | "returned">; reviewFails?: boolean; peer?: Map<string, { host: string | null; uploaded: boolean }>; files?: Map<string, string>; activeJobs?: number } = {}) {
   const files = options.files ?? initialFiles();
   let uploads = options.uploads ?? [uploadRow()];
   const reservations: Reservation[] = [
@@ -98,6 +98,7 @@ function harness(options: { uploads?: StoredPublishingUpload[]; frame?: "vertica
   const storyboards = [{ id: "sb1", video: "V14" }, { id: "sb2", video: "V1" }];
   const journals = new Map<string, ReleaseRecodeJournal>();
   const calls: string[] = [];
+  const carries: Array<{ channelId: string; fromSha256: string; toSha256: string; video: string; journals: number; renamedYet: boolean }> = [];
   let failCount = 0;
   let failed = false;
   // The injected failure happens once (the undo that follows works, unless a test breaks it on purpose).
@@ -173,7 +174,15 @@ function harness(options: { uploads?: StoredPublishingUpload[]; frame?: "vertica
     livePaths: async () => [],
     activeJobs: async () => options.activeJobs ?? 0,
     videoList: async () => videoList(),
-    approvals: async () => ({ reviewApproved: options.reviewApproved ?? new Set(), slots: options.slots ?? new Map() }),
+    approvals: async () => ({ slots: options.slots ?? new Map() }),
+    // Owner TG 4584: the package-reviews rule is faked here (its own tests cover the copy); this records what was asked, and whether
+    // the journal or any file had changed by then.
+    async carryReviewDecision(channelId, input) {
+      carries.push({ channelId, ...input, journals: journals.size, renamedYet: files.has(`${WS}/${TO}/S12_release.json`) || files.has(`${WS}/${FROM}/S12_release.json`) });
+      calls.push("review:carry");
+      if (options.reviewFails) throw new Error("review document unreadable");
+      return { carried: options.review?.get(input.fromSha256) ?? null };
+    },
     peerLinks: async (_c, video) => (video === "V14" ? [{ deviceId: "win", hostName: "WIN-PC", kind: "cost_run" as const, count: 2 }] : []),
     async listFolder(abs) {
       const out = new Map<string, "file" | "dir">();
@@ -288,7 +297,7 @@ function harness(options: { uploads?: StoredPublishingUpload[]; frame?: "vertica
     orientation: { ...orientation },
     storyboards: structuredClone(storyboards),
   });
-  return { core: createReleaseRecode(deps), deps, files, calls, journals, state, uploads: () => uploads, reservations, storyboards, jobs, orientation: () => orientation };
+  return { core: createReleaseRecode(deps), deps, files, calls, carries, journals, state, uploads: () => uploads, reservations, storyboards, jobs, orientation: () => orientation };
 }
 
 const codeOf = (p: Promise<unknown>) =>
@@ -479,14 +488,14 @@ test("BL-263 AC-SC-17: refused while uploading here (also a leased queued row), 
   live.deps.livePaths = async () => [`${FROM}/V14 Wonderful World Explained.mp4`];
   assert.equal(await codeOf(createReleaseRecode(live.deps).recode({ channelId: CH, video: "V14", newCode: "S12" })), "release_recode_busy:live_rotation");
 
-  // Approvals. Not uploaded (no record, no done row): a package-review approval of this manifest, or an approved slot naming it.
+  // Approvals. Not uploaded (no record, no done row): an approved slot naming it. A package-review approval is no longer a refusal
+  // (requirement changed, owner TG 4584: the owner's decision is carried to the new manifest -- see the carry tests below).
   const unpublished = () => {
     const files = initialFiles();
     files.delete(`${WS}/${FROM}/V14_youtube.json`);
     return files;
   };
   const sha14 = sha(manifestText);
-  assert.equal(await codeOf(harness({ files: unpublished(), uploads: [], reviewApproved: new Set([sha14]) }).core.recode({ channelId: CH, video: "V14", newCode: "S12" })), "release_recode_approval_standing:package_review");
   const slotApproved = new Map<string, SlotDecision>([["wwe-v14-s0012", { kind: "approved", publishAt: "2026-11-20T10:00:00.000Z", package: { video: "V14", manifestSha256: sha14, videoId: null } }]]);
   assert.equal(await codeOf(harness({ files: unpublished(), uploads: [], slots: slotApproved }).core.recode({ channelId: CH, video: "V14", newCode: "S12" })), "release_recode_approval_standing:plan_slot");
   // Uploaded and the slot approval counts, but the video has no date yet (private): the plan would still date it.
@@ -499,7 +508,7 @@ test("BL-263 AC-SC-17: refused while uploading here (also a leased queued row), 
   };
   assert.equal(await codeOf(createReleaseRecode(privateHarness.deps).recode({ channelId: CH, video: "V14", newCode: "S12" })), "release_recode_approval_standing:plan_slot_date");
   // Published with an approved slot (released): history -- not a refusal; a pending review of an uploaded package neither.
-  const released = harness({ slots: new Map([["wwe-v14-s0012", { kind: "approved", publishAt: "2026-11-10T10:00:00.000Z", package: { video: "V14", manifestSha256: sha14, videoId: VIDEO_ID } }]]), reviewApproved: new Set([sha14]) });
+  const released = harness({ slots: new Map([["wwe-v14-s0012", { kind: "approved", publishAt: "2026-11-10T10:00:00.000Z", package: { video: "V14", manifestSha256: sha14, videoId: VIDEO_ID } }]]), review: new Map([[sha14, "approved"]]) });
   assert.equal(await codeOf(released.core.recode({ channelId: CH, video: "V14", newCode: "S12", dryRun: true })), "ok");
 });
 
@@ -726,4 +735,59 @@ test("BL-263 review LOW 7: a read-back that fails says mismatch with the failed 
   assert.equal(result.readBack, "mismatch");
   assert.deepEqual(result.readBackProblems, ["video_list"]);
   assert.ok(h.calls.includes("audit:release.recoded:mismatch"));
+});
+
+// -- Owner TG 4584 («проверь чтобы те видео что проверял недавно не сбились, не потерялась связь к чему относились замечания»): the
+// owner's package-review decision follows the recoded package. Expected hashes are written by hand from the manifest text (§L).
+const EXPECTED_NEW_MANIFEST = `${BOM}${JSON.stringify({ ...MANIFEST, video: "S12", files: { video: "S12 Wonderful World Explained.mp4", thumbnail: "Thumbnail_S12.jpg" }, thumbnails: [{ file: "Thumbnail_S12.jpg", role: "default" }, { file: "Thumbnail_S12_A.jpg", role: "test" }] }, null, 2)}\n`;
+const unpublishedFiles = () => {
+  const files = initialFiles();
+  files.delete(`${WS}/${FROM}/V14_youtube.json`);
+  return files;
+};
+
+test("BL-263 fix (owner TG 4584): an approved, not uploaded Short is recoded, not refused; the approval is carried old → new manifest before any change", async () => {
+  const h = harness({ files: unpublishedFiles(), uploads: [], review: new Map([[sha(manifestText), "approved"]]) });
+  const result = await h.core.recode({ channelId: CH, video: "V14", newCode: "S12" });
+  assert.equal(result.readBack, "verified");
+  assert.deepEqual(result.review, { carried: "approved" });
+  assert.deepEqual(h.carries, [{ channelId: CH, fromSha256: sha(manifestText), toSha256: sha(EXPECTED_NEW_MANIFEST), video: "S12", journals: 0, renamedYet: false }]);
+  // After the device gate, before the first rename or write.
+  assert.equal(h.calls[0], "gate");
+  assert.equal(h.calls[1], "review:carry");
+  assert.ok(h.calls.findIndex((c) => c.startsWith("rename:") || c.startsWith("write:")) > 1);
+});
+
+test("BL-263 fix (owner TG 4584): a returned Short carries the return; no decision carries nothing (carried null)", async () => {
+  const returned = harness({ files: unpublishedFiles(), uploads: [], review: new Map([[sha(manifestText), "returned"]]) });
+  assert.deepEqual((await returned.core.recode({ channelId: CH, video: "V14", newCode: "S12" })).review, { carried: "returned" });
+  const none = harness({ files: unpublishedFiles(), uploads: [] });
+  const result = await none.core.recode({ channelId: CH, video: "V14", newCode: "S12" });
+  assert.deepEqual(result.review, { carried: null });
+  assert.equal(result.readBack, "verified");
+});
+
+test("BL-263 fix (owner TG 4584): a dry run and every refusal carry nothing; an unreadable review document refuses before anything changes", async () => {
+  const review = new Map<string, "approved" | "returned">([[sha(manifestText), "approved"]]);
+  const dry = harness({ files: unpublishedFiles(), uploads: [], review });
+  const result = await dry.core.recode({ channelId: CH, video: "V14", newCode: "S12", dryRun: true });
+  assert.equal(result.review, undefined);
+  assert.deepEqual(dry.carries, []);
+  // A refusal after the approvals (an approved plan slot naming the package) and the device gate refusing: no carry.
+  const slot = harness({ files: unpublishedFiles(), uploads: [], review, slots: new Map([["wwe-v14-s0012", { kind: "approved", publishAt: "2026-11-20T10:00:00.000Z", package: { video: "V14", manifestSha256: sha(manifestText), videoId: null } }]]) });
+  assert.equal(await codeOf(slot.core.recode({ channelId: CH, video: "V14", newCode: "S12" })), "release_recode_approval_standing:plan_slot");
+  assert.deepEqual(slot.carries, []);
+  const gated = harness({ files: unpublishedFiles(), uploads: [], review });
+  gated.deps.assertMutationAllowed = async () => {
+    throw new Error("device_mutation_blocked");
+  };
+  await assert.rejects(createReleaseRecode(gated.deps).recode({ channelId: CH, video: "V14", newCode: "S12" }));
+  assert.deepEqual(gated.carries, []);
+  // The review document cannot be read: release_recode_busy review_carry_failed; nothing renamed, no journal.
+  const broken = harness({ files: unpublishedFiles(), uploads: [], review, reviewFails: true });
+  const before = broken.state();
+  assert.equal(await codeOf(broken.core.recode({ channelId: CH, video: "V14", newCode: "S12" })), "release_recode_busy:review_carry_failed");
+  assert.deepEqual(broken.state(), before);
+  assert.equal(broken.journals.size, 0);
+  assert.deepEqual(broken.calls, ["gate", "review:carry"]);
 });

@@ -1000,6 +1000,7 @@ export { folderNameProblem, rewritePaths, type ReleaseFolderRenameInput, type Re
 export function createReleaseRecodeCore(options: {
   videoList: ReleaseRecodeDeps["videoList"];
   approvals: ReleaseRecodeDeps["approvals"];
+  carryReviewDecision: ReleaseRecodeDeps["carryReviewDecision"];
   peerLinks: ReleaseRecodeDeps["peerLinks"];
   storyboards: ReleaseRecodeDeps["storyboards"];
   /** The reservations and costs reports written now (the uploads report is this module's own). */
@@ -1024,6 +1025,7 @@ export function createReleaseRecodeCore(options: {
     activeJobs: (channelId, video) => countActiveVideoJobs(channelId, video),
     videoList: options.videoList,
     approvals: options.approvals,
+    carryReviewDecision: options.carryReviewDecision,
     peerLinks: options.peerLinks,
     async listFolder(absolutePath) {
       const entries = await readdir(absolutePath, { withFileTypes: true });

@@ -1045,7 +1045,10 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
     `video` и файловые поля), записи, папка, строки этого компьютера одной транзакцией, раскадровки; журнал с копиями, откат при сбое,
     восстановление после падения (законченный журнал `completed` только удаляется, не откатывается; незаконченный блокирует коды
     S/V и виден в `pendingRecodes`, модуль `src/lib/release-recode-journals/`); без вызова YouTube. Предусловие: оба компьютера на
-    этой сборке до первого настоящего запуска. Agent API 4.21.0, Producer API 1.23.0.
+    этой сборке до первого настоящего запуска. Agent API 4.21.0, Producer API 1.23.0. С Factory API 1.50.0 (owner TG 4584) одобрение
+    пакета владельцем больше не отказ: последнее решение владельца (одобрено / возвращено с комментарием) по старому SHA-256 манифеста
+    копируется на новый до любых изменений (`carryReviewDecisionForRecode` модуля `package-reviews`, поле `carriedFrom`, исходное
+    время), результат `review: { carried }`; нечитаемый документ проверки — `release_recode_busy` `review_carry_failed`.
   - BL-261 (owner TG 3521 через Оператора): `factory_release_folder_rename` (Factory API 1.48.0) — переименование папки пакета в
     `04 Videos/<месяц>/` (`src/lib/publishing/release-folder-rename.ts`, подключение `src/composition/release-folder-rename.ts`): имя
     должно содержать номер видео; папка переезжает целиком, строки загрузок этого компьютера (очередь и законченные) переписываются

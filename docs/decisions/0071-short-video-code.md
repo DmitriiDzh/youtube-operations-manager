@@ -62,6 +62,15 @@ recoded to S1–S22, including four published and two uploaded private ones. The
    follow. Journal and backups first; any failure undoes the done steps; a crash is undone on the next call; read-back and audit.
    Refused: not a ` Short` folder or a horizontal frame, another channel, target known, busy (BL-261's reasons), a peer holding any
    upload row of the code, an owner approval that still has a date or an upload to give. Publishing state is **not** a refusal.
+   **Amendment (2026-11-16, owner TG 4584, Factory API 1.50.0):** an owner **package-review** decision is no longer a refusal
+   (`release_recode_approval_standing` keeps only `plan_slot | plan_slot_date`). After every check passed and before the journal or any
+   file changes, the owner's LATEST decision on the old manifest SHA-256 (approved or returned) is copied to the new SHA-256 -- same
+   kind, comment, thumbnail hash, device and original `at` (AC-PR-11 compares it with the upload rows' times), `video` the S code,
+   `carriedFrom` the old SHA-256 -- through `carryReviewDecisionForRecode` of `src/lib/package-reviews/` (its write lock), wired in
+   `src/composition/release-recode.ts`. The mp4 and thumbnail bytes do not change, so an approved package stays approved and a returned
+   one keeps its comment. A copy for a manifest no package has yet is inert, so a failed or undone recode leaves nothing that acts; a
+   retry writes no second copy. A review document that cannot be read or written refuses the recode (`release_recode_busy` reason
+   `review_carry_failed`). The result gains `review: { carried }`, the `release.recoded` audit `carriedReview`.
 5. **Recode alias.** A V cancelled with `replacedBy` an S on any computer is "recoded": shown as such (no video id, so Content shows
    the S), its runs counted under the S, no new links, still counted toward the next V. A weekly-plan approval naming the V matches
    the S package when its video id equals the current one; an approval made before the upload is not carried (the slot asks
@@ -87,7 +96,7 @@ conflict renumber (always V→V), so the peer learns the mapping without a schem
 
 ## Compatibility / migration impact
 
-- Additive APIs: Factory 1.49.0, Agent 4.21.0, Producer 1.22.0.
+- Additive APIs: Factory 1.49.0 (1.50.0 with the review carry, owner TG 4584), Agent 4.21.0, Producer 1.22.0.
 - No schema migration (no new table or column; the orientation cache is a setting key).
 - Sync: version 1 reports unchanged when no S code exists; version 2 needs this build on both computers.
 - Existing V packages, upload rows and reports are read exactly as before. The recode changes 22 WWE packages' manifest SHA-256 by

@@ -47,6 +47,11 @@ export type ReleaseRecodeResult = {
   clearedJournals?: string[];
   /** Something to look at that did not stop the recode (e.g. `journal_not_removed: <path>` after a finished recode). */
   warnings?: string[];
+  /**
+   * A real run only (owner TG 4584): the owner's latest package-review decision on the old manifest carried to the new manifest's
+   * SHA-256 (`approved` | `returned`), or null when there was none.
+   */
+  review?: { carried: "approved" | "returned" | null };
 };
 
 /** The video list of the channel, as the recode needs it (`src/lib/video-projects` listVideos, wired by the composition layer). */
@@ -97,8 +102,14 @@ export type ReleaseRecodeDeps = {
   activeJobs(channelId: string, video: string): Promise<number>;
   /** The channel's video list (every computer's reservations, folders, uploads, records, registry); throws when it cannot be read. */
   videoList(channelId: string): Promise<RecodeVideoList>;
-  /** The owner's approvals that could still act: package-review approvals (manifest hashes) and the weekly plan's slot decisions. */
-  approvals(channelId: string): Promise<{ reviewApproved: ReadonlySet<string>; slots: ReadonlyMap<string, SlotDecision> }>;
+  /** The owner's approvals that could still act: the weekly plan's slot decisions. */
+  approvals(channelId: string): Promise<{ slots: ReadonlyMap<string, SlotDecision> }>;
+  /**
+   * Owner TG 4584: copies the owner's LATEST package-review decision on manifest `fromSha256` (approved or returned; only an existing
+   * one) to `toSha256` -- the package-reviews module's rule, wired by the composition layer (AGENTS.md §M). Throws when the review
+   * document cannot be read or written.
+   */
+  carryReviewDecision(channelId: string, input: { fromSha256: string; toSha256: string; video: string }): Promise<{ carried: "approved" | "returned" | null }>;
   /** Other computers' own rows naming the code (reservations in work, cost runs). */
   peerLinks(channelId: string, video: string): Promise<ReleaseRecodeResult["peerLinks"]>;
   /** Names directly in a folder (files and folders; never following a symlink). */
@@ -397,15 +408,13 @@ export function createReleaseRecode(deps: ReleaseRecodeDeps) {
     const peer = peerUploads.get(video);
     if (peer) throw refuse("release_recode_elsewhere", `${peer.host ?? "Another computer"} reports an upload of ${video}; run the recode on that computer`, { ...details, host: peer.host, uploaded: peer.uploaded });
 
-    // -- An owner approval that still has an upload or a date to give (the manifest SHA-256 changes, so it would silently stop counting).
+    // -- A weekly-plan approval that still has an upload or a date to give (the manifest SHA-256 changes, so it would silently stop
+    // counting). An owner package-review decision is no refusal (owner TG 4584): it is carried to the new manifest below.
     const uploaded = pkg.youtube !== null || ownRows.some((r) => r.videoId !== null && r.videoId !== undefined && r.status === "done");
     const approvals = await deps.approvals(channelId);
     const slot = pkg.pkg?.slotId ? approvals.slots.get(pkg.pkg.slotId) : undefined;
     const slotNamesThis = slot?.kind === "approved" && (!slot.package || slot.package.manifestSha256 === pkg.manifestSha256 || (pkg.youtube !== null && slot.package.videoId === pkg.youtube.videoId));
     if (!uploaded) {
-      if (pkg.manifestSha256 && approvals.reviewApproved.has(pkg.manifestSha256)) {
-        throw refuse("release_recode_approval_standing", `The owner approved ${video}'s package and it is not uploaded yet; recode it only after asking him`, { ...details, reason: "package_review" });
-      }
       if (slotNamesThis) throw refuse("release_recode_approval_standing", `The owner approved the plan slot of ${video}'s package and it is not uploaded yet`, { ...details, reason: "plan_slot", slotId: pkg.pkg?.slotId });
     } else if (slotNamesThis && pkg.state !== "scheduled" && pkg.state !== "published") {
       throw refuse("release_recode_approval_standing", `The owner approved the plan slot of ${video} and the video has no date yet; the plan would still give it one`, { ...details, reason: "plan_slot_date", slotId: pkg.pkg?.slotId });
@@ -482,6 +491,17 @@ export function createReleaseRecode(deps: ReleaseRecodeDeps) {
 
     // -- The recode itself: journal first, then each step; any failure undoes the done ones.
     await deps.assertMutationAllowed();
+    // Owner TG 4584: the owner's latest review decision follows the package to its new manifest SHA-256 (the mp4 and the thumbnail
+    // bytes do not change). Carried after every refusal and BEFORE anything changes: a decision for a manifest no package has yet is
+    // inert, so a failed or undone recode leaves nothing that acts; a retry finds the copy and writes no second one. A review document
+    // that cannot be read or written refuses the recode (an approval or a comment must never be lost silently).
+    let carriedReview: "approved" | "returned" | null = null;
+    const reviewFrom = pkg.manifestSha256 ?? oldSha256;
+    try {
+      carriedReview = (await deps.carryReviewDecision(channelId, { fromSha256: reviewFrom, toSha256: newSha256, video: newCode })).carried;
+    } catch (error) {
+      throw refuse("release_recode_busy", `The owner's package review of ${video} cannot be carried to ${newCode} now; nothing changed. Try again`, { ...details, reason: "review_carry_failed", message: error instanceof Error ? error.message : String(error) });
+    }
     const nextBefore = list.nextVideo;
     const journalPath = deps.journal.pathFor(channelId, video, deps.now());
     const journal: ReleaseRecodeJournal = {
@@ -576,8 +596,8 @@ export function createReleaseRecode(deps: ReleaseRecodeDeps) {
       ...(oldFolderLeft ? ["old_folder_exists"] : []),
     ];
     const readBack = problems.length === 0 ? "verified" : "mismatch";
-    await deps.audit({ channelId, video, detail: { event: "release.recoded", newCode, from, to, files: files.length, oldSha256, newSha256, uploads: uploadPlans.map((u) => u.id), readBack, ...(problems.length > 0 ? { problems } : {}), ...(warnings.length > 0 ? { warnings } : {}) } });
-    return { ...result, readBack, ...(problems.length > 0 ? { readBackProblems: problems } : {}), ...(warnings.length > 0 ? { warnings } : {}) };
+    await deps.audit({ channelId, video, detail: { event: "release.recoded", newCode, from, to, files: files.length, oldSha256, newSha256, uploads: uploadPlans.map((u) => u.id), readBack, carriedReview, ...(problems.length > 0 ? { problems } : {}), ...(warnings.length > 0 ? { warnings } : {}) } });
+    return { ...result, readBack, review: { carried: carriedReview }, ...(problems.length > 0 ? { readBackProblems: problems } : {}), ...(warnings.length > 0 ? { warnings } : {}) };
   }
 }
 

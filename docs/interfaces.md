@@ -1133,7 +1133,9 @@ A second agent role, separate from the channel agents. Technical contract only (
   POST only (405), the MCP connection switch (403 `MCP_CONNECTION_DISABLED`), a token (401 `AGENT_TOKEN_REQUIRED`), the token (401 `AGENT_TOKEN_INVALID` for an
   unknown, revoked or wrong-type token, including a channel token; 503 `AGENT_ENDPOINT_UNAVAILABLE` if the database cannot answer). The token is re-verified on
   every tool call, so a revocation applies to the next call. A factory token on `/api/mcp` is rejected the same way.
-- **Factory API version:** `1.49.0` since BL-263 (ADR 0071, additive: video codes `V<n>` or `S<n>` -- `^(V|S)[1-9][0-9]{0,5}$`, `S` = a
+- **Factory API version:** `1.50.0` since the BL-263 fix (owner TG 4584, ADR 0071 §4 amendment, additive: `factory_release_recode`
+  carries the owner's package-review decision to the new manifest instead of refusing -- `release_recode_approval_standing` reason
+  `package_review` gone; result `review: { carried }`; `release_recode_busy` reason `review_carry_failed`); `1.49.0` = BL-263 (ADR 0071, additive: video codes `V<n>` or `S<n>` -- `^(V|S)[1-9][0-9]{0,5}$`, `S` = a
   WWE Short whose number is the factory's piece number -- wherever a video number is taken or returned; `factory_video_create.video`
   (an S code reserved as given; `video_number_taken` 409 with `details.source`; a given V -> `validation_failed` reason
   `v_numbers_are_given`); `factory_video_list` state `recoded` + `recodedTo`, `series`; new WRITE tool `factory_release_recode`, see
@@ -1442,17 +1444,23 @@ A second agent role, separate from the channel agents. Technical contract only (
       { youtube, cost }, rows: { uploads, reservations, jobs, plans, storyboards, socialJobs, orientation }, frame, peerLinks: [{ deviceId,
       hostName, kind: reservation | cost_run, count }], changed, readBack: verified | mismatch | null, readBackProblems? (with mismatch:
       package_not_found | leftover_names | rows | video_list | old_folder_exists -- stop and inspect), recoveredFrom?, clearedJournals?
-      (finished journals removed, never undone), warnings? (`journal_not_removed: <path>`) }`. **Precondition:** both computers run this
+      (finished journals removed, never undone), warnings? (`journal_not_removed: <path>`), review? (1.50.0, real runs only: `{ carried:
+      approved | returned | null }`) }`. **Precondition:** both computers run this
       build before the first real run (an older build freezes this computer's v2 reports; the peer's build is not visible here). Renames the
       folder and every file named after the code as a whole token (`<C>_*`, `<C> *`, `<C>.*`, `Thumbnail_<C>(_X|_base).jpg|jpeg|png`,
       `Thumbnail_<C>_A.logo.json`, `work/<C>_*`), rewrites the manifest's `video` and file fields (never title, description, tags,
       localizations) and the records' `video`, then in one transaction this computer's upload rows (code, paths, new manifest SHA-256;
       `video_id` kept), reservations (V cancelled `replacedBy` S; S in work), job/plan links, finished cross-post jobs, the orientation
-      memo; storyboards follow. Journal + backups first; a failure undoes every done step. Errors: `release_recode_invalid` (400),
+      memo; storyboards follow. **Package review (1.50.0, owner TG 4584):** after every check and before the journal or any file
+      changes, the owner's latest decision on the old manifest SHA-256 (approved or returned) is copied to the new SHA-256 -- same kind,
+      comment, thumbnail hash, device and original `at`, `video` the S code, `carriedFrom` the old SHA-256 (no decision: nothing; a retry
+      writes no second copy); the mp4 and thumbnail bytes are unchanged, so an approved Short stays approved and a returned one keeps its
+      comment; audit `release.recoded` gains `carriedReview`. Journal + backups first; a failure undoes every done step. Errors: `release_recode_invalid` (400),
       `_not_found` (404), `_ambiguous`, `_not_short` (reason `folder | horizontal`), `_target_exists`, `_busy` (reason `upload_here | upload_queued |
       job_running | cross_post | live_rotation | video_list_unavailable | step_failed` (`details.step`) `| recovery_pending`
-      (`details.journal`: an unfinished journal; a dry run is refused, the next real call undoes it)), `_elsewhere`, `_approval_standing` (reason
-      `package_review | plan_slot | plan_slot_date`) (409), `_rollback_failed` (500, `details.journal`).
+      (`details.journal`: an unfinished journal; a dry run is refused, the next real call undoes it) `| review_carry_failed` (1.50.0: the
+      package-review document cannot be read or written; nothing changed)), `_elsewhere`, `_approval_standing` (reason
+      `plan_slot | plan_slot_date`; `package_review` until 1.49.0) (409), `_rollback_failed` (500, `details.journal`).
     - Sync: the `publishing-uploads`, `video-reservations` and `video-costs` reports are version 2 only when they hold an S code (else
       version 1 exactly as before); this build reads both.
   - **BL-194 video numbers (Factory API 1.20.0, `docs/roadmap/plans/VIDEO_COST_PLAN.md` §2 stage 1, ADR 0040).**

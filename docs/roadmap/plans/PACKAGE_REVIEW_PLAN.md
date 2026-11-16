@@ -26,6 +26,8 @@ Owner: TG 2298 (via the Producer), msgs 4514/4516 (2026-11-15). WWE only for now
 - AC-PR-06 An uploaded package is not affected (no new problem after upload).
 - AC-PR-07 A review document that cannot be read → every package pending (fail closed).
 - AC-PR-08 Only the owner's Web UI routes decide or switch; no MCP tool, agent or factory path reaches them (boundaries test).
+  Amendment (owner TG 4584, ADR 0070 §4 amendment): `factory_release_recode` copies the owner's latest existing decision to a recoded
+  Short's new manifest (`carriedFrom`, original time) -- never a decision of its own; only `src/composition/release-recode.ts` calls it.
 - AC-PR-09 The video route streams the package's own mp4 (Range 206), only for a package of that channel under `04 Videos/`.
 - AC-PR-10 A decision invalidates the plan's package cache (the slot moves without waiting 60 s).
 - AC-PR-11 An approved manifest whose upload rows are all cancelled without a video id is taken by the automatic upload; a manifest

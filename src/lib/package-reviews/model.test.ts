@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { PackageReviewDecision, PackageReviewsSnapshot } from "./contracts";
-import { latestOwnerDecision, ownerReviewProblemOf, ownerReviewStateOf, triedExceptionsOf } from "./model";
+import { latestOwnerDecision, ownerReviewProblemOf, ownerReviewStateOf, triedExceptionsOf, wellFormedDecision } from "./model";
 
 // BL-257 (PACKAGE_REVIEW_PLAN.md AC-PR-01/03/04/07/11; ADR 0070 §1-§5). Expected values are written from the ADR's rules:
 // no document = off; unreadable = on, nothing approved; the LATEST owner decision for a manifest stands; an approval covers one
@@ -109,4 +109,13 @@ test("review L1: the document's order (seq) beats the wall clock -- a later deci
   assert.equal(latestOwnerDecision(A, [macReturn, windowsApproveSlowClock])?.id, "w1");
   // same seq (made offline at once): the time decides
   assert.equal(latestOwnerDecision(A, [{ ...macReturn, seq: 2 }, windowsApproveSlowClock])?.id, "m1");
+});
+
+test("TG 4584: carriedFrom (a recode's copy) is kept when it is a SHA-256 and dropped otherwise -- never a reason to refuse the decision", () => {
+  const carried = { ...d("c1", B, "approved", "2026-11-15T12:00:00.000Z"), carriedFrom: A };
+  assert.equal(wellFormedDecision(carried)?.carriedFrom, A);
+  const malformed = wellFormedDecision({ ...carried, carriedFrom: "V11" });
+  assert.notEqual(malformed, null);
+  assert.equal("carriedFrom" in malformed!, false);
+  assert.equal("carriedFrom" in wellFormedDecision(d("o1", A, "approved", "2026-11-15T12:00:00.000Z"))!, false, "an owner decision has none");
 });
