@@ -1,6 +1,7 @@
 # 0071. A second video code `S<n>` for Shorts, chosen by the factory, and a one-shot local recode of the WWE Shorts
 
-Status: Accepted (owner via the Producer: PRD-REQ-0194, Producer chat TG 2332 «под шортс ок», 2026-11-16; TG 2334 -- recode the
+Status: Proposed -- the requirement is the owner's; the design choices below (the recode alias, conditional report versions, the S
+input for worker agents, the approval rule) await the owner's and the Operator's confirmation of the plan. Requirement (owner via the Producer: PRD-REQ-0194, Producer chat TG 2332 «под шортс ок», 2026-11-16; TG 2334 -- recode the
 unpublished WWE Shorts; owner TG 4553/4555 -- recode the published ones too, locally only; spec agreed with the Factory Operator).
 
 **Date:** 2026-11-16.
@@ -43,8 +44,8 @@ recoded to S1–S22, including four published and two uploaded private ones. The
 
 ## Decision
 
-1. **`src/lib/shared-video-code/`** owns the code: `^(V|S)[1-9][0-9]{0,5}$` for every input and new contract; a lenient reader rule
-   (today's `V\d{1,6}` spellings plus strict S) for existing files and reports, so no existing V package or report changes meaning;
+1. **`src/lib/shared-video-code/`** owns the code: `^(V|S)[1-9][0-9]{0,5}$` for every input and new contract; for existing files and
+   reports, each reader keeps its current V acceptance (`V\d+`, `V\d{1,6}` or strict) and adds strict S, so no existing V package or report changes meaning;
    `parseVideoCode` → `{ series, number }`; the comparator (V before S, numeric).
 2. **Numbering.** The next V is the highest known **V** + 1. `factory_video_create` / `agent_video_create` take an optional `video`
    that must be an S code; it is refused as `video_number_taken` when any source already knows it (cancelled reservations
@@ -58,10 +59,11 @@ recoded to S1–S22, including four published and two uploaded private ones. The
    reservations (old V cancelled with `replacedBy` the S, S in work), job/plan/social links and the orientation key; storyboards
    follow. Journal and backups first; any failure undoes the done steps; a crash is undone on the next call; read-back and audit.
    Refused: not a ` Short` folder or a horizontal frame, another channel, target known, busy (BL-261's reasons), a peer holding any
-   upload row of the code, an unuploaded package with a standing owner approval. Publishing state is **not** a refusal.
+   upload row of the code, an owner approval that still has a date or an upload to give. Publishing state is **not** a refusal.
 5. **Recode alias.** A V cancelled with `replacedBy` an S on any computer is "recoded": shown as such (no video id, so Content shows
    the S), its runs counted under the S, no new links, still counted toward the next V. A weekly-plan approval naming the V matches
-   the S package when the video id is the same.
+   the S package when its video id equals the current one; an approval made before the upload is not carried (the slot asks
+   again, which by ADR 0062 changes no date).
 
 ## Rationale
 
@@ -74,7 +76,7 @@ conflict renumber (always V→V), so the peer learns the mapping without a schem
 
 ## Consequences
 
-- WWE V numbers 1–26 except the long ones become burnt: the next long WWE video is V27.
+- The recoded WWE V numbers stay burnt: the next long WWE video is the highest V ever known + 1 (V27 with V26 the highest).
 - Old V codes stay in history (audit, cleanup log, review and plan decisions, Producer wake file names).
 - `video_registry.csv` rows naming recoded codes need the Operator's update; until then the alias hides them.
 - An older build that meets an S report keeps a stale copy of that peer's report (it cannot know the peer's newer uploads) -- the

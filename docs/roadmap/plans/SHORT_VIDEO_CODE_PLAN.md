@@ -24,7 +24,7 @@ ADR: `docs/decisions/0071-short-video-code.md`. Backlog: BL-263. Amends ADR 0040
 
 ## 2. Inventory (production code, `src/**` without tests; 41 sites)
 
-"Strict" = the shared `isVideoCode`; "lenient read" = the shared `isReadableVideoCode` (§3). Every row moves to the shared module.
+"Strict" = the shared `isVideoCode`; "lenient read" = the reader keeps its current V acceptance and adds strict S (§3). Every row moves to the shared module.
 
 | # | Site | Today | Change |
 |---|---|---|---|
@@ -66,7 +66,7 @@ ADR: `docs/decisions/0071-short-video-code.md`. Backlog: BL-263. Amends ADR 0040
 | 36 | `src/components/content-manager.tsx:146` `vn` sort | `Number(slice(1))` | Shared comparator. |
 | 37 | `src/components/content-video-extras.ts:56` "two numbers naming one video: the higher one" | relies on list order | Recoded V entries carry no `youtubeVideoId` (§6.4), so the S code is shown. |
 | 38 | `src/components/live-stream-add-videos-dialog.tsx` | shows `vNumber` | Display only; no change. |
-| 39 | `src/lib/ui-text/locales/*/content.ts` (`content.column.vn` «Vn», `publishingNewPackage.noFolders` `<MMDD Vn>`), `localVideoCleanup.ts` (`"V<n> <channel>.mp4"`) | V wording | Wording "V/S" in every language (§H). |
+| 39 | `src/lib/ui-text/locales/*/`: `content.ts` (`content.column.vn` «Vn», `publishingNewPackage.noFolders` and `errors.ts` `errors.package_folder_invalid` `<MMDD Vn>`, `videoProjects.intro` «(Vn)»), `localVideoCleanup.ts` (`cleanup.reason.pathNotAllowed` `"V<n> <channel>.mp4"`), `liveStreams.ts` (`live.rotation.filePlaceholder` example `V47.mp4`, no change needed) | V wording | Wording "V/S" in every language (§H). |
 | 40 | MCP/API descriptions and `docs/interfaces.md` (`videoNumber` `^V[1-9][0-9]{0,5}$`, `factory_video_create`, `MMDD Vn`, `Vn_release.json`) | V | Updated text; Factory/Agent/Producer version notes (§8). |
 | 41 | `src/lib/sync-gateway/{storyboards,package-reviews,publishing-plans}` `video` strings (Automerge) | unvalidated string | No change; an older build displays S as text (§5). |
 
@@ -80,9 +80,11 @@ New `src/lib/shared-video-code/` (AGENTS §M, the `shared-video-presence` / `sha
 
 - `VIDEO_CODE_PATTERN` = `^(V|S)[1-9][0-9]{0,5}$`; `VIDEO_SERIES = ["V", "S"]`.
 - `isVideoCode(s)` -- strict, for every **input** (MCP, routes, reservations, recode) and every new contract.
-- `isReadableVideoCode(s)` -- for **readers of existing files and reports**: today's lenient V spellings (`V\d{1,6}`) plus strict S.
-  Decision: readers do **not** tighten V. Today's file readers accept `V07`/`V0`; tightening them could hide an existing package or
-  invalidate a whole peer report. S never had a legacy, so it is strict everywhere.
+- Readers of **existing files and reports** keep exactly their current V acceptance -- `V\d+` (rows 4, 5, 7, 8, 19, 34),
+  `V\d{1,6}` (row 2), strict V (rows 1, 3, 16) -- and add strict S. The module exports `isLegacyVCode` (`V\d+`) and the strict S
+  check so each reader composes its own current rule without a regex of its own. Decision: readers do **not** tighten V (today's
+  file readers accept `V07`/`V0`; tightening could hide an existing package or invalidate a whole peer report). S never had a
+  legacy, so it is strict everywhere.
 - `parseVideoCode(s)` → `{ series: "V" | "S", number } | null`; `compareVideoCodes(a, b)` → V before S, then number (numeric:
   `S2 < S10`); a `desc` helper for highest-first lists.
 - `videoCodeOfFolder(name)` stays exported from `workspace-videos` (folder rules live there) but uses this module's pattern.
@@ -98,7 +100,7 @@ New `src/lib/shared-video-code/` (AGENTS §M, the `shared-video-presence` / `sha
   refuses an S (there is no "next S" -- the number is the factory's); the losing computer's reservation is cancelled by the owner
   (existing `/cancel`) or by the Operator re-creating the right piece. Nothing links to a disputed S (`video_in_dispute`, unchanged).
 - V numbers burnt by the recode stay burnt: each recoded V keeps a cancelled reservation (§6.3), so after the recode the next long
-  WWE video is **V27**, never V6.
+  WWE video is the **highest V ever known + 1** (V27 if V26 is the highest), never V6.
 
 ## 5. Sync compatibility and rollout
 
@@ -145,10 +147,12 @@ orientation }, peerLinks, changed, readBack: verified | mismatch | null, recover
   a cross-post uploading the file; the file in a live rotation or source map; a file-system refusal.
 - `release_recode_elsewhere`: a peer reports **any** upload row of `video` (finished included). Run it on that computer: only it can
   move those rows, and a peer row left on V would let that computer think the S package was never uploaded.
-- `release_recode_approval_standing`: the package is **not** uploaded and the owner has a standing approval of its current manifest
-  (package review, or a weekly-plan slot approval whose fingerprint names this manifest). The manifest SHA-256 changes, so the
-  approval would silently stop counting; refused rather than revoked. Today none exists (WWE packages are `owner_review_pending`,
-  no slot approved). An uploaded package's approvals are history and do not block.
+- `release_recode_approval_standing`: the owner has a standing approval that still has work to do -- the package is not uploaded
+  and its current manifest is approved (package review, or a weekly-plan slot approval whose fingerprint names this manifest), or
+  it is uploaded, its slot approval counts and the video has **no date yet** (the runner's date step or the plan schedule would
+  still act on it). The manifest SHA-256 changes, so the approval would silently stop counting; refused rather than revoked. Today
+  none exists (WWE packages are `owner_review_pending`, no slot approved; V14/V17 have no approved slot; V1–V3, V5 are released).
+  Other approvals of an uploaded package are history and do not block.
 
 ### 6.2 What changes, in order (journal + backups, compensated in reverse on failure)
 
@@ -159,15 +163,19 @@ orientation }, peerLinks, changed, readBack: verified | mismatch | null, recover
 2. Rewrite `S12_release.json` (atomic replace): `video` → `S12`, and `files.video`, `files.thumbnail`, `thumbnails[].file` where they
    name a renamed file. **Free text (title, description, localizations, tags) is never rewritten.** The video `sha256`, `slotId`
    and every other field stay. The manifest's own SHA-256 changes (reported old/new).
-3. Rewrite `S12_youtube.json` and `S12_cost.json`: only a `video` field equal to `V14`; `videoId` stays.
+3. Rewrite `S12_youtube.json` and `S12_cost.json`: only their top-level `video` field (`V14` → `S12`). Verified shapes: the record
+   is `{ schema: "yt-release-upload/1", channelId, video, videoId, uploadedAt, device, result }` (`upload-runner.ts:394`, also the
+   owner's `linked` record) and the cost file `VideoCostFile` has `video` at the top and runs without a video -- neither holds a
+   path, file name or manifest SHA-256. `videoId` stays.
 4. Rename the folder `<MMDD> V14 Short` → `<MMDD> S12 Short`.
 5. One DB transaction (`src/lib/db.ts` `recodeVideoRows`, the shared persistence layer that owns all these tables):
    - `publishing_uploads`: `video`, `manifest_path`, `manifest_sha256` (the new manifest's), `package_json` (paths + `video`) -- the
      row moves to the new manifest version, so it still counts as tried/uploaded and is never offered again; `video_id` stays;
    - `video_reservations`: this computer's V14 row → `cancelled`, `replacedBy: "S12"` (inserted as cancelled if this computer has
      none); a new `S12` row `in_work` with the V14 working title;
-   - links: `media_jobs.video`, `gemini_media_jobs.video`, `elevenlabs_speech_jobs.video`, `generation_plans.video`,
-     `social_post_jobs.video`;
+   - links: `media_jobs.video`, `gemini_media_jobs.video`, `elevenlabs_speech_jobs.video`, `generation_plans.video`;
+   - finished `social_post_jobs` rows: `video` and `manifest_sha256` (a cross-post job is keyed by channel + slot + network, so a
+     posted slot is never posted again whatever the code; a job still uploading refuses the recode);
    - the `video_orientations` setting key V14 → S12.
    Kept as history (not rewritten): `local_video_cleanup_log`, audit entries, package-review decisions, plan decisions.
 6. Storyboards whose `video` is V14 → S12 (Automerge, syncs).
@@ -201,9 +209,15 @@ so V→S is unambiguous; no schema change). Then:
 
 ### 6.5 Plans and reviews
 
-- Released weekly-plan slots (V1–V3, V5 published; V14/V17 have no approved slot): the fingerprint match (`publishing-plans/model.ts`)
-  treats an approval naming V-code + old manifest as the same package when the recode alias maps it to the current S code **and the
-  video id is the same** (the video id is the identity, AGENTS §F). Slots stay released and covered.
+- Weekly-plan slots (ADR 0062): an approval counts only while its fingerprint `[video, manifestSha256, videoId]` covers the slot's
+  current package (`fingerprintCovers`, `model.ts:72`); otherwise the slot turns `needs_approval`. ADR 0062 §4 / BL-225: nothing
+  counting leaves a video's date as it is -- only a counting approval gives a date and only a standing **veto** removes one, so a
+  recode never changes a date on YouTube by itself, and the moved upload row means the package is never uploaded again.
+- To keep the owner's released approvals counting (no false «needs approval» for V1–V3, V5), `fingerprintCovers` also accepts an
+  approval whose `video` maps through the recode alias to the current code **and whose `videoId` equals the current non-null
+  video id** (the video id is the identity, AGENTS §F); the manifest SHA-256 may differ then. An approval made before the upload
+  (`videoId` null) is not carried: that slot shows «needs approval» again, which by the rule above changes no date. The refusal
+  `release_recode_approval_standing` keeps every case where an approval still has a date to give out of reach.
 - Package review: the decisions stay as history. An unpublished recoded package has a new manifest SHA-256, so it is
   `owner_review_pending` again (it already is). An uploaded one stays unaffected (BL-257 AC-PR-06).
 - `video_registry.csv` is the factory's file (YTM only reads it): the Operator updates its V→S rows; until then the alias hides them.
@@ -248,7 +262,8 @@ Codes and files
 - AC-SC-05 `S14 WWE.mp4` is named after S14, not after S1; `V14 WWE.mp4` is not named after S14.
 
 Numbering
-- AC-SC-06 Channel with V1..V26 known and S5..S22 folders: `factory_video_create {}` → `V27`; S folders never raise it.
+- AC-SC-06 Channel with V1..V26 known and S5..S22 folders plus an `S900` reservation: `factory_video_create {}` → `V27`; S codes
+  never raise it.
 - AC-SC-07 `factory_video_create { video: "S23" }` → S23 reserved; again `S23` → `video_number_taken` (source reservation);
   `S12` when a folder `… S12 Short` exists → `video_number_taken` (folder); a cancelled S23 reservation still refuses S23.
 - AC-SC-08 `factory_video_create { video: "V30" }` → `validation_failed` (`v_numbers_are_given`).
@@ -269,7 +284,11 @@ Recode
   `6Zt6kYUUMVo`; the S12 package is uploaded and cannot be queued again (`upload_already_tried` / not offered); read-back verified.
 - AC-SC-14 Published V1→S1: done upload row and `_youtube.json` move to S1 with the same video id; the released slot stays released
   and the day covered; Content shows `S1` for that video id; no YouTube call is made (gateway inventory: none).
-- AC-SC-15 After the recode, `factory_video_create {}` still gives V27; V14 is listed as recoded → S12, refuses new links
+- AC-SC-14b After any recode, with the automatic upload, the plan schedule, the runner and the cross-post runner ticking: no
+  YouTube write (no `videos.insert`, `videos.update`, `thumbnails.set`, no date set or removed) and no social post is made for the
+  recoded video; a released slot of V1→S1 with an approval carrying the video id stays `approved`; one made without a video id
+  shows `needs_approval` and its video's date on YouTube is unchanged.
+- AC-SC-15 After the recode, `factory_video_create {}` gives the same next V as before it (V27 with V26 the highest); V14 is listed as recoded → S12, refuses new links
   (`video_not_found` reason `recoded`), and counts toward the next V.
 - AC-SC-16 Refused: V4 (folder without ` Short`) and a ` Short` folder whose frame is horizontal → `release_recode_not_short`;
   `newCode` S12 already reserved / foldered → `release_recode_target_exists`; a V of another channel or a channel not connected →
@@ -303,5 +322,9 @@ Recode
 2. Should `agent_video_create` (channel worker agents) also take a given S, or only the Factory? The plan gives both (one core).
 3. The Operator updates `video_registry.csv` (V→S) after the recode? YTM only reads it; the alias hides stale rows.
 4. Confirm: after the recode the next long WWE video is V27 (V1–V26 stay burnt; "a number is never given twice").
-5. The thumbnails of the WWE packages: are any named after the code (`V14_thumb.jpg`)? They are renamed and the manifest follows;
+5. Spec gap: between the 2.5.44 pin and the recode, nothing stops the factory reserving or foldering an S that the mapping gives
+   to an existing V (e.g. S12 for piece 12 while V14 still holds it); the recode would then refuse `release_recode_target_exists`.
+   Proposed: the Operator runs the recode right after the pin, before the worker makes any new S piece in S1–S22 (or reserves only
+   S23+ until then).
+6. The thumbnails of the WWE packages: are any named after the code (`V14_thumb.jpg`)? They are renamed and the manifest follows;
    say if a different rule is wanted.
