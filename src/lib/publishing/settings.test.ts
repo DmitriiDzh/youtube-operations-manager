@@ -22,6 +22,8 @@ test("the defaults the request and the owner set", () => {
     // Owner msgs 2751/2753: «Прямая реклама» off unless the owner turns it on; no channel tags until the owner adds some.
     paidProductPlacement: false,
     channelTags: [],
+    // BL-269 (ADR 0074 §2, owner TG 4592): a new requirement -- captions only where the owner turns them on (WWE); off by default.
+    captionsEnabled: false,
   });
   assert.deepEqual(effectivePublishingSettings({}), { settings: DEFAULT_PUBLISHING_SETTINGS, saved: [] });
 });

@@ -327,7 +327,12 @@ function createPackageScanReads() {
     orientations: { get: (channelId) => getVideoOrientations(channelId), remember: (channelId, video, orientation) => rememberVideoOrientation(channelId, video, orientation) },
     async channel(channelId) {
       const baseline = await getChannelExpectedLanguages(channelId);
-      return { channelId, defaultLanguage: baseline.defaultLanguage, defaultAudioLanguage: baseline.defaultAudioLanguage };
+      // BL-269 (ADR 0074 §2): the channel's captions switch, read with every scan (unreadable: off -- a `captions` field then blocks).
+      const captionsEnabled = await createPublishingSettingsCore()
+        .read(channelId)
+        .then((view) => view.settings.captionsEnabled === true)
+        .catch(() => false);
+      return { channelId, defaultLanguage: baseline.defaultLanguage, defaultAudioLanguage: baseline.defaultAudioLanguage, captionsEnabled };
     },
     async videos(channelId) {
       return (await videoStore.listVideosByChannel(channelId)).map((video) => ({ videoId: video.videoId, title: video.title, description: video.description, privacyStatus: video.privacyStatus, publishAt: video.publishAt, publishedAt: video.publishedAt }));

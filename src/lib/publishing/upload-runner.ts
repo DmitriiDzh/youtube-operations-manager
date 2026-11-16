@@ -62,6 +62,13 @@ export type ApprovedPackage = {
   containsSyntheticMedia?: boolean;
   /** BL-225: the weekly-plan slot the package names. */
   slotId?: string;
+  /**
+   * BL-269 (VIDEO_CAPTIONS_PLAN.md §3.3, ADR 0074 §7): the package's one English caption file as checked when queued (`file` relative
+   * to the workspace). Absent: none -- `steps.captions` is `none` (every row from before BL-269 too).
+   */
+  captions?: { language: string; file: string; name: string; sha256: string };
+  /** BL-269: the video's frame as the scan knew it when queued (the step re-reads YouTube's own before it writes). */
+  orientation?: "vertical" | "horizontal" | null;
 };
 
 /** The AI flag an upload carries: the package's own, else the channel's setting (BL-225 stage 3). */
@@ -532,7 +539,7 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
       return null;
     }
     const folder = pkg.manifestPath.slice(0, pkg.manifestPath.lastIndexOf("/"));
-    const next: ApprovedPackage = { ...approvedPackageOf(parsed, { manifestPath: pkg.manifestPath, folder }, settings), videoSha256: pkg.videoSha256!, sizeBytes: pkg.sizeBytes };
+    const next: ApprovedPackage = { ...approvedPackageOf(parsed, { manifestPath: pkg.manifestPath, folder, ...(pkg.orientation !== undefined ? { orientation: pkg.orientation } : {}) }, settings), videoSha256: pkg.videoSha256!, sizeBytes: pkg.sizeBytes };
     if (tagsLength(next.tags) > 500) {
       await fail(job, "package_changed", "The package was re-packaged with tags over YouTube's 500 characters.");
       return null;

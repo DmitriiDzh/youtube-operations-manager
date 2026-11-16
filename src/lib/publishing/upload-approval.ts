@@ -144,7 +144,7 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
     const rows: StoredPublishingUpload[] = chosen.map(({ item, found, pkg }) => {
       // BL-265 (ADR 0072 §4, AC-MG-21): the one manifest -> row builder; every row whose manifest states the mp4's sha256 freezes it
       // (the owner's approval rows too), so the runner hashes the file before the first byte and only such a row takes a re-package.
-      const approved: ApprovedPackage = approvedPackageOf(pkg, { manifestPath: found.manifestPath, folder: found.folder }, view.settings);
+      const approved: ApprovedPackage = approvedPackageOf(pkg, { manifestPath: found.manifestPath, folder: found.folder, orientation: found.orientation ?? null }, view.settings);
       return {
         id: deps.newId(),
         channelId: args.channelId,

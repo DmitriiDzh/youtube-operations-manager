@@ -75,7 +75,7 @@ suffice:
 | channel's captions switch off | `captions_invalid` (`channel_disabled`) |
 | S code, or frame vertical, or frame unknown | `captions_invalid` (`not_horizontal` / `orientation_unknown`) |
 | more than one entry, or `language` not `en` | `captions_invalid` (`count` / `language`) |
-| `name` empty, > 150 characters, or with `<` `>` | `captions_invalid` (`name`) |
+| `name` > 150 characters, or with `<` `>` ("" is allowed: Q3) | `captions_invalid` (`name`) |
 | 0 bytes or > 10 MiB (`CAPTIONS_MAX_BYTES`, our cap; API: 100 MB) | `captions_invalid` (`size`) |
 | SHA-256 of the bytes ≠ `sha256` | `captions_invalid` (`sha256`) |
 | not UTF-8, extension and content disagree, no cue, a bad timestamp, end ≤ start, or a cue ending after duration + 1 s | `captions_invalid` (`format`) |
@@ -244,7 +244,7 @@ Package checks
 - AC-CAP-05 SHA-256 differs by one byte → `captions_invalid` `sha256`.
 - AC-CAP-06 0 bytes, or 10 MiB + 1 byte → `captions_invalid` `size`; exactly 10 MiB with valid content is accepted.
 - AC-CAP-07 Two entries, or language `de` / `en-US` → `captions_invalid` (`count` / `language`).
-- AC-CAP-08 Name empty, 151 characters, or with `<` → `captions_invalid` `name`; 150 characters accepted.
+- AC-CAP-08 Name of 151 characters, or with `<` → `captions_invalid` `name`; "" (the bundle's value, Q3) and 150 characters accepted.
 - AC-CAP-09 Hand-written fixtures: valid SRT and VTT (with BOM, without hours) pass; `.srt` holding VTT, non-UTF-8, a cue with end ≤
   start, `00:00:61,000`, or a cue ending 2 s after the video → `captions_invalid` `format`.
 - AC-CAP-10 Both codes block (not in `PACKAGE_WARNING_CODES`); adding/changing `captions` keeps the media approval, and a queued

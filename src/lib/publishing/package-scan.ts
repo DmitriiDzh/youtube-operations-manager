@@ -2,12 +2,14 @@ import { existsOnChannelOf, VIDEO_DELETED_ON_YOUTUBE } from "@/lib/shared-video-
 import { parseUploadRecord, stripBom, VIDEOS_FOLDER, videoNumberOfFolder, walkVideosFolder, type DirEntry } from "@/lib/workspace-videos";
 import { compareVideoCodes } from "@/lib/shared-video-code";
 import { packagingDifferences, type PackagingField } from "./package-text";
+import { CAPTIONS_MAX_BYTES, checkCaptionFile } from "@/lib/video-captions/caption-file";
 import {
   imageKindOf,
   packageChecks,
   parseReleasePackage,
   RELEASE_PACKAGE_FILE_PATTERN,
   youtubeRecordFileName,
+  type CaptionFacts,
   type ChannelExpectations,
   type PackageProblem,
   type ReleasePackage,
@@ -243,6 +245,24 @@ export function createPackageScan(deps: PackageScanDeps) {
       const file = await deps.resolveFile(workspace, `${folder}/${test.file}`);
       testThumbnails.push({ file: test.file, exists: file !== null, sizeBytes: file?.bytes ?? null, kind: file ? imageKindOf(await deps.readHead(file.path, 8)) : null });
     }
+    // BL-269 (VIDEO_CAPTIONS_PLAN.md §3.1): each caption file -- found by the workspace rule, at most CAPTIONS_MAX_BYTES read, its
+    // SHA-256 and the format check of those bytes (the duration as probed here, else the manifest's).
+    const captionFacts: CaptionFacts[] = [];
+    for (const caption of pkg.captions ?? []) {
+      const file = await deps.resolveFile(workspace, `${folder}/${caption.file}`);
+      if (!file || file.bytes === 0 || file.bytes > CAPTIONS_MAX_BYTES) {
+        captionFacts.push({ file: caption.file, exists: file !== null, sizeBytes: file?.bytes ?? null, sha256: null, check: null });
+        continue;
+      }
+      const bytes = await deps.readHead(file.path, file.bytes).catch(() => null);
+      captionFacts.push({
+        file: caption.file,
+        exists: true,
+        sizeBytes: file.bytes,
+        sha256: await deps.sha256(file.path).catch(() => null),
+        check: bytes ? checkCaptionFile(bytes, caption.file, durationSeconds ?? pkg.durationSeconds) : null,
+      });
+    }
     const recordFile = await deps.resolveFile(workspace, `${folder}/${youtubeRecordFileName(pkg.video)}`);
     let record: { videoId: string; uploadedAt?: string } | null = null;
     if (recordFile) {
@@ -259,6 +279,8 @@ export function createPackageScan(deps: PackageScanDeps) {
         testThumbnails,
         youtubeRecordExists: recordFile !== null,
         sameTitleVideoId: sameTitle?.videoId ?? null,
+        captions: captionFacts,
+        orientation,
       },
       channel
     );

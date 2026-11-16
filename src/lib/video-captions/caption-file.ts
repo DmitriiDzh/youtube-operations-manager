@@ -1,8 +1,7 @@
 // BL-269 (VIDEO_CAPTIONS_PLAN.md §3.1, §3.2; ADR 0074 §3): the caption file checks -- pure, shared by the package scan and the
 // writer (which re-checks the very bytes it sends). Only SubRip (.srt) and WebVTT (.vtt), the two formats the Operator writes and
 // YouTube accepts (support.google.com/youtube/answer/2734698). Stricter than YouTube on purpose: a file refused here is fixed by the
-// factory, never "repaired" by the app.
-import { createHash } from "node:crypto";
+// factory, never "repaired" by the app. No Node import: the package checks (also bundled for the browser) use it.
 
 /** Our cap (the API allows 100 MB; the factory writes at most 1 MB). */
 export const CAPTIONS_MAX_BYTES = 10 * 1024 * 1024;
@@ -22,10 +21,6 @@ export type CaptionFileCheck = { ok: true; format: CaptionFormat; cues: number; 
 export function captionFormatOfName(name: string): CaptionFormat | null {
   const match = /\.(srt|vtt)$/i.exec(name);
   return match ? (match[1].toLowerCase() as CaptionFormat) : null;
-}
-
-export function sha256Hex(bytes: Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex");
 }
 
 /** A track's language is English when its primary subtag is `en` (`en`, `en-US`, `en-GB`, ...). */
@@ -80,7 +75,7 @@ export function checkCaptionFile(bytes: Uint8Array, fileName: string, durationSe
   if (!format) return { ok: false, detail: "not a .srt or .vtt file" };
   const decoded = decodeUtf8(bytes);
   if (decoded === null) return { ok: false, detail: "not UTF-8" };
-  const text = decoded.replace(/^﻿/, "");
+  const text = decoded.replace(/^\uFEFF/, "");
   const isVtt = /^WEBVTT(?:[ \t]|\r|\n|$)/.test(text);
   if (format === "vtt" && !isVtt) return { ok: false, detail: "a .vtt file must start with WEBVTT" };
   if (format === "srt" && isVtt) return { ok: false, detail: "a .srt file holds WebVTT" };

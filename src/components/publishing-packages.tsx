@@ -198,7 +198,9 @@ export function PublishingPackages({ channelId, visible }: { channelId: string |
     // BL-243: a video deleted on YouTube is not uploaded.
     uploaded: packages.filter((p) => p.youtube !== null && p.state !== "deleted_on_youtube").length,
   };
-  const problemText = (problem: Problem) => t(`publishingPackages.problem.${problem.code}` as UiTextKey, problem.params ?? {});
+  // BL-269: `captions_invalid` has one text per reason.
+  const problemText = (problem: Problem) =>
+    t((problem.code === "captions_invalid" && typeof problem.params?.reason === "string" ? `publishingPackages.problem.captions_invalid.${problem.params.reason}` : `publishingPackages.problem.${problem.code}`) as UiTextKey, problem.params ?? {});
   const duration = (seconds: number) => t("duration.hoursMinutes", { h: Math.floor(seconds / 3600), m: Math.floor((seconds % 3600) / 60) });
 
   const toggle = (path: string) => setSelected((prev) => (prev.includes(path) ? prev.filter((x) => x !== path) : [...prev, path]));

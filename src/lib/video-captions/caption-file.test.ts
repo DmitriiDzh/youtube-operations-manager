@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { captionFormatOfName, captionNameProblem, checkCaptionFile, isEnglishLanguage, sha256Hex } from "./caption-file";
+import { captionFormatOfName, captionNameProblem, checkCaptionFile, isEnglishLanguage } from "./caption-file";
+import { sha256Hex } from "./hash";
 
 // BL-269 AC-CAP-08 / AC-CAP-09 (VIDEO_CAPTIONS_PLAN.md §3.1): hand-written fixtures. SubRip: an optional index line, then
 // `HH:MM:SS,mmm --> HH:MM:SS,mmm`; WebVTT: a `WEBVTT` header (after an optional BOM), `.` milliseconds, optional hours.
 
 const enc = (text: string) => new TextEncoder().encode(text);
 const SRT = "1\r\n00:00:01,000 --> 00:00:03,500\r\nHello\r\n\r\n2\r\n00:00:04,000 --> 00:00:06,000\r\nWorld\r\n";
-const VTT = "﻿WEBVTT\n\nNOTE written by hand\n\n00:01.000 --> 00:03.500 align:start\nHello\n\ncue-2\n00:04.000 --> 00:06.000\nWorld\n";
+const VTT = "\uFEFFWEBVTT\n\nNOTE written by hand\n\n00:01.000 --> 00:03.500 align:start\nHello\n\ncue-2\n00:04.000 --> 00:06.000\nWorld\n";
 
 test("AC-CAP-09 valid SRT (CRLF) and VTT (BOM, no hours, a NOTE, a cue id, cue settings) pass", () => {
   assert.deepEqual(checkCaptionFile(enc(SRT), "V27_captions.en.srt", 10), { ok: true, format: "srt", cues: 2, lastEndMs: 6000 });
