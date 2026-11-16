@@ -1,6 +1,6 @@
 # 0071. A second video code `S<n>` for Shorts, chosen by the factory, and a one-shot local recode of the WWE Shorts
 
-Status: Proposed -- the requirement is the owner's; implemented on `feature/bl-263-short-video-code` (Factory API 1.49.0, Agent API
+Status: Accepted (2026-11-16: merged dev 09706a64 + d7333e29, live on both computers, the 22 WWE Shorts recoded and verified) -- the requirement is the owner's; implemented on `feature/bl-263-short-video-code` (Factory API 1.49.0, Agent API
 4.21.0, Producer API 1.23.0), awaiting the owner's merge. Decided 2026-11-16: the recode runs on the Mac, an S is given only through
 `factory_video_create`, the next long video is the highest V ever known + 1, published Shorts are recoded too; the Operator confirmed
 the file rule, the timing (recode right after the 2.5.44 pin) and that slots asking for approval again are acceptable. Requirement (owner via the Producer: PRD-REQ-0194, Producer chat TG 2332 «под шортс ок», 2026-11-16; TG 2334 -- recode the
