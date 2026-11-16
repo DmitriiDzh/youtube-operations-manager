@@ -1410,6 +1410,30 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   `REVIEW-DECISION-package-<video>-<decisionId>.md`. Ни один MCP-путь не решает и не переключает (`package-reviews/boundaries.test.ts`).
   Это не писатель YouTube.
 
+### 2.9bn Шаблон недели вместо одобрения слотов (BL-267, PRD-REQ-0195 A, ADR 0073, `docs/roadmap/plans/WEEK_TEMPLATE_PLAN.md`) — **IMPLEMENTED на ветке** `feature/bl-267-week-template` (ждёт ревью, текст §F у владельца, разрешения на мердж)
+
+- **Шаблон:** `publishing-plans/template.ts` (`week-template/1`: дни `mon..sun`, `kind long|short`, `hours?`, `publishTimeUtc`;
+  `horizonWeeks`, `displayTimeZone` только для показа), хранение в семействе `publishing_plans` — карты `templateVersions` (неизменяемые
+  версии) и `templateDecisions` (решения владельца), не в генезисе, чтение через конфликт первой записи. «В силе» — новейшее решение
+  владельца approved/withdrawn с совпадающим хэшем; иначе нет (fail closed). Службы `template-services.ts`: правка владельца (версия +
+  одобрение одним изменением), принять/отклонить, снять — только Web UI; предложение — Продюсер.
+- **Сопоставление:** UTC-день и точная минута; short ≤ 180 с, `hours` ±10 %, S-код длиннее 180 с — неясный вид; одна позиция = первый
+  созданный слот этого вида (O4), long и short раздельно.
+- **Правило даты** (`slotDecisions`, `source: template | owner`): совпал + упаковка готова/загружена + медиа одобрено (на канале с
+  проверкой; сведения о медиа — порт `progress`, `publishing-plan-progress` по правилу `package-reviews`); явная дата — один слот.
+  Привязка к медиа (`approvalNamesUpload`, `fingerprintCovers`). `approvalStage` и замена (`replacesSlotId`) больше ничего не решают.
+  Соцсети (`socialSlotStates`) следуют тому же датированию (O10).
+- **Своя дата** (`publishing/plan-schedule.ts`): автоматический проход не двигает и не снимает дату, поставленную не этим компьютером
+  (`planSync.result: foreign_date`); явный перенос (`explicitPrecheck` / `explicitMove`, тот же `change()` в явном режиме) — может.
+- **Перенос** (`publishing-plans` `move()`): владелец (маршрут `/publishing-plans/move`) и Продюсер (`producer_publishing_plan_move_slot`)
+  — куда угодно, id сохраняется, одно изменение `moveSlot`, `movedFrom`; дата на YouTube пишется сразу через порт `moveYoutube`
+  (`src/composition/publishing-plan-moves.ts` → `publishing.createPlanMoveYoutubeCore`); первую дату не даёт.
+- **Экран:** «План» (Неделя | Месяц | Шаблон недели, `week-template-editor.tsx`, `week-template-model.ts`), «Календарь» убран,
+  «Собрать неделю по шаблону» (`weekly-template-build-card.tsx`, `composition/weekly-build-template.ts`, weekly-build `startByTemplate` /
+  `collectTemplateBuild`, файл `05 Docs/publishing/week-template.json`).
+- **Контракты:** Factory 1.52.0 (`factory_publishing_template_get`), Agent 4.23.0 (`agent_publishing_template_get`), Producer 1.25.0
+  (`producer_week_template_get` / `_propose`, `producer_publishing_plan_get` / `_list` / `_move_slot`, разрешение `PLAN_MOVE`).
+
 ### 2.9bm Ворота только по медиа и правка упаковки после загрузки (BL-265, PRD-REQ-0195 B, ADR 0072, `docs/roadmap/plans/MEDIA_GATE_PLAN.md`) — **IMPLEMENTED на ветке** `feature/bl-265-media-gate` (ждёт ревью и разрешения на мердж)
 
 - **Ворота по медиа:** решение владельца (`package-reviews/model.ts`, `standingDecision`) покрывает mp4 — `videoSha256` + `videoSizeBytes`

@@ -5283,6 +5283,33 @@ from the channel's own workspace images, behind the same identity check and Live
   `local-file-response`, `isOwnerBrowserRequest`); Media → «Видео на проверку» (`MEDIA_TABS` value `packages`); the week-plan slot line
   from `PlanSlotPackage.reviewComment` and the problem codes; review-notify kind `package` (`packageNoticesOf`).
 
+## BL-267 — the week template replaces slot approval (ADR 0073, WEEK_TEMPLATE_PLAN.md)
+
+- **Template storage.** Two root maps of the channel's `publishing_plans` document, absent from the genesis: `templateVersions`
+  (whole, immutable `week-template/1` versions with a canonical content hash) and `templateDecisions` (the owner's
+  approved / rejected / withdrawn, Lamport `seq`). The reader merges every conflicting value of a root key
+  (`Automerge.getConflicts`), so two computers' first versions both survive. `templateInForce` fails closed on a hash mismatch.
+- **Matching** (`template.ts`, pure): UTC weekday + exact minute; kind from the package's duration (short ≤ 180 s; `hours` ±10 %);
+  positions are claimed channel-wide by the first created live slot of the kind; a vetoed slot claims nothing.
+- **Date rule.** `slotDecisions` dates a slot by the template when it matches, its package is ready (apart from the owner-review
+  problems) or uploaded, and the media review allows it (`progress.media.review`: computed in `publishing-plan-progress` with
+  `package-reviews.standingDecision` for every package). Decisions carry `source` and the media key, so a packaging-only re-package
+  keeps the date (`approvalNamesUpload`, `fingerprintCovers`). The explicit owner date is one slot per decision and names the media
+  too. `approvalStage` is ignored (setApprovalStage writes nothing); `replacesSlotId` holds nothing. Decisions are read by slot id
+  across weeks.
+- **Owned dates.** `plan-schedule.change()` in automatic mode leaves a YouTube date that is not the row's own (`foreign_date`,
+  retried hourly; a mismatch read back from its own write counts as its own). Explicit mode (moves) may change any date.
+- **Moves.** `move()` checks everything (slot, hash, margins, target week, 52 weeks, 28 slots), then asks the `moveYoutube` port
+  (`createPlanMoveYoutubeCore`: this computer's newest finished upload row of the video, `explicitPrecheck`) before writing; one
+  `moveSlot` change; revocations of standing explicit approvals; then `explicitMove` (video-details' write, read-back, the row's
+  `publishAt`, audit `publishing.plan_moved` with `by`). An undated video only changes position (D1); a failed write leaves the plan
+  moved and is retried by moving to the same place.
+- **Social.** `socialSlotStates` returns `approved` when the plan dates the slot (template or explicit), evaluated for slots up to 36 h
+  past, bound to the current manifest; a foreign date, a veto, a removed entry or a taken position post nothing.
+- **Weekly build by template.** `weekly-build.startByTemplate` writes the template (the `templateViewOf` serializer) to
+  `05 Docs/publishing/week-template.json` and starts `13 Weekly_Plan v1 auto --template [--week]`; `collectTemplateBuild` saves a done
+  job's `job.result.payloads` through the plan's agent save as `factory` once per job and runs `13 push --sent --plan` for the accepted.
+
 ## BL-265 — the media-only gate and packaging fixes after upload (ADR 0072, MEDIA_GATE_PLAN.md)
 
 - **Gate key.** `package-reviews/model.ts`: `OwnerReviewState` = `{ required, decisions (approved/returned only, in seq/at/id order),

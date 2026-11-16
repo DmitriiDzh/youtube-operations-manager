@@ -7,7 +7,7 @@ the Operator's ADR-0003 draft (`factory_publishing_template_get`, `week-template
 Answers 2026-11-16: owner TG 4630–4636 (O1–O10, moves, O7 weekly build by template, O10 one plan for YouTube and social
 networks), Producer P1–P4 and the three templates, Operator Op1–Op4 (§7).
 
-Status: **In progress** on `feature/bl-267-week-template` (stages 1–7, §8). The owner answered §7; his wording for AGENTS.md §F
+Status: **Built** on `feature/bl-267-week-template` (stages 1–7, §8; independent review and the merge pending). The owner answered §7; his wording for AGENTS.md §F
 (ADR 0073 §"Proposed AGENTS.md §F text") is shown to him before the merge (O9); AGENTS.md is not edited until then. Part B shipped as BL-265 (ADR 0072), part C as BL-264. **BL-266 is
 reserved for the «Видео» tab redesign** (not in this plan).
 
@@ -519,3 +519,13 @@ Other consumers:
   posts of template-dated slots go out from then on (O10).
 - The Producer can move slots at once with `producer_publishing_plan_move_slot` (Producer API 1.25.0).
 - Operator bundle **2.5.48** and the Producer pin the new API versions; Windows updates together with the Mac.
+
+## 12. Build notes (2026-11-16)
+
+- `retime()` (BL-256, the owner's in-week move with `approve`) stays in the module for its tests and the old route, but the Web UI
+  uses `move()` only; retire it with its route in the review if wanted.
+- Not built: the template editor's "effect on the plan's slots" count (§3.3) -- the dialog lists the per-day changes only; the Producer
+  wake file for template decisions (`REVIEW-DECISION-template-…`): `notifyOwnerDecision` is called, but review-notify has no template
+  source yet.
+- «Собрать неделю по шаблону» collects a finished job's payloads when the card is open (the server remembers each job once); the
+  `job.result.{plan,payloads}` field in `13 status --json` is the contract to confirm with the Operator.

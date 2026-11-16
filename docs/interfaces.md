@@ -1138,7 +1138,13 @@ A second agent role, separate from the channel agents. Technical contract only (
   POST only (405), the MCP connection switch (403 `MCP_CONNECTION_DISABLED`), a token (401 `AGENT_TOKEN_REQUIRED`), the token (401 `AGENT_TOKEN_INVALID` for an
   unknown, revoked or wrong-type token, including a channel token; 503 `AGENT_ENDPOINT_UNAVAILABLE` if the database cannot answer). The token is re-verified on
   every tool call, so a revocation applies to the next call. A factory token on `/api/mcp` is rejected the same way.
-- **Factory API version:** `1.51.0` since BL-265 (PRD-REQ-0195 B, ADR 0072, additive: the plan / calendar packages gain `warnings`
+- **Factory API version:** `1.52.0` since BL-267 (PRD-REQ-0195 A, ADR 0073, additive: `factory_publishing_template_get` (READ) --
+  `{ template: { format: 'week-template/1', channelId, versionId, contentHash, horizonWeeks, displayTimeZone, days: { mon..sun?: [{ kind:
+  long | short, hours?, publishTimeUtc }] }, by, at } | null, proposal | null, matchRules: { shortMaxSeconds: 180, hoursTolerance: 0.1,
+  time: exact_minute_utc, position: first_created } }` (bundle 2.5.48 reads exactly these); plan slots gain `dating { source: template |
+  owner | null, state, position?, heldBy? }`, `foreignPublishAt`, `movedFrom`; `updatedBy` may be `producer`; `factory_publishing_plan_save`
+  refuses `slot_dated` (the slot's video has a date on YouTube); `approvalStage` is always `packaged`; `replacesSlotId` holds nothing;
+  Agent API `4.23.0` adds `agent_publishing_template_get` for the bound channel); `1.51.0` since BL-265 (PRD-REQ-0195 B, ADR 0072, additive: the plan / calendar packages gain `warnings`
   (codes that never block); the owner's package review gates the video (mp4 `sha256` + `sizeBytes`) only -- a re-package of only its
   packaging stays ready and a queued upload takes it (upload rows gain the error codes `media_changed` / `package_slot_changed`);
   `factory_release_recode` copies only a decision made before BL-265 (a media decision follows the V -> S alias; `review.carried`
@@ -1498,7 +1504,8 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
 
 - **Transport:** as the factory endpoint, with `Authorization: Bearer ytom_pr_...` (the same checks and codes; a channel or factory token is
   401 `AGENT_TOKEN_INVALID` here, and a producer token on `/api/mcp` and `/api/mcp/factory`). Re-verified on every tool call.
-- **Producer API version:** `1.24.0` (since BL-265, ADR 0072, additive: `producer_video_metadata_update`, permission `METADATA_WRITE`
+- **Producer API version:** `1.25.0` (since BL-267, ADR 0073, additive: the weekly-plan tools below, permission `PLAN_MOVE`,
+  `planTools` / `planMoveTools` in `producer_get_capabilities`); `1.24.0` (BL-265, ADR 0072, additive: `producer_video_metadata_update`, permission `METADATA_WRITE`
   and `metadataTools` in `producer_get_capabilities`; calendar `warnings`; the media-keyed review gate; the queue add's "tried" rule by
   the row's mp4; wake status `packaging_comment`); `1.23.0` = BL-263 (ADR 0071: video codes may be `S<n>` in `agent_get_publishing_calendar`,
   `producer_upload_queue_*` (`video`: `V61` or `S14`) and the wake file names `REVIEW-DECISION-package-S14-...` -- additive; `1.22.0` =
@@ -1542,6 +1549,19 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
   `Figures = { samples, onAirMs, notLiveMs, dataGaps, viewerHours, averageViewers, peakViewers, interruptions }` -- from the stream computer's
   own broadcast checks and its stored YouTube Analytics pulls; unknown is null, never 0; `analyticsCollected` = the final pull (4 days after the
   broadcast) is stored. Local read only.
+- **Weekly-plan tools (BL-267, ADR 0073, owner TG 4630–4636; Producer 1.25.0):** `producer_week_template_get { channelId }` →
+  `{ template | null, proposal | null, matchRules }` (READ, as `factory_publishing_template_get`); `producer_week_template_propose
+  { channelId, template: week-template/1 }` (DRAFT: a version the owner accepts, edits or rejects in the Web UI; `proposed: false` when
+  identical to the template in force or the pending proposal; `validation_failed` with `details.refused [{ field, reason }]`);
+  `producer_publishing_plan_get { channelId, weekStart }` / `_list { channelId, limit? }` (READ, slots with `contentHash`, `dating`,
+  `foreignPublishAt`, `movedFrom`); `producer_publishing_plan_move_slot { channelId, slotId, contentHash, toWeekStart, date, publishAt,
+  dryRun? }` (`PLAN_MOVE`): moves the slot anywhere at once keeping its id; a dated video's new date is written immediately through
+  video-details (identity check, backup, Live writes right before, read-back, audit `publishing.plan_moved` with `by: producer`); never
+  a first date; → `{ plan, moved, dryRun, from, to, youtube: { effect: moves | plan_only | none, previous, result?, reason?, publishAt? } }`.
+  Refusals: `publishing_plan_slot_not_found`, `_slot_vetoed`, `_slot_past`, `_changed`, `_already_published`, `_slot_too_soon`,
+  `_move_not_here`, `_move_youtube_unavailable`, `validation_failed` (`toWeekStart` / `date` / `publishAt`: `week_start_not_monday`,
+  `date_invalid`, `outside_week`, `publish_at_invalid`, `date_mismatch`, `in_past` (< 30 min), `beyond_horizon` (> 52 weeks),
+  `too_many_slots`).
 - **Metadata tool (BL-265, ADR 0072, owner TG 4578/4581; Producer 1.24.0):** `producer_video_metadata_update` `{ channelId, video, dryRun? }`
   (strict: no text of the caller's) → dry run `{ dryRun: true, video, videoId, manifestSha256, etag, baseline: upload_row | metadata_apply | unknown,
   fields: [{ field: title | description | tags, youtube, uploaded, manifest, status: same | write | conflict }], changed, audioLanguageLeftOut,
@@ -1696,7 +1716,11 @@ Every route: a Web session (401) and the active channel (403); `DomainError` →
   future, not vetoed slots wait for the owner (the tab's badge).
 - `GET /api/channels/[channelId]/publishing-plans/[weekStart]` — `{ plan }` with every slot; 404 `publishing_plan_not_found`.
 - `POST /api/channels/[channelId]/publishing-plans/[weekStart]/decisions` — `{ action: approve | revoke | veto | restore, slots:
-  [{ slotId, contentHash? }] }` (approve and revoke name the hash shown; revoke, veto and restore take one slot) → `{ plan, decided }`.
+  [{ slotId, contentHash? }] }` (approve and revoke name the hash shown; since BL-267 every action takes exactly one slot) → `{ plan, decided }`.
+- BL-267 (ADR 0073): `POST .../publishing-plans/move` `{ slotId, contentHash, toWeekStart, date, publishAt, dryRun? }` (the owner's
+  move, as `producer_publishing_plan_move_slot`); `GET/POST .../publishing-plans/template` (read; the owner's edit `{ template,
+  basedOn? }`), `POST .../template/decisions` `{ action: accept | reject, versionId, contentHash }`, `POST .../template/withdraw`;
+  `GET .../weekly-build/template`, `POST .../weekly-build/template/start` `{ week? }`, `POST .../weekly-build/template/collect`.
   Refusals: `publishing_plan_changed` 409 (a hash differs; nothing is approved), `publishing_plan_slot_vetoed` 409,
   `publishing_plan_slot_past` 409, `publishing_plan_slot_not_found` 404. Each decision is synced (by, device, at) and audited on
   this computer (`video_edit_audit_events`, video id `plan:<weekStart>:<slotId>`, `publishing_plan.<kind>`).
