@@ -708,8 +708,11 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
         if (Date.parse(slot.publishAtUtc) < from) continue;
         seen.set(slot.slotId, (seen.get(slot.slotId) ?? 0) + 1);
         const current = fingerprintOf(read.progress.get(slot.slotId) ?? null);
-        // Fail closed: vetoed, not dated by the plan, or a date YouTube carries that this computer did not set -- nothing posts.
-        const approved = slot.dating.source !== null && !slot.vetoed && !slot.foreignPublishAt && current !== null;
+        // Fail closed: vetoed, or a date YouTube carries that this computer did not set -- nothing posts. Owner msg 4640 (2026-11-16,
+        // «соц сети дублируют»): the social networks duplicate YouTube, so a slot posts when the plan dates it OR its video already
+        // carries this computer's own date at the slot's time (a move outside the template, a date kept after a template entry went).
+        const ownDateAtSlot = slot.youtubePublishAt !== null && Date.parse(slot.youtubePublishAt) === Date.parse(slot.publishAtUtc);
+        const approved = (slot.dating.source !== null || ownDateAtSlot) && !slot.vetoed && !slot.foreignPublishAt && current !== null;
         out.push({ slotId: slot.slotId, weekStart: meta.weekStart, timeZone: meta.timeZone, publishAtUtc: slot.publishAtUtc, released: slot.released, vetoed: slot.vetoed !== null, approved, package: approved ? { ...current! } : null });
       }
     }

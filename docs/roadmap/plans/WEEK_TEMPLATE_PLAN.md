@@ -236,7 +236,9 @@ in Studio. The Producer's move takes effect immediately; it never waits for the 
   slots; `unlocked` lists explicit approvals a save dropped.
 - **`approvalStage`** is retired: the switch disappears, the field is ignored; only fingerprinted (packaged) explicit approvals
   count, as in the default stage today. Slot-stage approvals (no fingerprint) stop counting for new dates; dates on YouTube stay.
-- **Social posts follow the plan (O10, amends ADR 0068 Am. 1).** One plan for YouTube and the social networks: a slot authorizes
+- **Social posts follow the plan (O10, amends ADR 0068 Am. 1; owner msg 4640: «соц сети дублируют»).** Also a slot whose video
+  carries this computer's own YouTube date at the slot's time posts (a move outside the template, a date kept after its template entry
+  went) — the social networks duplicate what YouTube publishes; a foreign date never posts. One plan for YouTube and the social networks: a slot authorizes
   its package's `crossPost` when the plan dates it — a template match with the media condition, or a standing explicit owner date —
   evaluated by the same rule also for slots up to 36 h past (cross-posting's look-back), bound to the slot's **current** manifest
   SHA-256, which the runner re-checks before each Meta call (`stillApproved` reads the same `socialSlotStates`). Fail closed: a
@@ -469,7 +471,8 @@ Other consumers:
 - **AC-WT-36** (O4) A slot with `replacesSlotId` matching a free position is dated by the template while the replaced slot is
   live; an explicit date on it vetoes nothing.
 - **AC-WT-37** (O10) `socialSlotStates.approved` is true for a slot dated by the template (media condition met) and for a standing
-  explicit owner date, also 2 h after the slot's time (released); false for a slot whose template entry was removed, for a slot whose
+  explicit owner date, also 2 h after the slot's time (released), and (msg 4640) for a slot whose video carries this computer's own date
+  at the slot's time; false for a slot whose template entry was removed and that has no such date, for a slot whose
   video has a foreign date, for a vetoed slot; the runner's `stillApproved` re-check gives the same answers.
 - **AC-WT-38** `approvalStage: "slot"` in a document → ignored; a slot-stage approval dates nothing new.
 - **AC-WT-39** Migration fixture (the §4 table, one slot per row): after the switch no plan-schedule pass writes for any row that

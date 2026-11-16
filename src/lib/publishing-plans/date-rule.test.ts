@@ -211,7 +211,29 @@ test("AC-WT-37 (O10): social posts follow the plan -- template-dated and explici
   assert.equal(states.get("F")?.approved, false, "foreign date");
   assert.equal(states.get("V")?.approved, false, "vetoed");
   await h.service.templateOwnerSave(CH, { template: { ...WWE, days: { ...WWE.days, mon: [{ kind: "short", publishTimeUtc: "12:00" }] } } }, "u1");
-  assert.equal(new Map((await h.service.socialSlotStates(CH)).map((s) => [s.slotId, s])).get("L")?.approved, false, "entry removed");
+  // Owner msg 4640 («соц сети дублируют»; this assertion was `false` before): the entry went, but L's video keeps this computer's own
+  // date at L's time (a pending slot's date is never removed), so it still goes out on YouTube -- and the social networks duplicate it.
+  assert.equal(new Map((await h.service.socialSlotStates(CH)).map((s) => [s.slotId, s])).get("L")?.approved, true, "entry removed, own date kept");
+  // Without a date on YouTube, an undated slot posts nothing.
+  h.progress.set("L", pkg("V1", 600, "not_required", { videoId: "vid1" }));
+  assert.equal(new Map((await h.service.socialSlotStates(CH)).map((s) => [s.slotId, s])).get("L")?.approved, false, "entry removed, no date");
+});
+
+test("owner msg 4640: a video moved outside the template posts to the social networks at its new time (own date); a foreign date does not", async () => {
+  const h = harness();
+  // X: Wed 2026-11-25 10:00 JST = 01:00Z, no template position; its video carries this computer's own date at that time (a move).
+  await setup(h, [slot("X", "2026-11-25", "10:00")]);
+  h.progress.set("X", pkg("V2", 600, "not_required", { videoSha: SHA("2"), videoId: "vid2", publishAt: "2026-11-25T01:00:00.000Z" }));
+  h.clock.now = new Date("2026-11-25T00:00:00Z");
+  const x = (await h.service.socialSlotStates(CH)).find((s) => s.slotId === "X");
+  assert.equal(slotOf((await h.service.get({ channelId: CH, weekStart: WEEK })).plan, "X").dating.source, null, "off the template");
+  assert.equal(x?.approved, true);
+  // The same date set elsewhere (Studio): foreign -- nothing posts.
+  h.progress.set("X", { ...pkg("V2", 600, "not_required", { videoSha: SHA("2"), videoId: "vid2", publishAt: "2026-11-25T01:00:00.000Z" }), foreignPublishAt: "2026-11-25T01:00:00.000Z" });
+  assert.equal((await h.service.socialSlotStates(CH)).find((s) => s.slotId === "X")?.approved, false);
+  // A different own date than the slot's time: nothing posts at the slot's time.
+  h.progress.set("X", pkg("V2", 600, "not_required", { videoSha: SHA("2"), videoId: "vid2", publishAt: "2026-11-25T03:00:00.000Z" }));
+  assert.equal((await h.service.socialSlotStates(CH)).find((s) => s.slotId === "X")?.approved, false);
 });
 
 test("AC-WT-35 (zone change): a save changing only the plan's zone re-times dated slots -> slot_dated", async () => {
