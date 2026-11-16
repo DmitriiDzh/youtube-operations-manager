@@ -110,6 +110,7 @@ export const weekTemplate: Record<keyof typeof en, string> = {
   "weekTemplate.build.failed": "Не запущено: {code}",
   "weekTemplate.build.collected": "Сохранено в план: {accepted} из {total}.",
   "weekTemplate.build.refusedPayload": "Неделя {week}: отказ ({code})",
+  "weekTemplate.build.jobRefused": "Фабрика отказала в сборке ({code}): {reason}",
   "weekTemplate.build.pushFailed": "Фабрике не сообщено: {reason}",
   "weekTemplate.build.waitingVideo": "ждёт видео",
   "weekTemplate.effect.loading": "Проверяю, какие слоты он меняет…",

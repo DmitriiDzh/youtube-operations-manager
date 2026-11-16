@@ -121,7 +121,9 @@ export function parseStatus(raw: Record<string, unknown>): WeeklyBuildStatus | n
           startedAt: str(job.startedAt),
           finishedAt: str(job.finishedAt),
           exitCode: num(job.exitCode),
-          ...(result && Array.isArray(result.payloads) ? { result: { plan: str(result.plan), payloads: result.payloads } } : {}),
+          ...(result && (Array.isArray(result.payloads) || str(result.error))
+            ? { result: { plan: str(result.plan), week: str(result.week), payloads: Array.isArray(result.payloads) ? result.payloads : [], error: str(result.error), message: str(result.message) } }
+            : {}),
         }
       : null;
   return {
@@ -417,18 +419,24 @@ export function createWeeklyBuildServices(deps: WeeklyBuildDeps) {
     },
 
     /**
-     * BL-267 (O7): a finished template build's payloads saved by the caller (`save`: the plan's agent save as the factory, with every
-     * check), then `13 push --sent --plan <plan>` when at least one was accepted. A job already collected is answered from memory
-     * (nothing saved twice). null: no finished job with a result.
+     * BL-267 (O7): a template build's payloads saved by the caller (`save`: the plan's agent save as the factory, with every check),
+     * then `13 push --sent --plan <plan>` when at least one was accepted. The result appears while the job still runs (the Operator,
+     * 2026-11-16), so it is collected as soon as it is there, whatever the job's state. A refusal (`result.error`) is answered as
+     * `error`, nothing saved. A job already collected is answered from memory (nothing saved twice). null: no result yet.
      */
     async collectTemplateBuild(channelId: string, save: (payload: unknown) => Promise<void>): Promise<WeeklyTemplateCollect | null> {
       const ctx = await requireReady(channelId);
       const status = await readStatus(ctx);
       const job = status.job;
-      if (!job || job.state !== "done" || !job.result) return null;
+      if (!job || !job.result) return null;
       const key = `${channelId}:${job.jobId}`;
       const known = collected.get(key);
       if (known) return known;
+      if (job.result.error) {
+        const refused: WeeklyTemplateCollect = { jobId: job.jobId, plan: null, results: [], pushed: false, pushError: null, error: { code: job.result.error, message: job.result.message } };
+        collected.set(key, refused);
+        return refused;
+      }
       const results: WeeklyTemplatePayloadResult[] = [];
       for (const [index, payload] of job.result.payloads.entries()) {
         const weekStart = str(obj(payload)?.weekStart);

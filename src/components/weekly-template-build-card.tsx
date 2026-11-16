@@ -33,8 +33,8 @@ export function WeeklyTemplateBuildCard({ channelId, visible }: { channelId: str
       const [s, v] = await Promise.all([fetch(`${base}/template`).then((r) => (r.ok ? r.json() : null)), fetch(base).then((r) => (r.ok ? r.json() : null))]);
       setState(s);
       setView(v);
-      // A done template job: its payloads are saved once (the server remembers the job).
-      if (v?.status?.job?.state === "done" && v.status.job.result) {
+      // A template job's result (it appears while the job still runs): its payloads are saved once (the server remembers the job).
+      if (v?.status?.job?.result) {
         const c = await fetch(`${base}/template/collect`, { method: "POST" }).then((r) => (r.ok ? r.json() : null));
         if (c?.collected) setCollected(c.collected as WeeklyTemplateCollect);
       }
@@ -137,6 +137,7 @@ export function WeeklyTemplateBuildCard({ channelId, visible }: { channelId: str
                 {t("weekTemplate.build.refusedPayload", { week: r.weekStart ?? "?", code: r.code ?? "?" })}
               </p>
             ))}
+          {collected.error && <p className="text-amber-300">{t("weekTemplate.build.jobRefused", { code: collected.error.code, reason: collected.error.message ?? "" })}</p>}
           {collected.pushError && <p className="text-amber-300">{t("weekTemplate.build.pushFailed", { reason: collected.pushError })}</p>}
         </div>
       )}

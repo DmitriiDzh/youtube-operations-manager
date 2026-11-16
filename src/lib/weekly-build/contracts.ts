@@ -43,10 +43,12 @@ export type WeeklyBuildSlot = {
 export type WeeklyBuildJob = {
   jobId: string;
   /**
-   * BL-267 (ADR 0073 §7, owner O7, agreed with the Operator): a finished `auto --template` job's result -- the factory plan file and
-   * its `payloads` (each an `agent_publishing_plan_save` body), which YT Manager saves as the factory. Absent otherwise.
+   * BL-267 (ADR 0073 §7, owner O7, agreed with the Operator 2026-11-16): an `auto --template` job's result -- the factory plan file
+   * (`05 Docs/publishing/<plan>`), its week and `payloads` (each an `agent_publishing_plan_save` body), which YT Manager saves as the
+   * factory. Filled as soon as the draft step ends, while the job still runs (it builds for hours afterwards). On a refusal the job
+   * ends with `error` (no_template / week_has_plan / outside_horizon / job_running) and no payloads. Absent otherwise.
    */
-  result?: { plan: string | null; payloads: unknown[] } | null;
+  result?: { plan: string | null; week: string | null; payloads: unknown[]; error: string | null; message: string | null } | null;
   /** The launcher's own job_state(): running / done / failed / stopped (…) / starting. */
   state: string;
   args: string[];
@@ -94,4 +96,4 @@ export const WEEK_TEMPLATE_FILE = ["05 Docs", "publishing", "week-template.json"
 export type WeeklyTemplatePayloadResult = { index: number; weekStart: string | null; status: "accepted" | "refused"; code: string | null; refused?: unknown };
 
 /** BL-267 (O7): what collecting a finished template build did. */
-export type WeeklyTemplateCollect = { jobId: string; plan: string | null; results: WeeklyTemplatePayloadResult[]; pushed: boolean; pushError: string | null };
+export type WeeklyTemplateCollect = { jobId: string; plan: string | null; results: WeeklyTemplatePayloadResult[]; pushed: boolean; pushError: string | null; error?: { code: string; message: string | null } };

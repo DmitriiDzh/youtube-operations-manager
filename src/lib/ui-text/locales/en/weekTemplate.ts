@@ -108,6 +108,7 @@ export const weekTemplate = {
   "weekTemplate.build.failed": "Not started: {code}",
   "weekTemplate.build.collected": "Saved to the plan: {accepted} of {total}.",
   "weekTemplate.build.refusedPayload": "Week {week}: refused ({code})",
+  "weekTemplate.build.jobRefused": "The factory refused the build ({code}): {reason}",
   "weekTemplate.build.pushFailed": "The factory was not told: {reason}",
   "weekTemplate.build.waitingVideo": "waiting for the video",
   "weekTemplate.effect.loading": "Checking which slots it changes…",

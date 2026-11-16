@@ -397,3 +397,31 @@ test("AC-WT-48: a done template job's payloads are saved; refused keep their cod
     await ch.cleanup();
   }
 });
+
+test("AC-WT-48 (Operator 2026-11-16): the result is collected while the job still runs; a refusal is reported, nothing saved; no result yet → null", async () => {
+  const ch = await channel("2.5.48");
+  try {
+    const running = { jobId: "j3", state: "running", args: [], startedAt: null, finishedAt: null, exitCode: null, result: { plan: "plan-2026-11-23.json", week: "2026-11-23", payloads: [{ channelId: "UC", weekStart: "2026-11-23" }] } };
+    const answer = factory({ status: STATUS({ job: running }) });
+    const h = harness(ch.ws, (args) => (args[0] === "run" && args[2] === "push" ? ok("pushed\n") : answer(args)));
+    const saved: unknown[] = [];
+    const r = await h.core.collectTemplateBuild("UC", async (p) => void saved.push(p));
+    assert.equal(saved.length, 1);
+    assert.equal(r?.pushed, true);
+    assert.equal(r?.error, undefined);
+
+    const refusedJob = { jobId: "j4", state: "failed", args: [], startedAt: null, finishedAt: null, exitCode: 3, result: { error: "week_has_plan", message: "week 2026-11-23 already has a plan" } };
+    const rh = harness(ch.ws, factory({ status: STATUS({ job: refusedJob }) }));
+    const savedR: unknown[] = [];
+    const rr = await rh.core.collectTemplateBuild("UC", async (p) => void savedR.push(p));
+    assert.deepEqual(rr?.error, { code: "week_has_plan", message: "week 2026-11-23 already has a plan" });
+    assert.deepEqual(rr?.results, []);
+    assert.equal(savedR.length, 0);
+    assert.equal(rh.calls.some((c) => c.args[4] === "push"), false);
+
+    const noResult = harness(ch.ws, factory({ status: STATUS({ job: { jobId: "j5", state: "running", args: [], startedAt: null, finishedAt: null, exitCode: null } }) }));
+    assert.equal(await noResult.core.collectTemplateBuild("UC", async () => undefined), null);
+  } finally {
+    await ch.cleanup();
+  }
+});
