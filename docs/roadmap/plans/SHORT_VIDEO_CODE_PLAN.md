@@ -117,7 +117,10 @@ uploads in progress (the "uploading on <host>" guard).
 - Automerge families (`storyboards.video`, `package-reviews` decisions' `video`, `publishing-plans` fingerprints) carry the code as
   an unvalidated string: an older build shows S as text. An older build's package scan does not see S packages at all
   (`RELEASE_PACKAGE_FILE_PATTERN`), so its plan would show those slots as awaiting a package.
-- No app build of the peer is visible to YTM today, so the gate is the release order (also a TECHNICAL_DEBT entry at implementation):
+- No app build of the peer is visible to YTM today (checked 2026-11-16: no per-device report carries a build marker, and a v1 report
+  does not tell an older build from this one without an S), so the gate is the release order -- a **hard precondition** of the first
+  real `factory_release_recode` run, also stated in the tool's description (TECHNICAL_DEBT RISK-155): an older build refuses this
+  computer's reports once they hold an S code and keeps a frozen copy of them.
   1. BL-263 merged and live on the **Mac and Windows** (restart-when-idle; Windows build).
   2. The Operator checks both versions (Settings → О программе / `factory_restart_status`), then pins factory bundle **2.5.44** for
      WWE only (writes S, reads both).
@@ -335,6 +338,16 @@ Recode
 7. Slots showing «needs approval» again after a recode are accepted.
 
 ## 13. Implementation notes (2026-11-16, on the branch)
+
+- Review fixes: a journal is written `completed: true` once every step is done; a journal that is completed, or whose `done` holds
+  every step, is only cleared (audit `release_recode.journal_cleared`), never undone, and a failed remove after a finished recode is
+  the result's `warnings: ["journal_not_removed: <path>"]`. While an UNFINISHED journal exists: a dry run is refused
+  (`release_recode_busy` reason `recovery_pending`), the next real call undoes it first; `factory_video_create` refuses its S
+  (`video_number_taken`, source `recode_pending`), its V and S take no new link (`video_not_found` reason `recode_pending`) and
+  `factory_video_list` lists it in `pendingRecodes` (shared module `src/lib/release-recode-journals/`). Also refused: a queued own
+  upload row (`upload_queued`), an unfinished linked media/Gemini/speech job (`job_running`). A read-back `mismatch` carries
+  `readBackProblems` and means stop and inspect. `factory_release_folder_rename` and the thumbnail `vn` keep their old V acceptance
+  (`V\d{1,6}`) and add S.
 
 - Row 5 (manifest `video` = the folder's code): checked only when an S code is involved (the manifest, the folder or the file name),
   so every V package scans exactly as before (AC-SC-04); a V manifest naming another V is not newly refused.

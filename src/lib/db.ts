@@ -12462,6 +12462,17 @@ export type VideoRecodePlan = {
   manifestSha256: string;
 };
 
+/**
+ * BL-263 (release_recode_busy reason job_running): how many media / Gemini / speech jobs of this computer linked to `video` on
+ * `channelId` are not finished (a running job would write its result under the old code).
+ */
+export async function countActiveVideoJobs(channelId: string, video: string, database: AppDb = db): Promise<number> {
+  const media = await database.select({ id: mediaJobs.id }).from(mediaJobs).where(and(eq(mediaJobs.channelId, channelId), eq(mediaJobs.video, video), notInArray(mediaJobs.status, ["done", "failed", "cancelled"])));
+  const gemini = await database.select({ id: geminiMediaJobs.jobId }).from(geminiMediaJobs).where(and(eq(geminiMediaJobs.channelId, channelId), eq(geminiMediaJobs.video, video), inArray(geminiMediaJobs.status, ["queued", "submitting", "running"])));
+  const speech = await database.select({ id: elevenlabsSpeechJobs.jobId }).from(elevenlabsSpeechJobs).where(and(eq(elevenlabsSpeechJobs.channelId, channelId), eq(elevenlabsSpeechJobs.video, video), inArray(elevenlabsSpeechJobs.status, ["queued", "submitting", "running"])));
+  return media.length + gemini.length + speech.length;
+}
+
 /** BL-263: reads every row a recode of `from` → `to` on `channelId` would change (the given upload rows; jobs, plans, social jobs, memo). */
 export async function snapshotVideoRecodeRows(channelId: string, from: string, to: string, uploadIds: readonly string[], database: AppDb = db): Promise<VideoRecodeSnapshot> {
   const uploads = uploadIds.length === 0 ? [] : await database.select().from(publishingUploads).where(and(eq(publishingUploads.channelId, channelId), inArray(publishingUploads.id, [...uploadIds])));

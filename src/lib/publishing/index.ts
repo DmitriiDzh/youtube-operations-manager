@@ -3,6 +3,7 @@ import { createReadStream } from "node:fs";
 import { createReleaseFolderRename } from "./release-folder-rename";
 import { createReleaseRecode, type ReleaseRecodeDeps, type ReleaseRecodeJournal } from "./release-recode";
 import { writeFileAtomic } from "@/lib/atomic-json-file";
+import { releaseRecodeJournalDir, releaseRecodeJournalPath } from "@/lib/release-recode-journals";
 import { lstat, mkdir, open, readdir, readFile, realpath, rename as renamePath, stat, unlink } from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
@@ -39,6 +40,7 @@ import {
   recodeVideoRows,
   snapshotVideoRecodeRows,
   undoVideoRecodeRows,
+  countActiveVideoJobs,
   listSocialPostJobs,
   listLiveStreamVideos,
   listLiveStreamSources,
@@ -1006,8 +1008,7 @@ export function createReleaseRecodeCore(options: {
 }) {
   const scan = createPackageScanCore();
   const reads = createPackageScanReads();
-  const journalRoot = path.join(getProductionAppPaths().appDataDir, "release-recode");
-  const safe = (s: string) => s.replace(/[^A-Za-z0-9_-]/g, "_");
+  const appDataDir = getProductionAppPaths().appDataDir;
   return createReleaseRecode({
     workspace: (channelId) => reads.workspace(channelId),
     scan: (channelId) => scan.scan(channelId),
@@ -1020,6 +1021,7 @@ export function createReleaseRecodeCore(options: {
       const [videos, sources] = await Promise.all([listLiveStreamVideos(channelId), listLiveStreamSources(channelId)]);
       return [...videos, ...sources].map((row) => row.originalPath).filter((p): p is string => typeof p === "string");
     },
+    activeJobs: (channelId, video) => countActiveVideoJobs(channelId, video),
     videoList: options.videoList,
     approvals: options.approvals,
     peerLinks: options.peerLinks,
@@ -1045,13 +1047,13 @@ export function createReleaseRecodeCore(options: {
     },
     storyboards: options.storyboards,
     journal: {
-      pathFor: (channelId, video, at) => path.join(journalRoot, safe(channelId), `${safe(video)}-${at.getTime()}.json`),
+      pathFor: (channelId, video, at) => releaseRecodeJournalPath(appDataDir, channelId, video, at),
       async write(file, journal) {
         await mkdir(path.dirname(file), { recursive: true });
         await writeFileAtomic(file, JSON.stringify(journal, null, 2));
       },
       async list(channelId) {
-        const dir = path.join(journalRoot, safe(channelId));
+        const dir = releaseRecodeJournalDir(appDataDir, channelId);
         const names = await readdir(dir).catch(() => [] as string[]);
         return names.filter((n) => n.endsWith(".json")).sort().map((n) => path.join(dir, n));
       },

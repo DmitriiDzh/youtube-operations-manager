@@ -86,7 +86,7 @@ type Reservation = { channelId: string; video: string; workingTitle: string | nu
 
 type Fail = { op: "rename-file" | "write-manifest" | "write-record" | "rename-folder" | "rows" | "storyboard" | "undo"; after?: number };
 
-function harness(options: { uploads?: StoredPublishingUpload[]; frame?: "vertical" | "horizontal" | null; fail?: Fail; slots?: Map<string, SlotDecision>; reviewApproved?: Set<string>; peer?: Map<string, { host: string | null; uploaded: boolean }>; files?: Map<string, string> } = {}) {
+function harness(options: { uploads?: StoredPublishingUpload[]; frame?: "vertical" | "horizontal" | null; fail?: Fail; slots?: Map<string, SlotDecision>; reviewApproved?: Set<string>; peer?: Map<string, { host: string | null; uploaded: boolean }>; files?: Map<string, string>; activeJobs?: number } = {}) {
   const files = options.files ?? initialFiles();
   let uploads = options.uploads ?? [uploadRow()];
   const reservations: Reservation[] = [
@@ -171,6 +171,7 @@ function harness(options: { uploads?: StoredPublishingUpload[]; frame?: "vertica
     peerUploads: async () => options.peer ?? new Map(),
     socialBusy: async () => false,
     livePaths: async () => [],
+    activeJobs: async () => options.activeJobs ?? 0,
     videoList: async () => videoList(),
     approvals: async () => ({ reviewApproved: options.reviewApproved ?? new Set(), slots: options.slots ?? new Map() }),
     peerLinks: async (_c, video) => (video === "V14" ? [{ deviceId: "win", hostName: "WIN-PC", kind: "cost_run" as const, count: 2 }] : []),
@@ -659,4 +660,70 @@ test("BL-263 AC-SC-19: a journal whose workspace cannot be seen (every file chec
     .then(() => null, (e: unknown) => e);
   assert.ok(isDomainError(error) && error.code === "release_recode_rollback_failed", String(error));
   assert.equal(h.journals.size, 1, "the journal stays for a manual restore");
+});
+
+// -- Review fixes (2026-11-16).
+test("BL-263 review HIGH 1: a finished recode whose journal could not be removed is never undone -- cleared with an audit, not recovered", async () => {
+  const h = harness();
+  const keep = { ...h.deps, journal: { ...h.deps.journal, remove: async () => { throw new Error("EBUSY"); } } };
+  const result = await createReleaseRecode(keep).recode({ channelId: CH, video: "V14", newCode: "S12" });
+  assert.equal(result.readBack, "verified");
+  assert.deepEqual(result.warnings, [`journal_not_removed: /app/release-recode/${CH}/V14-${Date.parse("2026-11-16T12:00:00.000Z")}.json`]);
+  assert.equal(h.journals.size, 1);
+  const [journal] = [...h.journals.values()];
+  assert.equal(journal.completed, true);
+  const done = h.state();
+  // The next real call (any video of the channel) clears it and undoes nothing.
+  assert.equal(await codeOf(h.core.recode({ channelId: CH, video: "V14", newCode: "S12" })), "release_recode_not_found", "V14 is S12 now");
+  assert.equal(h.journals.size, 0);
+  assert.deepEqual(h.state(), done, "the recode stands");
+  assert.ok(h.calls.includes("audit:release_recode.journal_cleared"));
+  assert.equal(h.calls.includes("rows:undo"), false);
+});
+
+test("BL-263 review HIGH 1: a journal with every step done but no completed flag (the process died before writing it) is not undone either", async () => {
+  const h = harness();
+  const keep = { ...h.deps, journal: { ...h.deps.journal, remove: async () => { throw new Error("killed"); } } };
+  await createReleaseRecode(keep).recode({ channelId: CH, video: "V14", newCode: "S12" });
+  const [path] = [...h.journals.keys()];
+  const journal = h.journals.get(path)!;
+  delete journal.completed;
+  assert.deepEqual(journal.done, ["files", "manifest", "records", "folder", "rows", "storyboards"]);
+  const done = h.state();
+  // A dry run is not refused by it (finished), and the next real call clears it.
+  assert.equal(await codeOf(h.core.recode({ channelId: CH, video: "V14", newCode: "S12", dryRun: true })), "release_recode_not_found");
+  await h.core.recode({ channelId: CH, video: "V14", newCode: "S12" }).catch(() => undefined);
+  assert.equal(h.journals.size, 0);
+  assert.deepEqual(h.state(), done);
+});
+
+test("BL-263 review MEDIUM 2: while an unfinished journal exists a dry run is refused release_recode_busy recovery_pending; the real call recovers", async () => {
+  const h = harness();
+  const crashing = { ...h.deps, rows: { ...h.deps.rows, recode: async () => { throw new Error("killed"); }, undo: async () => { throw new Error("gone"); } } };
+  await createReleaseRecode(crashing).recode({ channelId: CH, video: "V14", newCode: "S12" }).catch(() => undefined);
+  const error = await h.core.recode({ channelId: CH, video: "V14", newCode: "S12", dryRun: true }).then(() => null, (e: unknown) => e);
+  assert.ok(isDomainError(error) && error.code === "release_recode_busy" && (error.details as { reason: string }).reason === "recovery_pending");
+  assert.equal((error.details as { journal: string }).journal, [...h.journals.keys()][0]);
+  const result = await h.core.recode({ channelId: CH, video: "V14", newCode: "S12" });
+  assert.ok(result.recoveredFrom);
+  assert.equal(result.readBack, "verified");
+});
+
+test("BL-263 review LOW 4/5: a queued upload row of the code (not leased) or an unfinished linked job refuses the recode", async () => {
+  const queued = harness({ uploads: [uploadRow({ status: "queued" as never, videoId: null })] });
+  assert.equal(await codeOf(queued.core.recode({ channelId: CH, video: "V14", newCode: "S12" })), "release_recode_busy:upload_queued");
+  const jobs = harness({ activeJobs: 1 });
+  assert.equal(await codeOf(jobs.core.recode({ channelId: CH, video: "V14", newCode: "S12", dryRun: true })), "release_recode_busy:job_running");
+  assert.deepEqual([...queued.calls, ...jobs.calls], []);
+});
+
+test("BL-263 review LOW 7: a read-back that fails says mismatch with the failed checks", async () => {
+  const h = harness();
+  let calls = 0;
+  const realList = h.deps.videoList;
+  const flaky = { ...h.deps, videoList: async (c: string) => (++calls > 1 ? Promise.reject(new Error("list unreadable")) : realList(c)) };
+  const result = await createReleaseRecode(flaky).recode({ channelId: CH, video: "V14", newCode: "S12" });
+  assert.equal(result.readBack, "mismatch");
+  assert.deepEqual(result.readBackProblems, ["video_list"]);
+  assert.ok(h.calls.includes("audit:release.recoded:mismatch"));
 });

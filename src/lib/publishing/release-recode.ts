@@ -6,6 +6,7 @@ import { stripBom, videoNumberOfFolder } from "@/lib/workspace-videos";
 import type { PackageScanResult, ScannedPackage } from "./package-scan";
 import { rewritePaths } from "./release-folder-rename";
 import type { SlotDecision } from "./slot-decision";
+import { isFinishedRecodeJournal, RELEASE_RECODE_STEPS } from "@/lib/release-recode-journals";
 
 // BL-263 (docs/roadmap/plans/SHORT_VIDEO_CODE_PLAN.md §6, ADR 0071 §4; owner TG 2334 / 4553 / 4555 via the Producer and the Operator):
 // the one-shot recode of a WWE Short's release package from its V code to its S code -- LOCAL ONLY, never a YouTube call. Modelled on
@@ -36,9 +37,16 @@ export type ReleaseRecodeResult = {
   /** Other computers' own rows that name the old code (they follow the recode alias, never edited from here). */
   peerLinks: Array<{ deviceId: string; hostName: string | null; kind: "reservation" | "cost_run"; count: number }>;
   changed: boolean;
+  /** `mismatch`: STOP and inspect the folder, the rows and the list before anything else (see `readBackProblems`). */
   readBack: "verified" | "mismatch" | null;
+  /** With `mismatch`: which checks failed (package_not_found | leftover_names | rows | video_list | old_folder_exists). */
+  readBackProblems?: string[];
   /** The journal of an earlier recode of this channel that crashed and was undone first. */
   recoveredFrom?: string;
+  /** Finished journals cleared (never undone) before this run. */
+  clearedJournals?: string[];
+  /** Something to look at that did not stop the recode (e.g. `journal_not_removed: <path>` after a finished recode). */
+  warnings?: string[];
 };
 
 /** The video list of the channel, as the recode needs it (`src/lib/video-projects` listVideos, wired by the composition layer). */
@@ -65,10 +73,12 @@ export type ReleaseRecodeJournal = {
   plan: VideoRecodePlan;
   storyboards: string[];
   done: ReleaseRecodeStep[];
+  /** Written once every step is done, before the journal is removed: a completed journal is cleared, never undone. */
+  completed?: boolean;
   startedAt: string;
 };
 
-export const RELEASE_RECODE_STEPS = ["files", "manifest", "records", "folder", "rows", "storyboards"] as const;
+export { RELEASE_RECODE_STEPS };
 export type ReleaseRecodeStep = (typeof RELEASE_RECODE_STEPS)[number];
 
 export type ReleaseRecodeDeps = {
@@ -83,6 +93,8 @@ export type ReleaseRecodeDeps = {
   socialBusy(channelId: string, video: string): Promise<boolean>;
   /** The channel's live rotation and source-map files (relative to the workspace). */
   livePaths(channelId: string): Promise<string[]>;
+  /** How many media / Gemini / speech jobs linked to the code on this computer are not finished (queued, submitting, running). */
+  activeJobs(channelId: string, video: string): Promise<number>;
   /** The channel's video list (every computer's reservations, folders, uploads, records, registry); throws when it cannot be read. */
   videoList(channelId: string): Promise<RecodeVideoList>;
   /** The owner's approvals that could still act: package-review approvals (manifest hashes) and the weekly plan's slot decisions. */
@@ -246,13 +258,24 @@ export function createReleaseRecode(deps: ReleaseRecodeDeps) {
     }
   }
 
-  /** A journal left by a crashed recode of this channel: undone from its backups, then removed. */
-  async function recoverChannel(channelId: string): Promise<string | undefined> {
+  /**
+   * The channel's journals left behind: a FINISHED one (`completed`, or every step done -- the process died, or the remove failed,
+   * after the recode succeeded) is only removed and audited, never undone; an unfinished one (a crashed recode) is undone from its
+   * backups, then removed.
+   */
+  async function recoverChannel(channelId: string): Promise<{ recovered?: string; cleared: string[] }> {
     const left = await deps.journal.list(channelId);
     let recovered: string | undefined;
+    const cleared: string[] = [];
     for (const path of left) {
       try {
         const journal = await deps.journal.read(path);
+        if (isFinishedRecodeJournal(journal)) {
+          await deps.journal.remove(path);
+          await deps.audit({ channelId, video: journal.video, detail: { event: "release_recode.journal_cleared", journal: path, newCode: journal.newCode } }).catch(() => undefined);
+          cleared.push(path);
+          continue;
+        }
         await undo(journal);
         await deps.publishReports().catch(() => undefined);
         await deps.audit({ channelId, video: journal.video, detail: { event: "release.recode_recovered", journal: path, newCode: journal.newCode, done: journal.done } }).catch(() => undefined);
@@ -266,7 +289,17 @@ export function createReleaseRecode(deps: ReleaseRecodeDeps) {
         });
       }
     }
-    return recovered;
+    return { recovered, cleared };
+  }
+
+  /** The channel's unfinished journals (finished ones do not count: they are only cleared). */
+  async function unfinishedJournals(channelId: string): Promise<string[]> {
+    const out: string[] = [];
+    for (const path of await deps.journal.list(channelId)) {
+      const journal = await deps.journal.read(path).catch(() => null);
+      if (!journal || !isFinishedRecodeJournal(journal)) out.push(path);
+    }
+    return out;
   }
 
   async function recodeOne(input: ReleaseRecodeInput): Promise<ReleaseRecodeResult> {
@@ -276,8 +309,14 @@ export function createReleaseRecode(deps: ReleaseRecodeDeps) {
     if (!isStrictVCode(video)) throw refuse("release_recode_invalid", "video must be a V code like V14", { ...details, field: "video" });
     if (!isStrictSCode(newCode)) throw refuse("release_recode_invalid", "newCode must be an S code like S12", { ...details, field: "newCode" });
 
-    // A crash left a journal: undo it first (never on a dry run -- a dry run changes nothing).
-    const recoveredFrom = dryRun ? undefined : await recoverChannel(channelId);
+    // A crash left a journal: the next REAL call undoes it first (the recovery itself). A dry run changes nothing, so while an unfinished
+    // journal exists it is refused (recovery_pending) instead of describing a half-recoded folder.
+    if (dryRun) {
+      const pending = await unfinishedJournals(channelId);
+      if (pending.length > 0) throw refuse("release_recode_busy", `A recode of this channel did not finish (${pending[0]}); run the recode for real once to undo it first`, { ...details, reason: "recovery_pending", journal: pending[0] });
+    }
+    const recovery = dryRun ? { cleared: [] as string[] } : await recoverChannel(channelId);
+    const recoveredFrom = recovery.recovered;
 
     // -- Where the package is (BL-261's rules), in THIS channel's workspace only.
     const workspace = await deps.workspace(channelId);
@@ -346,6 +385,11 @@ export function createReleaseRecode(deps: ReleaseRecodeDeps) {
     const nowMs = deps.now().getTime();
     const sending = ownRows.filter((row) => BUSY.has(row.status) || (row.status === "queued" && row.leaseUntil !== null && row.leaseUntil !== undefined && new Date(row.leaseUntil).getTime() > nowMs));
     if (sending.length > 0) throw refuse("release_recode_busy", `${video} is being uploaded on this computer; recode it when the upload finished`, { ...details, reason: "upload_here", uploads: sending.map((r) => ({ uploadId: r.id, status: r.status })) });
+    // A queued row (not leased yet) would start with the old paths in hand: cancel or wait for it first.
+    const queued = ownRows.filter((row) => row.status === "queued");
+    if (queued.length > 0) throw refuse("release_recode_busy", `${video} is queued for upload on this computer; recode it when that upload finished or was cancelled`, { ...details, reason: "upload_queued", uploads: queued.map((r) => r.id) });
+    const running = await deps.activeJobs(channelId, video);
+    if (running > 0) throw refuse("release_recode_busy", `${running} media job(s) linked to ${video} are not finished; recode it when they finished`, { ...details, reason: "job_running", jobs: running });
     if (await deps.socialBusy(channelId, video)) throw refuse("release_recode_busy", `A cross-post of ${video} is uploading its file; recode it when that finished`, { ...details, reason: "cross_post" });
     if ((await deps.livePaths(channelId)).some((p) => p.replace(/\\/g, "/").startsWith(`${from}/`))) {
       throw refuse("release_recode_busy", `${video}'s file is in the channel's live rotation or source map; take it out there first`, { ...details, reason: "live_rotation" });
@@ -432,6 +476,7 @@ export function createReleaseRecode(deps: ReleaseRecodeDeps) {
       changed: !dryRun,
       readBack: null,
       ...(recoveredFrom ? { recoveredFrom } : {}),
+      ...(recovery.cleared.length > 0 ? { clearedJournals: recovery.cleared } : {}),
     };
     if (dryRun) return result;
 
@@ -481,6 +526,9 @@ export function createReleaseRecode(deps: ReleaseRecodeDeps) {
       step = "storyboards";
       for (const id of storyboards) await deps.storyboards.setVideo(channelId, id, newCode);
       await mark("storyboards");
+      // Finished: from here on the journal is never undone, even if removing it fails or the process dies now.
+      journal.completed = true;
+      await deps.journal.write(journalPath, journal);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       try {
@@ -500,7 +548,8 @@ export function createReleaseRecode(deps: ReleaseRecodeDeps) {
       await deps.audit({ channelId, video, detail: { event: "release.recode_failed", newCode, step, reason, rollback: "done" } }).catch(() => undefined);
       throw refuse("release_recode_busy", `The recode failed at ${step} (${reason}); everything was put back. Try again`, { ...details, reason: "step_failed", step });
     }
-    await deps.journal.remove(journalPath).catch(() => undefined);
+    const warnings: string[] = [];
+    await deps.journal.remove(journalPath).catch(() => warnings.push(`journal_not_removed: ${journalPath}`));
     deps.invalidate(channelId);
     await deps.publishReports().catch(() => undefined);
 
@@ -518,9 +567,17 @@ export function createReleaseRecode(deps: ReleaseRecodeDeps) {
     const newEntry = listAfter?.videos.find((v) => v.video === newCode);
     const videoId = snapshot.uploads.find((u) => u.videoId)?.videoId ?? pkg.youtube?.videoId ?? null;
     const listOk = Boolean(listAfter) && oldEntry?.state === "recoded" && oldEntry?.recodedTo === newCode && newEntry !== undefined && (videoId === null || newEntry.youtubeVideoId === videoId) && listAfter!.nextVideo === nextBefore;
-    const readBack = found && !leftovers && rowsOk && listOk && !(await deps.exists(fromAbs)) ? "verified" : "mismatch";
-    await deps.audit({ channelId, video, detail: { event: "release.recoded", newCode, from, to, files: files.length, oldSha256, newSha256, uploads: uploadPlans.map((u) => u.id), readBack } });
-    return { ...result, readBack };
+    const oldFolderLeft = await deps.exists(fromAbs);
+    const problems = [
+      ...(found ? [] : ["package_not_found"]),
+      ...(leftovers ? ["leftover_names"] : []),
+      ...(rowsOk ? [] : ["rows"]),
+      ...(listOk ? [] : ["video_list"]),
+      ...(oldFolderLeft ? ["old_folder_exists"] : []),
+    ];
+    const readBack = problems.length === 0 ? "verified" : "mismatch";
+    await deps.audit({ channelId, video, detail: { event: "release.recoded", newCode, from, to, files: files.length, oldSha256, newSha256, uploads: uploadPlans.map((u) => u.id), readBack, ...(problems.length > 0 ? { problems } : {}), ...(warnings.length > 0 ? { warnings } : {}) } });
+    return { ...result, readBack, ...(problems.length > 0 ? { readBackProblems: problems } : {}), ...(warnings.length > 0 ? { warnings } : {}) };
   }
 }
 

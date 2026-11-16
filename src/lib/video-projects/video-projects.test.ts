@@ -107,7 +107,7 @@ function harness(overrides: Partial<Harness> = {}) {
     },
     log: (line) => void h.logs.push(line),
   };
-  return { h, service: createVideoProjectsService(deps) };
+  return { h, deps, service: createVideoProjectsService(deps) };
 }
 
 const folder = (path: string, video: string, files: string[] = []): VideoFolder => ({ folder: path, video, files });
@@ -742,4 +742,18 @@ test("BL-263 §5: a reservations report without an S code stays version 1 exactl
   await service.createVideo({ channelId: UC1 });
   assert.equal(h.published.at(-1)?.version, 1);
   assert.deepEqual(Object.keys(h.published.at(-1)!), ["format", "version", "deviceId", "hostName", "updatedAt", "reservations"]);
+});
+
+// BL-263 review MEDIUM 2: while a recode of V14 → S12 did not finish, S12 is not given, neither code takes a new link, and the list
+// names the journal so the Operator sees it.
+test("BL-263 review: an unfinished recode journal blocks a given S12 and links to V14 / S12, and shows in the list", async () => {
+  const { h, deps } = harness();
+  h.own.push(reservation(UC1, "V14", "2026-10-01T00:00:00.000Z"));
+  const pending = [{ journal: "/app/release-recode/UC1/V14-1.json", video: "V14", newCode: "S12", startedAt: "2026-11-16T12:00:00.000Z", done: ["files"] }];
+  const s = createVideoProjectsService({ ...deps, pendingRecodes: async () => pending });
+  await assert.rejects(s.createVideo({ channelId: UC1, video: "S12" }), (e: unknown) => isDomainError(e) && e.code === "video_number_taken" && (e.details as { source: string }).source === "recode_pending");
+  for (const code of ["V14", "S12"]) await assert.rejects(s.assertAttachable(UC1, code), (e: unknown) => isDomainError(e) && e.code === "video_not_found" && (e.details as { reason: string }).reason === "recode_pending", code);
+  assert.deepEqual((await s.listVideos({ channelId: UC1 })).pendingRecodes, pending);
+  // Another S is still given.
+  assert.equal((await s.createVideo({ channelId: UC1, video: "S23" })).video.video, "S23");
 });

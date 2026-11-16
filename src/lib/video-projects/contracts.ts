@@ -106,6 +106,9 @@ export type VideoProject = {
   removedAt: string | null;
 };
 
+/** BL-263: an unfinished recode journal of the channel (`src/lib/release-recode-journals`). */
+export type PendingRecode = { journal: string; video: string; newCode: string; startedAt: string | null; done: string[] };
+
 /** BL-221: a synced video of the channel the owner may link a number to (a local read; never YouTube). */
 export type LinkCandidate = {
   videoId: string;
@@ -158,6 +161,11 @@ export type VideoProjectsDeps = {
   channelVideos?(channelId: string): Promise<LinkCandidate[]>;
   /** BL-221: writes a `Vn_youtube.json` (workspace-relative path) that must not exist yet, inside the channel workspace. */
   writeUploadRecord?(channelId: string, relativePath: string, record: unknown): Promise<void>;
+  /**
+   * BL-263: the channel's unfinished `factory_release_recode` journals (a crashed recode the next real call undoes); while one exists
+   * its V and S take no new link and the S is not given. Absent or failing: none known.
+   */
+  pendingRecodes?(channelId: string): Promise<PendingRecode[]>;
   now(): Date;
   /** Reservations of one process run one at a time (read the highest number, then take the next). */
   withLock<T>(fn: () => Promise<T>): Promise<T>;

@@ -1728,3 +1728,19 @@ test("BL-263: factory_video_create { video: 'S23' } reaches the module; a given 
   }
   assert.deepEqual(toolDeps.mediaCalls, []);
 });
+
+// BL-263 review LOW 6: factory_release_folder_rename takes the V spellings it took before (`V\d{1,6}`, a legacy V07 included) plus a
+// strict S; factory_release_recode reaches only the module with its inputs.
+test("BL-263: factory_release_folder_rename keeps the old V acceptance (V07) and adds S; S014 is refused before the module", async () => {
+  const { endpoint, tokenServices, toolDeps } = setupWithDeps();
+  const { token } = await tokenServices.issueToken({});
+  for (const video of ["V07", "V65", "S14"]) {
+    assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_release_folder_rename", { channelId: "UC_A", video, newName: `1115 ${video} Short`, dryRun: true }), withToken(token))))).isError, false, video);
+  }
+  assert.deepEqual(toolDeps.mediaCalls, ["folders.rename:V07:1115 V07 Short:true", "folders.rename:V65:1115 V65 Short:true", "folders.rename:S14:1115 S14 Short:true"]);
+  toolDeps.mediaCalls.length = 0;
+  const body = await (await endpoint.handle(rpc(call("factory_release_folder_rename", { channelId: "UC_A", video: "S014", newName: "x", dryRun: true }), withToken(token)))).json();
+  assert.equal(Boolean(body.result?.isError ?? body.error), true);
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_release_recode", { channelId: "UC_A", video: "V14", newCode: "S12", dryRun: true }), withToken(token))))).isError, false);
+  assert.deepEqual(toolDeps.mediaCalls, ["folders.recode:V14:S12:true"]);
+});

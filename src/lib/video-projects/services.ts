@@ -2,7 +2,7 @@ import { parseWithSchema } from "@/lib/shared-domain";
 import { reportVersionFor } from "@/lib/shared-video-code";
 import { VIDEO_RESERVATIONS_REPORT_FORMAT, type VideoReservationsReport } from "@/lib/sync-gateway";
 import { uploadRecordFileName } from "@/lib/workspace-videos";
-import { DomainError, isDomainError, type LinkCandidate, type OwnReservation, type VideoProject, type VideoProjectsDeps } from "./contracts";
+import { DomainError, isDomainError, type PendingRecode, type LinkCandidate, type OwnReservation, type VideoProject, type VideoProjectsDeps } from "./contracts";
 import { linkSuggestions } from "./linking";
 import { buildVideoList, knownNumbers, nextVideoNumber, recodeAliases, type VideoListInput } from "./numbering";
 import { createVideoInputSchema, jobVideoInputSchema, linkVideoInputSchema, listVideosInputSchema, videoNumberSchema, videoRefInputSchema, vNumberSchema } from "./schemas";
@@ -18,6 +18,8 @@ export type VideoListResult = {
   workspace: "ok" | "not_configured" | "unavailable";
   /** What «Новый ролик» would give now; null while the workspace cannot be read. */
   nextVideo: string | null;
+  /** BL-263: unfinished `factory_release_recode` journals of the channel (the next real recode call undoes them). */
+  pendingRecodes?: PendingRecode[];
 };
 
 const unavailable = (channelId: string, reason: string) =>
@@ -25,6 +27,7 @@ const unavailable = (channelId: string, reason: string) =>
 
 export function createVideoProjectsService(deps: VideoProjectsDeps) {
   const log = (line: string) => deps.log?.(line);
+  const pendingOf = async (channelId: string): Promise<PendingRecode[]> => (deps.pendingRecodes ? deps.pendingRecodes(channelId).catch(() => []) : []);
   let lastPublished: string | null = null;
 
   async function requireConnected(channelId: string) {
@@ -102,6 +105,10 @@ export function createVideoProjectsService(deps: VideoProjectsDeps) {
     if (gathered.workspace !== "ok") throw unavailable(channelId, gathered.workspaceReason ?? "the workspace folder cannot be read");
     const input = gathered.input;
     const reservations = [...input.own.reservations, ...input.peers.flatMap((p) => p.reservations)].filter((r) => r.channelId === channelId);
+    const pending = (await pendingOf(channelId)).find((p) => p.newCode === video || p.video === video);
+    if (pending) {
+      throw new DomainError({ code: "video_number_taken", message: `${video} belongs to a recode that did not finish (${pending.journal}); the next factory_release_recode call undoes it first.`, details: { channelId, video, source: "recode_pending", journal: pending.journal } });
+    }
     const source = reservations.some((r) => r.video === video || r.replacedBy === video)
       ? "reservation"
       : (input.folders ?? []).some((f) => f.video === video)
@@ -143,6 +150,10 @@ export function createVideoProjectsService(deps: VideoProjectsDeps) {
     const recoded = recodeAliases(channelId, [own, ...others.map((p) => p.reservations)]).get(video);
     if (recoded) {
       throw new DomainError({ code: "video_not_found", message: `${video} was recoded to ${recoded}; link ${recoded} instead.`, details: { channelId, video, reason: "recoded", recodedTo: recoded } });
+    }
+    const pending = (await pendingOf(channelId)).find((p) => p.newCode === video || p.video === video);
+    if (pending) {
+      throw new DomainError({ code: "video_not_found", message: `${video} is in a recode that did not finish (${pending.journal}); nothing is linked to it until that is undone.`, details: { channelId, video, reason: "recode_pending", journal: pending.journal } });
     }
     if (mine && !peerActive) return video;
     const gathered = await gather(channelId);
@@ -236,6 +247,7 @@ export function createVideoProjectsService(deps: VideoProjectsDeps) {
         videos,
         workspace: gathered.workspace,
         nextVideo: gathered.workspace === "ok" ? nextVideoNumber(knownNumbers(gathered.input)) : null,
+        pendingRecodes: await pendingOf(input.channelId),
       };
     },
 

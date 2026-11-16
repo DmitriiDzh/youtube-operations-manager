@@ -1432,20 +1432,26 @@ A second agent role, separate from the channel agents. Technical contract only (
       `reservation | folder | upload | upload_record | registry`) when known (cancelled reservations included); a given V ->
       `validation_failed` (`details.reason: v_numbers_are_given`). A channel worker's `agent_video_create` refuses `video`
       (`validation_failed`, `s_codes_factory_only`). An S conflict between computers has no `suggestedVideo`; `renumber` refuses an S.
-    - **`factory_video_list`**: each video gains `series` (`V | S`) and `recodedTo`; state `recoded` = a V some computer reports cancelled
+    - **`factory_video_list`**: the result gains `pendingRecodes` (`[{ journal, video, newCode, startedAt, done }]`, unfinished recode
+      journals: their S is refused `video_number_taken` source `recode_pending`, links to their V and S `video_not_found` reason
+      `recode_pending`); each video gains `series` (`V | S`) and `recodedTo`; state `recoded` = a V some computer reports cancelled
       with `replacedBy` an S (never in dispute, no `youtubeVideoId`, new links `video_not_found` reason `recoded`, still counts toward
       the next V); its runs count under the S in `factory_video_get_cost`.
     - **`factory_release_recode`** (WRITE, gated unless dryRun; Factory endpoint only; no YouTube call) `{ channelId, video (V), newCode
       (S), dryRun? }` → `{ dryRun, video, newCode, from, to, files: [{ from, to }], manifest: { fields, oldSha256, newSha256 }, records:
       { youtube, cost }, rows: { uploads, reservations, jobs, plans, storyboards, socialJobs, orientation }, frame, peerLinks: [{ deviceId,
-      hostName, kind: reservation | cost_run, count }], changed, readBack: verified | mismatch | null, recoveredFrom? }`. Renames the
+      hostName, kind: reservation | cost_run, count }], changed, readBack: verified | mismatch | null, readBackProblems? (with mismatch:
+      package_not_found | leftover_names | rows | video_list | old_folder_exists -- stop and inspect), recoveredFrom?, clearedJournals?
+      (finished journals removed, never undone), warnings? (`journal_not_removed: <path>`) }`. **Precondition:** both computers run this
+      build before the first real run (an older build freezes this computer's v2 reports; the peer's build is not visible here). Renames the
       folder and every file named after the code as a whole token (`<C>_*`, `<C> *`, `<C>.*`, `Thumbnail_<C>(_X|_base).jpg|jpeg|png`,
       `Thumbnail_<C>_A.logo.json`, `work/<C>_*`), rewrites the manifest's `video` and file fields (never title, description, tags,
       localizations) and the records' `video`, then in one transaction this computer's upload rows (code, paths, new manifest SHA-256;
       `video_id` kept), reservations (V cancelled `replacedBy` S; S in work), job/plan links, finished cross-post jobs, the orientation
       memo; storyboards follow. Journal + backups first; a failure undoes every done step. Errors: `release_recode_invalid` (400),
-      `_not_found` (404), `_ambiguous`, `_not_short` (reason `folder | horizontal`), `_target_exists`, `_busy` (reason `upload_here |
-      cross_post | live_rotation | video_list_unavailable | step_failed`, `details.step`), `_elsewhere`, `_approval_standing` (reason
+      `_not_found` (404), `_ambiguous`, `_not_short` (reason `folder | horizontal`), `_target_exists`, `_busy` (reason `upload_here | upload_queued |
+      job_running | cross_post | live_rotation | video_list_unavailable | step_failed` (`details.step`) `| recovery_pending`
+      (`details.journal`: an unfinished journal; a dry run is refused, the next real call undoes it)), `_elsewhere`, `_approval_standing` (reason
       `package_review | plan_slot | plan_slot_date`) (409), `_rollback_failed` (500, `details.journal`).
     - Sync: the `publishing-uploads`, `video-reservations` and `video-costs` reports are version 2 only when they hold an S code (else
       version 1 exactly as before); this build reads both.

@@ -5313,5 +5313,8 @@ from the channel's own workspace images, behind the same identity check and Live
   value), relink storyboards. A failure undoes the done steps (and the running one) in reverse -- each undo idempotent
   (`undoVideoRecodeRows` puts back only values that still are the new ones); a journal left by a crash is undone at the next call.
   Then caches invalidated, the three reports published, read-back (scan, file names, rows, the video list's alias and next V) and audit
-  `release.recoded`. Composition (`src/composition/release-recode.ts`) supplies the video list, package-review approvals, plan slot
+  `release.recoded` (a `mismatch` lists `readBackProblems`). A finished recode writes `completed: true` into its journal before removing
+  it; a completed journal (or one whose `done` covers every step) is only cleared, never undone. Unfinished journals are read by the
+  shared `src/lib/release-recode-journals/` module, so `video-projects` blocks their codes and lists them (`pendingRecodes`) without
+  importing publishing. Composition (`src/composition/release-recode.ts`) supplies the video list, package-review approvals, plan slot
   decisions, storyboards, peer rows and the other reports, so publishing imports none of those modules. No YouTube client anywhere.

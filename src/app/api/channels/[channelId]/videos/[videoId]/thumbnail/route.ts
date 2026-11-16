@@ -5,7 +5,7 @@ import { authOptions } from "@/lib/auth";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { isDomainError } from "@/lib/shared-domain";
 import { createVideoThumbnailsCore } from "@/lib/video-thumbnails";
-import { isVideoCode } from "@/lib/shared-video-code";
+import { isReportVCode, isStrictSCode } from "@/lib/shared-video-code";
 
 const channelAccess = createChannelAccessCore();
 
@@ -23,9 +23,9 @@ export async function GET(request: Request, { params }: Params) {
   try {
     const { channelId, videoId } = await params;
     await channelAccess.assertActiveChannel({ userId: session.user.id, channelId });
-    // `vn` (optional, e.g. V4 or S14; BL-263: the shared strict code): the video's number as the screen knows it -- only orders the folders, never widens what is read.
+    // `vn` (optional, e.g. V4 or S14; BL-263: the V spellings accepted before plus a strict S): the video's number as the screen knows it -- only orders the folders, never widens what is read.
     const vn = new URL(request.url).searchParams.get("vn");
-    return NextResponse.json(await createVideoThumbnailsCore().listCandidates(channelId, videoId, vn && isVideoCode(vn) ? vn : null));
+    return NextResponse.json(await createVideoThumbnailsCore().listCandidates(channelId, videoId, vn && (isReportVCode(vn) || isStrictSCode(vn)) ? vn : null));
   } catch (error) {
     return errorResponse(error);
   }

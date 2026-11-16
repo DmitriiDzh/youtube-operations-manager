@@ -1043,7 +1043,9 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
     подключение `src/composition/release-recode.ts`, строки — `db.ts` `snapshotVideoRecodeRows` / `recodeVideoRows` /
     `undoVideoRecodeRows`): разовая локальная перекодировка шортса V → S — файлы по имени кода (целым токеном), манифест (только
     `video` и файловые поля), записи, папка, строки этого компьютера одной транзакцией, раскадровки; журнал с копиями, откат при сбое,
-    восстановление после падения; без вызова YouTube. Agent API 4.21.0, Producer API 1.23.0.
+    восстановление после падения (законченный журнал `completed` только удаляется, не откатывается; незаконченный блокирует коды
+    S/V и виден в `pendingRecodes`, модуль `src/lib/release-recode-journals/`); без вызова YouTube. Предусловие: оба компьютера на
+    этой сборке до первого настоящего запуска. Agent API 4.21.0, Producer API 1.23.0.
   - BL-261 (owner TG 3521 через Оператора): `factory_release_folder_rename` (Factory API 1.48.0) — переименование папки пакета в
     `04 Videos/<месяц>/` (`src/lib/publishing/release-folder-rename.ts`, подключение `src/composition/release-folder-rename.ts`): имя
     должно содержать номер видео; папка переезжает целиком, строки загрузок этого компьютера (очередь и законченные) переписываются
