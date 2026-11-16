@@ -417,6 +417,8 @@ export const content = {
   "publishingUploads.moveUp": "Move up in the queue",
   "publishingUploads.moveDown": "Move down in the queue",
   "publishingUploads.moveFailed": "Could not move the upload.",
+  "publishingUploads.cancelled.media_changed": "Stopped before anything was sent: the package now names another video file, which waits for the owner's review.",
+  "publishingUploads.cancelled.package_slot_changed": "Stopped before anything was sent: the package was re-packaged for another plan slot.",
   "publishingUploads.failed.unknown_outcome": "Outcome unknown: the last chunk was sent, but YouTube never confirmed the upload ({reason}). Open Studio: if the video is there, do nothing — the package stays taken; if it is not, press \"No video — allow uploading again\".",
   "publishingUploads.failed.package_changed": "The package or its video file changed after the approval, so the upload stopped. Check the package and approve again.",
   "publishingUploads.failed.video_hash_mismatch": "The video file no longer matched the SHA-256 in its manifest, so the upload stopped before anything was sent. It is not retried by itself: check the file, or approve the package yourself.",

@@ -3,7 +3,7 @@ import test from "node:test";
 import type { StoredPublishingUpload } from "@/lib/db";
 import { DomainError } from "@/lib/shared-domain";
 import { DEFAULT_PUBLISHING_SETTINGS, type PublishingSettings } from "./settings";
-import { classifyUploadError, createUploadRunner, holdsPackage, holdsSlot, isCancellable, isPublishAtSet, readBackMismatches, type ApprovedPackage, type InsertResource, type UploadRunnerDeps, type VideoReadBack } from "./upload-runner";
+import { classifyUploadError, createUploadRunner, holdsPackage, isPlanChangeCancel, holdsSlot, isCancellable, isPublishAtSet, readBackMismatches, type ApprovedPackage, type InsertResource, type UploadRunnerDeps, type VideoReadBack } from "./upload-runner";
 
 // BL-182 stage 2 -- the upload runner against fakes (no real YouTube call, DEVELOPMENT_PLAYBOOK §6.11). Requirements: the
 // acceptance list in upload-runner.acceptance.test.ts (FO-REQ-0023 §4 B5–B7 and §5; ADR 0037; owner msgs 2725/2727; owner msgs
@@ -1657,4 +1657,13 @@ test("AC-MG-21: a row that froze the mp4 sha256 is refused (VIDEO_HASH_MISMATCH)
   await h.runAll();
   assert.deepEqual([h.row().status, h.yt.log], ["failed", []]);
   assert.equal(h.row().errorCode, "video_hash_mismatch");
+});
+
+// MEDIA_GATE_PLAN.md §3.2: a row cancelled package_slot_changed (nothing sent) is a plan change -- it never makes the package "tried",
+// so the re-packaged video is queued again under the plan's rules (the automatic upload / the Producer's add drop such rows).
+test("BL-265 §3.2: only a cancelled package_slot_changed row without a video id is a plan change (not a try)", () => {
+  assert.equal(isPlanChangeCancel({ status: "cancelled", errorCode: "package_slot_changed", videoId: null }), true);
+  assert.equal(isPlanChangeCancel({ status: "cancelled", errorCode: "media_changed", videoId: null }), false);
+  assert.equal(isPlanChangeCancel({ status: "cancelled", errorCode: "owner_review_withdrawn", videoId: null }), false);
+  assert.equal(isPlanChangeCancel({ status: "failed", errorCode: "package_slot_changed", videoId: null }), false);
 });

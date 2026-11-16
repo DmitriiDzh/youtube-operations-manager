@@ -178,7 +178,12 @@ export function createPackageMetadata(deps: PackageMetadataDeps) {
     let thumbnail: PackageMetadataPreview["thumbnail"] = null;
     if (found.thumbnailPath) {
       const [current, last] = await Promise.all([deps.fileSha256(channelId, found.thumbnailPath), deps.lastThumbnailSha256(channelId, found.videoId)]);
-      const sentPath = doneRow ? (JSON.parse(doneRow.packageJson) as { thumbnailFile?: string }).thumbnailFile ?? null : null;
+      let sentPath: string | null = null;
+      try {
+        sentPath = doneRow ? ((JSON.parse(doneRow.packageJson) as { thumbnailFile?: string }).thumbnailFile ?? null) : null;
+      } catch {
+        // a damaged row: unknown
+      }
       const differs = current !== null && last !== null ? current !== last : sentPath !== null ? sentPath !== found.thumbnailPath : null;
       thumbnail = { path: found.thumbnailPath, differs };
     }

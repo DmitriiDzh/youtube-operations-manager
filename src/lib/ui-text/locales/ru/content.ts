@@ -421,6 +421,8 @@ export const content: Record<keyof typeof en, string> = {
   "publishingUploads.moveUp": "Выше в очереди",
   "publishingUploads.moveDown": "Ниже в очереди",
   "publishingUploads.moveFailed": "Не удалось передвинуть загрузку.",
+  "publishingUploads.cancelled.media_changed": "Остановлено до отправки: пакет теперь указывает другой файл видео, он ждёт проверки владельца.",
+  "publishingUploads.cancelled.package_slot_changed": "Остановлено до отправки: пакет перепакован под другой слот плана.",
   "publishingUploads.failed.unknown_outcome": "Исход неизвестен: последний кусок отправлен, но YouTube так и не подтвердил загрузку ({reason}). Откройте Studio: если видео там есть, ничего не делайте — пакет останется занятым; если видео нет, нажмите «Видео нет — разрешить загрузить снова».",
   "publishingUploads.failed.package_changed": "Пакет или файл видео изменился после подтверждения — загрузка остановлена. Проверьте пакет и подтвердите снова.",
   "publishingUploads.failed.video_hash_mismatch": "Файл видео перестал совпадать с SHA-256 из манифеста — загрузка остановлена до отправки. Сама она не повторится: проверьте файл или подтвердите пакет вручную.",

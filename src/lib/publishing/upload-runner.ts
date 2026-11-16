@@ -24,6 +24,13 @@ export const OWNER_REVIEW_WITHDRAWN = "owner_review_withdrawn";
 export const MEDIA_CHANGED = "media_changed";
 /** BL-265 (ADR 0072 §4): a queued row whose manifest now names another plan slot -- cancelled, nothing sent (AC-MG-16). */
 export const PACKAGE_SLOT_CHANGED = "package_slot_changed";
+/**
+ * BL-265 (MEDIA_GATE_PLAN.md §3.2): a row cancelled `package_slot_changed` before anything was sent is a plan change, not a try: it
+ * never makes its package "tried", so the automatic upload or the Producer queues the re-packaged video again under the plan's rules.
+ */
+export function isPlanChangeCancel(row: { status: string; errorCode: string | null; videoId: string | null }): boolean {
+  return row.status === "cancelled" && row.errorCode === PACKAGE_SLOT_CHANGED && row.videoId === null;
+}
 /** BL-265: how long a queued row waits for a re-packaged manifest that cannot be read before it fails `package_changed` (AC-MG-18). */
 export const REPACKAGE_WAIT_MS = 10 * 60_000;
 const REPACKAGE_RETRY_MS = 60_000;

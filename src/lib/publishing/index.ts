@@ -77,7 +77,7 @@ import { createPackageScan, isPackageThumbnailPath, VIDEOS_FOLDER, type PackageS
 import { imageKindOf } from "./packages";
 import { createPackageComposer } from "./package-composer";
 import { authorizedOAuth, createPublishingFinishWrites, createPublishingYoutubeWrites, freshAccessToken } from "./adapters/youtube-writes";
-import { ACTIVE_UPLOAD_STATUSES, createUploadRunner, holdsPackage, holdsSlot, syntheticMediaOf, UNKNOWN_OUTCOME_RELEASED, type ApprovedPackage, type UploadRunnerDeps } from "./upload-runner";
+import { ACTIVE_UPLOAD_STATUSES, createUploadRunner, isPlanChangeCancel, holdsPackage, holdsSlot, syntheticMediaOf, UNKNOWN_OUTCOME_RELEASED, type ApprovedPackage, type UploadRunnerDeps } from "./upload-runner";
 import { createPlanSchedule, isVideoNotFound } from "./plan-schedule";
 import type { PublishingSettings } from "./settings";
 import { createUploadApproval } from "./upload-approval";
@@ -699,7 +699,9 @@ export function createAutoPrivateUploadCore(options: { slotDecisions?: (channelI
       // BL-257 (ADR 0070 §5, AC-PR-11), BL-265 (ADR 0072 §6): the rows here keyed by their media (by the manifest for an older row);
       // a key the owner approved in package review whose rows were all cancelled before reaching YouTube, before that approval, is
       // not "tried" (the cancelled WWE V6-V11); any other row keeps it the owner's. The rule is package-reviews' own.
-      return triedPackagesOf(triedKeysOf(await ownerReviewStateFor(channelId), await listUploadRowsForTriedRule(channelId)));
+      // A row cancelled because the package moved to another slot (nothing sent) is no try (BL-265, plan §3.2).
+      const rows = (await listUploadRowsForTriedRule(channelId)).filter((row) => !isPlanChangeCancel(row));
+      return triedPackagesOf(triedKeysOf(await ownerReviewStateFor(channelId), rows));
     },
     async videoFile(channelId, relativePath) {
       const workspace = await files.workspace(channelId);
@@ -802,12 +804,17 @@ export function createUploadQueueControlCore(
     async blockedHashes(channelId) {
       // The Producer's own cancels free their key (review #4); every other row blocks it -- by its media when it froze the mp4's
       // sha256, else by its manifest (BL-265, ADR 0072 §6).
-      const all = await listUploadRowsForTriedRule(channelId);
+      const all = (await listUploadRowsForTriedRule(channelId)).filter((row) => !isPlanChangeCancel(row));
       const producerCancelled = new Set(all.filter((row) => row.status === "cancelled" && row.errorCode === CANCELLED_BY_PRODUCER && row.queuedBy === "producer").map((row) => row.id));
       // PRD-REQ-0195 C (owner TG 2340 via the Producer, 2026-11-16): the same exception as the automatic upload (BL-257, ADR 0070
       // §5) -- a key the owner approved in package review whose rows here were all cancelled before reaching YouTube, before that
       // approval, may be queued by the Producer too (WWE V7: upload_already_tried). The rule is package-reviews' own.
-      return triedPackagesOf(triedKeysOf(await ownerReviewStateFor(channelId), all.filter((row) => !producerCancelled.has(row.id))));
+      // As before BL-265: the exception is judged over EVERY row of the key (a Producer row made after the approval keeps it tried);
+      // only then are the keys left that some row other than a Producer cancel holds.
+      const state = await ownerReviewStateFor(channelId);
+      const tried = triedPackagesOf(triedKeysOf(state, all));
+      const held = triedPackagesOf(triedKeysOf({ ...state, required: false }, all.filter((row) => !producerCancelled.has(row.id))));
+      return { manifests: new Set([...held.manifests].filter((k) => tried.manifests.has(k))), media: new Set([...held.media].filter((k) => tried.media.has(k))) };
     },
     ...(options.slotDecisions ? { slotDecisions: options.slotDecisions } : {}),
     async videoFile(channelId, relativePath) {
