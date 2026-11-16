@@ -445,6 +445,21 @@ export type DomainErrorCode =
   | "package_metadata_conflict"
   // Review fix 2: the package was re-packaged between the preview and the apply.
   | "package_metadata_manifest_changed"
+  // BL-269 (ADR 0074): the captions writer -- the package's captions break a rule (details.reason) or its file is missing; an English
+  // track is already there (foreign, or the app's own with another file) and the call is no explicit overwrite; an overwrite finds
+  // more than one English track, only a forced one, or a draft; the previewed track is no longer the one to replace; the channel's
+  // grant lacks youtube.force-ssl; this computer's upload of the video is still running its steps; the package states no captions.
+  | "captions_invalid"
+  | "captions_missing"
+  | "captions_foreign_track"
+  | "captions_own_track_differs"
+  | "captions_track_ambiguous"
+  | "captions_track_forced"
+  | "captions_track_draft"
+  | "captions_track_changed"
+  | "captions_scope_missing"
+  | "captions_step_pending"
+  | "captions_not_in_package"
   | "video_in_dispute"
   // BL-263 (ADR 0071 §2): a given S code is already known on the channel (details.source).
   | "video_number_taken"

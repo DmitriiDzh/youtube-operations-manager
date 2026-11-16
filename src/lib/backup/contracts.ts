@@ -67,7 +67,20 @@ export type VideoThumbnailBackupSnapshot = {
   image: { size: string; url: string; contentType: string; base64: string } | null;
 };
 
-export type BackupSnapshot = LocalizationBackupSnapshot | VideoFieldsBackupSnapshot | ChannelLocalizationsBackupSnapshot | ChannelBrandingBackupSnapshot | VideoThumbnailBackupSnapshot;
+/**
+ * BL-269 (ADR 0074 §6, §10): the captions writer backs up a video's caption tracks as listed before its write and the bytes it is about
+ * to send; an explicit overwrite also saves the replaced track's snippet and its current content (`captions.download`, base64), so the
+ * old text can be put back by hand.
+ */
+export type VideoCaptionsBackupSnapshot = {
+  kind: "video_captions";
+  mode: "insert" | "update";
+  tracks: Array<{ id: string; language: string | null; name: string | null; trackKind: string | null; isDraft: boolean | null; status: string | null; lastUpdated: string | null }>;
+  sending: { fileName: string; sha256: string; base64: string };
+  replaced: { trackId: string; language: string | null; name: string | null; lastUpdated: string | null; base64: string } | null;
+};
+
+export type BackupSnapshot = LocalizationBackupSnapshot | VideoFieldsBackupSnapshot | ChannelLocalizationsBackupSnapshot | ChannelBrandingBackupSnapshot | VideoThumbnailBackupSnapshot | VideoCaptionsBackupSnapshot;
 
 export type BackupRecord = {
   path: string;
