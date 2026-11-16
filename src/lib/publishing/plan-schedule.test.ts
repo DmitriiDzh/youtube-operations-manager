@@ -229,11 +229,11 @@ test("BL-267 review #1 scenarios A/B: a template date never moves a date this co
   assert.deepEqual(a.state.writes, []);
   // B (manifest re-pointed): the package now names another slot on a template position at another time; that slot's template decision
   // names vid1 (by its video id) -- the row keeps its own date.
-  const b = multiHarness(dated, new Map<string, SlotDecision>([["old", { kind: "pending" }], ["new", { ...byVideo("2026-11-06T15:00:00.000Z"), source: "template" }]]));
+  const b = multiHarness(dated, new Map<string, SlotDecision>([["old", { kind: "pending" }], ["new", { kind: "approved", publishAt: "2026-11-06T15:00:00.000Z", package: { video: "V73", manifestSha256: "mf-aa", videoId: "vid1" }, source: "template" }]]));
   assert.deepEqual(await b.schedule.tick(), { changed: 0 });
   assert.deepEqual(b.state.writes, []);
   // The same with the owner's own date: moved (his explicit word).
-  const owner = multiHarness(dated, new Map<string, SlotDecision>([["old", { kind: "pending" }], ["new", { ...byVideo("2026-11-06T15:00:00.000Z"), source: "owner" }]]));
+  const owner = multiHarness(dated, new Map<string, SlotDecision>([["old", { kind: "pending" }], ["new", { kind: "approved", publishAt: "2026-11-06T15:00:00.000Z", package: { video: "V73", manifestSha256: "mf-aa", videoId: "vid1" }, source: "owner" }]]));
   await owner.schedule.tick();
   assert.deepEqual(owner.state.writes, ["2026-11-06T15:00:00.000Z"]);
 });
