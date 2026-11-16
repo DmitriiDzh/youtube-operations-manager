@@ -143,8 +143,9 @@ plan contents.
   - Each channel that is not active gets one entry per type of work:
     - **review:** "Media: N tracks waiting for review (P passed, R rejected)", plus the waiting count of each wave, for
       example "C13 47 · C14 38";
-    - one entry per plan and notice kind: `stage_complete`, `plan_complete`, `attempts_exhausted`, `budget_80` and
-      `budget_100`. A plan's completed stages are one entry that names them all.
+    - one entry per plan and notice kind: `attempts_exhausted`, `budget_80` and `budget_100`. `stage_complete` and
+      `plan_complete` were dropped from the bell (owner msg 4535, 2026-11-16: the bell holds what waits for the owner;
+      the plan card still shows them).
   - Each entry shows the channel's avatar and name.
   - The counts update in place on every poll. Nothing is posted per track or per event.
 - **AC-BL-05: open the place.**
