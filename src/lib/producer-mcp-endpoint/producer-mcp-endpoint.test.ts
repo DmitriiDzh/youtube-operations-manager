@@ -1184,10 +1184,13 @@ test("BL-265 AC-MG-34: producer_video_metadata_update reaches only the session's
   const result = await toolResult(await endpoint.handle(rpc(call("producer_video_metadata_update", args), bearer(token))));
   assert.equal(result.isError, false, result.text);
   assert.equal(payloadOf(result.text).forChannelId, "UC_PR_X");
-  for (const bad of [{ channelId: "UC_PR_X" }, { video: "V61" }, { ...args, title: "free text" }, { ...args, overwrite: ["title"] }]) {
+  // Review fix 2: an optional pin to the dry run's manifest, 64 hex digits.
+  const pinned = { channelId: "UC_PR_X", video: "V61", expectedManifestSha256: "a".repeat(64) };
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("producer_video_metadata_update", pinned), bearer(token))))).isError, false);
+  for (const bad of [{ channelId: "UC_PR_X" }, { video: "V61" }, { ...args, title: "free text" }, { ...args, overwrite: ["title"] }, { ...args, expectedManifestSha256: "V61" }]) {
     const refusedResult = await toolResult(await endpoint.handle(rpc(call("producer_video_metadata_update", bad), bearer(token))));
     assert.equal(refusedResult.isError, true, JSON.stringify(bad));
   }
-  assert.deepEqual(metadataCalls, [args]);
+  assert.deepEqual(metadataCalls, [args, pinned]);
   assert.deepEqual([calls[0].tool, calls[0].channelId, calls[0].outcome], ["producer_video_metadata_update", "UC_PR_X", "ok"]);
 });

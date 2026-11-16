@@ -10,7 +10,7 @@ export type PackageMetadataRouteDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;
   assertActiveChannel: (args: { userId: string; channelId: string }) => Promise<void>;
   preview: (channelId: string, input: { video: string }, actor: PackageMetadataActor) => Promise<unknown>;
-  apply: (channelId: string, input: { video: string; expectedEtag?: string; overwrite?: string[] }, actor: PackageMetadataActor) => Promise<unknown>;
+  apply: (channelId: string, input: { video: string; expectedEtag?: string; expectedManifestSha256?: string; overwrite?: string[] }, actor: PackageMetadataActor) => Promise<unknown>;
 };
 
 function errorResponse(error: unknown) {
@@ -24,7 +24,7 @@ function errorResponse(error: unknown) {
 
 /**
  * BL-265 (ADR 0072 §5, §8; AGENTS.md §F «Package metadata after upload»): the owner's packaging fix of an uploaded video --
- * `{ video, dryRun? }` previews (every read and check, the three-way diff, no write); `{ video, expectedEtag, overwrite? }` applies the
+ * `{ video, dryRun? }` previews (every read and check, the three-way diff, no write); `{ video, expectedEtag, expectedManifestSha256, overwrite? }` applies the
  * package's current title / description / tags through video-details (identity check, backup, Live writes, read-back, audit). The
  * owner's session and the active channel only (remote allowed, like the Details card).
  */
@@ -51,7 +51,19 @@ export function createPackageMetadataHandlers(
         const actor: PackageMetadataActor = { kind: "owner", userId };
         if (body.dryRun === true) return NextResponse.json(await deps.preview(channelId, { video: body.video }, actor));
         const overwrite = Array.isArray(body.overwrite) ? body.overwrite.filter((f): f is string => typeof f === "string") : [];
-        return NextResponse.json(await deps.apply(channelId, { video: body.video, ...(typeof body.expectedEtag === "string" ? { expectedEtag: body.expectedEtag } : {}), overwrite }, actor));
+        return NextResponse.json(
+          await deps.apply(
+            channelId,
+            {
+              video: body.video,
+              ...(typeof body.expectedEtag === "string" ? { expectedEtag: body.expectedEtag } : {}),
+              // Review fix 2: the manifest the preview showed (the service requires it of the owner).
+              ...(typeof body.expectedManifestSha256 === "string" ? { expectedManifestSha256: body.expectedManifestSha256 } : {}),
+              overwrite,
+            },
+            actor
+          )
+        );
       } catch (error) {
         return errorResponse(error);
       }

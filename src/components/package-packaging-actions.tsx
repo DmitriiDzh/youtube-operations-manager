@@ -13,6 +13,7 @@ import { useUiText } from "./ui-text-provider";
 type Field = "title" | "description" | "tags";
 type Preview = {
   video: string;
+  manifestSha256: string;
   videoId: string;
   etag: string | null;
   baseline: "upload_row" | "metadata_apply" | "unknown";
@@ -74,7 +75,7 @@ export function PackagingActions({ channelId, video, manifestSha256, differs, on
     setBusy(true);
     setError(null);
     try {
-      const result = (await post("/publishing/package-metadata", { video, expectedEtag: preview.etag ?? "", overwrite })) as { changed?: boolean; written?: string[] };
+      const result = (await post("/publishing/package-metadata", { video, expectedEtag: preview.etag ?? "", expectedManifestSha256: preview.manifestSha256, overwrite })) as { changed?: boolean; written?: string[] };
       setOpen(null);
       setNotice(result.changed ? t("packagingActions.applied", { count: result.written?.length ?? 0 }) : t("packagingActions.nothingToApply"));
       onChanged();

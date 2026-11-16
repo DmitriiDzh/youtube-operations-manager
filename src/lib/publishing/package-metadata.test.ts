@@ -67,7 +67,7 @@ const doneRow = (texts: { title: string; description: string; tags: string[] } =
 
 function harness(options: {
   pkg?: ReleasePackage;
-  now?: VideoDetailsSnapshot | "not_found";
+  now?: VideoDetailsSnapshot | "not_found" | (() => VideoDetailsSnapshot);
   rows?: PackageMetadataUploadRow[];
   videoId?: string | null;
   channelTags?: string[];
@@ -86,7 +86,8 @@ function harness(options: {
         : "not_found",
     channelTags: async () => options.channelTags ?? [],
     uploadRows: async () => options.rows ?? [doneRow()],
-    lastApplied: async () => null,
+    // As production: the latest package_metadata.applied audit's afterTexts.
+    lastApplied: async () => (audits.filter((a) => a.detail.event === "package_metadata.applied").at(-1)?.detail.afterTexts as never) ?? null,
     lastThumbnailSha256: async () => null,
     fileSha256: async () => "t".repeat(64),
     assertDeviceAvailable: async () => {
@@ -96,7 +97,7 @@ function harness(options: {
     credentialRef: async (_c, actor) => ({ userId: actor.kind === "owner" ? actor.userId : "u-connected" }),
     snapshot: async () => {
       calls.push("read");
-      return options.now ?? snapshot();
+      return typeof options.now === "function" ? options.now() : (options.now ?? snapshot());
     },
     localizationLanguages: async () => {
       calls.push("languages");
@@ -113,6 +114,7 @@ function harness(options: {
   return { service: createPackageMetadata(deps), calls, applied, audits };
 }
 
+const M = "m".repeat(64);
 const refusedWith = (code: string) => (error: unknown) => isDomainError(error) && error.code === code;
 
 test("AC-MG-22: the preview makes every read and check, no backup and no write; it returns the diff and 54 quota units", async () => {
@@ -130,7 +132,7 @@ test("AC-MG-22: the preview makes every read and check, no backup and no write; 
 
 test("AC-MG-26: success -- only the manifest's title/description/tags (description as YouTube keeps it), the preview's etag, untouched fields verified, the localization set read before and after, audited", async () => {
   const h = harness();
-  const result = await h.service.apply(CH, { video: "V61", expectedEtag: "etag-1" }, OWNER);
+  const result = await h.service.apply(CH, { video: "V61", expectedEtag: "etag-1", expectedManifestSha256: M }, OWNER);
   assert.deepEqual(h.applied.length, 1);
   const call = h.applied[0];
   assert.deepEqual(call.patch, { title: "New title", description: "New description", tags: ["wwe", "new"] });
@@ -147,20 +149,20 @@ test("AC-MG-26: success -- only the manifest's title/description/tags (descripti
 
 test("AC-MG-23: a wrong channel identity in the write path (video-details' assertWriteChannel) -> the error, nothing written", async () => {
   const h = harness({ applyFails: new DomainError({ code: "WRITE_CHANNEL_MISMATCH", message: "wrong channel" }) });
-  await assert.rejects(h.service.apply(CH, { video: "V61", expectedEtag: "etag-1" }, OWNER), refusedWith("WRITE_CHANNEL_MISMATCH"));
+  await assert.rejects(h.service.apply(CH, { video: "V61", expectedEtag: "etag-1", expectedManifestSha256: M }, OWNER), refusedWith("WRITE_CHANNEL_MISMATCH"));
   assert.deepEqual(h.applied, []);
   assert.equal(h.audits.some((a) => a.detail.event === "package_metadata.applied"), false);
 });
 
 test("AC-MG-24 (service): Live writes off -> video-details refuses before its write; the error is returned, nothing recorded as applied", async () => {
   const h = harness({ applyFails: new DomainError({ code: "live_writes_disabled", message: "off" }) });
-  await assert.rejects(h.service.apply(CH, { video: "V61", expectedEtag: "etag-1" }, OWNER), refusedWith("live_writes_disabled"));
+  await assert.rejects(h.service.apply(CH, { video: "V61", expectedEtag: "etag-1", expectedManifestSha256: M }, OWNER), refusedWith("live_writes_disabled"));
   assert.deepEqual(h.applied, []);
 });
 
 test("AC-MG-25: no such video on YouTube -> video_missing; another channel's video -> video_not_in_channel; nothing written", async () => {
   const missing = harness({ now: "not_found" });
-  await assert.rejects(missing.service.apply(CH, { video: "V61", expectedEtag: "etag-1" }, OWNER), refusedWith("video_missing"));
+  await assert.rejects(missing.service.apply(CH, { video: "V61", expectedEtag: "etag-1", expectedManifestSha256: M }, OWNER), refusedWith("video_missing"));
   const foreign = harness({ now: snapshot({ channelId: "UC_other" }) });
   await assert.rejects(foreign.service.preview(CH, { video: "V61" }, OWNER), refusedWith("video_not_in_channel"));
   assert.deepEqual([...missing.calls, ...foreign.calls].filter((c) => c === "write"), []);
@@ -168,19 +170,19 @@ test("AC-MG-25: no such video on YouTube -> video_missing; another channel's vid
 
 test("AC-MG-27: YouTube's audio language zxx -> stated in the result and not verified afterwards (it is left out of the write, RISK-102)", async () => {
   const h = harness({ now: snapshot({ defaultAudioLanguage: "zxx" }) });
-  const result = await h.service.apply(CH, { video: "V61", expectedEtag: "etag-1" }, OWNER);
+  const result = await h.service.apply(CH, { video: "V61", expectedEtag: "etag-1", expectedManifestSha256: M }, OWNER);
   assert.equal(result.audioLanguageLeftOut, true);
   assert.deepEqual(h.applied[0].verifyUnchanged, ["categoryId", "defaultLanguage", "privacyStatus", "publishAt"]);
 });
 
 test("AC-MG-28: the read-back finds an untouched field changed (video-details throws update_failed) -> never a success", async () => {
   const h = harness({ applyFails: new DomainError({ code: "update_failed", message: "changed: defaultLanguage", details: { changedUntouched: ["defaultLanguage"] } }) });
-  await assert.rejects(h.service.apply(CH, { video: "V61", expectedEtag: "etag-1" }, OWNER), (error: unknown) => isDomainError(error) && error.code === "update_failed" && JSON.stringify(error.details).includes("defaultLanguage"));
+  await assert.rejects(h.service.apply(CH, { video: "V61", expectedEtag: "etag-1", expectedManifestSha256: M }, OWNER), (error: unknown) => isDomainError(error) && error.code === "update_failed" && JSON.stringify(error.details).includes("defaultLanguage"));
 });
 
 test("ADR 0072 §5: the localization languages changed across the write -> update_failed (audited verified: false), never a success", async () => {
   const h = harness({ languages: [["de", "en"], ["en"]] });
-  await assert.rejects(h.service.apply(CH, { video: "V61", expectedEtag: "etag-1" }, OWNER), refusedWith("update_failed"));
+  await assert.rejects(h.service.apply(CH, { video: "V61", expectedEtag: "etag-1", expectedManifestSha256: M }, OWNER), refusedWith("update_failed"));
   const verification = h.audits.find((a) => a.detail.event === "package_metadata.applied");
   assert.equal(verification?.detail.verified, false);
 });
@@ -190,11 +192,11 @@ test("AC-MG-29: YouTube's title differs from both the uploaded and the manifest 
   const h = harness({ now: changedInStudio });
   const preview = await h.service.preview(CH, { video: "V61" }, OWNER);
   assert.equal(preview.fields.find((f) => f.field === "title")?.status, "conflict");
-  const plain = await h.service.apply(CH, { video: "V61", expectedEtag: "etag-1" }, OWNER);
+  const plain = await h.service.apply(CH, { video: "V61", expectedEtag: "etag-1", expectedManifestSha256: M }, OWNER);
   assert.deepEqual([plain.written, plain.skippedConflicts], [["description", "tags"], ["title"]]);
   assert.equal("title" in h.applied[0].patch, false);
   const overridden = harness({ now: changedInStudio });
-  const forced = await overridden.service.apply(CH, { video: "V61", expectedEtag: "etag-1", overwrite: ["title"] }, OWNER);
+  const forced = await overridden.service.apply(CH, { video: "V61", expectedEtag: "etag-1", expectedManifestSha256: M, overwrite: ["title"] }, OWNER);
   assert.deepEqual(forced.written, ["title", "description", "tags"]);
   assert.equal(overridden.applied[0].patch.title, "New title");
   const producer = harness({ now: changedInStudio });
@@ -204,7 +206,7 @@ test("AC-MG-29: YouTube's title differs from both the uploaded and the manifest 
 
 test("AC-MG-30: the etag changed between preview and apply -> video-details' video_details_conflict, no write", async () => {
   const h = harness({ applyFails: new DomainError({ code: "video_details_conflict", message: "changed" }) });
-  await assert.rejects(h.service.apply(CH, { video: "V61", expectedEtag: "etag-0" }, OWNER), refusedWith("video_details_conflict"));
+  await assert.rejects(h.service.apply(CH, { video: "V61", expectedEtag: "etag-0", expectedManifestSha256: M }, OWNER), refusedWith("video_details_conflict"));
   assert.deepEqual(h.applied, []);
   // the owner must name the etag his preview showed
   await assert.rejects(harness().service.apply(CH, { video: "V61" }, OWNER), refusedWith("validation_failed"));
@@ -213,7 +215,7 @@ test("AC-MG-30: the etag changed between preview and apply -> video-details' vid
 test("AC-MG-31: an upload row of that video here that has not finished its read-back -> upload_steps_pending, no read, no write", async () => {
   for (const status of ["queued", "uploading", "processing", "finishing", "paused"]) {
     const h = harness({ rows: [{ ...doneRow(), status, videoId: status === "finishing" ? VIDEO_ID : null }] });
-    await assert.rejects(h.service.apply(CH, { video: "V61", expectedEtag: "etag-1" }, OWNER), refusedWith("upload_steps_pending"), status);
+    await assert.rejects(h.service.apply(CH, { video: "V61", expectedEtag: "etag-1", expectedManifestSha256: M }, OWNER), refusedWith("upload_steps_pending"), status);
     assert.deepEqual(h.calls, [], status);
   }
 });
@@ -221,18 +223,18 @@ test("AC-MG-31: an upload row of that video here that has not finished its read-
 test("AC-MG-32: a device handoff (operation lock) or recovery mode -> refused before any read, backup or write", async () => {
   for (const code of ["operation_lock_held", "device_in_recovery_mode"]) {
     const h = harness({ device: async () => Promise.reject(Object.assign(new Error(code), { code })) });
-    await assert.rejects(h.service.apply(CH, { video: "V61", expectedEtag: "etag-1" }, OWNER), (error: unknown) => (error as { code?: string }).code === code);
+    await assert.rejects(h.service.apply(CH, { video: "V61", expectedEtag: "etag-1", expectedManifestSha256: M }, OWNER), (error: unknown) => (error as { code?: string }).code === code);
     assert.deepEqual(h.calls, ["device"]);
   }
 });
 
 test("AC-MG-33: a field equal on YouTube and in the manifest is not in the patch; all three equal -> nothing written, changed: false", async () => {
   const partly = harness({ now: snapshot({ title: "New title" }) });
-  const result = await partly.service.apply(CH, { video: "V61", expectedEtag: "etag-1" }, OWNER);
+  const result = await partly.service.apply(CH, { video: "V61", expectedEtag: "etag-1", expectedManifestSha256: M }, OWNER);
   assert.deepEqual(Object.keys(partly.applied[0].patch), ["description", "tags"]);
   assert.deepEqual(result.written, ["description", "tags"]);
   const same = harness({ now: snapshot({ title: "New title", description: "New description", tags: ["new", "wwe"] }) });
-  const nothing = await same.service.apply(CH, { video: "V61", expectedEtag: "etag-1" }, OWNER);
+  const nothing = await same.service.apply(CH, { video: "V61", expectedEtag: "etag-1", expectedManifestSha256: M }, OWNER);
   assert.deepEqual([nothing.changed, nothing.written, same.applied.length], [false, [], 0]);
   assert.equal(same.calls.includes("write"), false);
 });
@@ -275,6 +277,47 @@ test("the patch is never free text and the texts must pass YouTube's limits; a p
   assert.equal(preview.fields.find((f) => f.field === "tags")?.status, "same");
   // free text in the input is ignored: only the manifest's values are ever sent
   const free = harness();
-  await free.service.apply(CH, { video: "V61", expectedEtag: "etag-1", title: "Injected" } as never, OWNER);
+  await free.service.apply(CH, { video: "V61", expectedEtag: "etag-1", expectedManifestSha256: M, title: "Injected" } as never, OWNER);
   assert.equal(free.applied[0].patch.title, "New title");
+});
+
+// Independent review fix 1 (MEDIUM-HIGH): a field the owner left in conflict (not ticked) must not become the next baseline at YouTube's
+// current value -- otherwise the next preview calls it `write` and the Producer overwrites the owner's Studio edit with no conflict.
+test("review fix 1: conflict on the title -> the owner applies only the description -> the Producer's update is still refused as a conflict on the title", async () => {
+  let yt = snapshot({ title: "Studio title" });
+  const h = harness({ now: () => yt });
+  const first = await h.service.apply(CH, { video: "V61", expectedEtag: "etag-1", expectedManifestSha256: M }, OWNER);
+  assert.deepEqual([first.written, first.skippedConflicts], [["description", "tags"], ["title"]]);
+  const applied = h.audits.find((a) => a.detail.event === "package_metadata.applied");
+  assert.deepEqual(applied?.detail.afterTexts, { title: "Old title", description: "New description", tags: ["wwe", "new"] }, "the title keeps the upload's baseline, never YouTube's current title");
+  yt = snapshot({ title: "Studio title", description: "New description", tags: ["wwe", "new"], etag: "etag-2" });
+  const preview = await h.service.preview(CH, { video: "V61" }, PRODUCER);
+  assert.deepEqual(preview.fields.map((f) => [f.field, f.status]), [["title", "conflict"], ["description", "same"], ["tags", "same"]]);
+  await assert.rejects(h.service.apply(CH, { video: "V61" }, PRODUCER), refusedWith("package_metadata_conflict"));
+  assert.equal(h.applied.length, 1, "only the owner's write happened");
+});
+
+test("review fix 1: with an unknown baseline (uploaded elsewhere) a skipped conflict stays unknown after the owner's apply", async () => {
+  let yt = snapshot({ title: "Studio title" });
+  const h = harness({ now: () => yt, rows: [] });
+  await h.service.apply(CH, { video: "V61", expectedEtag: "etag-1", expectedManifestSha256: M, overwrite: ["description", "tags"] }, OWNER);
+  const applied = h.audits.find((a) => a.detail.event === "package_metadata.applied");
+  assert.deepEqual(applied?.detail.afterTexts, { title: null, description: "New description", tags: ["wwe", "new"] });
+  yt = snapshot({ title: "Studio title", description: "New description", tags: ["wwe", "new"] });
+  await assert.rejects(h.service.apply(CH, { video: "V61" }, PRODUCER), refusedWith("package_metadata_conflict"));
+});
+
+// Independent review fix 2 (MEDIUM): the apply is pinned to the manifest the preview showed.
+test("review fix 2: the owner must name the previewed manifest; a re-package in between -> package_metadata_manifest_changed, no write; the Producer may pin one", async () => {
+  await assert.rejects(harness().service.apply(CH, { video: "V61", expectedEtag: "etag-1" }, OWNER), refusedWith("validation_failed"));
+  const changed = harness();
+  await assert.rejects(changed.service.apply(CH, { video: "V61", expectedEtag: "etag-1", expectedManifestSha256: "a".repeat(64) }, OWNER), refusedWith("package_metadata_manifest_changed"));
+  assert.deepEqual(changed.applied, []);
+  const producer = harness();
+  await assert.rejects(producer.service.apply(CH, { video: "V61", expectedManifestSha256: "a".repeat(64) }, PRODUCER), refusedWith("package_metadata_manifest_changed"));
+  assert.deepEqual(producer.applied, []);
+  const pinned = harness();
+  assert.equal((await pinned.service.apply(CH, { video: "V61", expectedManifestSha256: M }, PRODUCER)).changed, true);
+  const preview = await harness().service.preview(CH, { video: "V61" }, OWNER);
+  assert.equal(preview.manifestSha256, M, "the preview names the manifest to pass back");
 });

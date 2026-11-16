@@ -427,6 +427,8 @@ export type DomainErrorCode =
   | "video_missing"
   | "upload_steps_pending"
   | "package_metadata_conflict"
+  // Review fix 2: the package was re-packaged between the preview and the apply.
+  | "package_metadata_manifest_changed"
   | "video_in_dispute"
   // BL-263 (ADR 0071 §2): a given S code is already known on the channel (details.source).
   | "video_number_taken"

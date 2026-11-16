@@ -239,3 +239,20 @@ test("BL-265 AC-MG-07: a packaging comment gives exactly one notice (status pack
   assert.deepEqual(notices.map((n) => reviewFileName(n.kind, n.itemId, n.decisionId)), ["REVIEW-DECISION-package-V11-pr_a.md", "REVIEW-DECISION-package-V11-pr_c.md"]);
   assert.equal(notices[0].context.some((l) => l.label === "Counts"), false, "the comment does not override the approval");
 });
+
+// Independent review fix 4: "Counts" follows the gate's covering rule -- a later return of the same mp4 under a re-packaged manifest
+// overrides an earlier approval made on another manifest of it.
+test("BL-265 review fix 4: a later decision on the same mp4 (another manifest) makes the earlier one 'Counts: no'", () => {
+  const media = { videoSha256: "e".repeat(64), videoSizeBytes: 1000 };
+  const snapshot: PackageReviewsSnapshot = {
+    exists: true,
+    required: { value: true, updatedAt: "2026-11-15T08:00:00Z", by: "owner", device: "Mac" },
+    decisions: {
+      pr_a: { id: "pr_a", manifestSha256: "a".repeat(64), video: "V11", thumbnailSha256: null, kind: "approved", comment: null, by: "owner", device: "Mac", at: "2026-11-15T10:00:00Z", seq: 1, ...media },
+      pr_r: { id: "pr_r", manifestSha256: "b".repeat(64), video: "V11", thumbnailSha256: null, kind: "returned", comment: "cut", by: "owner", device: "Mac", at: "2026-11-15T11:00:00Z", seq: 2, ...media },
+    },
+  };
+  const notices = packageNoticesOf(CH, snapshot, SINCE);
+  assert.ok(notices[0].context.some((l) => l.label === "Counts" && l.value.includes("pr_r")));
+  assert.equal(notices[1].context.some((l) => l.label === "Counts"), false);
+});

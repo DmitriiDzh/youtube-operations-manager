@@ -139,7 +139,13 @@ export function createProducerSessionDeps(
       update: async (input) =>
         input.dryRun === true
           ? { ...(await createPackageMetadataCore().preview(input.channelId, { video: input.video }, { kind: "producer" })) }
-          : { ...(await createPackageMetadataCore().apply(input.channelId, { video: input.video }, { kind: "producer" })) },
+          : {
+              ...(await createPackageMetadataCore().apply(
+                input.channelId,
+                { video: input.video, ...(input.expectedManifestSha256 !== undefined ? { expectedManifestSha256: input.expectedManifestSha256 } : {}) },
+                { kind: "producer" }
+              )),
+            },
     },
     // BL-241 (ADR 0061): the clips for review -- the module's Producer surface only (submit, withdraw, list, get); the owner's
     // decision is reachable only from the Web UI's clip-review routes (clip-reviews/boundaries.test.ts).

@@ -1147,8 +1147,13 @@ export function createPackageMetadataCore() {
       for (const event of events.reverse()) {
         const detail = event.detail as { source?: unknown; verified?: unknown; afterTexts?: { title?: unknown; description?: unknown; tags?: unknown } };
         const after = detail?.afterTexts;
-        if (detail?.source === "package_metadata" && after && typeof after.title === "string" && typeof after.description === "string" && Array.isArray(after.tags)) {
-          return { title: after.title, description: after.description, tags: after.tags.filter((t): t is string => typeof t === "string") };
+        if (detail?.source === "package_metadata" && after && typeof after === "object") {
+          // Per field; null (or anything malformed) is "unknown" -- a difference there is a conflict (review fix 1).
+          return {
+            title: typeof after.title === "string" ? after.title : null,
+            description: typeof after.description === "string" ? after.description : null,
+            tags: Array.isArray(after.tags) ? after.tags.filter((t): t is string => typeof t === "string") : null,
+          };
         }
       }
       return null;

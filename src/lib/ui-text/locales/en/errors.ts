@@ -107,6 +107,7 @@ export const errors = {
   "errors.video_missing": "The video is not on YouTube (deleted, or not visible to this account).",
   "errors.upload_steps_pending": "This video's upload on this computer has not finished yet. Try again once it is done.",
   "errors.package_metadata_conflict": "A field on YouTube was changed since the upload: only the owner can overwrite it, field by field.",
+  "errors.package_metadata_manifest_changed": "The package was re-packaged since you looked at it: open «Packaging» again.",
   "errors.thumbnail_step_pending": "This video's upload has not set its own thumbnail yet. Try again once the upload has finished.",
   "errors.video_in_dispute": "This video number was taken on two computers at once. Nothing is linked to it until the computer that lost takes another number (Content → Publishing).",
   "errors.video_costs_unavailable": "The cost of a channel's videos is shown only for a channel connected on this computer.",

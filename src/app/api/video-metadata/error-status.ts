@@ -314,6 +314,7 @@ const DOMAIN_ERROR_STATUS = {
   video_missing: 404,
   upload_steps_pending: 409,
   package_metadata_conflict: 409,
+  package_metadata_manifest_changed: 409,
   video_in_dispute: 409,
   video_number_taken: 409,
   video_already_linked: 409,

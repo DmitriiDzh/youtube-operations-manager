@@ -90,7 +90,7 @@ export type VideoDetailsYoutubeIo = {
   applyUpdate(args: Parameters<typeof applyVideoDetailsUpdate>[0]): Promise<unknown>;
 };
 
-const PRODUCTION_IO: VideoDetailsYoutubeIo = {
+export const PRODUCTION_IO: VideoDetailsYoutubeIo = {
   createClient: (credentials) => createAuthorizedClient(credentials),
   readContext: (youtube, videoId) => getVideoDetailsContext(youtube, videoId),
   assertLiveWrites: () => assertLiveWritesAuthorized(),

@@ -42,7 +42,7 @@ export type PackageMetadataDeps = {
   /** This computer's upload rows of the channel's `video`. */
   uploadRows(channelId: string, video: string): Promise<PackageMetadataUploadRow[]>;
   /** The texts YouTube had right after the latest `package_metadata` apply on this computer to this video (its audit), or null. */
-  lastApplied(channelId: string, videoId: string): Promise<{ title: string; description: string; tags: string[] } | null>;
+  lastApplied(channelId: string, videoId: string): Promise<Baseline | null>;
   /** The SHA-256 of the thumbnail last set on the video by the thumbnail writer here (its audit), or null when unknown. */
   lastThumbnailSha256(channelId: string, videoId: string): Promise<string | null>;
   /** A workspace file's SHA-256, or null when it is not there. */
@@ -120,6 +120,26 @@ export function packageTextProblems(texts: { title: string; description: string;
 }
 
 type Texts = { title: string; description: string; tags: string[] };
+/**
+ * What this computer knows the video got from the package side, per field (the next fix's baseline b): null where it is not known --
+ * then any difference on that field is a conflict. Never YouTube's current value of a field that was not written (review fix 1).
+ */
+export type Baseline = { title: string | null; description: string | null; tags: string[] | null };
+
+/** The baseline the next fix compares with after this write (review fix 1). */
+export function afterTextsOf(
+  patch: { title?: string; description?: string; tags?: string[] },
+  fields: ReadonlyArray<{ field: PackagingField; manifest: string | string[]; status: PackageMetadataFieldStatus }>,
+  before: Baseline | null
+): Baseline {
+  const pick = (field: PackagingField): string | string[] | null => {
+    if (patch[field] !== undefined) return patch[field]!;
+    const f = fields.find((x) => x.field === field);
+    if (f?.status === "same") return f.manifest;
+    return before ? before[field] : null;
+  };
+  return { title: pick("title") as string | null, description: pick("description") as string | null, tags: pick("tags") as string[] | null };
+}
 
 export function createPackageMetadata(deps: PackageMetadataDeps) {
   /** Every read and check both the preview and the apply make, in the plan's order; nothing is written. */
@@ -152,26 +172,28 @@ export function createPackageMetadata(deps: PackageMetadataDeps) {
       .filter((row) => row.status === "done" && row.videoId === found.videoId)
       .sort((a, b) => (b.finishedAt?.getTime() ?? 0) - (a.finishedAt?.getTime() ?? 0))[0];
     let baseline: PackageMetadataPreview["baseline"] = "unknown";
-    let uploaded: Texts | null = null;
-    if (applied) {
-      baseline = "metadata_apply";
-      uploaded = applied;
-    } else if (doneRow) {
+    let uploaded: Baseline | null = null;
+    let rowTexts: Baseline | null = null;
+    if (doneRow) {
       try {
         const sent = JSON.parse(doneRow.packageJson) as Partial<Texts>;
-        if (typeof sent.title === "string" && typeof sent.description === "string" && Array.isArray(sent.tags)) {
-          baseline = "upload_row";
-          uploaded = { title: sent.title, description: sent.description, tags: sent.tags };
-        }
+        if (typeof sent.title === "string" && typeof sent.description === "string" && Array.isArray(sent.tags)) rowTexts = { title: sent.title, description: sent.description, tags: sent.tags };
       } catch {
         // unreadable: unknown, every difference is a conflict (the safe default)
       }
+    }
+    if (applied) {
+      baseline = "metadata_apply";
+      uploaded = applied;
+    } else if (rowTexts) {
+      baseline = "upload_row";
+      uploaded = rowTexts;
     }
     const youtube: Texts = { title: now.title, description: now.description, tags: now.tags };
     const fields = PACKAGING_FIELDS.map((field) => {
       let status: PackageMetadataFieldStatus;
       if (samePackagingValue(field, youtube[field], manifest[field])) status = "same";
-      else if (uploaded !== null && samePackagingValue(field, youtube[field], uploaded[field])) status = "write";
+      else if (uploaded !== null && uploaded[field] !== null && samePackagingValue(field, youtube[field], uploaded[field])) status = "write";
       else status = "conflict";
       return { field, youtube: youtube[field], uploaded: uploaded ? uploaded[field] : null, manifest: manifest[field], status };
     });
@@ -187,7 +209,7 @@ export function createPackageMetadata(deps: PackageMetadataDeps) {
       const differs = current !== null && last !== null ? current !== last : sentPath !== null ? sentPath !== found.thumbnailPath : null;
       thumbnail = { path: found.thumbnailPath, differs };
     }
-    return { found, videoId: found.videoId, credentialRef, now, manifest, fields, baseline, thumbnail, audioLanguageLeftOut: (now.defaultAudioLanguage ?? "").toLowerCase() === "zxx" };
+    return { found, videoId: found.videoId, credentialRef, now, manifest, fields, baseline, uploaded, thumbnail, audioLanguageLeftOut: (now.defaultAudioLanguage ?? "").toLowerCase() === "zxx" };
   }
 
   const actorLabel = (actor: PackageMetadataActor) => actor.kind;
@@ -220,12 +242,28 @@ export function createPackageMetadata(deps: PackageMetadataDeps) {
      * The write. The owner names the etag his preview showed (required) and may tick conflicting fields to overwrite; the Producer is
      * refused on any conflict and never overrides one. Only the manifest's values of the fields that differ are sent.
      */
-    async apply(channelId: string, input: { video: string; expectedEtag?: string; overwrite?: string[] }, actor: PackageMetadataActor): Promise<PackageMetadataApplyResult> {
+    async apply(
+      channelId: string,
+      input: { video: string; expectedEtag?: string; expectedManifestSha256?: string; overwrite?: string[] },
+      actor: PackageMetadataActor
+    ): Promise<PackageMetadataApplyResult> {
       if (actor.kind === "owner" && (typeof input?.expectedEtag !== "string" || input.expectedEtag === "")) {
         throw refuse("validation_failed", "expectedEtag is required: apply what the preview showed");
       }
+      // Review fix 2: the owner applies the manifest his preview showed (required); the Producer may pin one too.
+      if (actor.kind === "owner" && (typeof input?.expectedManifestSha256 !== "string" || input.expectedManifestSha256 === "")) {
+        throw refuse("validation_failed", "expectedManifestSha256 is required: apply the package the preview showed");
+      }
       const overwrite = actor.kind === "owner" ? (input.overwrite ?? []).filter((f): f is PackagingField => (PACKAGING_FIELDS as readonly string[]).includes(f)) : [];
       const seen = await inspect(channelId, input?.video, actor);
+      if (input.expectedManifestSha256 !== undefined && input.expectedManifestSha256 !== seen.found.manifestSha256) {
+        throw refuse("package_metadata_manifest_changed", `${seen.found.pkg.video}'s package was re-packaged since the preview: preview it again.`, {
+          channelId,
+          video: seen.found.pkg.video,
+          expected: input.expectedManifestSha256,
+          actual: seen.found.manifestSha256,
+        });
+      }
       const conflicts = seen.fields.filter((f) => f.status === "conflict").map((f) => f.field);
       if (actor.kind === "producer" && conflicts.length > 0) {
         throw refuse("package_metadata_conflict", `${seen.found.pkg.video}: ${conflicts.join(", ")} on YouTube differ from both what the upload sent and the package (changed in Studio, or uploaded from the other computer): only the owner may overwrite them.`, {
@@ -274,8 +312,10 @@ export function createPackageMetadata(deps: PackageMetadataDeps) {
             ...context,
             event: "package_metadata.applied",
             sent: patch,
-            // The next fix's baseline (b): the texts on YouTube after this write -- the written fields as sent, the others as read.
-            afterTexts: { title: patch.title ?? seen.now.title, description: patch.description ?? seen.now.description, tags: patch.tags ?? seen.now.tags },
+            // The next fix's baseline (b): a written field as sent; a field that was already the package's ("same") as it is; any other
+            // field keeps the baseline it had (null when unknown) -- never YouTube's current value of an unwritten field (review fix 1:
+            // that would turn the owner's Studio edit into the baseline and let the next fix overwrite it without a conflict).
+            afterTexts: afterTextsOf(patch, seen.fields, seen.uploaded),
             localizationLanguages: { before: languagesBefore, after: languagesAfter, same: sameLanguages }, verified: sameLanguages, backupPath: result.backupPath },
         })
         .catch(() => undefined);

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DomainError, type ResolvedCredentials } from "@/lib/shared-domain";
-import { createVideoDetailsYoutubeApiAdapter, snippetPartOf, statusPartOf, type VideoDetailsYoutubeIo } from "./youtube-api";
+import { getLiveWritesEnabled } from "@/lib/db";
+import { createVideoDetailsYoutubeApiAdapter, PRODUCTION_IO, snippetPartOf, statusPartOf, type VideoDetailsYoutubeIo } from "./youtube-api";
 
 // Changed by BL-265 (ADR 0072 §5, MEDIA_GATE_PLAN.md §3.4 gap 1, AC-MG-24; the same order as the thumbnail writer's AC-TH-07): Live
 // writes is no longer the first statement of `applyPatch` ("refuses before ever touching the network") but is checked immediately
@@ -44,6 +45,21 @@ test("AC-MG-24: applyPatch -- client, read, Live writes, write in that order; Li
   );
   assert.deepEqual(off.order, ["client", "read", "live_writes"]);
   assert.equal(off.sent.length, 0);
+});
+
+// Independent review fix 5: the production wiring's Live-writes check is the write gateway's own (`assertLiveWritesAuthorized`) and
+// runs before the write. With the real check (Live writes is off in a test process) and fake client / read / write, the write is
+// never reached.
+test("AC-MG-24 (production wiring): PRODUCTION_IO.assertLiveWrites is the gateway's check -- Live writes off refuses before the write", async () => {
+  assert.equal(await getLiveWritesEnabled(), false, "sanity check -- a test process starts with Live writes off");
+  const fake = fakeIo(true);
+  const io: VideoDetailsYoutubeIo = { ...fake.io, assertLiveWrites: PRODUCTION_IO.assertLiveWrites };
+  await assert.rejects(
+    () => createVideoDetailsYoutubeApiAdapter(io).applyPatch({ credentials: CREDENTIALS, videoId: "v1", patch: { title: "New" }, readBackRetries: 0 }),
+    (error: unknown) => error instanceof DomainError && error.code === "live_writes_disabled"
+  );
+  assert.deepEqual(fake.order, ["client", "read"]);
+  assert.equal(fake.sent.length, 0);
 });
 
 test("AC-MG-26: a title/description/tags patch sends the whole snippet as read (categoryId, defaultLanguage, defaultAudioLanguage) with the new texts, and no status part", async () => {

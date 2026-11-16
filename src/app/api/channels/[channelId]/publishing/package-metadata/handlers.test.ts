@@ -42,10 +42,10 @@ test("AC-MG-34: a channel that is not the active one -> refused, nothing preview
 test("dryRun previews as the owner; otherwise applies with the etag and the overrides, as the owner", async () => {
   const h = harness();
   assert.equal((await h.post("UC_active", { video: "V61", dryRun: true })).status, 200);
-  assert.equal((await h.post("UC_active", { video: "V61", expectedEtag: "e1", overwrite: ["title", 5] })).status, 200);
+  assert.equal((await h.post("UC_active", { video: "V61", expectedEtag: "e1", expectedManifestSha256: "m".repeat(64), overwrite: ["title", 5] })).status, 200);
   assert.deepEqual(h.calls, [
     { kind: "preview", channelId: "UC_active", input: { video: "V61" }, actor: { kind: "owner", userId: "u-owner" } },
-    { kind: "apply", channelId: "UC_active", input: { video: "V61", expectedEtag: "e1", overwrite: ["title"] }, actor: { kind: "owner", userId: "u-owner" } },
+    { kind: "apply", channelId: "UC_active", input: { video: "V61", expectedEtag: "e1", expectedManifestSha256: "m".repeat(64), overwrite: ["title"] }, actor: { kind: "owner", userId: "u-owner" } },
   ]);
   assert.equal((await h.post("UC_active", {})).status, 400);
 });

@@ -1,7 +1,7 @@
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { decidingRecordOf, wellFormedAttachments } from "@/lib/clip-reviews";
-import { latestOwnerDecision } from "@/lib/package-reviews";
+import { ownerReviewStateOf, standingDecision } from "@/lib/package-reviews";
 import {
   deleteReviewNotifyLedgerBefore,
   getReviewNotifySettingsJson,
@@ -224,11 +224,16 @@ export function slotNoticesOf(channel: Channel, snapshot: PublishingPlansSnapsho
  */
 export function packageNoticesOf(channel: Channel, snapshot: PackageReviewsSnapshot, sinceMs: number): ReviewDecisionNotice[] {
   const all = Object.values(snapshot.decisions);
+  const gate = ownerReviewStateOf(snapshot);
   const out: ReviewDecisionNotice[] = [];
   for (const d of all) {
     if (d.by !== "owner" || (d.kind !== "approved" && d.kind !== "returned" && d.kind !== "packaging_comment") || !after(d.at, sinceMs)) continue;
-    // The package-reviews rule (review L1: the document's seq, then the time, then the id) says which decision stands.
-    const standing = d.kind === "packaging_comment" ? null : latestOwnerDecision(d.manifestSha256, all);
+    // The gate's own rule (package-reviews `standingDecision`: one order across the decisions that cover the same video -- the same
+    // manifest, or the same mp4 under the same code) says which decision stands for what this one decided.
+    const standing =
+      d.kind === "packaging_comment"
+        ? null
+        : standingDecision(gate, { manifestSha256: d.manifestSha256, video: d.video || null, videoSha256: d.videoSha256 ?? null, videoSizeBytes: d.videoSizeBytes ?? null });
     const later = standing && standing.id !== d.id ? standing : null;
     const media = typeof d.videoSha256 === "string" ? [{ label: "Video sha256", value: `${d.videoSha256} (${d.videoSizeBytes ?? "?"} bytes)` }] : [];
     out.push({
@@ -250,7 +255,7 @@ export function packageNoticesOf(channel: Channel, snapshot: PackageReviewsSnaps
         ...(d.kind === "packaging_comment"
           ? [{ label: "Next", value: "a comment on the packaging (title, description, tags, thumbnail, translations): it blocks nothing -- re-package if you agree; an uploaded video's texts are fixed with producer_video_metadata_update (dry run first)" }]
           : []),
-        ...(later ? [{ label: "Counts", value: `no: a later owner decision (${later.id}) decides this manifest` }] : []),
+        ...(later ? [{ label: "Counts", value: `no: a later owner decision (${later.id}) decides this video` }] : []),
       ],
       attachments: [],
       ytmPlace: "Медиа → «Видео на проверку»",
