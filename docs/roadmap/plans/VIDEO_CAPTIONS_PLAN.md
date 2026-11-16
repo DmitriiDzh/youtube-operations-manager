@@ -4,13 +4,18 @@ Owner: 2026-11-16, Telegram 4590 («да» to `captions.insert`, English only, b
 WWE long, horizontal videos; none for other channels or Shorts). Factory contract: Operator bundle 2.5.46 (`12 --captions`) writes
 the package field `captions` (§3.1). Request: FO-REQ-0055.
 
-Status: **plan only** (no code). ADR 0074 is Proposed. Branch `feature/bl-269-video-captions` (from dev `510161e2`), one branch for
+Owner 2026-11-17, Telegram 4660 (answers Q1/Q2: «лучше дать возможность нам перезаписать»): the automatic upload step still never
+overwrites; an **explicit** «Перезаписать субтитры» action (owner Web UI, Producer tool) replaces the existing English standard track,
+foreign or ours, with the package's current captions (`captions.update`, §3.7).
+
+Status: built on the branch (stages 1–5); ADR 0074 is Proposed until the merge. Branch `feature/bl-269-video-captions` (from dev `510161e2`), one branch for
 all stages, one merge (AGENTS.md §K.1).
 
 ## 1. Requirements
 
-- R1. A new YouTube writer: `captions.insert` of **one English track**, and nothing else. No `captions.update`, no `captions.delete`,
-  ever, in this work. The app never replaces or deletes a track it did not create (a "foreign" track).
+- R1. A new YouTube writer: `captions.insert` of **one English track**, and `captions.update` of the one English standard track only
+  on an explicit overwrite (R9). Never `captions.delete`. The automatic upload step never replaces a track it did not create (a
+  "foreign" track) nor its own with a different file.
 - R2. Captions only where the channel's captions switch is on (WWE) **and** the video is horizontal (a long video, V code). A
   `captions` field anywhere else is a package problem, and nothing is written.
 - R3. Upload step for new packages: after processing, next to the translations and the thumbnail, before `publishAt`. The date is
@@ -24,7 +29,13 @@ all stages, one merge (AGENTS.md §K.1).
   `captions_invalid`; file existence, SHA-256, size and format (SRT or WebVTT) checked.
 - R7. The upload record `yt-release-upload/1` gains the mp4's `sha256` + `sizeBytes` (Operator's request).
 - R8. Budget about 450–550 pool units per long video (Google's table, re-checked 2026-11-16: `captions.insert` 400, `list` 50,
-  `update` 450, `delete` 50; already in `src/lib/youtube-quota/costs.ts`).
+  `update` 450, `delete` 50; already in `src/lib/youtube-quota/costs.ts`). An overwrite costs about 800 (list 50 + `captions.download`
+  200 for the backup -- the method page's cost; the table does not list it -- + update 450 + list 50 + one re-read 50).
+- R9 (owner msg 4660). An explicit overwrite: «Перезаписать субтитры» for the owner (dry-run preview, then an in-app confirm) and the
+  Producer (`producer_video_captions_add { channelId, video, dryRun?, overwrite: true }`) replaces the existing English standard track
+  -- foreign or ours -- with the package's current manifest captions: `captions.update` of that track id with the new file (the id is
+  kept), after a backup of its current content (`captions.download`) and snippet. Refused when more than one English standard track
+  exists, when the only English track is `forced`, or when it is a draft. ASR tracks are never touched.
 
 ## 2. API facts (YouTube Data API v3 reference, read 2026-11-16)
 
@@ -32,6 +43,13 @@ all stages, one merge (AGENTS.md §K.1).
   ≤ 100 MB, MIME `text/xml`, `application/octet-stream` or `*/*`; settable `snippet.videoId`, `language`, `name` (all required),
   `isDraft`. `sync` is deprecated (2024-03-13) and is never sent. Errors: `captionExists` (409: a track with the same language **and**
   name), `nameTooLong` (> 150 characters), `invalidMetadata`, `forbidden`, `videoNotFound`, `contentRequired`.
+- `captions.update` (450 units, same scopes; captions/update, read 2026-11-17): the only settable property is `snippet.isDraft`, and an
+  omitted settable property is deleted; with a new file the request is `part=id`, body `{ id }` plus the media (≤ 100 MB, same MIME
+  types). The track's `name` and `language` cannot be changed. `sync` is deprecated and never sent. Errors: `contentRequired`,
+  `forbidden`, `captionNotFound`.
+- `captions.download` (200 units per the method page; not in the quota table, read 2026-11-17; same scopes): `id`, optional `tfmt`
+  (omitted: the original format), "requires the user to have permission to edit the video"; errors `forbidden`, `couldNotConvert`
+  (also when the track's status is `failed`), `captionNotFound`. A read: through the read gateway.
 - `captions.list` (50 units, same scopes): `snippet.trackKind` `standard` | `ASR` | `forced`, `status` `serving` | `syncing` |
   `failed` (+ `failureReason`), `isDraft`, `language`, `name`, `lastUpdated`. **No content hash** -- which track is ours must be
   recorded by us (§3.4).
@@ -77,10 +95,11 @@ the metadata-only re-package (ADR 0072 §4) -- `changedPackageFields` gains `cap
 - `caption-file.ts` -- pure: the format check, the SHA-256, the MIME type sent (`application/octet-stream`).
 - `services.ts` -- `addTrack(input, actor, { dryRun })`, the only code that inserts a caption. Callers: the upload runner (injected
   dep `writeCaptions`, like `writeLocalizations`) and the package-captions service (§3.5). It imports nothing from `publishing`.
-- Gateway: one new primitive `insertVideoCaption(youtube, { videoId, language, name, isDraft: false, media })` in
-  `src/lib/youtube-write-gateway/` (added to `WRITE_PRIMITIVE_NAMES`); **no update/delete primitive** -- a new inventory test fails if
-  any file calls `captions.update` or `captions.delete`. Read: `listVideoCaptions` in `youtube-read-gateway/data-api.ts`
-  (`part=snippet`), and `fileDetails` in the existing video read.
+- Gateway: two primitives in `src/lib/youtube-write-gateway/captions.ts` (added to `WRITE_PRIMITIVE_NAMES`): the insert
+  (`videoId`, `language`, `name`, `isDraft: false`, media) and the update (`part=id`, `{ id }` + media, §3.7); **no delete primitive**
+  -- an inventory test fails if any file calls `captions.delete`, if `captions.insert`/`update` is called outside the gateway, or if
+  the primitives are called outside `src/lib/video-captions/`. Reads in `youtube-read-gateway/data-api.ts`: the track list
+  (`part=snippet`), the track's content (`captions.download`, for the overwrite's backup) and the video's frame (`fileDetails`).
 - Credentials require `youtube.force-ssl` (`requiredScopes`, as `live-streams` does); a missing scope → refused
   `captions_scope_missing` (the owner reconnects the channel), never a silent skip.
 
@@ -93,8 +112,9 @@ Pipeline of `addTrack` (both callers):
 4. Track list before (`captions.list`, 50). Decision by **language** (primary subtag `en`), not by name:
    - `ASR` tracks are ignored: never touched, never block.
    - a `standard`/`forced` English track whose id is in our record with the same `sha256` → `already_present`, no write;
-   - our own English track with another `sha256` → refused `captions_own_track_differs` (no update in v1; Q1);
-   - any other `standard`/`forced` English track → refused `captions_foreign_track`, nothing written.
+   - our own English track with another `sha256` → refused `captions_own_track_differs` (no write without an explicit overwrite);
+   - any other `standard`/`forced` English track → refused `captions_foreign_track`, nothing written (the owner or the Producer may
+     overwrite it explicitly, §3.7).
    Why refuse rather than add alongside: a person put that track there on purpose; two "English" entries confuse viewers and the app
    cannot know which is right. The owner removes or keeps it in Studio; the app never does.
 5. Quota guard `checkUnits(550)` (list + insert + list + one re-read); short → `youtube_quota_exceeded` (a pause in the runner, a
@@ -144,22 +164,48 @@ only the captions checks of §3.1 apply, plus:
 - orientation from YouTube's `fileDetails` (width/height after rotation); absent → this computer's orientation memo; neither →
   refused `captions_invalid` `orientation_unknown` (fail closed). An S code is always refused.
 - refused `captions_step_pending` while this computer's upload row of that video has not finished its own captions step.
-- Owner: «Добавить субтитры» on the uploaded package's row in «Ролики и релизы» (dry-run preview with units, then an in-app confirm;
+- Owner: «Добавить субтитры» (and «Перезаписать субтитры» when the preview finds an English track, §3.7) on the uploaded package's row in «Ролики и релизы» (dry-run preview with units, then an in-app confirm;
   no native dialogs); owner session + active channel; remote allowed (like ADR 0069 §6). UI texts in every locale.
-- Producer: `producer_video_captions_add { channelId, video, dryRun? }` (permission `CAPTIONS_WRITE`, listed in
+- Producer: `producer_video_captions_add { channelId, video, dryRun?, overwrite? }` (`overwrite: true`: §3.7) (permission `CAPTIONS_WRITE`, listed in
   `producer_get_capabilities` as `captionsTools`), its endpoint only. `no-agent-upload-tool.test.ts` allows exactly this tool there.
 - No adoption on a lost answer here: the next call's list shows an unrecorded track as foreign, and the result says
   `unknown_outcome` with the track list for the owner.
 
 ### 3.6 Out of scope
 
-Burned-in subtitles (the factory's render; off by owner TG 4590), other languages, `captions.update`/`delete`, ASR handling, Shorts,
-other channels, live streams.
+Burned-in subtitles (the factory's render; off by owner TG 4590), other languages, `captions.delete`, an automatic overwrite, ASR
+handling, Shorts, other channels, live streams.
+
+### 3.7 Explicit overwrite (owner msg 4660)
+
+Same module, same pipeline (`addTrack(input, actor, { dryRun, overwrite: true })`), same callers' rules (package + upload record,
+current manifest only, device gate, `captions_step_pending`). Never from the upload runner.
+
+- Decision by language among non-ASR English tracks: none → a plain insert (reported `mode: insert`); exactly one `standard`, not a
+  draft → `mode: update` of that track id, unless it is ours with the same `sha256` (`already_present`, no write); one `forced` →
+  refused `captions_track_forced`; a draft → refused `captions_track_draft`; more than one → refused `captions_track_ambiguous`.
+- Quota guard `checkUnits(800)` (list 50 + download 200 + update 450 + list 50 + one re-read 50).
+- Dry run: every read and check above (no download: the download is the backup), units 51, the track to be replaced (id, name,
+  language, `lastUpdated`, ours or foreign). The owner's confirm pins the preview: `expectedManifestSha256` and `expectedTrackId`
+  (refused `captions_track_changed` / `package_metadata_manifest_changed` when either moved).
+- Backup before the write: the track's snippet as listed and its current content (`captions.download`, original format, base64) plus
+  the bytes about to be sent, as a `video_captions` snapshot. A download that fails (403, `couldNotConvert` on a `failed` track,
+  anything) stops the write: the old text could not be put back (a known limitation: such a track can only be replaced in Studio).
+- Identity check → Live writes immediately before the one `captions.update` (`part=id`, `{ id }`, the new file). No `snippet` is sent
+  (`isDraft` is the only settable field; omitting it in a sent snippet would delete it).
+- Read-back (`captions.list`): the same id, still `standard`, `language` and `name` **unchanged** (they cannot change), not draft,
+  `lastUpdated` later than the backup's (else "YouTube still shows the previous version" → not verified), `status` `serving`
+  (`syncing` → one bounded re-read; `failed` → not verified); every other track unchanged. A failure after a 200 is "written, not
+  verified".
+- Record: the track's id with its actual name and the new `sha256` replace any earlier entry of that id in `Vn_youtube.json`
+  `captions` -- the track is ours from now on. Audit `BACKUP`/`RESULT`/`VERIFICATION`, `source: video_captions`, `mode: update`,
+  the previous `lastUpdated`.
 
 ## 4. Stages (one branch, one merge)
 
-1. `video-captions` pure parts: caption file parser/validator, SHA-256; gateway `insertVideoCaption` + read `listVideoCaptions` +
-   `fileDetails`; inventory tests (primitive listed, no `captions.update/delete` anywhere).
+1. `video-captions` pure parts: caption file parser/validator, SHA-256; gateway insert + update primitives, reads (track list,
+   download, `fileDetails`), `captions.download` cost; inventory tests (primitives listed, insert/update only in the gateway and called
+   only from video-captions, no `captions.delete` anywhere).
 2. Package field + checks + `captionsEnabled` switch + `PackageFacts.captions` in the scan; UI texts for the codes and the switch.
 3. `addTrack` service (pipeline §3.2) with dry run, backup kind `video_captions`, audit, record update.
 4. Runner step (§3.3), `ApprovedPackage` fields, units estimate, record `videoSha256`/`videoSizeBytes`/`captions`.
@@ -179,11 +225,10 @@ Pre-build check (stage 1, read-only): WWE's stored grant includes `youtube.force
 
 ## 6. Open questions (few)
 
-- **Q1 (owner).** A track the app itself added with a now-different file (a typo fixed by the Operator): v1 refuses
-  (`captions_own_track_differs`). Later allow `captions.update` of **our own** track only (450 units, backup = our sent copy)?
-  Recommendation: not now.
-- **Q2 (owner).** A foreign English track found during the upload step withholds the date (fail closed). Recommendation: keep; the
-  owner decides in Studio, then the Producer or he adds the date.
+- **Q1 (owner) -- ANSWERED 2026-11-17, msg 4660.** Our own track with a now-different file: the upload step still refuses
+  (`captions_own_track_differs`, date withheld); the owner or the Producer may overwrite it explicitly (§3.7).
+- **Q2 (owner) -- ANSWERED 2026-11-17, msg 4660.** A foreign English track found during the upload step withholds the date (fail
+  closed, owner-visible reason); the explicit overwrite (§3.7) replaces it, foreign or ours.
 - **Q3 (Operator).** Bundle 2.5.46 writes `language: "en"` exactly (not `en-US`), one entry, `.srt` or `.vtt`, UTF-8, `name` ≤ 150 — ANSWERED 2026-11-16 by the Operator: `name` is always "" (allowed, 0–150), `.vtt` only (`V<n>_captions.en.vtt`, bare file name), UTF-8 (BOM tolerated), one `en` entry in practice, 12 caps the file at 1 MB; record names `videoSha256`/`videoSizeBytes`/`captions{…}` accepted (2.5.49 reads them first). Original question:
   characters (suggest `"English"`)? Record field names `videoSha256` / `videoSizeBytes` OK?
 - **Q4 (Producer).** One tool `producer_video_captions_add { channelId, video, dryRun }` enough (no free file path)?
@@ -213,8 +258,9 @@ Writer (both paths)
 - AC-CAP-13 Wrong channel (identity) or a video whose `snippet.channelId` differs → fails closed, no insert.
 - AC-CAP-14 Backup (track list + bytes) before the insert; a failed backup → no insert.
 - AC-CAP-15 An `ASR` English track only → insert proceeds; the ASR track is untouched and not counted as foreign.
-- AC-CAP-16 A `standard` (or `forced`) English track not in the record → `captions_foreign_track`, no insert, no update, no delete.
-- AC-CAP-17 Our recorded track with the same SHA-256 → `already_present`, no insert; with another SHA-256 →
+- AC-CAP-16 Without `overwrite`: a `standard` (or `forced`) English track not in the record → `captions_foreign_track`, no insert, no
+  update, no delete.
+- AC-CAP-17 Our recorded track with the same SHA-256 → `already_present`, no insert; with another SHA-256 and no `overwrite` →
   `captions_own_track_differs`, no write.
 - AC-CAP-18 Tracks of other languages are kept: the read-back fails if any backed-up id disappeared or changed.
 - AC-CAP-19 Read-back `serving` with the new id, `en`, the name, `standard`, not draft → `verified`; `failed` → not verified with
@@ -222,7 +268,8 @@ Writer (both paths)
 - AC-CAP-20 A failure after a 200 insert (read-back, audit, record) is reported as written, never as "not written".
 - AC-CAP-21 Audit BACKUP, RESULT, VERIFICATION with actor and file SHA-256; dry run → no backup, no write, no RESULT, units 51.
 - AC-CAP-22 Missing `youtube.force-ssl` → `captions_scope_missing`, no insert.
-- AC-CAP-23 Inventory: `insertVideoCaption` is the only caption write primitive; no file calls `captions.update` or `captions.delete`.
+- AC-CAP-23 Inventory: the insert and update primitives are the only caption writes, called only from `src/lib/video-captions/`;
+  `captions.insert`/`update` appear only in the gateway; no file calls `captions.delete`.
 
 Upload step
 - AC-CAP-24 Order localizations → captions → thumbnail; the date is written only when `steps.captions` is `none`, `verified` or
@@ -247,9 +294,32 @@ Add path
 - AC-CAP-37 Success updates `Vn_youtube.json` `captions` (other keys byte-for-byte unchanged); the other computer then sees the track
   as the app's own (AC-CAP-17 holds there).
 
+Explicit overwrite (owner msg 4660)
+- AC-CAP-38 The upload runner never passes `overwrite`: a foreign or own-different track at the step → `refused`, date withheld, no
+  update (AC-CAP-24/26 hold).
+- AC-CAP-39 Overwrite with one foreign `standard` English track: download (backup) before the write, then exactly one
+  `captions.update` with `part=["id"]`, body `{ id: <that track> }` and no snippet, media = the hashed bytes; no insert, no delete.
+- AC-CAP-40 Overwrite of our own track with another SHA-256 → update; with the same SHA-256 → `already_present`, no download, no write.
+- AC-CAP-41 Overwrite with no English standard track → a plain insert (`mode: insert`), the insert budget.
+- AC-CAP-42 Two English standard tracks → `captions_track_ambiguous`; only a `forced` one → `captions_track_forced`; a draft →
+  `captions_track_draft`; nothing written; ASR tracks never counted, never touched.
+- AC-CAP-43 The download fails (403 / `couldNotConvert`) or the backup fails → no update.
+- AC-CAP-44 Order: list → quota guard (800) → download → backup → identity → Live writes → update; Live writes off → no update; quota
+  short → `youtube_quota_exceeded`, no download.
+- AC-CAP-45 Read-back: same id, `en` and the name unchanged, `standard`, not draft, `lastUpdated` advanced, `serving` → verified;
+  `lastUpdated` unchanged → not verified; the id gone → not verified; another track changed → not verified; reported as written.
+- AC-CAP-46 Dry run with `overwrite`: no download, no backup, no write; units 51; names the track to be replaced. The owner's apply
+  must name `expectedTrackId` and `expectedManifestSha256`; a different track or manifest now → refused, no write.
+- AC-CAP-47 After a verified overwrite the record lists the track id with the new SHA-256 (one entry per id, others kept), so the next
+  call reports `already_present`.
+- AC-CAP-48 `producer_video_captions_add` accepts `overwrite: true` (strict input, no free path); audit `source: video_captions`,
+  `mode: update`, actor producer.
+
 ## 8. Risks
 
-- **Foreign track blocks a date** (Q2): fail closed by design; the owner must act in Studio.
+- **Foreign track blocks a date** (Q2): fail closed by design; the owner or the Producer overwrites it explicitly (§3.7), then dates.
+- **Overwrite replaces a person's text**: only on an explicit owner/Producer action after a preview; the old content is backed up
+  first (and the write refused when it cannot be). The track's name stays the old one (YouTube cannot rename it).
 - **Scope**: WWE's grant may lack `youtube.force-ssl`; the first upload with captions would refuse until reconnect (pre-build check).
 - **Quota pause holds the whole queue** (the runner's existing rule): a long pause can push a date inside the margin →
   `skipped_too_soon`. 550 units per long video is the budget; several WWE uploads a day are visible in the guard.
