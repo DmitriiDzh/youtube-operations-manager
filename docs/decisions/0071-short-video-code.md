@@ -1,7 +1,9 @@
 # 0071. A second video code `S<n>` for Shorts, chosen by the factory, and a one-shot local recode of the WWE Shorts
 
-Status: Proposed -- the requirement is the owner's; the design choices below (the recode alias, conditional report versions, the S
-input for worker agents, the approval rule) await the owner's and the Operator's confirmation of the plan. Requirement (owner via the Producer: PRD-REQ-0194, Producer chat TG 2332 «под шортс ок», 2026-11-16; TG 2334 -- recode the
+Status: Proposed -- the requirement is the owner's; implemented on `feature/bl-263-short-video-code` (Factory API 1.49.0, Agent API
+4.21.0, Producer API 1.23.0), awaiting the owner's merge. Decided 2026-11-16: the recode runs on the Mac, an S is given only through
+`factory_video_create`, the next long video is the highest V ever known + 1, published Shorts are recoded too; the Operator confirmed
+the file rule, the timing (recode right after the 2.5.44 pin) and that slots asking for approval again are acceptable. Requirement (owner via the Producer: PRD-REQ-0194, Producer chat TG 2332 «под шортс ок», 2026-11-16; TG 2334 -- recode the
 unpublished WWE Shorts; owner TG 4553/4555 -- recode the published ones too, locally only; spec agreed with the Factory Operator).
 
 **Date:** 2026-11-16.
@@ -47,8 +49,8 @@ recoded to S1–S22, including four published and two uploaded private ones. The
 1. **`src/lib/shared-video-code/`** owns the code: `^(V|S)[1-9][0-9]{0,5}$` for every input and new contract; for existing files and
    reports, each reader keeps its current V acceptance (`V\d+`, `V\d{1,6}` or strict) and adds strict S, so no existing V package or report changes meaning;
    `parseVideoCode` → `{ series, number }`; the comparator (V before S, numeric).
-2. **Numbering.** The next V is the highest known **V** + 1. `factory_video_create` / `agent_video_create` take an optional `video`
-   that must be an S code; it is refused as `video_number_taken` when any source already knows it (cancelled reservations
+2. **Numbering.** The next V is the highest known **V** + 1. `factory_video_create` takes an optional `video` that must be an S code
+   (decision 2026-11-16: only the Factory Operator; a channel worker's `agent_video_create` refuses it, `s_codes_factory_only`); it is refused as `video_number_taken` when any source already knows it (cancelled reservations
    included). An S conflict between computers is shown, but never renumbered (there is no next S).
 3. **Sync.** `publishing-uploads`, `video-reservations` and `video-costs` reports are version 2 only when they hold an S code;
    readers take 1 and 2. Automerge families are unchanged. Release order: both computers on this build, then the Operator pins
@@ -78,7 +80,7 @@ conflict renumber (always V→V), so the peer learns the mapping without a schem
 
 - The recoded WWE V numbers stay burnt: the next long WWE video is the highest V ever known + 1 (V27 with V26 the highest).
 - Old V codes stay in history (audit, cleanup log, review and plan decisions, Producer wake file names).
-- `video_registry.csv` rows naming recoded codes need the Operator's update; until then the alias hides them.
+- `video_registry.csv` rows naming recoded codes would need the Operator's update (WWE has none); the alias hides them meanwhile.
 - An older build that meets an S report keeps a stale copy of that peer's report (it cannot know the peer's newer uploads) -- the
   release order is the guard; a TECHNICAL_DEBT entry records it.
 - No change to how YouTube is written; the recode is not a YouTube writer (AGENTS §F/§G unaffected).

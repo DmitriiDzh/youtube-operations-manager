@@ -5278,3 +5278,35 @@ from the channel's own workspace images, behind the same identity check and Live
 - **Surfaces:** owner routes `/api/channels/[channelId]/package-reviews` (`GET`/`PUT`, `/decision`, `/video`, `/thumbnail` via
   `local-file-response`, `isOwnerBrowserRequest`); Media → «Видео на проверку» (`MEDIA_TABS` value `packages`); the week-plan slot line
   from `PlanSlotPackage.reviewComment` and the problem codes; review-notify kind `package` (`packageNoticesOf`).
+
+## BL-263 — the second video code `S<n>` and the Short recode (ADR 0071, SHORT_VIDEO_CODE_PLAN.md)
+
+- **One code rule.** `src/lib/shared-video-code/` (pure, no dependencies; `sync-gateway`, the Factory server and client components
+  import it) owns every rule about a code: `VIDEO_CODE_PATTERN` `^(V|S)[1-9][0-9]{0,5}$` for every input and new contract;
+  `isLegacyVCode` (`V\d+`) / `isReportVCode` (`V\d{1,6}`) plus the strict S for readers of existing files and reports, so no existing V
+  package or report changes meaning; `parseVideoCode`, `compareVideoCodes(Desc)` (V block before S, numeric), `reportVersionFor`.
+- **Files.** `workspace-videos.videoNumberOfFolder` reads `<MMDD> S<n>[ Short]`; `RELEASE_PACKAGE_FILE_PATTERN`, the upload record and
+  cost file names, the cleanup allowlist and the release-folder rename take S. A package whose manifest names an S (or sits in an S
+  folder) must name exactly its folder's and file's code, else `field_invalid` (the check runs only when an S is involved).
+- **Numbering (`video-projects`).** `strictVideoCode` keeps every strict code in the list (`V07` stays ignored, as before); the next V
+  reads only series V. `createVideo({ video })` reserves a given S (`reserveGiven`) unless any source knows it (`video_number_taken`,
+  `details.source`); a given V is refused before the gate. `renumber` refuses an S; an S conflict has no `suggestedVideo`.
+- **Recode alias.** `recodeAliases` (numbering.ts): a V that any computer reports cancelled with `replacedBy` an S (a conflict renumber
+  is always V→V). Such a V is `recoded` (+ `recodedTo`), never in dispute, names no YouTube video, refuses links (`video_not_found`
+  reason `recoded`, also on the fast path of `assertAttachable`), and counts toward the next V. `video-costs` maps runs of a recoded V
+  to the S (from `videoStates`); the weekly plan's progress port adds `recodedFrom` so `fingerprintCovers` accepts an approval naming
+  the old V when it names the same non-null video id.
+- **Sync.** The three per-device reports carrying a code are written as version 2 only when they hold an S (else version 1 byte for
+  byte); the schemas accept 1 and 2 and refuse a v1 report holding an S. An older build reading a v2 report says "newer than this app
+  understands; update the app" and keeps the peer's last report (release order: both computers updated before the first S).
+- **The recode (`src/lib/publishing/release-recode.ts`, `factory_release_recode`).** Checks first (invalid, not found / ambiguous in this
+  channel's workspace, not a « Short» folder or horizontal, target known or a target name present, busy, a peer upload row, a standing
+  owner approval), then journal + backups (`<app data>/release-recode/<channel>/<video>-<ms>.json`, holding the original manifest and
+  record texts and the DB snapshot), then: rename files named after the code (`renamedForCode`: `<C>[ _.]…`, `Thumbnail_<C>(_X|_base)`
+  images and `.logo.json`, `work/<C>_*`), write the manifest (`rewriteManifest`: `video` + every non-free-text field naming a renamed
+  file), write the records' `video`, rename the folder, `db.ts recodeVideoRows` (one transaction, every update guarded by the snapshot's
+  value), relink storyboards. A failure undoes the done steps (and the running one) in reverse -- each undo idempotent
+  (`undoVideoRecodeRows` puts back only values that still are the new ones); a journal left by a crash is undone at the next call.
+  Then caches invalidated, the three reports published, read-back (scan, file names, rows, the video list's alias and next V) and audit
+  `release.recoded`. Composition (`src/composition/release-recode.ts`) supplies the video list, package-review approvals, plan slot
+  decisions, storyboards, peer rows and the other reports, so publishing imports none of those modules. No YouTube client anywhere.

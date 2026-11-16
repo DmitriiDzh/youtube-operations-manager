@@ -59,7 +59,7 @@ ADR: `docs/decisions/0071-short-video-code.md`. Backlog: BL-263. Amends ADR 0040
 | 29 | `src/mcp/factory-server.ts:1747` `factory_release_folder_rename` input | `^V\d{1,6}$` | Shared strict. |
 | 30 | `src/mcp/factory-server.ts:1960` `factory_video_get_cost` input | V | Shared strict. |
 | 31 | `src/mcp/factory-server.ts` `factory_video_create` | no number input | Optional `video` (S only) (§4). New tool `factory_release_recode` (§6). Descriptions say `V49` / `S14`. |
-| 32 | `src/mcp/worker-factory-tools.ts` `agent_video_create` / `_list` / `_get_cost` | V via the core | Same core: S input on create (§4). |
+| 32 | `src/mcp/worker-factory-tools.ts` `agent_video_create` / `_list` / `_get_cost` | V via the core | S codes in list / cost; create refuses `video` (`s_codes_factory_only`: decision 2026-11-16, only the Factory gives an S). |
 | 33 | `src/mcp/server.ts:599` `producer_upload_queue_add` `video` | free string ≤ 32, checked by the scan | Description `V61 or S14`; works through rows 4–7. |
 | 34 | `src/app/api/social/slot/route.ts:14` | `^V\d+$` | Lenient read. |
 | 35 | `src/app/api/channels/[channelId]/videos/[videoId]/thumbnail/route.ts:27` `vn` | `^V\d{1,6}$` | Shared strict. |
@@ -91,8 +91,10 @@ New `src/lib/shared-video-code/` (AGENTS §M, the `shared-video-presence` / `sha
 
 ## 4. Numbering and reservations
 
-- `factory_video_create` / `agent_video_create` gain optional `video`. Absent → the next **V** as today. `video` given → it must be a
-  strict **S** code (a given V is refused, `validation_failed` reason `v_numbers_are_given`: the V series stays YTM's own).
+- `factory_video_create` gains optional `video`. Absent → the next **V** as today. `video` given → it must be a strict **S** code (a
+  given V is refused, `validation_failed` reason `v_numbers_are_given`: the V series stays YTM's own). Decision 2026-11-16: a given S
+  is accepted only through `factory_video_create` (the Factory Operator); a channel worker's `agent_video_create` refuses `video`
+  (`validation_failed`, reason `s_codes_factory_only`).
 - An S is refused as `video_number_taken` (409, `details.source`: `reservation` | `folder` | `upload` | `upload_record` |
   `registry`) when any source the list reads already knows it on this channel: any computer's reservation (cancelled ones included
   -- a code is never given twice), a folder, `video_registry.csv`, an upload row here, a peer's upload report, a `_youtube.json`.
@@ -158,8 +160,12 @@ orientation }, peerLinks, changed, readBack: verified | mismatch | null, recover
 
 0. Journal `<app data>/release-recode/<channelId>/<video>-<ts>.json` (planned steps, done marks) and backups of the original
    `_release.json`, `_youtube.json`, `_cost.json` and a JSON snapshot of every DB row it will change; `assertMutationAllowed`.
-1. Rename, inside the old folder, every file named after the release (`isNamedAfterRelease(name, "V14")`: `V14_*`, `V14 <Channel>.mp4`,
-   `V14.*`) to the same name with `S12`. Files not named after the code (thumbnails like `thumb_a.jpg`) stay.
+1. Rename, inside the old folder, every file named after the code as a whole token (the Operator's rule, 2026-11-16; `renamedForCode`):
+   the code at the start followed by `_`, a space or `.` (`V14_release.json`, `V14_YouTube_Title_Description.txt`, `V14_CrossPost.json`,
+   `V14_Tags.txt`, `V14_youtube.json`, `V14_cost.json`, `V14 <Channel>.mp4`), the code inside a thumbnail's name
+   (`^Thumbnail_<C>(_[A-Z]|_base)?\.(jpg|jpeg|png)$` and `Thumbnail_<C>_A.logo.json` -- the factory looks them up by code), and the
+   scratch files `work/<C>_*`. `V1` never matches `V12`'s files. `localizations/*.json` and files not named after the code
+   (`thumb_a.jpg`) stay. Every manifest file field follows a renamed file.
 2. Rewrite `S12_release.json` (atomic replace): `video` → `S12`, and `files.video`, `files.thumbnail`, `thumbnails[].file` where they
    name a renamed file. **Free text (title, description, localizations, tags) is never rewritten.** The video `sha256`, `slotId`
    and every other field stay. The manifest's own SHA-256 changes (reported old/new).
@@ -220,7 +226,9 @@ so V→S is unambiguous; no schema change). Then:
   `release_recode_approval_standing` keeps every case where an approval still has a date to give out of reach.
 - Package review: the decisions stay as history. An unpublished recoded package has a new manifest SHA-256, so it is
   `owner_review_pending` again (it already is). An uploaded one stays unaffected (BL-257 AC-PR-06).
-- `video_registry.csv` is the factory's file (YTM only reads it): the Operator updates its V→S rows; until then the alias hides them.
+- `video_registry.csv` is the factory's file (YTM only reads it). WWE has none (Operator, 2026-11-16); the plan files under `05 Docs`
+  and `piece.json` are the Operator's and YTM does not touch them; slot ids like `wwe-v10-s0009` stay as they are.
+- Slots showing «needs approval» again after a recode (approvals made before the upload) are accepted (Operator, 2026-11-16).
 
 ## 7. Sorting and display
 
@@ -229,13 +237,13 @@ so V→S is unambiguous; no schema change). Then:
   descending, numerically (`S10` above `S2`). Ascending lists (the live picker): V then S, each ascending.
 - Date-ordered views (План недели, Календарь, Релизы, the package scan): by date; on a tie, the shared comparator.
 
-## 8. API versions (current: Factory 1.48.0, Agent 4.20.0, Producer 1.21.0; one bump each for the one merge)
+## 8. API versions (current: Factory 1.48.0, Agent 4.20.0, Producer 1.21.0; one bump each for the one merge; Producer 1.22.0 is PRD-REQ-0195 C on another branch)
 
 - **Factory 1.49.0:** codes `V<n>` or `S<n>` everywhere a video number is taken or returned; `factory_video_create.video` (S only),
   `video_number_taken`; new WRITE tool `factory_release_recode` with the `release_recode_*` errors. Additive.
-- **Agent 4.21.0:** `agent_video_create.video` (S only, the same core); S codes in `agent_video_list` / `_get_cost` and the
-  publishing calendar. Additive.
-- **Producer 1.22.0:** S codes in `agent_get_publishing_calendar`, `producer_upload_queue_*` and wake file names
+- **Agent 4.21.0:** S codes in `agent_video_list` (state `recoded`, `recodedTo`, `series`) / `_get_cost` and the publishing calendar;
+  `agent_video_create` refuses `video` (only the Factory gives an S). Additive.
+- **Producer 1.23.0:** S codes in `agent_get_publishing_calendar`, `producer_upload_queue_*` and wake file names
   (`REVIEW-DECISION-package-S14-…`). Additive.
 
 ## 9. Stages (one branch `feature/bl-263-short-video-code`, one merge)
@@ -315,16 +323,27 @@ Recode
 - No change to how V numbers are given; no renumbering of the long videos V4, V11, V18, V19.
 - No change to the Automerge family formats.
 
-## 12. Open questions
+## 12. Questions (answered 2026-11-16)
 
-1. Which computer holds the upload rows (and reservations) of V1–V3, V5, V14, V17 -- the Mac? The recode runs there
-   (`release_recode_elsewhere` otherwise).
-2. Should `agent_video_create` (channel worker agents) also take a given S, or only the Factory? The plan gives both (one core).
-3. The Operator updates `video_registry.csv` (V→S) after the recode? YTM only reads it; the alias hides stale rows.
-4. Confirm: after the recode the next long WWE video is V27 (V1–V26 stay burnt; "a number is never given twice").
-5. Spec gap: between the 2.5.44 pin and the recode, nothing stops the factory reserving or foldering an S that the mapping gives
-   to an existing V (e.g. S12 for piece 12 while V14 still holds it); the recode would then refuse `release_recode_target_exists`.
-   Proposed: the Operator runs the recode right after the pin, before the worker makes any new S piece in S1–S22 (or reserves only
-   S23+ until then).
-6. The thumbnails of the WWE packages: are any named after the code (`V14_thumb.jpg`)? They are renamed and the manifest follows;
-   say if a different rule is wanted.
+1. The recode runs on the **Mac** (all WWE upload rows are there; `release_recode_elsewhere` otherwise).
+2. A given S is accepted only through `factory_video_create` (the Factory Operator), not `agent_video_create`.
+3. WWE has no `video_registry.csv`; `05 Docs` plan files and `piece.json` are the Operator's (YTM does not touch them).
+4. The next long WWE video is the **highest V ever known + 1** (V27 with V26 the highest).
+5. Timing: the Operator runs the recode right after the 2.5.44 pin, in the same window; no S code is created before then (new pieces
+   are S23+). `release_recode_target_exists` stays.
+6. Files: the Operator's rule in §6.2 step 1 (thumbnails `Thumbnail_<C>…` are renamed with the rest; `work/<C>_*` too).
+7. Slots showing «needs approval» again after a recode are accepted.
+
+## 13. Implementation notes (2026-11-16, on the branch)
+
+- Row 5 (manifest `video` = the folder's code): checked only when an S code is involved (the manifest, the folder or the file name),
+  so every V package scans exactly as before (AC-SC-04); a V manifest naming another V is not newly refused.
+- Row 29/30 (MCP inputs) take the shared strict pattern; `factory-server.ts` may import `@/lib/shared-video-code` (pure, like
+  `shared-domain`; the boundary test names it).
+- §6.4: the alias reaches costs through `video-costs`' existing `videoStates` port (`recodedTo`), and the plan through a new optional
+  `recodedFrom` on the progress port's slot progress (filled by `publishing-plan-progress` from the video list).
+- §6.2: the journal holds the backups (original manifest and record texts) and the DB snapshot itself; the undo of each step is
+  idempotent, so a crash is undone the same way whichever step was running. The uploads report is written at once by a new
+  `publishUploadsReportNow` (the runner's own publisher refactored onto the same function).
+- §6.1: the published packages' standing approvals are checked from the scan (`uploaded_private` / `uploaded_unknown` = no date yet).
+- Content's «V/S» column sorts by a rank (V above every S): highest first is V block then S; the ascending direction shows S first.

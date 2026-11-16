@@ -2278,6 +2278,23 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Gate(s):** none (no new YouTube write; nothing is ever scheduled by it). **Re-evaluate:** when upload rows are synced between
   the computers.
 
+## RISK-155 — Short codes: an older build meeting an S report keeps a stale copy of that peer; the recode alias is read-time only — OPEN, 2026-11-16
+
+- **Affected components:** `src/lib/shared-video-code/`, the `publishing-uploads` / `video-reservations` / `video-costs` report
+  contracts, `src/lib/video-projects/numbering.ts` (`recodeAliases`), `src/lib/publishing/release-recode.ts` (BL-263, ADR 0071).
+- **Risk:** (1) the three reports are written as version 2 once they hold an S code; a computer still on an older build refuses the
+  whole report ("newer than this app understands") and keeps the peer's last accepted one, so it no longer sees that peer's newer V
+  uploads in progress (the "uploading on <host>" guard) until it is updated. (2) The peer's own rows naming a recoded V (its jobs, its
+  own reservation) are never edited from the recoding computer; they follow the alias only where the alias is applied (video list,
+  costs, plan fingerprint) -- a future reader of those rows that does not apply it would see the old V. (3) The recode is a local,
+  multi-step file + DB operation: a crash is undone from the journal at the next call for the channel, and a failed undo leaves the
+  journal for a manual restore (`release_recode_rollback_failed`).
+- **Mitigation:** V-only reports stay version 1 byte for byte; release order (both computers on this build before the Operator pins
+  bundle 2.5.44 and writes S); the recode runs on the computer holding the upload rows (`release_recode_elsewhere` otherwise); dry run
+  first; every recode step is guarded and undone in reverse; read-back and audit.
+- **Gate(s):** none for YouTube writes (the recode makes no YouTube call). **Re-evaluate:** a third series, a second channel using S,
+  or a new reader of job / reservation rows that must know a video's current code.
+
 ## RISK-154 — Package review: decisions in the synced folder are not authenticated; ordering across computers is causal, not absolute — OPEN, 2026-11-15
 
 - **Affected components:** `src/lib/package-reviews/`, `src/lib/sync-gateway/package-reviews(-sync)/`, the gate in

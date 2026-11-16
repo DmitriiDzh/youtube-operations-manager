@@ -805,6 +805,8 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   наследовании — задание без привязки.
 - **Factory API 1.20.0:** `factory_video_create`, `factory_video_list`, `factory_video_get_cost` (чтение), `videoNumber` у инструментов
   заданий, раскадровок и планов.
+- **BL-263 (ADR 0071):** коды `S<n>` (шортсы; номер даёт фабрика, `factory_video_create.video`) рядом с `V<n>`; следующий V их не
+  считает; состояние `recoded` + `recodedTo` у V, перекодированного в S (`factory_release_recode`); правила кода — `src/lib/shared-video-code/`.
 - **Web/API:** `/api/channels/[channelId]/video-projects` (+ `/[video]/renumber`, `/[video]/cancel`), `.../storyboards/[id]/video`,
   `/api/generation-plans/[planId]/video`; Контент → «Публикация» → «Ролики в работе»; выбор ролика на экране раскадровки и в карточке плана.
 - **Доля счёта RunPod (этап 2, ADR 0041):** `media_jobs.started_at` / `gpu_finished_at` из событий websocket ComfyUI
@@ -1029,6 +1031,19 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
     маршрут `/publishing-plans/[weekStart]/retime`, `retime()` в модуле): не снятый, не прошедший, не ближе 15 минут; старое
     одобрение отзывается, «Сохранить и одобрить» одобряет новое время тем же шагом — дату загруженного видео на YouTube переносит
     цикл plan-schedule. `updatedBy: owner`; аудит `publishing_plan.retimed`. Factory API 1.47.0, Agent API 4.20.0.
+  - BL-263 (PRD-REQ-0194, owner TG 2332/2334/4553/4555, ADR 0071, `docs/roadmap/plans/SHORT_VIDEO_CODE_PLAN.md`) — **на ветке
+    `feature/bl-263-short-video-code`, не влито в `dev`**: второй код видео `S<n>` для шортсов WWE. Общий модуль
+    `src/lib/shared-video-code/` (§M, без зависимостей) — единственное место правил кода: строгий `^(V|S)[1-9][0-9]{0,5}$` для ввода,
+    читатели файлов и отчётов сохраняют свой мягкий V (`V\d+`) и добавляют строгий S, сравнение (V перед S, по числу), версия отчёта.
+    Сканер пакетов читает папки `<MMDD> S<n> Short` и `S<n>_release.json` (S-пакет, чей `video` не совпадает с папкой, — `field_invalid`).
+    Нумерация (`video-projects`): следующий V = наибольший V + 1, S не считаются; `factory_video_create.video` резервирует данный код S
+    (`video_number_taken`); конфликт S без перенумерации; псевдоним перекодировки — V, отменённый с `replacedBy` S, показывается
+    `recoded` (затраты под S, одобрение слота с тем же videoId покрывает пакет S). Отчёты `publishing-uploads`, `video-reservations`,
+    `video-costs` — версия 2 только с кодом S. `factory_release_recode` (Factory API 1.49.0; `src/lib/publishing/release-recode.ts`,
+    подключение `src/composition/release-recode.ts`, строки — `db.ts` `snapshotVideoRecodeRows` / `recodeVideoRows` /
+    `undoVideoRecodeRows`): разовая локальная перекодировка шортса V → S — файлы по имени кода (целым токеном), манифест (только
+    `video` и файловые поля), записи, папка, строки этого компьютера одной транзакцией, раскадровки; журнал с копиями, откат при сбое,
+    восстановление после падения; без вызова YouTube. Agent API 4.21.0, Producer API 1.23.0.
   - BL-261 (owner TG 3521 через Оператора): `factory_release_folder_rename` (Factory API 1.48.0) — переименование папки пакета в
     `04 Videos/<месяц>/` (`src/lib/publishing/release-folder-rename.ts`, подключение `src/composition/release-folder-rename.ts`): имя
     должно содержать номер видео; папка переезжает целиком, строки загрузок этого компьютера (очередь и законченные) переписываются
