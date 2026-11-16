@@ -30,6 +30,13 @@ export type PackageReviewDecision = {
    * made offline at once may share one (then `at`, then `id`). Absent on a decision written without it.
    */
   seq?: number;
+  /**
+   * Owner TG 4584 (BL-263 fix): set only on a copy that a local recode (`factory_release_recode`, V -> S: files renamed, the
+   * manifest's `video` and file fields rewritten, the mp4 and thumbnail bytes unchanged) made of the owner's latest decision on the
+   * earlier manifest version -- that earlier manifest's SHA-256. `kind`, `comment`, `thumbnailSha256`, `device` and `at` are the
+   * original's. Absent on the owner's own decisions; an older build ignores it.
+   */
+  carriedFrom?: string;
 };
 
 /** The owner's switch: review the channel's final packages before they count as ready. Assigned whole. */

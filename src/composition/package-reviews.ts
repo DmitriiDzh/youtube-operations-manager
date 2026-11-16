@@ -39,6 +39,16 @@ const MEDIA_SCAN_MS = 30_000;
 const MEMO_KEY = Symbol.for("ytom.packageReviews.mediaScanMemo");
 type GlobalWithMemo = typeof globalThis & { [MEMO_KEY]?: Map<string, { at: number; result: ReviewPackagesResult }> };
 
+/**
+ * Owner TG 4584 (BL-263 fix): what the owner path's `afterChange` does once a recode carried his decision to a new manifest -- the
+ * media routes' short-lived scan dropped, the Producer's Inbox writer nudged (the weekly plan's cache is dropped by the recode itself).
+ * Used by `src/composition/release-recode.ts` only.
+ */
+export function afterReviewCarried(channelId: string): void {
+  (globalThis as GlobalWithMemo)[MEMO_KEY]?.delete(channelId);
+  nudgeReviewNotify();
+}
+
 export function packageReviewsForRoutes(): PackageReviewsOwnerSurface {
   const memo = ((globalThis as GlobalWithMemo)[MEMO_KEY] ??= new Map());
   const scanCore = createPackageScanCore();

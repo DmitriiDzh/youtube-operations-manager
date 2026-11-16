@@ -153,11 +153,17 @@ orientation }, peerLinks, changed, readBack: verified | mismatch | null, recover
 - `release_recode_elsewhere`: a peer reports **any** upload row of `video` (finished included). Run it on that computer: only it can
   move those rows, and a peer row left on V would let that computer think the S package was never uploaded.
 - `release_recode_approval_standing`: the owner has a standing approval that still has work to do -- the package is not uploaded
-  and its current manifest is approved (package review, or a weekly-plan slot approval whose fingerprint names this manifest), or
+  and a weekly-plan slot approval whose fingerprint names its current manifest stands (reason `plan_slot`), or
   it is uploaded, its slot approval counts and the video has **no date yet** (the runner's date step or the plan schedule would
   still act on it). The manifest SHA-256 changes, so the approval would silently stop counting; refused rather than revoked. Today
   none exists (WWE packages are `owner_review_pending`, no slot approved; V14/V17 have no approved slot; V1–V3, V5 are released).
-  Other approvals of an uploaded package are history and do not block.
+  Other approvals of an uploaded package are history and do not block. **Changed 2026-11-16 (owner TG 4584, Factory API 1.50.0):**
+  a package-review approval is no refusal any more (the `package_review` reason is gone; eight WWE Shorts V6, V7, V9, V10, V12, V13,
+  V15, V16 are approved and must be recoded) -- the owner's decision is carried instead, see §6.5.
+- `release_recode_busy` reason `review_carry_failed` (1.50.0): the owner's package-review document cannot be read or written here;
+  nothing changed. Reason `manifest_changed` (1.50.0): the manifest read differs from the one the scan hashed; nothing changed. The
+  decision is carried again after the folder step (a decision made during the recode); that failing is a warning and the read-back
+  problem `review_carry`, never an undo.
 
 ### 6.2 What changes, in order (journal + backups, compensated in reverse on failure)
 
@@ -227,8 +233,15 @@ so V→S is unambiguous; no schema change). Then:
   video id** (the video id is the identity, AGENTS §F); the manifest SHA-256 may differ then. An approval made before the upload
   (`videoId` null) is not carried: that slot shows «needs approval» again, which by the rule above changes no date. The refusal
   `release_recode_approval_standing` keeps every case where an approval still has a date to give out of reach.
-- Package review: the decisions stay as history. An unpublished recoded package has a new manifest SHA-256, so it is
-  `owner_review_pending` again (it already is). An uploaded one stays unaffected (BL-257 AC-PR-06).
+- Package review: the decisions stay as history. **Changed 2026-11-16 (owner TG 4584 -- «проверь чтобы те видео что проверял
+  недавно не сбились, не потерялась связь к чему относились замечания»):** the recoded package has a new manifest SHA-256 but the
+  same mp4 and thumbnail bytes, so on a real run, after every refusal check and before the journal or any file changes, the owner's
+  LATEST decision on the old SHA-256 (approved or returned) is copied to the new one: same kind, comment, thumbnail hash, device and
+  original `at` (AC-PR-11), `video` the S code, `carriedFrom` the old SHA-256 (package-reviews' `carryReviewDecisionForRecode`, its
+  write lock; only the recode's composition calls it). An approved Short stays approved (the thumbnail hash still matches), a returned
+  one keeps its comment. No decision: nothing written. The copy is inert until the new manifest exists, so a failed or undone recode
+  leaves nothing that acts; a retry writes no second copy. The result reports `review: { carried: approved | returned | null }`, the
+  audit `carriedReview`. Only the Mac runs the recode; the synced document brings the copy to the other computer.
 - `video_registry.csv` is the factory's file (YTM only reads it). WWE has none (Operator, 2026-11-16); the plan files under `05 Docs`
   and `piece.json` are the Operator's and YTM does not touch them; slot ids like `wwe-v10-s0009` stay as they are.
 - Slots showing «needs approval» again after a recode (approvals made before the upload) are accepted (Operator, 2026-11-16).
@@ -306,7 +319,7 @@ Recode
   `release_recode_not_found`; `S5` as `video` or `V5` as `newCode` → `release_recode_invalid`.
 - AC-SC-17 Refused while uploading here (incl. a leased queued row), while the peer reports any upload row of the code
   (`release_recode_elsewhere`), while a cross-post uploads it, while it is in a live rotation; an unuploaded package with a standing
-  owner approval → `release_recode_approval_standing`.
+  weekly-plan slot approval → `release_recode_approval_standing` (a package-review approval is carried instead, owner TG 4584).
 - AC-SC-18 A failure injected after each step class (file rename, manifest write, record write, folder rename, DB transaction,
   storyboard relink) leaves folder, files, rows and reports exactly as before; a failed undo → `release_recode_rollback_failed`
   with the journal path.

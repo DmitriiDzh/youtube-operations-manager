@@ -1,4 +1,5 @@
-import { readOwnerReviewState } from "@/lib/package-reviews";
+import { carryReviewDecisionForRecode } from "@/lib/package-reviews";
+import { afterReviewCarried } from "./package-reviews";
 import { createReleaseRecodeCore, type ReleaseRecodeInput, type ReleaseRecodeResult } from "@/lib/publishing";
 import { invalidatePlanPackages } from "@/lib/publishing-plan-progress";
 import { createStoryboardsCoreForProduction, createVideoCostsShareCoreForProduction, createVideoReservationsShareCoreForProduction } from "@/lib/sync-gateway";
@@ -7,8 +8,9 @@ import { planSlotDecisions } from "./publishing-plan-slots";
 
 // BL-263 (SHORT_VIDEO_CODE_PLAN.md §6, ADR 0071 §4): the recode as the factory tool reaches it -- only this one operation of the
 // publishing module (no upload, no YouTube writer), with what other modules own handed in here (AGENTS.md §M): the channel's video list
-// (video-projects), the owner's package-review approvals and the weekly plan's slot decisions, the storyboards linked to the video, the
-// other computers' own rows naming it, and the reservations / costs reports written again afterwards.
+// (video-projects), the weekly plan's slot decisions, the carry of the owner's package-review decision to the new manifest (owner
+// TG 4584), the storyboards linked to the video, the other computers' own rows naming it, and the reservations / costs reports
+// written again afterwards.
 export async function recodeRelease(input: ReleaseRecodeInput): Promise<ReleaseRecodeResult> {
   const videos = createVideoProjectsServiceForProduction();
   const storyboards = createStoryboardsCoreForProduction();
@@ -18,9 +20,13 @@ export async function recodeRelease(input: ReleaseRecodeInput): Promise<ReleaseR
       if (list.workspace !== "ok") throw new Error(`the channel workspace is ${list.workspace}`);
       return list;
     },
-    approvals: async (channelId) => {
-      const [review, slots] = await Promise.all([readOwnerReviewState(channelId), planSlotDecisions(channelId)]);
-      return { reviewApproved: new Set(review.approved.keys()), slots };
+    approvals: async (channelId) => ({ slots: await planSlotDecisions(channelId) }),
+    // Owner TG 4584: the owner's latest package-review decision follows the package to its new manifest (package-reviews' own rule and
+    // write lock). The weekly plan's package cache is dropped by `invalidate` once the recode finished.
+    async carryReviewDecision(channelId, input) {
+      const out = await carryReviewDecisionForRecode(channelId, input);
+      if (out.wrote) afterReviewCarried(channelId);
+      return { carried: out.carried };
     },
     async peerLinks(channelId, video) {
       const out: ReleaseRecodeResult["peerLinks"] = [];

@@ -29,6 +29,12 @@ video: the format differs (a finished episode, not a 5–300 s scene clip).
 4. **Decisions.** Owner only, Web UI (session, remote allowed): «Одобрить» or «Вернуть» with a required comment. The latest owner
    decision for a manifest stands until the package is uploaded (he can change his mind before the upload). No MCP tool decides.
    Agents only read the state (calendar problem codes; the Producer's wake file `REVIEW-DECISION-package-…`).
+   **Amendment (2026-11-16, owner TG 4584, BL-263 fix):** one copy path outside the owner's surface -- `factory_release_recode` (a
+   local V → S rename of a Short: the manifest's SHA-256 changes, the mp4 and thumbnail bytes do not) copies the owner's LATEST
+   existing decision on the old manifest to the new one (`carriedFrom` = the old SHA-256; kind, comment, thumbnail hash, device and
+   original `at` unchanged). It never creates a decision of its own: nothing to copy, nothing written. Only
+   `src/composition/release-recode.ts` calls `carryReviewDecisionForRecode` (boundaries test); a re-packaged manifest (new content)
+   or a changed thumbnail is still pending as in §3.
 5. **Order after approval (today's flow, unchanged):** the approved package becomes ready → the automatic upload sends it private
    without a date (when the channel's automatic upload is on) or the Producer queues it → the owner's slot approval gives the date.
    A manifest whose only upload rows were cancelled before reaching YouTube and that the owner approved counts as not tried, so the

@@ -25,6 +25,8 @@ export function wellFormedDecision(value: unknown): PackageReviewDecision | null
     device: typeof d.device === "string" ? d.device : null,
     at: d.at,
     ...(typeof d.seq === "number" && Number.isSafeInteger(d.seq) && d.seq > 0 ? { seq: d.seq } : {}),
+    // Owner TG 4584: a malformed `carriedFrom` is dropped, never a reason to refuse the decision (it only says where it came from).
+    ...(typeof d.carriedFrom === "string" && HEX64.test(d.carriedFrom) ? { carriedFrom: d.carriedFrom } : {}),
   };
 }
 
