@@ -398,6 +398,26 @@ test("AC-WT-48: a done template job's payloads are saved; refused keep their cod
   }
 });
 
+test("review #8: two collects at once (poll + click) save each payload once and push once", async () => {
+  const ch = await channel("2.5.48");
+  try {
+    const job = { jobId: "j9", state: "running", args: [], startedAt: null, finishedAt: null, exitCode: null, result: { plan: "plan-2026-11-23.json", week: "2026-11-23", payloads: [{ channelId: "UC", weekStart: "2026-11-23", slots: [{ slotId: "a1" }] }] } };
+    const answer = factory({ status: STATUS({ job }) });
+    const h = harness(ch.ws, (args) => (args[0] === "run" && args[2] === "push" ? ok("pushed\n") : answer(args)));
+    const saved: unknown[] = [];
+    const save = async (p: unknown) => {
+      await new Promise((r) => setTimeout(r, 5));
+      saved.push(p);
+    };
+    const [a, b] = await Promise.all([h.core.collectTemplateBuild("UC", save), h.core.collectTemplateBuild("UC", save)]);
+    assert.equal(saved.length, 1);
+    assert.equal(h.calls.filter((c) => c.args[4] === "push").length, 1);
+    assert.deepEqual(a, b);
+  } finally {
+    await ch.cleanup();
+  }
+});
+
 test("AC-WT-48 (Operator 2026-11-16): the result is collected while the job still runs; a refusal is reported, nothing saved; no result yet → null", async () => {
   const ch = await channel("2.5.48");
   try {

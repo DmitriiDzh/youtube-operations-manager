@@ -209,6 +209,8 @@ export function createWeeklyBuildServices(deps: WeeklyBuildDeps) {
   const busy = new Set<string>();
   /** BL-267 (O7): template builds already collected, by `<channel>:<job>` (one save per job). */
   const collected = new Map<string, WeeklyTemplateCollect>();
+  /** Review #8: the collect in flight per channel. */
+  const collecting = new Map<string, Promise<WeeklyTemplateCollect | null>>();
 
   const blocked = (code: WeeklyBuildBlockCode, message: string, bundle: string | null = null, python: string | null = null): { readiness: WeeklyBuildReadiness; ctx: null } => ({
     readiness: { ready: false, code, message, bundle, python },
@@ -425,6 +427,27 @@ export function createWeeklyBuildServices(deps: WeeklyBuildDeps) {
      * `error`, nothing saved. A job already collected is answered from memory (nothing saved twice). null: no result yet.
      */
     async collectTemplateBuild(channelId: string, save: (payload: unknown) => Promise<void>): Promise<WeeklyTemplateCollect | null> {
+      // Review #8: one collect per channel at a time (the card's poll and a click): a second call waits for the one in flight and
+      // gets its answer -- the existence check and the saves in `save` never run twice side by side, and push runs once.
+      const running = collecting.get(channelId);
+      if (running) return running;
+      const run = collectOnce(channelId, save).finally(() => collecting.delete(channelId));
+      collecting.set(channelId, run);
+      return run;
+    },
+
+    async stop(channelId: string): Promise<{ stopped: true }> {
+      return exclusive(channelId, async () => {
+        const ctx = await requireReady(channelId);
+        const result = await runLauncher(ctx, ["run", WEEKLY_PLAN_WORKFLOW, "stop"]);
+        if (result.exitCode !== 0) throw failed("stop", result);
+        return { stopped: true as const };
+      });
+    },
+  };
+
+  async function collectOnce(channelId: string, save: (payload: unknown) => Promise<void>): Promise<WeeklyTemplateCollect | null> {
+    {
       const ctx = await requireReady(channelId);
       const status = await readStatus(ctx);
       const job = status.job;
@@ -468,17 +491,8 @@ export function createWeeklyBuildServices(deps: WeeklyBuildDeps) {
       const answer: WeeklyTemplateCollect = { jobId: job.jobId, plan: job.result.plan, results, pushed, pushError };
       collected.set(key, answer);
       return answer;
-    },
-
-    async stop(channelId: string): Promise<{ stopped: true }> {
-      return exclusive(channelId, async () => {
-        const ctx = await requireReady(channelId);
-        const result = await runLauncher(ctx, ["run", WEEKLY_PLAN_WORKFLOW, "stop"]);
-        if (result.exitCode !== 0) throw failed("stop", result);
-        return { stopped: true as const };
-      });
-    },
-  };
+    }
+  }
 }
 
 export type WeeklyBuildService = ReturnType<typeof createWeeklyBuildServices>;
