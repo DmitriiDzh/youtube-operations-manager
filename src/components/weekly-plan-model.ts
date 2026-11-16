@@ -29,7 +29,7 @@ export type PlanSlotDto = {
     previous: { date: string; publishAt: string; lengthHint: string | null; note: string | null; timeZone: string; package?: PackageFingerprintDto };
     approvedAt: string;
     changedAt: string;
-    changedBy: "factory" | "worker";
+    changedBy: "factory" | "worker" | "owner";
   } | null;
   /** BL-240: the slot this one replaces (approving this one pulls it), or null. */
   replaces: { slotId: string; weekStart: string | null; publishAt: string | null; video: string | null; vetoed: boolean; released: boolean; found: boolean } | null;
@@ -46,7 +46,7 @@ export type PlanSlotDto = {
   /** BL-242 round 3: another counting approval names the same video number -- the uploads give no date. */
   duplicateVideo?: boolean;
   updatedAt: string;
-  updatedBy: "factory" | "worker";
+  updatedBy: "factory" | "worker" | "owner";
 };
 
 export type PlanSummaryDto = {
@@ -59,9 +59,9 @@ export type PlanSummaryDto = {
   counts: { slots: number; approved: number; needsApproval: number; vetoed: number };
   firstRelease: string | null;
   createdAt: string;
-  createdBy: "factory" | "worker";
+  createdBy: "factory" | "worker" | "owner";
   updatedAt: string;
-  updatedBy: "factory" | "worker";
+  updatedBy: "factory" | "worker" | "owner";
 };
 
 export type PlanDto = PlanSummaryDto & { slots: PlanSlotDto[] };
@@ -236,4 +236,48 @@ export function ownerReviewOf(pkg: { problems: string[]; reviewComment?: string 
   if (pkg.problems.includes("owner_review_returned")) return { review: "returned", comment: pkg.reviewComment ?? null, factoryProblems };
   if (pkg.problems.includes("owner_review_pending")) return { review: "pending", comment: null, factoryProblems };
   return { review: null, comment: null, factoryProblems };
+}
+
+/** BL-256: plan-schedule's margin -- a date within 15 minutes is neither written nor removed, so such a slot is not moved. */
+export const RETIME_MARGIN_MS = 15 * 60_000;
+
+/** BL-256 (owner msgs 4380/4383): the owner may move the slot -- not vetoed, not released, at least 15 minutes away. */
+export function canRetime(slot: Pick<PlanSlotDto, "vetoed" | "released" | "publishAtUtc"> & { youtubePublishAt?: string | null; changedAfterApproval?: PlanSlotDto["changedAfterApproval"] }, nowMs: number): boolean {
+  if (slot.vetoed || slot.released) return false;
+  // Review 1: the soonest time the video may come out -- the slot's, the approved time an agent's change still stands on, the date on
+  // YouTube.
+  const previous = slot.changedAfterApproval?.previous;
+  const times = [Date.parse(slot.publishAtUtc), slot.youtubePublishAt ? Date.parse(slot.youtubePublishAt) : NaN, previous ? zonedInstantMs(previous.publishAt, previous.timeZone) : NaN].filter((v) => Number.isFinite(v));
+  return Math.min(...times) - nowMs >= RETIME_MARGIN_MS;
+}
+
+/** The instant (ms) of a wall time `YYYY-MM-DDTHH:MM` in `timeZone` (two passes of the zone's offset; NaN when unreadable). */
+function zonedInstantMs(publishAt: string, timeZone: string): number {
+  const guess = Date.parse(`${publishAt}:00Z`);
+  if (!Number.isFinite(guess)) return NaN;
+  const offset = (at: number) => {
+    try {
+      const p = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).formatToParts(new Date(at)).map((x) => [x.type, x.value]));
+      return Date.parse(`${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:00Z`) - at;
+    } catch {
+      return NaN;
+    }
+  };
+  const first = guess - offset(guess);
+  return guess - offset(first);
+}
+
+/** BL-256: the seven days of the plan's week (Monday first), `YYYY-MM-DD`. */
+export function weekDays(weekStart: string): string[] {
+  return Array.from({ length: 7 }, (_, i) => new Date(Date.parse(`${weekStart}T00:00:00Z`) + i * 86_400_000).toISOString().slice(0, 10));
+}
+
+/** BL-256: a typed `HH:MM` (24 h; `9:05` is taken as `09:05`), or null. Never a native time picker (locale-dependent display). */
+export function parseClock(text: string): string | null {
+  const match = /^\s*(\d{1,2}):(\d{2})\s*$/.exec(text);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours > 23 || minutes > 59) return null;
+  return `${String(hours).padStart(2, "0")}:${match[2]}`;
 }

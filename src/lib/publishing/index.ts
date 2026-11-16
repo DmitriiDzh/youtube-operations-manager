@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { open, realpath, stat } from "node:fs/promises";
+import { createReleaseFolderRename } from "./release-folder-rename";
+import { lstat, open, realpath, rename as renamePath, stat } from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
 import { YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
@@ -33,6 +34,10 @@ import {
   listQuotaCalls,
   reorderQueuedPublishingUploads,
   rawSqlClient,
+  rewritePublishingUploadPaths,
+  listSocialPostJobs,
+  listLiveStreamVideos,
+  listLiveStreamSources,
   removeLocalVideoRowIfUnreferenced,
   savePublishingG1Probe,
   stopPublishingUploadBeforeYoutube,
@@ -686,6 +691,16 @@ export async function listChannelUploads(channelId: string) {
 }
 
 /**
+ * BL-258 (owner msg 4385): this computer's open uploads of every channel, each queued row with its place in the shared queue -- the
+ * header's «Выполняется в фоне».
+ */
+export async function listActiveUploadsWithQueue() {
+  const active = await listPublishingUploads({ statuses: ACTIVE_UPLOAD_STATUSES, limit: 500 });
+  const { positions } = queuePositions(active);
+  return active.map((row) => ({ ...row, queuePosition: positions.get(row.id) ?? null }));
+}
+
+/**
  * BL-239 (UPLOAD_QUEUE_CONTROL_PLAN.md §6): the owner's list -- the channel's uploads with each queued row's place in the shared
  * queue of this computer (every channel) and the queue's length, so the ↑↓ arrows show what they change.
  */
@@ -910,3 +925,42 @@ export async function markUploadThumbnailSetLater(channelId: string, videoId: st
   }
   return marked;
 }
+
+/**
+ * BL-261 (owner TG 3521 via the Factory Operator): rename one release package's folder under `04 Videos/` and rewrite this
+ * computer's upload rows that name it. `invalidate`: the caller's package caches (the weekly plan's, composition) -- this module
+ * never imports them.
+ */
+export function createReleaseFolderRenameCore(options: { invalidate?: (channelId: string) => void } = {}) {
+  const scan = createPackageScanCore();
+  const reads = createPackageScanReads();
+  return createReleaseFolderRename({
+    workspace: (channelId) => reads.workspace(channelId),
+    scan: (channelId) => scan.scan(channelId),
+    uploads: (channelId) => listPublishingUploads({ channelId, limit: 5000 }),
+    peerUploads: (channelId) => peerUploadsOf(channelId),
+    async socialBusy(channelId, video) {
+      return (await listSocialPostJobs(channelId)).some((job) => job.video === video && (job.status === "uploading" || job.status === "processing"));
+    },
+    async livePaths(channelId) {
+      const [videos, sources] = await Promise.all([listLiveStreamVideos(channelId), listLiveStreamSources(channelId)]);
+      return [...videos, ...sources].map((row) => row.originalPath).filter((p): p is string => typeof p === "string");
+    },
+    now: () => new Date(),
+    exists: (absolutePath) => lstat(absolutePath).then(() => true, () => false),
+    async isRealFolder(workspace, relativeFolder) {
+      const absolute = path.join(workspace, ...relativeFolder.split("/"));
+      const info = await lstat(absolute).catch(() => null);
+      if (!info || !info.isDirectory() || info.isSymbolicLink()) return false;
+      const [root, real] = await Promise.all([realpath(path.join(workspace, VIDEOS_FOLDER)).catch(() => null), realpath(absolute).catch(() => null)]);
+      return root !== null && real !== null && real !== root && isPathInsideOrEqual(root, real);
+    },
+    rename: (from, to) => renamePath(from, to),
+    rewriteUploads: (updates) => rewritePublishingUploadPaths(updates),
+    assertMutationAllowed: () => assertDeviceAvailableForMutation(rawSqlClient),
+    audit: ({ channelId, video, detail }) => insertVideoEditAuditEvent({ channelId, videoId: `release-folder:${video}`, eventType: "RESULT", detail }),
+    invalidate: (channelId) => options.invalidate?.(channelId),
+    join: (...parts) => path.join(...parts),
+  });
+}
+export { folderNameProblem, rewritePaths, type ReleaseFolderRenameInput, type ReleaseFolderRenameResult } from "./release-folder-rename";

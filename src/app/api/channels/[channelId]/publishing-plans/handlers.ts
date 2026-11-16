@@ -88,5 +88,15 @@ export function createPublishingPlanRouteHandlers(deps: PublishingPlanRouteDeps 
         const input = await request.json().catch(() => null);
         return NextResponse.json(await deps.service().decide(channelId, weekStart, input, userId));
       }),
+
+    /**
+     * BL-256 (owner msgs 4380/4383): POST `{ slotId, contentHash, date, publishAt, approve }` -- the owner moves a slot to another day
+     * of its week and/or another time, approving the new time in the same step when `approve`. Remote access allowed (a session).
+     */
+    retime: (request: Request, context: Params<Base & { weekStart: string }>) =>
+      guarded(context, async ({ channelId, weekStart }, userId) => {
+        const input = await request.json().catch(() => null);
+        return NextResponse.json(await deps.service().retime(channelId, weekStart, input, userId));
+      }),
   };
 }

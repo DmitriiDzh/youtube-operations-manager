@@ -2,6 +2,7 @@ import { agentChannelBranding, createChannelBrandingAgentCore } from "@/lib/chan
 import { createPublishingPlansAgentCore } from "@/lib/publishing-plans";
 import { claimTranslationRequest, completeTranslationRequest, failTranslationRequest, listTranslationRequests, reportLocalizationChecks } from "@/lib/localization-review";
 import { publishingPlanProgress } from "@/lib/publishing-plan-progress";
+import { renameReleaseFolder } from "@/composition/release-folder-rename";
 import { createChannelPublishingCoverage, invalidateChannelTimeZone } from "@/composition/publishing-coverage";
 import { createChannelLocalizationsOperatorCore, operatorChannelLocalizations } from "@/lib/channel-localizations";
 import { createGeminiMediaCore } from "@/lib/gemini-media";
@@ -22,7 +23,7 @@ import type { FactoryToolDeps } from "./factory-server";
  * approval, start or stop (`session-approval-inventory.test.ts`). The factory route adds the media, logical-path and channel-list
  * parts.
  */
-export type FactoryChannelDeps = Pick<FactoryToolDeps, "plans" | "gemini" | "speech" | "voices" | "live" | "channelLocalizations" | "channelBranding" | "publishingPlans" | "publishingCoverage" | "localizationChecks" | "storyboards" | "videos" | "jobs">;
+export type FactoryChannelDeps = Pick<FactoryToolDeps, "plans" | "gemini" | "speech" | "voices" | "live" | "channelLocalizations" | "channelBranding" | "publishingPlans" | "publishingCoverage" | "releaseFolders" | "localizationChecks" | "storyboards" | "videos" | "jobs">;
 
 export function createFactoryChannelDeps(): FactoryChannelDeps {
   return {
@@ -139,6 +140,10 @@ export function createFactoryChannelDeps(): FactoryChannelDeps {
     // BL-235: the shared publishing coverage in the channel's zone (the weekly plan's, else the owner's) -- a local read.
     publishingCoverage: {
       get: async (input) => ({ ...(await createChannelPublishingCoverage().get(input)) }),
+    },
+    // BL-261: a release folder's rename; the weekly plan's package cache is read again after it.
+    releaseFolders: {
+      rename: async (input) => ({ ...(await renameReleaseFolder(input)) }),
     },
     // BL-227 (ADR 0052): check reports on change sets -- a report decides nothing (only the owner approves, in the Web UI).
     localizationChecks: {

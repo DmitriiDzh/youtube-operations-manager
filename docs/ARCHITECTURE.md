@@ -3298,7 +3298,8 @@ Plan: `docs/roadmap/plans/SERVERS_MEDIA_PLAN.md` (FO-REQ-0009, FO-MSG-0011). Bra
     The layout polls it every 60 s and when the channel changes.
   - The channel switcher shows `waitingLabel`.
   - The bell (`device-sync-bell.tsx`) shows `otherChannelEntries`:
-    - one entry per non-active channel and type of work, derived on every poll;
+    - one entry per non-active channel and type of work, derived on every poll (no `stage_complete`/`plan_complete`
+      entries since owner msg 4535);
     - entries cannot be dismissed, and the dot is sky blue;
     - an entry's button runs `activateStoredChannel`, waits until `channel.id` matches, then `router.push`es the place.
   - The pure rules are in `components/channel-work.ts`.

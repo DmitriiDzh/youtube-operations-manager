@@ -5,7 +5,7 @@ import { createActivityGetHandler } from "./route";
 
 // BL-195 AC-FB-08 (UI_FEEDBACK_CLARITY_PLAN.md §4): a session is required; the summary is asked for the session's user only.
 
-const empty: ActivitySummary = { channelId: null, items: [], sources: { operations: "no_channel", media_jobs: "no_channel", uploads: "no_channel", live_streams: "ok" }, at: "2026-10-17T10:00:00.000Z" };
+const empty: ActivitySummary = { channelId: null, items: [], sources: { operations: "ok", media_jobs: "ok", uploads: "ok", live_streams: "ok" }, at: "2026-10-17T10:00:00.000Z" };
 
 test("401 without a session; the summary is never read", async () => {
   let asked = 0;

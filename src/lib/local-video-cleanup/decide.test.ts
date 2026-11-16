@@ -157,3 +157,10 @@ test("Shorts kept: ≤ 180 s refused short_kept; 181 s and longer may be deleted
   assert.deepEqual(onYt(yt({ durationSeconds: 10_800 })), { action: "delete" });
   assert.deepEqual(onYt(yt({ durationSeconds: null })), { action: "wait", reason: "cannot_verify" });
 });
+
+test("BL-261 (owner TG 3521): a Short's release folder may end in « Short» -- no other suffix", () => {
+  assert.equal(isAllowedReleaseVideo("04 Videos/11 November/1115 V1 Short/V1 WWE.mp4", "V1", "WWE"), true);
+  assert.equal(isAllowedReleaseVideo("04 Videos/11 November/1115 V1 Long/V1 WWE.mp4", "V1", "WWE"), false);
+  assert.equal(isAllowedReleaseVideo("04 Videos/11 November/1115 V1 Shorts/V1 WWE.mp4", "V1", "WWE"), false);
+  assert.equal(isAllowedReleaseVideo("04 Videos/11 November/1115 V1/V1 WWE.mp4", "V1", "WWE"), true);
+});
