@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import * as Automerge from "@automerge/automerge";
 import type { AutomergeCore, DocumentByteStore } from "../automerge-core";
 import {
@@ -58,6 +59,9 @@ export function createStoryboardsCore(deps: ServiceDependencies) {
     return run;
   }
 
+  /** BL-270: `read`'s plain storyboards per channel, under the sha256 of the bytes they came from (null: no document yet). */
+  const readCache = new Map<string, { hash: string | null; records: StoryboardRecord[] }>();
+
   async function loadOrGenesis(channelId: string): Promise<Automerge.Doc<StoryboardsDocument>> {
     const bytes = await deps.store.loadDocumentBytes(channelId);
     // Loaded from bytes, so this computer writes with its own fresh actor -- never with the genesis actor every computer shares.
@@ -80,16 +84,27 @@ export function createStoryboardsCore(deps: ServiceDependencies) {
   }
 
   return {
-    /** The channel's storyboards as plain data (an empty list for a channel without a document yet). */
+    /**
+     * The channel's storyboards as plain data (an empty list for a channel without a document yet). BL-270 (owner TG 4662/4665): kept
+     * per channel under the sha256 of the document's bytes -- the badge poll, review-notify and the cost loop asked every minute and
+     * each loaded the Automerge document again; the same bytes are the same storyboards, so an entry can never be stale. Each call
+     * gets its own copy.
+     */
     read(channelId: string): Promise<StoryboardRecord[]> {
       return serialized(async () => {
-        const storyboards = (await loadOrGenesis(channelId)).storyboards ?? {};
-        return Object.values(storyboards).map((record) => {
+        const bytes = await deps.store.loadDocumentBytes(channelId);
+        const hash = bytes ? createHash("sha256").update(bytes).digest("hex") : null;
+        const hit = readCache.get(channelId);
+        if (hit && hit.hash === hash) return clone(hit.records);
+        const doc = Automerge.load<StoryboardsDocument>(bytes ?? Automerge.save(genesisDocument(channelId)));
+        const records = Object.values(doc.storyboards ?? {}).map((record) => {
           const plain = clone(record);
           if (record.renders) plain.renders = clone(renderMapOf(record, "renders"));
           if (record.renderDecisions) plain.renderDecisions = clone(renderMapOf(record, "renderDecisions"));
           return plain;
         });
+        readCache.set(channelId, { hash, records });
+        return clone(records);
       });
     },
 

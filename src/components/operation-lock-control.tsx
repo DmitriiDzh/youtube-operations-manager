@@ -6,11 +6,16 @@ import { OPERATION_LOCK_FORCE_CONFIRMATION } from "@/lib/operation-lock/contract
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import type { Translate, UiTextKey } from "@/lib/ui-text";
 import { useT } from "./ui-text-provider";
+import { startVisibleInterval } from "./visible-interval";
 
 type DatabaseState = "ready" | "failed" | "starting";
 type LockResponse = { status: OperationLockStatus | null; database: DatabaseState };
 
-const POLL_MS = 3_000;
+/** BL-270 (owner TG 4662/4665): every 10 s while nothing needs attention (the layout's quiet copy polled every 3 s on every page,
+ * forever); every 3 s while a lock is held, the database is not ready (the recovery page) or the last read failed. Never while the
+ * tab is hidden (`startVisibleInterval`). */
+const POLL_IDLE_MS = 10_000;
+const POLL_ACTIVE_MS = 3_000;
 
 const OPERATION_LABELS: Record<string, UiTextKey> = {
   migration: "operationLock.op.migration",
@@ -74,15 +79,17 @@ export function OperationLockControl({
 
   useEffect(() => {
     void refresh();
-    const poll = setInterval(() => void refresh(), POLL_MS);
-    const clock = setInterval(() => setNow(Date.now()), 1_000);
-    return () => {
-      clearInterval(poll);
-      clearInterval(clock);
-    };
   }, [refresh]);
 
   const status = data?.status ?? null;
+  const needsAttention = status !== null || (data !== null && data.database !== "ready") || loadError !== null;
+  useEffect(() => startVisibleInterval(() => void refresh(), needsAttention ? POLL_ACTIVE_MS : POLL_IDLE_MS), [refresh, needsAttention]);
+  // The elapsed-time clock ticks only while a lock is shown.
+  useEffect(() => {
+    if (!status) return;
+    const clock = setInterval(() => setNow(Date.now()), 1_000);
+    return () => clearInterval(clock);
+  }, [status]);
 
   // Tell the host when a lock it was showing has gone (finished or cleared), so it can refresh the
   // controls that were disabled while the lock was held.
