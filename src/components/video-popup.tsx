@@ -51,6 +51,7 @@ export function VideoPopup({ channelId, target, onClose }: { channelId: string; 
           <iframe
             src={sources.embed}
             title={target.title}
+            // ui-text-ignore: the iframe's permission list, not interface text
             allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
             allowFullScreen
             referrerPolicy="strict-origin-when-cross-origin"
