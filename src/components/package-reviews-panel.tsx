@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import type { UiTextKey } from "@/lib/ui-text";
 import { SkeletonLines } from "./busy-feedback";
@@ -9,7 +10,8 @@ import { ToggleSwitch } from "./toggle-switch";
 import { useT, useUiText } from "./ui-text-provider";
 import { useUserTimezone } from "./use-user-timezone";
 
-// BL-257 (ADR 0070, PACKAGE_REVIEW_PLAN.md stage 2; owner msgs 4514/4516/4519): Медиа → «Видео на проверку». The owner's questions in
+// BL-257 (ADR 0070, PACKAGE_REVIEW_PLAN.md stage 2; owner msgs 4514/4516/4519), BL-265 (ADR 0072 §1-§2): Медиа → «Видео на проверку».
+// The owner approves or returns the VIDEO (the mp4); packaging gets «Комментарий к упаковке» on any package, uploaded ones included. The owner's questions in
 // order: is the gate on for this channel (the switch on top), does anything wait for me (the line and the waiting cards first), what
 // does the finished video look like (the player streams the package's own file by Range -- any length, on the phone too), what goes
 // with it (thumbnail, title, description, translations, slot). He answers on the card: «Одобрить» or «Вернуть» (a comment required),
@@ -37,7 +39,13 @@ const ERROR_KEYS: Record<string, UiTextKey> = {
   package_review_uploaded: "packageReviews.error.package_review_uploaded",
 };
 
-type Asking = { item: PackageReviewDto; kind: "approved" | "returned" } | null;
+type DecisionKind = "approved" | "returned" | "packaging_comment";
+type Asking = { item: PackageReviewDto; kind: DecisionKind } | null;
+const DIALOG_KEYS: Record<DecisionKind, { title: UiTextKey; description: UiTextKey; confirm: UiTextKey; placeholder: UiTextKey }> = {
+  approved: { title: "packageReviews.approve.title", description: "packageReviews.approve.description", confirm: "packageReviews.approve.confirm", placeholder: "packageReviews.approve.placeholder" },
+  returned: { title: "packageReviews.return.title", description: "packageReviews.return.description", confirm: "packageReviews.return.confirm", placeholder: "packageReviews.return.placeholder" },
+  packaging_comment: { title: "packageReviews.comment.title", description: "packageReviews.comment.description", confirm: "packageReviews.comment.confirm", placeholder: "packageReviews.comment.placeholder" },
+};
 
 export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channelId: string | null; visible: boolean; onWaiting?: (count: number) => void }) {
   const t = useT();
@@ -64,7 +72,7 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
       }
     }
   };
-  const openDialog = (item: PackageReviewDto, kind: "approved" | "returned") => {
+  const openDialog = (item: PackageReviewDto, kind: DecisionKind) => {
     let draft = "";
     try {
       draft = window.localStorage.getItem(draftKey(item.manifestSha256, kind)) ?? "";
@@ -245,10 +253,34 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
                     )}
                   </div>
                 )}
+                {(item.packagingComments ?? []).length > 0 && (
+                  <div className="rounded-md bg-zinc-900 px-3 py-2">
+                    <p className="text-xs font-medium text-zinc-400">{t("packageReviews.packagingComments")}</p>
+                    <ul className="mt-1 space-y-1">
+                      {(item.packagingComments ?? []).map((c) => (
+                        <li key={c.id} className="text-zinc-300">
+                          <span className="whitespace-pre-wrap">{c.comment}</span>
+                          <span className="ml-2 text-xs text-zinc-500">
+                            {at(c.at)}
+                            {c.device ? ` ${t("packageReviews.decidedOn", { device: c.device })}` : ""}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {item.state === "uploaded" && (
+                  <p className="text-xs text-zinc-400">
+                    {t("packageReviews.uploadedHint")}{" "}
+                    <Link href="/content/publishing" className="text-violet-300 underline hover:text-violet-200">
+                      {t("packageReviews.uploadedLink")}
+                    </Link>
+                  </p>
+                )}
                 {actionError?.manifest === item.manifestSha256 && <p className="text-red-400">{actionError.text}</p>}
               </div>
             </div>
-            {(actions.approve || actions.ret) && (
+            {(actions.approve || actions.ret || actions.comment) && (
               // AC-PR-15: on a phone the actions stay at the bottom of the screen while the card scrolls -- just above the shell's fixed
               // bottom navigation (56 px + the safe area), which overlays the scrolling main area; on a wider screen in place.
               <div className="sticky bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-10 flex gap-2 border-t border-zinc-800 bg-zinc-900/95 px-3 py-2 backdrop-blur md:static md:bg-transparent md:backdrop-blur-none">
@@ -270,6 +302,16 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
                     className="flex-1 rounded-md border border-zinc-600 px-3 py-2 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-40 md:flex-none md:py-1"
                   >
                     {t("packageReviews.action.return")}
+                  </button>
+                )}
+                {actions.comment && (
+                  <button
+                    type="button"
+                    disabled={busy !== null}
+                    onClick={() => openDialog(item, "packaging_comment")}
+                    className="flex-1 rounded-md border border-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-40 md:flex-none md:py-1"
+                  >
+                    {t("packageReviews.action.comment")}
                   </button>
                 )}
                 {rowBusy && <span className="self-center text-xs text-zinc-400">{t("packageReviews.action.saving")}</span>}
@@ -323,12 +365,12 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
       )}
       {asking && (
         <ConfirmDialog
-          title={t(asking.kind === "approved" ? "packageReviews.approve.title" : "packageReviews.return.title", { video: asking.item.video })}
-          description={t(asking.kind === "approved" ? "packageReviews.approve.description" : "packageReviews.return.description")}
+          title={t(DIALOG_KEYS[asking.kind].title, { video: asking.item.video })}
+          description={t(DIALOG_KEYS[asking.kind].description)}
           cancelLabel={t("packageReviews.action.cancel")}
-          confirmLabel={t(asking.kind === "approved" ? "packageReviews.approve.confirm" : "packageReviews.return.confirm")}
+          confirmLabel={t(DIALOG_KEYS[asking.kind].confirm)}
           confirmVariant={asking.kind === "returned" ? "danger" : "default"}
-          confirmDisabled={busy !== null || (asking.kind === "returned" && !returnCommentReady(comment))}
+          confirmDisabled={busy !== null || (asking.kind !== "approved" && !returnCommentReady(comment))}
           confirmBusyLabel={busy === asking.item.manifestSha256 ? t(asking.kind === "approved" ? "packageReviews.action.checking" : "packageReviews.action.saving") : null}
           onCancel={() => {
             if (busy === null) setAsking(null);
@@ -339,9 +381,9 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
             value={comment}
             onChange={(event) => setComment(event.target.value)}
             maxLength={2000}
-            rows={asking.kind === "returned" ? 4 : 2}
-            aria-label={t(asking.kind === "approved" ? "packageReviews.approve.placeholder" : "packageReviews.return.placeholder")}
-            placeholder={t(asking.kind === "approved" ? "packageReviews.approve.placeholder" : "packageReviews.return.placeholder")}
+            rows={asking.kind === "approved" ? 2 : 4}
+            aria-label={t(DIALOG_KEYS[asking.kind].placeholder)}
+            placeholder={t(DIALOG_KEYS[asking.kind].placeholder)}
             className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-100 placeholder:text-zinc-600"
           />
         </ConfirmDialog>

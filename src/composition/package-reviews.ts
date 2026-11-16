@@ -1,5 +1,6 @@
 import { createPackageReviewsOwnerCore, OWNER_REVIEW_PROBLEM_CODES, type PackageReviewsOwnerSurface, type ReviewPackage, type ReviewPackagesResult } from "@/lib/package-reviews";
 import { createPackageScanCore, type PackageScanResult, type ScannedPackage } from "@/lib/publishing";
+import { createVideoProjectsServiceForProduction } from "@/lib/video-projects";
 import { invalidatePlanPackages } from "@/lib/publishing-plan-progress";
 import { nudgeReviewNotify } from "@/lib/review-notify";
 
@@ -26,7 +27,9 @@ export function reviewPackagesOf(scan: PackageScanResult): ReviewPackagesResult 
       videoPath: `${p.folder}/${p.pkg.files.video}`,
       thumbnailPath: p.thumbnailPath,
       videoSha256: p.pkg.sha256 ?? null,
+      videoSizeBytes: p.pkg.sizeBytes,
       uploaded: p.youtube !== null,
+      videoId: p.youtube?.videoId ?? null,
       otherProblems: p.problems.map((problem) => problem.code).filter((code) => !OWNER_REVIEW_PROBLEM_CODES.includes(code)),
     });
   }
@@ -61,6 +64,8 @@ export function packageReviewsForRoutes(): PackageReviewsOwnerSurface {
       return result;
     },
     resolveFile: (channelId, relativePath) => scanCore.resolvePackageFile(channelId, relativePath),
+    // BL-265 (ADR 0072 §1): a media decision follows the BL-263 recode alias (V -> S) the video list knows.
+    recodeAliases: (channelId) => createVideoProjectsServiceForProduction().recodeAliasesOf(channelId),
     afterChange(channelId) {
       memo.delete(channelId);
       invalidatePlanPackages(channelId);

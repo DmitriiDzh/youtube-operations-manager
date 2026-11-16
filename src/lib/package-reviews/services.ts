@@ -13,7 +13,7 @@ import {
   type ReviewPackage,
   type ReviewPackagesResult,
 } from "./contracts";
-import { latestOwnerDecision, ownerReviewStateOf } from "./model";
+import { isMediaKeyed, latestOwnerDecision, ownerReviewStateOf, standingDecision, wellFormedDecision } from "./model";
 import { manifestSha256Schema, packageDecisionInputSchema, packageReviewSwitchInputSchema } from "./schemas";
 
 // BL-257 (ADR 0070, PACKAGE_REVIEW_PLAN.md stage 1): the owner's review of a channel's final release packages. Every port is
@@ -42,6 +42,11 @@ export type PackageReviewsDeps = {
   audit(event: { channelId: string; video: string; detail: Record<string, unknown> }): Promise<void>;
   /** After a decision or a switch: the plan's package cache is dropped (AC-PR-10) and the Producer's Inbox writer nudged (AC-PR-13). */
   afterChange(channelId: string): Promise<void> | void;
+  /**
+   * BL-265 (ADR 0072 §1): the channel's BL-263 recode aliases (V -> S) as the video list knows them (the composition layer reads
+   * video-projects). Absent or failing: none -- a decision then counts for its own video code only (stricter).
+   */
+  recodeAliases?(channelId: string): Promise<ReadonlyMap<string, string>>;
 };
 
 const VIDEO_TYPES: Readonly<Record<string, string>> = { mp4: "video/mp4", m4v: "video/mp4", mov: "video/quicktime", webm: "video/webm" };
@@ -56,7 +61,13 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
   /** The gate's view; a document that cannot be read is "required, nothing approved" (AC-PR-07). Never throws. */
   async function ownerReviewState(channelId: string): Promise<OwnerReviewState> {
     const snapshot = await deps.store.read(channelId).catch(() => "unreadable" as const);
-    return ownerReviewStateOf(snapshot);
+    return ownerReviewStateOf(snapshot, await aliasesFor(channelId, snapshot));
+  }
+
+  /** The recode aliases, read only where a decision could use them (a gated channel's document); never throws. */
+  async function aliasesFor(channelId: string, snapshot: PackageReviewsSnapshot | "unreadable"): Promise<ReadonlyMap<string, string>> {
+    if (snapshot === "unreadable" || !snapshot.exists || Object.keys(snapshot.decisions ?? {}).length === 0 || !deps.recodeAliases) return new Map();
+    return deps.recodeAliases(channelId).catch(() => new Map());
   }
 
   async function snapshotOrUnreadable(channelId: string): Promise<PackageReviewsSnapshot | "unreadable"> {
@@ -69,13 +80,15 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
     return file ? deps.hashFile(file.path).catch(() => null) : null;
   }
 
-  async function itemOf(channelId: string, pkg: ReviewPackage, decisions: readonly unknown[]): Promise<PackageReviewItem> {
-    const latest = latestOwnerDecision(pkg.manifestSha256, decisions);
+  async function itemOf(pkg: ReviewPackage, gate: OwnerReviewState, comments: readonly PackageReviewDecision[]): Promise<PackageReviewItem> {
+    // BL-265 (ADR 0072 §1): the decision on this package's MEDIA stands -- an approval survives a re-package of its packaging.
+    const latest = standingDecision(gate, { manifestSha256: pkg.manifestSha256, video: pkg.video, videoSha256: pkg.videoSha256, videoSizeBytes: pkg.videoSizeBytes });
     let state: PackageReviewItemState;
     if (pkg.uploaded) state = "uploaded";
     else if (latest?.kind === "returned") state = "returned";
-    else if (latest?.kind === "approved" && latest.thumbnailSha256 !== null && latest.thumbnailSha256 === (await thumbnailHashOf(channelId, pkg))) state = "approved";
+    else if (latest?.kind === "approved") state = "approved";
     else state = "pending";
+    const own = comments.filter((c) => c.manifestSha256 === pkg.manifestSha256 || (c.video !== "" && (c.video === pkg.video || gate.aliases.get(c.video) === pkg.video)));
     return {
       manifestSha256: pkg.manifestSha256,
       manifestPath: pkg.manifestPath,
@@ -88,20 +101,29 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
       durationSeconds: pkg.durationSeconds,
       thumbnailPath: pkg.thumbnailPath,
       state,
-      decision: latest?.kind ?? null,
+      decision: latest?.kind === "approved" || latest?.kind === "returned" ? latest.kind : null,
       comment: latest?.comment ?? null,
       decidedAt: latest?.at ?? null,
       decidedOn: latest?.device ?? null,
       hasVideoSha256: pkg.videoSha256 !== null,
       otherProblems: pkg.otherProblems,
+      packagingComments: own
+        .slice()
+        .reverse()
+        .map((c) => ({ id: c.id, comment: c.comment ?? "", at: c.at, device: c.device })),
+      videoId: pkg.videoId ?? null,
     };
   }
 
   /** The owner's screen: the switch, and every package of the channel not yet uploaded (pending first), plus the last decided uploads. */
   async function view(channelId: string): Promise<PackageReviewsView> {
     const snapshot = await snapshotOrUnreadable(channelId);
-    const gate = ownerReviewStateOf(snapshot);
+    const gate = ownerReviewStateOf(snapshot, await aliasesFor(channelId, snapshot));
     const decisions = snapshot === "unreadable" ? [] : Object.values(snapshot.decisions);
+    const comments = decisions
+      .map(wellFormedDecision)
+      .filter((d): d is PackageReviewDecision => d !== null && d.kind === "packaging_comment")
+      .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0) || Date.parse(a.at) - Date.parse(b.at) || a.id.localeCompare(b.id));
     const found = await deps.packages(channelId);
     const base = {
       channelId,
@@ -116,7 +138,7 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
     const items: PackageReviewItem[] = [];
     for (const pkg of found.packages) {
       if (pkg.uploaded && !uploadedKept.has(pkg)) continue;
-      items.push(await itemOf(channelId, pkg, decisions));
+      items.push(await itemOf(pkg, gate, comments));
     }
     items.sort((a, b) => STATE_ORDER[a.state] - STATE_ORDER[b.state]);
     // Review M2: with the gate off nothing waits for the owner (no badge); the items stay listed, neutral on the screen.
@@ -144,29 +166,36 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
   }
 
   /**
-   * The owner's decision (Web UI only, AC-PR-08). An approval names the manifest version and the thumbnail file's hash at this moment;
-   * it is refused when the manifest states no video `sha256`, or this computer's mp4 does not hash to it (AC-PR-05). A return needs a
-   * comment. The latest decision stands until the upload, so the owner may change his mind.
+   * The owner's decision (Web UI only, AC-PR-08). BL-265 (ADR 0072 §1-§2): an approval is of the package's MEDIA -- refused when the
+   * manifest states no video `sha256`, or this computer's mp4 is not `sizeBytes` long or does not hash to it (AC-MG-03/04); no
+   * thumbnail is needed (AC-MG-05), its hash is only noted (an older build reads an approval with a null hash as none). A return needs
+   * a comment and returns that mp4. Both are refused for an uploaded package. A packaging comment (a comment required) is allowed on
+   * any package of the channel, uploaded ones and a channel without the gate included, and never changes the gate (AC-MG-07). The
+   * latest approval or return stands until the upload, so the owner may change his mind.
    */
   async function decide(channelId: string, input: unknown): Promise<{ decision: PackageReviewDecision; view: PackageReviewsView }> {
     const parsed = parseWithSchema(packageDecisionInputSchema, input, "package review decision");
     await deps.assertDeviceAvailable();
     const pkg = await findPackage(channelId, parsed.manifestSha256, false);
-    if (pkg.uploaded) throw refuse("package_review_uploaded", `${pkg.video} is already on YouTube: nothing to review`, { video: pkg.video });
-    let thumbnailSha256: string | null = null;
+    if (parsed.kind !== "packaging_comment" && pkg.uploaded) throw refuse("package_review_uploaded", `${pkg.video} is already on YouTube: its media is not reviewed any more (a packaging comment still is)`, { video: pkg.video });
+    let media: { videoSha256: string; videoSizeBytes: number } | null = null;
     if (parsed.kind === "approved") {
       if (!pkg.videoSha256) throw refuse("package_review_no_sha256", `${pkg.video}'s manifest states no video sha256: it cannot be reviewed (the factory adds it)`, { video: pkg.video });
       const videoFile = await deps.resolveFile(channelId, pkg.videoPath);
       if (!videoFile) throw refuse("package_review_video_missing", `${pkg.video}'s video file is not on this computer`, { video: pkg.video });
+      if (videoFile.bytes !== pkg.videoSizeBytes) {
+        throw refuse("package_review_video_mismatch", `${pkg.video}'s video on this computer is not the one the manifest states (its size differs): wait for the copy to finish or ask the factory`, { video: pkg.video, expectedBytes: pkg.videoSizeBytes, actualBytes: videoFile.bytes });
+      }
       const actual = await deps.hashFile(videoFile.path);
       if (actual !== pkg.videoSha256) {
         throw refuse("package_review_video_mismatch", `${pkg.video}'s video on this computer is not the one the manifest states (sha256 differs): wait for the copy to finish or ask the factory`, { video: pkg.video, expected: pkg.videoSha256, actual });
       }
-      thumbnailSha256 = await thumbnailHashOf(channelId, pkg);
-      if (!thumbnailSha256) throw refuse("package_review_thumbnail_missing", `${pkg.video}'s thumbnail file is not on this computer`, { video: pkg.video });
-    } else {
-      thumbnailSha256 = await thumbnailHashOf(channelId, pkg);
+      media = { videoSha256: pkg.videoSha256, videoSizeBytes: pkg.videoSizeBytes };
+    } else if (pkg.videoSha256) {
+      // A return (or a comment) names the mp4 the manifest states: a return holds that media, and a new mp4 is pending again.
+      media = { videoSha256: pkg.videoSha256, videoSizeBytes: pkg.videoSizeBytes };
     }
+    const thumbnailSha256 = await thumbnailHashOf(channelId, pkg);
     const comment = (parsed.comment ?? "").trim() || null;
     const decision: PackageReviewDecision = {
       id: `pr_${deps.randomId()}`.slice(0, 40),
@@ -178,9 +207,10 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
       by: "owner",
       device: await deps.deviceLabel(),
       at: deps.now().toISOString(),
+      ...(media ?? {}),
     };
     await deps.withLock(() => deps.store.addDecision(channelId, decision));
-    await deps.audit({ channelId, video: pkg.video, detail: { event: `package_review.${decision.kind}`, decisionId: decision.id, manifestSha256: decision.manifestSha256, thumbnailSha256, comment } });
+    await deps.audit({ channelId, video: pkg.video, detail: { event: `package_review.${decision.kind}`, decisionId: decision.id, manifestSha256: decision.manifestSha256, ...(media ?? {}), thumbnailSha256, comment } });
     await deps.afterChange(channelId);
     return { decision, view: await view(channelId) };
   }
@@ -223,6 +253,9 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
       const decisions = Object.values(snapshot.decisions ?? {});
       const latest = latestOwnerDecision(from, decisions);
       if (!latest) return { carried: null, wrote: false };
+      // BL-265 (ADR 0072 §1): a decision on the mp4 itself needs no copy -- the recode changes names, never the mp4 bytes, and the
+      // gate follows the V -> S recode alias. Only a BL-257 decision (keyed by the old manifest alone) is copied, as before.
+      if (isMediaKeyed(latest)) return { carried: latest.kind as "approved" | "returned", wrote: false };
       const already = latestOwnerDecision(to, decisions);
       if (
         already &&
@@ -232,7 +265,7 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
         already.thumbnailSha256 === latest.thumbnailSha256 &&
         already.at === latest.at
       ) {
-        return { carried: latest.kind, wrote: false };
+        return { carried: latest.kind as "approved" | "returned", wrote: false };
       }
       const copy: PackageReviewDecision = {
         id: `pr_${deps.randomId()}`.slice(0, 40),
@@ -250,7 +283,7 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
       await deps
         .audit({ channelId, video: input.video, detail: { event: "package_review.carried", decisionId: copy.id, from: latest.id, kind: copy.kind, manifestSha256: to, carriedFrom: from, fromVideo: latest.video } })
         .catch(() => undefined);
-      return { carried: copy.kind, wrote: true };
+      return { carried: copy.kind as "approved" | "returned", wrote: true };
     });
   }
 

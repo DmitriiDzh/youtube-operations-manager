@@ -159,11 +159,16 @@ test("BL-257 AC-PR-11: the upload rows for the tried rule, per channel, with sta
   withDb(async (database) => {
     const later = new Date("2026-10-22T08:00:00.000Z");
     assert.equal(await insertPublishingUploads([row({ id: "c1", manifestSha256: "mf-1", status: "cancelled" })], database), true);
-    assert.equal(await insertPublishingUploads([row({ id: "d1", manifestSha256: "mf-2", status: "done", videoId: "vid2", video: "V66", createdAt: later })], database), true);
+    // BL-265 (ADR 0072 §6): a row that froze the mp4's sha256 in its package carries it (and its video code and size); an unreadable
+    // or older package carries null.
+    const sha = "e".repeat(64);
+    assert.equal(await insertPublishingUploads([row({ id: "d1", manifestSha256: "mf-2", status: "done", videoId: "vid2", video: "V66", createdAt: later, packageJson: JSON.stringify({ videoSha256: sha }) })], database), true);
+    assert.equal(await insertPublishingUploads([row({ id: "b1", manifestSha256: "mf-3", status: "failed", packageJson: "not json" })], database), true);
     assert.equal(await insertPublishingUploads([row({ id: "o1", channelId: "UC2", manifestSha256: "mf-other" })], database), true);
     const rows = (await listUploadRowsForTriedRule("UC1", database)).sort((a, b) => a.manifestSha256.localeCompare(b.manifestSha256));
     assert.deepEqual(rows, [
-      { manifestSha256: "mf-1", status: "cancelled", videoId: null, createdAtMs: Date.parse("2026-10-21T12:00:00.000Z") },
-      { manifestSha256: "mf-2", status: "done", videoId: "vid2", createdAtMs: Date.parse("2026-10-22T08:00:00.000Z") },
+      { id: "c1", manifestSha256: "mf-1", video: "V65", videoSha256: null, sizeBytes: 1000, status: "cancelled", errorCode: null, queuedBy: null, videoId: null, createdAtMs: Date.parse("2026-10-21T12:00:00.000Z") },
+      { id: "d1", manifestSha256: "mf-2", video: "V66", videoSha256: sha, sizeBytes: 1000, status: "done", errorCode: null, queuedBy: null, videoId: "vid2", createdAtMs: Date.parse("2026-10-22T08:00:00.000Z") },
+      { id: "b1", manifestSha256: "mf-3", video: "V65", videoSha256: null, sizeBytes: 1000, status: "failed", errorCode: null, queuedBy: null, videoId: null, createdAtMs: Date.parse("2026-10-21T12:00:00.000Z") },
     ]);
   }));

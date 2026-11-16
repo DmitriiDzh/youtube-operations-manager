@@ -53,6 +53,8 @@ export type VideoDetailsPatch = {
 export type VideoDetailsSnapshot = {
   videoId: string;
   etag: string | null;
+  /** BL-265 (ADR 0072 §5): `snippet.channelId` as read -- read-only, never written; a caller checks the video is the channel's. */
+  channelId?: string | null;
   title: string;
   description: string;
   tags: string[];
@@ -95,6 +97,13 @@ export type ApplyFieldsUpdateResult = {
   verified: boolean;
   backupPath: string;
 };
+
+/**
+ * BL-265 (ADR 0072 §5): the untouched fields a caller may ask the read-back to confirm unchanged (the read just before the write against
+ * the read after it). Absent: only the patched fields are verified, as before.
+ */
+export const VERIFY_UNCHANGED_FIELDS = ["title", "description", "tags", "categoryId", "defaultLanguage", "defaultAudioLanguage", "privacyStatus", "publishAt"] as const;
+export type VerifyUnchangedField = (typeof VERIFY_UNCHANGED_FIELDS)[number];
 
 export type StoredChannelRecordRef = {
   channelId: string;

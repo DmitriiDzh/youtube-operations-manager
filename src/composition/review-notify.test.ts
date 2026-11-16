@@ -217,3 +217,25 @@ test("BL-257 AC-PR-13: package reviews -- one notice per owner decision, item = 
   assert.equal(notices[1].context.some((l) => l.label === "Counts"), false);
   assert.equal(notices[1].ytmPlace, "Медиа → «Видео на проверку»");
 });
+
+// BL-265 (MEDIA_GATE_PLAN.md AC-MG-07; ADR 0072 §2): a packaging comment wakes the Producer with exactly one file of its own; it never
+// overrides an approval ("Counts: no" is never said of the approval because of it).
+test("BL-265 AC-MG-07: a packaging comment gives exactly one notice (status packaging_comment); the approval before it still counts", () => {
+  const M = "a".repeat(64);
+  const snapshot: PackageReviewsSnapshot = {
+    exists: true,
+    required: { value: true, updatedAt: "2026-11-15T08:00:00Z", by: "owner", device: "Mac" },
+    decisions: {
+      pr_a: { id: "pr_a", manifestSha256: M, video: "V11", thumbnailSha256: null, kind: "approved", comment: null, by: "owner", device: "Mac", at: "2026-11-15T10:00:00Z", videoSha256: "e".repeat(64), videoSizeBytes: 1000 },
+      pr_c: { id: "pr_c", manifestSha256: M, video: "V11", thumbnailSha256: null, kind: "packaging_comment", comment: "a shorter title", by: "owner", device: "Mac", at: "2026-11-15T11:00:00Z", videoSha256: "e".repeat(64), videoSizeBytes: 1000 },
+    },
+  };
+  const notices = packageNoticesOf(CH, snapshot, SINCE);
+  assert.deepEqual(notices.map((n) => [n.decisionId, n.status, n.comment]), [
+    ["pr_a", "approved", null],
+    ["pr_c", "packaging_comment", "a shorter title"],
+  ]);
+  assert.equal(notices.filter((n) => n.status === "packaging_comment").length, 1);
+  assert.deepEqual(notices.map((n) => reviewFileName(n.kind, n.itemId, n.decisionId)), ["REVIEW-DECISION-package-V11-pr_a.md", "REVIEW-DECISION-package-V11-pr_c.md"]);
+  assert.equal(notices[0].context.some((l) => l.label === "Counts"), false, "the comment does not override the approval");
+});

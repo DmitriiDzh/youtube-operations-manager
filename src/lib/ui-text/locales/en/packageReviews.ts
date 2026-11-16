@@ -2,7 +2,7 @@
 // returned by the owner before they count as ready.
 export const packageReviews = {
   "packageReviews.title": "Videos for review",
-  "packageReviews.help": "The finished videos of this channel, before they go to YouTube. While the switch is on, a package counts as ready only after you approve it here; a returned one goes back to the factory with your comment.",
+  "packageReviews.help": "The finished videos of this channel, before they go to YouTube. While the switch is on, a package counts as ready only after you approve its video here; a re-package that changes only the title, description, tags, translations or thumbnail keeps your approval. A returned video goes back to the factory with your comment. Packaging gets comments: they never block the upload.",
   "packageReviews.refresh": "Refresh",
   "packageReviews.loadFailed": "Could not load the videos for review.",
   "packageReviews.switch.label": "Review the final video before upload",
@@ -44,11 +44,11 @@ export const packageReviews = {
   "packageReviews.action.saving": "Saving…",
   "packageReviews.action.cancel": "Cancel",
   "packageReviews.return.title": "Return {video} to the factory",
-  "packageReviews.return.description": "Say what to change. The package stays out of the upload and the plan until you approve a new version.",
+  "packageReviews.return.description": "You return the video itself: say what to change. It stays out of the upload and the plan until you approve a new video file. For packaging (title, description, thumbnail) use «Packaging comment» instead.",
   "packageReviews.return.placeholder": "What should be changed?",
   "packageReviews.return.confirm": "Return",
   "packageReviews.approve.title": "Approve {video}",
-  "packageReviews.approve.description": "This computer checks that its copy of the video is the one in the package, then the package becomes ready for upload.",
+  "packageReviews.approve.description": "You approve the video itself. This computer checks that its copy of the video is the one in the package, then the package becomes ready for upload. Later packaging changes (texts, thumbnail, translations) keep this approval; a different video file needs you again.",
   "packageReviews.approve.placeholder": "Comment (optional)",
   "packageReviews.approve.confirm": "Approve",
   "packageReviews.error.generic": "Could not save: {message}",
@@ -58,5 +58,14 @@ export const packageReviews = {
   "packageReviews.error.package_review_thumbnail_missing": "The thumbnail file is not on this computer.",
   "packageReviews.error.package_review_not_found": "This package changed meanwhile: the list was reloaded.",
   "packageReviews.error.package_review_uploaded": "This video is already on YouTube.",
+  // BL-265 (ADR 0072 §2): a comment on the packaging -- never blocks anything.
+  "packageReviews.action.comment": "Packaging comment",
+  "packageReviews.comment.title": "Packaging comment on {video}",
+  "packageReviews.comment.description": "A comment on the title, description, tags, thumbnail or translations. It goes to the Producer and blocks nothing: the video's approval stays as it is.",
+  "packageReviews.comment.placeholder": "What should the packaging say or look like?",
+  "packageReviews.comment.confirm": "Send comment",
+  "packageReviews.packagingComments": "Your packaging comments",
+  "packageReviews.uploadedHint": "This video is on YouTube. Its title, description and tags can still be fixed from the package:",
+  "packageReviews.uploadedLink": "Content → «Videos & releases»",
   "packageReviews.player.unavailable": "The video cannot be played: its file is not on this computer.",
 } as const;

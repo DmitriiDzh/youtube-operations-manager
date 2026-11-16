@@ -62,6 +62,8 @@ export type AgentPackages =
         plannedPublishDate: string | null;
         state: string;
         problems: string[];
+        /** BL-265 (Agent API 4.22.0, Producer 1.24.0, Factory 1.51.0): what the checks only warn about (codes); never blocking. */
+        warnings?: string[];
         videoId: string | null;
         /** BL-243: true -- in the copy, not removed, as of `checkedAt`; false -- removed on YouTube; null -- unknown. */
         existsOnChannel: boolean | null;

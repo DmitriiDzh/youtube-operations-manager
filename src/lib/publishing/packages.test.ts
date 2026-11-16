@@ -161,3 +161,36 @@ test("BL-209: the manifest's optional sha256 -- read as lower-case hex; absent o
   }
   assert.deepEqual(codes(read(upper).pkg!), []);
 });
+
+// BL-265 (MEDIA_GATE_PLAN.md §3.1 table, AC-MG-13; owner TG 4578 «Warnings list accepted»): only YouTube's and YTM's hard limits block.
+// Boundaries counted by hand from YouTube's videos resource / thumbnails.set limits.
+test("AC-MG-13: chapters are warnings (the package stays without blocking problems); the hard limits block exactly one past YouTube's limit", async () => {
+  const { packageChecks } = await import("./packages");
+  const checks = (p: ReleasePackage, facts: Partial<PackageFacts> = {}) => packageChecks(p, { ...FACTS, ...facts }, CHANNEL);
+  for (const [description, code] of [
+    ["0:05 A\n1:00 B\n2:00 C", "chapters_first_not_zero"],
+    ["0:00 A\n1:00 B", "chapters_too_few"],
+    ["0:00 A\n0:09 B\n1:00 C", "chapter_too_short"],
+  ] as const) {
+    const result = checks(pkg({ description }));
+    assert.deepEqual([result.problems, result.warnings.map((w) => w.code)], [[], [code]], code);
+  }
+  const blocking = (over: Partial<typeof MANIFEST>, facts: Partial<PackageFacts> = {}) => checks(pkg(over), facts).problems.map((p) => p.code);
+  assert.deepEqual(blocking({ title: "x".repeat(100) }), []);
+  assert.deepEqual(blocking({ title: "x".repeat(101) }), ["title_too_long"]);
+  assert.deepEqual(blocking({ description: "é".repeat(2500) }), [], "5000 bytes");
+  assert.deepEqual(blocking({ description: `${"é".repeat(2500)}x` }), ["description_too_long"], "5001 bytes");
+  // 50 tags of 9 characters + 49 commas = 499; one more character in the last tag = 500; another = 501
+  const tags = (last: string) => [...Array.from({ length: 49 }, () => "abcdefghi"), last];
+  assert.equal(tagsLength(tags("abcdefghij")), 500);
+  assert.deepEqual(blocking({ tags: tags("abcdefghij") }), []);
+  assert.deepEqual(blocking({ tags: tags("abcdefghijk") }), ["tags_too_long"]);
+  assert.deepEqual(blocking({}, { thumbnail: { exists: true, sizeBytes: 2_097_152, kind: "jpeg" } }), []);
+  assert.deepEqual(blocking({}, { thumbnail: { exists: true, sizeBytes: 2_097_153, kind: "jpeg" } }), ["thumbnail_too_large"]);
+  // every other code of the table still blocks (a sample of each class)
+  assert.deepEqual(blocking({ channelId: "UC_other" }), ["other_channel"]);
+  assert.deepEqual(blocking({}, { video: { exists: false, sizeBytes: null, durationSeconds: null } }), ["video_missing"]);
+  assert.deepEqual(blocking({ defaultLanguage: "ja" }), ["language_differs"]);
+  assert.deepEqual(blocking({}, { sameTitleVideoId: "vid1" }), ["same_title_on_channel"]);
+  assert.deepEqual(blocking({ ready: false }), ["factory_not_ready"]);
+});

@@ -13,10 +13,20 @@ import { removedMarkFreesSlot, uploadTimeOf } from "@/lib/shared-video-presence"
 import { READ_BACK_RETRIES, READ_BACK_RETRY_DELAY_MS } from "@/lib/video-details/read-back";
 import type { PublishingSettings } from "./settings";
 import { approvalNamesUpload, type SlotDecision } from "./slot-decision";
+import { packagingDifferences } from "./package-text";
+import { parseReleasePackage, tagsLength, type PackageProblem } from "./packages";
+import { approvedPackageOf, changedPackageFields } from "./approved-package";
 
 /** The package as the owner approved it (frozen in `package_json`). Paths are relative to the channel workspace. */
 /** BL-257 (review M1): the code of a queued row the runner cancelled because the owner's package review no longer covers it. */
 export const OWNER_REVIEW_WITHDRAWN = "owner_review_withdrawn";
+/** BL-265 (ADR 0072 §4): a queued row whose manifest now names another mp4 (sha256 or size) -- cancelled, nothing sent (AC-MG-15). */
+export const MEDIA_CHANGED = "media_changed";
+/** BL-265 (ADR 0072 §4): a queued row whose manifest now names another plan slot -- cancelled, nothing sent (AC-MG-16). */
+export const PACKAGE_SLOT_CHANGED = "package_slot_changed";
+/** BL-265: how long a queued row waits for a re-packaged manifest that cannot be read before it fails `package_changed` (AC-MG-18). */
+export const REPACKAGE_WAIT_MS = 10 * 60_000;
+const REPACKAGE_RETRY_MS = 60_000;
 
 export type ApprovedPackage = {
   video: string;
@@ -30,8 +40,10 @@ export type ApprovedPackage = {
   thumbnailFile: string;
   sizeBytes: number;
   /**
-   * BL-209 review L5: the video's SHA-256 from the manifest, frozen on an AUTOMATIC row only. The runner checks the file against it
-   * right before a new upload session starts (never on a resumed one); absent on an approval's row.
+   * BL-209 review L5: the video's SHA-256 from the manifest. The runner checks the file against it right before a new upload session
+   * starts (never on a resumed one). BL-265 (AC-MG-21): frozen on every new row whose manifest states it, the owner's approval rows
+   * too; it is the row's media identity (with `sizeBytes`), and only a row that froze it takes a re-packaged manifest (ADR 0072 §4).
+   * Absent on a row made before BL-265 by the owner's approval.
    */
   videoSha256?: string;
   /**
@@ -87,6 +99,13 @@ export type UploadSteps = {
   sync?: "synced" | "failed";
   /** The reason a step failed (shown with the job; the video exists either way). */
   notes?: string[];
+  /**
+   * BL-265 (ADR 0072 §4): each re-packaged manifest the row took while still queued (before any byte) -- the old and new manifest
+   * SHA-256, when, and which packaging fields changed.
+   */
+  repackaged?: Array<{ from: string; to: string; at: string; fields: string[] }>;
+  /** BL-265: since when a re-packaged manifest of this queued row could not be read (half-written); cleared once it is taken. */
+  repackageWaitSince?: string;
 };
 
 export type UploadHttpProgress = { done: true; videoId: string } | { done: false; storedBytes: number } | { expired: true };
@@ -136,11 +155,21 @@ export type UploadRunnerDeps = {
    */
   slotDecision?(channelId: string, slotId: string): Promise<SlotDecision | null>;
   /**
-   * BL-257 (ADR 0070 §2-§3, review M1): the channel's owner-review gate NOW (the package-reviews rule, read-only), asked before a
-   * queued row starts: a row queued before the gate was switched on, returned since, or whose thumbnail changed after the approval
-   * is cancelled before any byte is sent. Absent: no gate.
+   * BL-257 (ADR 0070 §2-§3, review M1), BL-265 (ADR 0072 §1): the channel's owner-review gate NOW (the package-reviews rule,
+   * read-only), asked before a queued row starts: a row queued before the gate was switched on, or whose media was returned since, is
+   * cancelled before any byte is sent. Absent: no gate.
    */
   ownerReview?(channelId: string): Promise<OwnerReviewGate>;
+  /**
+   * BL-265 (ADR 0072 §4): a queued row's manifest, read ONCE -- the SHA-256 and the text of the same bytes (no read-twice race); null
+   * when it is not there. Absent: the manifest is only hashed, and any change fails the row (`package_changed`, as before).
+   */
+  readManifest?(channelId: string, manifestPath: string): Promise<{ sha256: string; text: string } | null>;
+  /**
+   * BL-265 (ADR 0072 §4): the package scan's own checks of that manifest now, with fresh facts about its files (blocking problems
+   * only, the owner gate's included); "changed" when the manifest is no longer that SHA-256. Absent: a re-package fails the row.
+   */
+  packageProblemsNow?(channelId: string, manifestPath: string, manifestSha256: string): Promise<{ problems: PackageProblem[] } | "changed">;
   writeLocalizations?(args: {
     channelId: string;
     videoId: string;
@@ -290,8 +319,7 @@ export function classifyUploadError(error: unknown, now: Date, nextQuotaReset: (
   return { kind: "fail", code: info.code, message: info.message };
 }
 
-/** Line endings the factory's Windows files may carry; YouTube keeps a description's lines, not their CR (review question). */
-export const normalizeLineEndings = (text: string) => text.replace(/\r\n?/g, "\n");
+export { normalizeLineEndings } from "./package-text";
 
 /** The UTC instant two read-backs both mean (`...:00Z` and `...:00.000Z` are the same time). */
 const sameInstant = (a: string | null, b: string | null) => (a === null || b === null ? a === b : Date.parse(a) === Date.parse(b));
@@ -299,11 +327,10 @@ const sameInstant = (a: string | null, b: string | null) => (a === null || b ===
 /** Every field the read-back shows differently from what was approved; AI use is not readable (G1) and is not compared. */
 export function readBackMismatches(after: VideoReadBack, pkg: ApprovedPackage, settings: PublishingSettings, publishAt: string | null, nowMs: number): string[] {
   const mismatches: string[] = [];
-  if (after.title !== pkg.title) mismatches.push("title");
   // Seen on the first real uploads (2026-10-13, V50-V57): YouTube drops a description's trailing line breaks and returns the tags
-  // sorted -- the same text and the same tags are no mismatch.
-  if (normalizeLineEndings(after.description ?? "").trimEnd() !== normalizeLineEndings(pkg.description).trimEnd()) mismatches.push("description");
-  if (JSON.stringify([...(after.tags ?? [])].sort()) !== JSON.stringify([...pkg.tags].sort())) mismatches.push("tags");
+  // sorted -- the same text and the same tags are no mismatch. BL-265: the one comparison rule (`package-text.ts`), shared with the
+  // packaging fix after upload.
+  mismatches.push(...packagingDifferences(after, pkg));
   if (after.categoryId !== settings.categoryId) mismatches.push("categoryId");
   if (after.defaultLanguage !== pkg.defaultLanguage) mismatches.push("defaultLanguage");
   if (after.defaultAudioLanguage !== pkg.defaultAudioLanguage) mismatches.push("defaultAudioLanguage");
@@ -426,10 +453,97 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
     return (await deps.files.sha256(filePath)).toLowerCase() !== pkg.videoSha256;
   }
 
+  /** Cancels a still-queued row before anything was sent, with its code, and audits it under `event`. */
+  async function cancelQueued(job: StoredPublishingUpload, code: string, message: string, event: string, detail: Record<string, unknown> = {}): Promise<void> {
+    if (await deps.store.update(job.id, "queued", { status: "cancelled", errorCode: code, errorMessage: message, finishedAt: now(), updatedAt: now() })) {
+      await deps.audit({ channelId: job.channelId, videoId: null, detail: { event, uploadId: job.id, video: job.video, ...detail } });
+    }
+  }
+
+  /**
+   * BL-265 (ADR 0072 §4, MEDIA_GATE_PLAN.md §3.2): a queued row whose manifest was re-packaged (another SHA-256), before the identity
+   * read and before any byte. Only a row that froze the mp4's identity takes it, and only for the same channel, video, slot, mp4
+   * `sha256` and `sizeBytes`, with no blocking problem and the owner's media gate passing; the row's package is then replaced in one
+   * conditional update and audited. A manifest that cannot be read waits up to REPACKAGE_WAIT_MS (a factory still writing it), then
+   * fails. Returns the row and package to go on with, or null when the row stopped (failed, cancelled or waiting).
+   */
+  async function takeRepackage(job: StoredPublishingUpload, pkg: ApprovedPackage, settings: PublishingSettings, read: { sha256: string; text: string }): Promise<{ job: StoredPublishingUpload; pkg: ApprovedPackage } | null> {
+    const steps = stepsOf(job);
+    const wait = async (why: string): Promise<null> => {
+      const since = steps.repackageWaitSince ?? now().toISOString();
+      if (now().getTime() - Date.parse(since) >= REPACKAGE_WAIT_MS) {
+        await fail(job, "package_changed", `The package changed on disk after it was approved, and its new manifest could not be used for ${Math.round(REPACKAGE_WAIT_MS / 60_000)} minutes (${why}).`);
+        return null;
+      }
+      await deps.store.update(job.id, "queued", {
+        nextAttemptAt: new Date(now().getTime() + REPACKAGE_RETRY_MS),
+        stepsJson: JSON.stringify({ ...steps, repackageWaitSince: since }),
+        errorMessage: `Waiting for the re-packaged manifest (${why}).`,
+        updatedAt: now(),
+      });
+      return null;
+    };
+    let raw: unknown;
+    try {
+      raw = JSON.parse(read.text.replace(/^\uFEFF/, ""));
+    } catch {
+      return wait("it is not valid JSON");
+    }
+    const parsed = parseReleasePackage(raw).pkg;
+    if (!parsed) return wait("it is not a release package");
+    if (parsed.channelId !== job.channelId || parsed.video !== pkg.video) {
+      await fail(job, "package_changed", "The package changed on disk after it was approved: its manifest now names another channel or video.");
+      return null;
+    }
+    const frozenSlot = job.slotId ?? pkg.slotId ?? null;
+    if ((parsed.slotId ?? null) !== frozenSlot) {
+      await cancelQueued(job, PACKAGE_SLOT_CHANGED, "The package was re-packaged for another plan slot, so this upload stopped before anything was sent; it is queued again under the plan's rules.", "publishing.upload_cancelled_slot_changed", { from: frozenSlot, to: parsed.slotId ?? null });
+      return null;
+    }
+    if (parsed.sha256 !== pkg.videoSha256 || parsed.sizeBytes !== pkg.sizeBytes) {
+      await cancelQueued(job, MEDIA_CHANGED, "The package now names another video file (its sha256 or size changed), so this upload stopped before anything was sent; the new video waits for the owner's review.", "publishing.upload_cancelled_media_changed", {
+        manifestSha256: read.sha256,
+        expected: { sha256: pkg.videoSha256, sizeBytes: pkg.sizeBytes },
+        found: { sha256: parsed.sha256 ?? null, sizeBytes: parsed.sizeBytes },
+      });
+      return null;
+    }
+    const checked = await deps.packageProblemsNow!(job.channelId, pkg.manifestPath, read.sha256);
+    if (checked === "changed") return wait("it changed again while it was checked");
+    const review = checked.problems.find((p) => p.code === "owner_review_pending" || p.code === "owner_review_returned");
+    const blocking = checked.problems.filter((p) => p !== review);
+    if (blocking.length > 0) {
+      await fail(job, "package_changed", `The package was re-packaged with a problem that blocks the upload: ${blocking.map((p) => p.code).join(", ")}.`);
+      return null;
+    }
+    // The owner's media gate, by the new manifest's key (the same check as before the first byte).
+    const gate = deps.ownerReview ? await deps.ownerReview(job.channelId).catch(() => CLOSED_OWNER_REVIEW_GATE) : null;
+    const gateProblem = review ?? (gate?.required ? gate.problemOf({ manifestSha256: read.sha256, video: pkg.video, videoSha256: pkg.videoSha256 ?? null, videoSizeBytes: pkg.sizeBytes }) : null);
+    if (gateProblem) {
+      await cancelQueued(job, OWNER_REVIEW_WITHDRAWN, "The owner has not approved this package's video in package review (or returned it), so the upload stopped before anything was sent.", "publishing.upload_cancelled_owner_review", { manifestSha256: read.sha256, reason: gateProblem.code });
+      return null;
+    }
+    const folder = pkg.manifestPath.slice(0, pkg.manifestPath.lastIndexOf("/"));
+    const next: ApprovedPackage = { ...approvedPackageOf(parsed, { manifestPath: pkg.manifestPath, folder }, settings), videoSha256: pkg.videoSha256!, sizeBytes: pkg.sizeBytes };
+    if (tagsLength(next.tags) > 500) {
+      await fail(job, "package_changed", "The package was re-packaged with tags over YouTube's 500 characters.");
+      return null;
+    }
+    const fields = changedPackageFields(pkg, next);
+    const rest: UploadSteps = { ...steps };
+    delete rest.repackageWaitSince;
+    const stepsJson = JSON.stringify({ ...rest, repackaged: [...(steps.repackaged ?? []), { from: job.manifestSha256, to: read.sha256, at: now().toISOString(), fields }] });
+    const packageJson = JSON.stringify(next);
+    if (!(await deps.store.update(job.id, "queued", { manifestSha256: read.sha256, packageJson, stepsJson, errorMessage: null, updatedAt: now() }))) return null;
+    await deps.audit({ channelId: job.channelId, videoId: null, detail: { event: "publishing.upload_package_refreshed", uploadId: job.id, video: job.video, from: job.manifestSha256, to: read.sha256, changedFields: fields } });
+    return { job: { ...job, manifestSha256: read.sha256, packageJson, stepsJson, errorMessage: null }, pkg: next };
+  }
+
   async function upload(job: StoredPublishingUpload): Promise<void> {
-    const pkg = parseJson<ApprovedPackage | null>(job.packageJson, null);
+    const frozen = parseJson<ApprovedPackage | null>(job.packageJson, null);
     const settings = parseJson<PublishingSettings | null>(job.settingsJson, null);
-    if (!pkg || !settings) return fail(job, "job_damaged", "The approved package of this upload cannot be read.");
+    if (!frozen || !settings) return fail(job, "job_damaged", "The approved package of this upload cannot be read.");
+    let pkg: ApprovedPackage = frozen;
     let current = job;
     let hashChecked = false;
     try {
@@ -446,14 +560,10 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
       if (current.status === "queued" && deps.ownerReview) {
         const gate = await deps.ownerReview(job.channelId).catch(() => CLOSED_OWNER_REVIEW_GATE);
         if (gate.required) {
-          let thumbnailSha256: string | null = null;
-          if (gate.needsThumbnailHash(job.manifestSha256)) {
-            const thumbnail = await deps.files.resolve(job.channelId, pkg.thumbnailFile).catch(() => null);
-            thumbnailSha256 = thumbnail ? await deps.files.sha256(thumbnail.path).catch(() => null) : null;
-          }
-          const problem = gate.problemOf(job.manifestSha256, thumbnailSha256);
+          // BL-265 (ADR 0072 §1): by the media the row froze (an older row without it: its manifest version only).
+          const problem = gate.problemOf({ manifestSha256: job.manifestSha256, video: pkg.video, videoSha256: pkg.videoSha256 ?? null, videoSizeBytes: pkg.sizeBytes });
           if (problem) {
-            const message = "The owner has not approved this package version in package review (or returned it, or its thumbnail changed since), so the upload stopped before anything was sent.";
+            const message = "The owner has not approved this package's video in package review (or returned it), so the upload stopped before anything was sent.";
             if (await deps.store.update(job.id, "queued", { status: "cancelled", errorCode: OWNER_REVIEW_WITHDRAWN, errorMessage: message, finishedAt: now(), updatedAt: now() })) {
               await deps.audit({ channelId: job.channelId, videoId: null, detail: { event: "publishing.upload_cancelled_owner_review", uploadId: job.id, video: job.video, manifestSha256: job.manifestSha256, reason: problem.code } });
             }
@@ -464,9 +574,32 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
       // BL-233: held while a live stream here starves -- before anything is read, hashed or asked (the next tick asks again).
       if (deps.bandwidth && !(await deps.bandwidth.mayStart())) return;
       if (current.status === "queued") {
-        // The files must still be what the owner approved: the same manifest, a video of the same size.
-        const manifest = await deps.files.resolve(job.channelId, pkg.manifestPath);
-        if (!manifest || (await deps.files.sha256(manifest.path)) !== job.manifestSha256) return fail(job, "package_changed", "The package changed on disk after it was approved.");
+        // The files must still be what the owner approved: the same manifest (BL-265: or a re-package of only its packaging, taken
+        // here), a video of the same size.
+        if (deps.readManifest) {
+          const read = await deps.readManifest(job.channelId, pkg.manifestPath);
+          if (!read) return fail(job, "package_changed", "The package's manifest is no longer on disk.");
+          if (read.sha256 !== job.manifestSha256) {
+            // AC-MG-20: a row without the mp4's frozen identity (made before BL-265) never takes a new manifest.
+            if (!pkg.videoSha256 || !deps.packageProblemsNow) return fail(job, "package_changed", "The package changed on disk after it was approved.");
+            const taken = await takeRepackage(job, pkg, settings, read);
+            if (!taken) return;
+            job = taken.job;
+            current = taken.job;
+            pkg = taken.pkg;
+          } else if (stepsOf(job).repackageWaitSince) {
+            // The manifest went back to the one queued: no longer waiting.
+            const rest: UploadSteps = { ...stepsOf(job) };
+            delete rest.repackageWaitSince;
+            const stepsJson = JSON.stringify(rest);
+            if (!(await deps.store.update(job.id, "queued", { stepsJson, errorMessage: null, updatedAt: now() }))) return;
+            job = { ...job, stepsJson, errorMessage: null };
+            current = job;
+          }
+        } else {
+          const manifest = await deps.files.resolve(job.channelId, pkg.manifestPath);
+          if (!manifest || (await deps.files.sha256(manifest.path)) !== job.manifestSha256) return fail(job, "package_changed", "The package changed on disk after it was approved.");
+        }
         const videoFile = await deps.files.resolve(job.channelId, pkg.videoFile);
         if (!videoFile || videoFile.bytes !== job.totalBytes) return fail(job, "package_changed", "The video file changed or is missing since it was approved.");
         // Review L5: an automatic row was queued because the file matched its manifest's SHA-256; the file is hashed again before

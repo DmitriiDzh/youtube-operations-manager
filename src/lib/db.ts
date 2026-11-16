@@ -12645,17 +12645,50 @@ export async function listTriedManifestHashes(channelId: string, database: AppDb
 
 /**
  * BL-257 (ADR 0070 §5, AC-PR-11): every upload row of the channel on this computer, reduced to what the tried rule's narrow exception
- * needs (`package-reviews.triedExceptionsOf`): which manifest, how it ended, whether it reached YouTube, and when it was made.
+ * needs (`package-reviews.triedKeysOf`): which manifest, how it ended, whether it reached YouTube, and when it was made. BL-265 (ADR
+ * 0072 §6): also the row's video code, its size and the mp4 SHA-256 it froze (`package_json.videoSha256`, null on a row made before),
+ * so the rule can key a row by its media.
  */
 export async function listUploadRowsForTriedRule(
   channelId: string,
   database: AppDb = db
-): Promise<Array<{ manifestSha256: string; status: string; videoId: string | null; createdAtMs: number }>> {
+): Promise<Array<{ id: string; manifestSha256: string; video: string; videoSha256: string | null; sizeBytes: number; status: string; errorCode: string | null; queuedBy: string | null; videoId: string | null; createdAtMs: number }>> {
   const rows = await database
-    .select({ manifestSha256: publishingUploads.manifestSha256, status: publishingUploads.status, videoId: publishingUploads.videoId, createdAt: publishingUploads.createdAt })
+    .select({
+      id: publishingUploads.id,
+      errorCode: publishingUploads.errorCode,
+      queuedBy: publishingUploads.queuedBy,
+      manifestSha256: publishingUploads.manifestSha256,
+      video: publishingUploads.video,
+      packageJson: publishingUploads.packageJson,
+      totalBytes: publishingUploads.totalBytes,
+      status: publishingUploads.status,
+      videoId: publishingUploads.videoId,
+      createdAt: publishingUploads.createdAt,
+    })
     .from(publishingUploads)
     .where(eq(publishingUploads.channelId, channelId));
-  return rows.map((row) => ({ manifestSha256: row.manifestSha256, status: row.status, videoId: row.videoId, createdAtMs: row.createdAt.getTime() }));
+  return rows.map((row) => {
+    let videoSha256: string | null = null;
+    try {
+      const frozen = (JSON.parse(row.packageJson) as { videoSha256?: unknown }).videoSha256;
+      videoSha256 = typeof frozen === "string" && /^[a-f0-9]{64}$/.test(frozen) ? frozen : null;
+    } catch {
+      // An unreadable package keys the row by its manifest hash only (the stricter, older rule).
+    }
+    return {
+      id: row.id,
+      manifestSha256: row.manifestSha256,
+      video: row.video,
+      videoSha256,
+      sizeBytes: row.totalBytes,
+      status: row.status,
+      errorCode: row.errorCode,
+      queuedBy: row.queuedBy,
+      videoId: row.videoId,
+      createdAtMs: row.createdAt.getTime(),
+    };
+  });
 }
 
 /**

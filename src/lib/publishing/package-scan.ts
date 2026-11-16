@@ -1,9 +1,10 @@
 import { existsOnChannelOf, VIDEO_DELETED_ON_YOUTUBE } from "@/lib/shared-video-presence";
 import { parseUploadRecord, stripBom, VIDEOS_FOLDER, videoNumberOfFolder, walkVideosFolder, type DirEntry } from "@/lib/workspace-videos";
 import { compareVideoCodes } from "@/lib/shared-video-code";
+import { packagingDifferences, type PackagingField } from "./package-text";
 import {
   imageKindOf,
-  packageProblems,
+  packageChecks,
   parseReleasePackage,
   RELEASE_PACKAGE_FILE_PATTERN,
   youtubeRecordFileName,
@@ -51,6 +52,11 @@ export type ScannedPackage = {
   orientation?: "vertical" | "horizontal" | null;
   state: PackageState;
   problems: PackageProblem[];
+  /**
+   * BL-265 (ADR 0072 §3): what the checks found that YouTube still accepts (chapters, test thumbnails) -- shown, never blocking. Empty
+   * once uploaded (the problems are too).
+   */
+  warnings?: PackageProblem[];
   /** From `Vn_youtube.json`, once uploaded. BL-243: `removedAt` (ISO) when the sync found the video removed on YouTube. */
   youtube: { videoId: string; privacyStatus: string | null; publishAt: string | null; removedAt?: string | null; uploadedAt?: string | null } | null;
   /**
@@ -63,6 +69,13 @@ export type ScannedPackage = {
    * `existsOnChannel` stands on; null: never (then no video is "on the channel" -- true needs it).
    */
   checkedAt: string | null;
+  /**
+   * BL-265 (ADR 0072 §7, MEDIA_GATE_PLAN.md §3.1 "Entry point"): for an uploaded package whose video is in the synced copy, the
+   * default-language fields whose text differs between the manifest NOW and the copy (title, description; tags are not synced) by the
+   * one comparison rule -- the «Упаковка отличается от YouTube» badge. [] when they match; null when unknown (not uploaded, or the
+   * video is not in the copy). The packaging fix itself compares all three fields with a fresh read.
+   */
+  youtubeTextsDiffer?: PackagingField[] | null;
   /** The parsed manifest, for the approval screen (null when it is not a valid one). */
   pkg: ReleasePackage | null;
   /** The manifest file's SHA-256: an approval names it, so a package changed after the owner saw it is refused. */
@@ -101,7 +114,7 @@ export type PackageScanDeps = {
    * The channel's synced videos (the local copy). BL-243: `publishedAt` -- YouTube's `snippet.publishedAt` as synced; a video is
    * "on the channel" only when it is not later than the completed removed check (else that check may not have seen it).
    */
-  videos(channelId: string): Promise<Array<{ videoId: string; title: string; privacyStatus: string; publishAt: string | null; publishedAt?: string }>>;
+  videos(channelId: string): Promise<Array<{ videoId: string; title: string; description?: string; privacyStatus: string; publishAt: string | null; publishedAt?: string }>>;
   /** BL-243: the copy's videos a sync found removed on YouTube, with when (ISO). Absent: none known. */
   removedVideos?(channelId: string): Promise<Array<{ videoId: string; removedAt: string }>>;
   /** BL-243: when a channel sync last completed the removed check (ISO), or null when never. Absent: null. */
@@ -188,6 +201,7 @@ export function createPackageScan(deps: PackageScanDeps) {
       durationSeconds: null,
       state: "not_ready",
       problems: [],
+      warnings: [],
       youtube: null,
       existsOnChannel: null,
       checkedAt: copy.checkedAt,
@@ -237,7 +251,7 @@ export function createPackageScan(deps: PackageScanDeps) {
     // BL-243: when the record says the upload happened, so the newest of two deleted uploads speaks for a slot.
     const uploadedAt = record?.uploadedAt ?? null;
     const sameTitle = videos.find((video) => video.title === pkg.title);
-    const problems = packageProblems(
+    const { problems, warnings } = packageChecks(
       pkg,
       {
         video: { exists: videoFile !== null, sizeBytes: videoFile?.bytes ?? null, durationSeconds, probeFailed: videoFile !== null && probed === null, noProbe: probed === "no_ffprobe" },
@@ -249,12 +263,11 @@ export function createPackageScan(deps: PackageScanDeps) {
       channel
     );
     if (recordFile && !record) problems.push({ code: "youtube_record_invalid" });
-    // BL-257 (ADR 0070 §2-§3): a channel that reviews its final packages -- a package not uploaded, with no other problem, is ready
-    // only once the owner approved this manifest version with this thumbnail file. No gate: nothing is read or hashed here.
+    // BL-257 (ADR 0070 §2-§3), BL-265 (ADR 0072 §1): a channel that reviews its final packages -- a package not uploaded, with no other
+    // problem, is ready only once the owner approved its MEDIA (the manifest's mp4 sha256 + size under this video code). Nothing is
+    // hashed here: the owner's approval hashed the mp4, and the runner hashes it again before the first byte.
     if (copy.review?.required && !recordFile && problems.length === 0) {
-      const thumbnailSha256 =
-        base.manifestSha256 && thumbnailFile && copy.review.needsThumbnailHash(base.manifestSha256) ? await deps.sha256(thumbnailFile.path).catch(() => null) : null;
-      const reviewProblem = copy.review.problemOf(base.manifestSha256, thumbnailSha256);
+      const reviewProblem = copy.review.problemOf({ manifestSha256: base.manifestSha256, video: pkg.video, videoSha256: pkg.sha256 ?? null, videoSizeBytes: pkg.sizeBytes });
       if (reviewProblem) problems.push(reviewProblem);
     }
     const uploaded = record ? videos.find((video) => video.videoId === record.videoId) : undefined;
@@ -273,6 +286,7 @@ export function createPackageScan(deps: PackageScanDeps) {
       orientation,
       state,
       problems: state === "deleted_on_youtube" ? [{ code: VIDEO_DELETED_ON_YOUTUBE }] : record ? [] : problems,
+      warnings: record ? [] : warnings,
       youtube: record
         ? removedAt !== undefined
           ? { videoId: record.videoId, privacyStatus: null, publishAt: null, removedAt, uploadedAt }
@@ -280,6 +294,10 @@ export function createPackageScan(deps: PackageScanDeps) {
         : null,
       // BL-243: the shared rule (ADR 0063 §1) -- the removed mark is proof; "on the channel" only as of a completed check that
       // could have seen the video.
+      youtubeTextsDiffer:
+        uploaded && removedAt === undefined && typeof uploaded.description === "string"
+          ? packagingDifferences({ title: uploaded.title, description: uploaded.description, tags: null }, { title: pkg.title, description: pkg.description, tags: null })
+          : null,
       existsOnChannel: !record ? null : existsOnChannelOf({ removed: removedAt !== undefined, listed: uploaded !== undefined, publishedAt: uploaded?.publishedAt, checkedAt: copy.checkedAt }),
       pkg,
     };

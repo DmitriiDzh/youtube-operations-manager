@@ -491,3 +491,50 @@ test("AC-SVC-02c: refused -- a public video, a current time within 15 minutes, a
     );
   }
 });
+
+// ---------------------------------------------------------------------------
+// BL-265 (MEDIA_GATE_PLAN.md §3.4 gaps 3 + "One comparison rule"; AC-MG-26/28/36; ADR 0072 §5): `verifyUnchanged` -- the read-back
+// also confirms the named untouched fields equal the read just before the write; `auditContext` goes on every audit row of the
+// write; a description YouTube echoes without its trailing line breaks is the text written.
+// ---------------------------------------------------------------------------
+
+test("AC-MG-26: verifyUnchanged fields all unchanged -> verified; the caller's audit context is on BACKUP, RESULT and VERIFICATION", async () => {
+  const details: Array<{ type: string; detail: Record<string, unknown> }> = [];
+  const { deps } = makeDeps({ auditStore: { record: async (args) => void details.push({ type: args.eventType, detail: args.detail as Record<string, unknown> }) } });
+  const result = await createVideoDetailsServices(deps).applyFieldsUpdate({
+    ...baseInput({ title: "New Title", description: "New", tags: ["x"] }),
+    verifyUnchanged: ["categoryId", "defaultLanguage", "privacyStatus", "publishAt"],
+    auditContext: { source: "package_metadata", actor: "owner" },
+  });
+  assert.equal(result.verified, true);
+  for (const type of ["BACKUP", "RESULT", "VERIFICATION"]) {
+    const row = details.find((d) => d.type === type);
+    assert.deepEqual([row?.detail.source, row?.detail.actor], ["package_metadata", "owner"], type);
+  }
+});
+
+test("AC-MG-28: an untouched field changed on read-back (defaultLanguage) -> update_failed naming it, VERIFICATION verified: false, no cache refresh", async () => {
+  const details: Array<{ type: string; detail: Record<string, unknown> }> = [];
+  const { deps, calls, before } = makeDeps({ auditStore: { record: async (args) => void details.push({ type: args.eventType, detail: args.detail as Record<string, unknown> }) } });
+  deps.youtubeApi.applyPatch = async ({ patch }) => ({ before, after: { ...before, ...patch, defaultLanguage: "de" } });
+  await assert.rejects(
+    createVideoDetailsServices(deps).applyFieldsUpdate({ ...baseInput({ title: "New Title" }), verifyUnchanged: ["defaultLanguage", "categoryId"] }),
+    (error: unknown) => error instanceof DomainError && error.code === "update_failed" && JSON.stringify(error.details).includes("defaultLanguage")
+  );
+  const verification = details.find((d) => d.type === "VERIFICATION");
+  assert.deepEqual([verification?.detail.verified, verification?.detail.changedUntouched], [false, ["defaultLanguage"]]);
+  assert.equal(calls.refreshVideoFields.length, 0);
+});
+
+test("verifyUnchanged may not name a field the patch writes (validation, before anything)", async () => {
+  const { deps, calls } = makeDeps();
+  await assert.rejects(createVideoDetailsServices(deps).applyFieldsUpdate({ ...baseInput({ title: "New Title" }), verifyUnchanged: ["title"] }), (error: unknown) => error instanceof DomainError && error.code === "validation_failed");
+  assert.equal(calls.applyPatch, 0);
+});
+
+test("AC-MG-36: a description read back without its trailing line breaks (and LF for CRLF) is verified", async () => {
+  const { deps, before } = makeDeps();
+  deps.youtubeApi.applyPatch = async ({ patch }) => ({ before, after: { ...before, ...patch, description: "Line 1\nLine 2" } });
+  const result = await createVideoDetailsServices(deps).applyFieldsUpdate(baseInput({ description: "Line 1\r\nLine 2\n\n" }));
+  assert.equal(result.verified, true);
+});

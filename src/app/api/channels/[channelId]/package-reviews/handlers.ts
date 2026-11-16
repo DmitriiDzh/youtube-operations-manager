@@ -72,7 +72,7 @@ export function createPackageReviewRouteHandlers(deps: PackageReviewRouteDeps = 
     /** PUT `{ required: boolean }`: the owner's switch. */
     setRequired: (request: Request, context: Context) =>
       guarded(context, async (channelId) => NextResponse.json(await deps.service().setRequired(channelId, await request.json().catch(() => null)))),
-    /** POST `{ manifestSha256, kind: approved | returned, comment? }` (a return needs a comment). */
+    /** POST `{ manifestSha256, kind: approved | returned | packaging_comment (BL-265), comment? }` (a return or a packaging comment needs a comment). */
     decide: (request: Request, context: Context) =>
       guarded(context, async (channelId) => NextResponse.json(await deps.service().decide(channelId, await request.json().catch(() => null)))),
     /** GET `?manifest=<sha256>`: the package's own video, with HTTP Range (the player seeks in a multi-GB episode); never its path. */

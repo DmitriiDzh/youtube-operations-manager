@@ -7,7 +7,11 @@ export { DomainError, isDomainError };
 // (a flat map from the genesis, each under a fresh id and never edited), so two computers that each decide merge instead of one
 // replacing the other. Which decision stands is the package-reviews module's rule; this family stores and carries.
 
-export type PackageReviewDecisionKind = "approved" | "returned";
+/**
+ * BL-265 (ADR 0072 §2): `packaging_comment` -- the owner's comment on a package's packaging (title, description, thumbnail, ...); it
+ * never changes the gate. An older build drops the unknown kind (never an approval there).
+ */
+export type PackageReviewDecisionKind = "approved" | "returned" | "packaging_comment";
 
 /** One owner decision on one manifest version (the manifest file's SHA-256); never edited. */
 export type PackageReviewDecision = {
@@ -15,8 +19,18 @@ export type PackageReviewDecision = {
   manifestSha256: string;
   /** The package's video number (`V11`), for the reader. */
   video: string;
-  /** The default thumbnail file's SHA-256 when the owner decided: an approval covers that thumbnail only. */
+  /**
+   * The default thumbnail file's SHA-256 when the owner decided. BL-257: an approval covered that thumbnail only; since BL-265 (ADR
+   * 0072 §1) it is informational -- kept so an older build still reads a new approval (it ignores one with a null hash).
+   */
   thumbnailSha256: string | null;
+  /**
+   * BL-265 (ADR 0072 §1): the media the decision is about -- the manifest's `sha256` (lower-case hex) and `sizeBytes` of the mp4. With
+   * both set, an approval / return stands for that mp4 under this video code (or its BL-263 recode alias), whatever its manifest says
+   * about packaging. Absent on a decision written before BL-265 (it stands for its `manifestSha256` only).
+   */
+  videoSha256?: string;
+  videoSizeBytes?: number;
   kind: PackageReviewDecisionKind;
   /** A return always has one; an approval may. */
   comment: string | null;

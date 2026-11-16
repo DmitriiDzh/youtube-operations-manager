@@ -381,7 +381,12 @@ const reviewHashes = (manifest = M65, thumb = TH65) => async (abs: string) => {
   return "0".repeat(64);
 };
 const ownerDecision = (id: string, manifest: string, kind: "approved" | "returned", thumb: string | null, at = "2026-11-15T10:00:00.000Z") =>
-  ({ id, manifestSha256: manifest, video: "V65", thumbnailSha256: thumb, kind, comment: kind === "returned" ? "the intro is cut" : null, by: "owner" as const, device: "Mac", at });
+  ({ id, manifestSha256: manifest, video: "V65", thumbnailSha256: thumb, kind, comment: kind === "returned" ? "the intro is cut" : null, by: "owner" as const, device: "Mac", at }) as {
+    id: string; manifestSha256: string; video: string; thumbnailSha256: string | null; kind: "approved" | "returned"; comment: string | null; by: "owner"; device: string; at: string; videoSha256?: string; videoSizeBytes?: number;
+  };
+/** BL-265: the mp4 the V65 package states (its `sha256` and `sizeBytes`, as `packageFiles` writes them with `over`). */
+const MP4_65 = "e".repeat(64);
+const mediaDecision = (id: string, manifest: string, kind: "approved" | "returned", at = "2026-11-15T10:00:00.000Z") => ({ ...ownerDecision(id, manifest, kind, TH65, at), videoSha256: MP4_65, videoSizeBytes: 1000 });
 async function gate(required: boolean | null, decisions: ReturnType<typeof ownerDecision>[]) {
   const { ownerReviewStateOf, reviewGateOf } = await import("@/lib/package-reviews/model");
   return reviewGateOf(ownerReviewStateOf({ exists: true, required: required === null ? null : { value: required, updatedAt: "", by: "owner", device: null }, decisions: Object.fromEntries(decisions.map((d) => [d.id, d])) }));
@@ -413,13 +418,29 @@ test("AC-PR-02: gate on, no decision -> not_ready with owner_review_pending", as
   assert.deepEqual([scanned.state, scanned.problems], ["not_ready", [{ code: "owner_review_pending" }]]);
 });
 
-test("AC-PR-03: approved for this manifest + thumbnail -> ready; re-packaged manifest or changed thumbnail -> pending again", async () => {
+// AC-PR-03 changed by BL-265 (owner TG 2340, ADR 0072 §1): the thumbnail is packaging and no longer part of the approval.
+test("AC-MG-09 (was AC-PR-03): a BL-257 approval of this manifest -> ready whatever the thumbnail; a re-packaged manifest -> pending once", async () => {
   const approved = [ownerDecision("d1", M65, "approved", TH65)];
   assert.deepEqual((await scanV65({ ownerReview: async () => gate(true, approved) })).state, "ready");
+  const newThumb = await scanV65({ sha256: reviewHashes(M65, TH65B), ownerReview: async () => gate(true, approved) });
+  assert.deepEqual([newThumb.state, newThumb.problems], ["ready", []]);
   const repackaged = await scanV65({ sha256: reviewHashes(M65B, TH65), ownerReview: async () => gate(true, approved) });
   assert.deepEqual([repackaged.state, repackaged.problems], ["not_ready", [{ code: "owner_review_pending" }]]);
-  const newThumb = await scanV65({ sha256: reviewHashes(M65, TH65B), ownerReview: async () => gate(true, approved) });
-  assert.deepEqual([newThumb.state, newThumb.problems], ["not_ready", [{ code: "owner_review_pending" }]]);
+});
+
+test("AC-MG-01/02 (scan): a media approval keeps a re-packaged manifest of the same mp4 ready; a manifest stating another sha256 or size is pending; nothing but the manifest is hashed", async () => {
+  const hashed: string[] = [];
+  const counting = (manifest: string) => async (abs: string) => {
+    hashed.push(abs.split("/").pop() ?? "");
+    return reviewHashes(manifest, TH65B)(abs);
+  };
+  const approved = [mediaDecision("d1", M65, "approved")];
+  const files = (over: Record<string, unknown>) => packageFiles("04 Videos/10 October/1024 V65", "V65", { sha256: MP4_65, ...over });
+  const same = await scanV65({ sha256: counting(M65B), ownerReview: async () => gate(true, approved) }, files({ title: "A new title" }));
+  assert.deepEqual([same.state, same.problems], ["ready", []]);
+  const otherSha = await scanV65({ sha256: counting(M65B), ownerReview: async () => gate(true, approved) }, files({ sha256: "f".repeat(64) }));
+  assert.deepEqual([otherSha.state, otherSha.problems], ["not_ready", [{ code: "owner_review_pending" }]]);
+  assert.deepEqual([...new Set(hashed)], ["V65_release.json"]);
 });
 
 test("AC-PR-04: returned -> not_ready with owner_review_returned and the comment; a later approval -> ready", async () => {
@@ -527,4 +548,23 @@ test("BL-263 AC-SC-04: a V package whose manifest names another V (today's behav
   const result = await createPackageScan(deps(files)).scan("UC_t");
   if (result.status !== "ok") return assert.fail(result.status);
   assert.deepEqual(result.packages.map((p) => p.video).sort(), ["V07", "V66"]);
+});
+
+// BL-265 (MEDIA_GATE_PLAN.md §3.1 "Entry point", §3.4 "One comparison rule"; AC-MG-36/38): an uploaded package's row says whether its
+// manifest's texts differ from the synced copy -- on any channel, with or without the review gate. Title exact; description with CR
+// line ends or trailing line breaks is the same text; an unknown video (not in the copy) is null.
+test("AC-MG-36/38: the uploaded package's 'packaging differs from YouTube' fields, by the one comparison rule, on a channel without the gate", async () => {
+  const folder = "04 Videos/10 October/1024 V65";
+  const files = { ...packageFiles(folder, "V65", { description: "Line 1\r\nLine 2" }), [`${folder}/V65_youtube.json`]: { text: JSON.stringify({ videoId: "vid65" }), bytes: 20 } };
+  const synced = (title: string, description: string) => async () => [{ videoId: "vid65", title, description, privacyStatus: "public", publishAt: null }];
+  const same = await scanV65({ videos: synced("Title V65", "Line 1\nLine 2\n\n") }, files);
+  assert.deepEqual([same.state, same.youtubeTextsDiffer], ["published", []]);
+  const retitled = await scanV65({ videos: synced("Old title", "Line 1\nLine 2") }, files);
+  assert.deepEqual(retitled.youtubeTextsDiffer, ["title"]);
+  const both = await scanV65({ videos: synced("Old title", "Other text") }, files);
+  assert.deepEqual(both.youtubeTextsDiffer, ["title", "description"]);
+  const unknown = await scanV65({ videos: async () => [] }, files);
+  assert.equal(unknown.youtubeTextsDiffer, null);
+  const notUploaded = await scanV65({});
+  assert.equal(notUploaded.youtubeTextsDiffer, null);
 });

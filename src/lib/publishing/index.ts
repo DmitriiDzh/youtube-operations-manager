@@ -7,7 +7,8 @@ import { releaseRecodeJournalDir, releaseRecodeJournalPath } from "@/lib/release
 import { lstat, mkdir, open, readdir, readFile, realpath, rename as renamePath, stat, unlink } from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
-import { YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
+import { YOUTUBE_READ_SCOPE, YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
+import { createPackageMetadata } from "./package-metadata";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { createChannelVideoStoreAdapter } from "@/lib/channel-video-store";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
@@ -24,11 +25,11 @@ import {
   getChannelExpectedLanguages,
   getLiveWritesEnabled,
   getDataApiReadsEnabled,
-  listTriedManifestHashes,
   listUploadRowsForTriedRule,
   listStoredChannels,
   getPublishingG1Probe,
   insertVideoEditAuditEvent,
+  listVideoEditAuditEventsByVideo,
   claimPublishingUpload,
   getPublishingUpload,
   insertPublishingUploads,
@@ -55,8 +56,9 @@ import {
 import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
 import { createChannelSyncCore } from "@/lib/channel-sync";
 import { getProductionAppPaths } from "@/lib/platform-paths/runtime";
-import type { ResolvedCredentials } from "@/lib/shared-domain";
-import { readOwnerReviewState, reviewGateOf, triedExceptionsOf } from "@/lib/package-reviews";
+import { DomainError, isDomainError, type ResolvedCredentials } from "@/lib/shared-domain";
+import { readOwnerReviewState, reviewGateOf, triedKeysOf } from "@/lib/package-reviews";
+import { mediaKeyOf, type TriedPackages } from "./owner-review-gate";
 import { createVideoDetailsCore } from "@/lib/video-details";
 import { createVideoLocalizationsWriterCore } from "@/lib/shared-video-localizations";
 import { createQuotaGuardCore } from "@/lib/quota-guard";
@@ -67,7 +69,7 @@ import { detectFfmpeg, probeMedia, type FfmpegTools } from "@/lib/ffmpeg-host";
 import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
 import { createWriteContextCore } from "@/lib/write-context";
-import { createYoutubeClient, getVideoUploadState, listPlaylistItemIdsByVideo, listUploadsPlaylistFirstPage } from "@/lib/youtube-read-gateway";
+import { createYoutubeClient, getVideoMetadataContext, getVideoUploadState, listPlaylistItemIdsByVideo, listUploadsPlaylistFirstPage } from "@/lib/youtube-read-gateway";
 import { createWorkspaceExchangeFsForPublishing, isRealVideoFolder, resolveWorkspaceFileForPublishing, writeVideoFolderFile } from "./adapters/files";
 import { createWorkspaceVideoFiles, videoNumberOfFolder, writeUploadRecordFile } from "@/lib/workspace-videos";
 import { reportVersionFor } from "@/lib/shared-video-code";
@@ -189,6 +191,7 @@ export function createPublishingCalendarCore(options: { dailyCoverage?: (channel
           plannedPublishDate: p.plannedPublishDate,
           state: p.state,
           problems: p.problems.map((problem) => problem.code),
+          warnings: (p.warnings ?? []).map((problem) => problem.code),
           videoId: p.youtube?.videoId ?? null,
           // BL-243: whether the uploaded video is still on the channel, as of the copy's last sync.
           existsOnChannel: p.existsOnChannel,
@@ -245,6 +248,25 @@ export function createPackageScanCore() {
     },
   };
 }
+
+/**
+ * BL-265 (ADR 0072 §1): the channel's owner-review state with the BL-263 recode aliases (V -> S) the video list knows, so a media
+ * approval follows a recode without a copy. video-projects is read lazily (as the plan progress does); unreadable -- no aliases.
+ */
+export async function ownerReviewStateFor(channelId: string) {
+  return readOwnerReviewState(channelId, {
+    recodeAliases: async (id) => {
+      const { createVideoProjectsServiceForProduction } = await import("@/lib/video-projects");
+      return createVideoProjectsServiceForProduction().recodeAliasesOf(id);
+    },
+  });
+}
+
+/** BL-265 (ADR 0072 §6): package-reviews' tried keys in the publishing module's spelling. */
+function triedPackagesOf(keys: { manifests: Set<string>; media: Array<{ video: string; videoSha256: string; sizeBytes: number }> }): TriedPackages {
+  return { manifests: keys.manifests, media: new Set(keys.media.map((k) => mediaKeyOf(k.video, k.videoSha256, k.sizeBytes))) };
+}
+
 
 function createPackageScanReads() {
   const workspaces = createChannelWorkspacesCore();
@@ -308,7 +330,7 @@ function createPackageScanReads() {
       return { channelId, defaultLanguage: baseline.defaultLanguage, defaultAudioLanguage: baseline.defaultAudioLanguage };
     },
     async videos(channelId) {
-      return (await videoStore.listVideosByChannel(channelId)).map((video) => ({ videoId: video.videoId, title: video.title, privacyStatus: video.privacyStatus, publishAt: video.publishAt, publishedAt: video.publishedAt }));
+      return (await videoStore.listVideosByChannel(channelId)).map((video) => ({ videoId: video.videoId, title: video.title, description: video.description, privacyStatus: video.privacyStatus, publishAt: video.publishAt, publishedAt: video.publishedAt }));
     },
     // BL-243: the removed mark and the copy's age, so a deleted video is not read as uploaded.
     removedVideos: (channelId) => removedVideosOf(channelId),
@@ -320,7 +342,7 @@ function createPackageScanReads() {
     clock: { now: () => new Date() },
     // BL-257 (ADR 0070 §2): the owner's review of the channel's final packages -- every consumer of the scan (the weekly plan, the
     // automatic upload, the Producer's queue add, the owner's upload approval) sees the same gate. No document: no gate.
-    ownerReview: async (channelId) => reviewGateOf(await readOwnerReviewState(channelId)),
+    ownerReview: async (channelId) => reviewGateOf(await ownerReviewStateFor(channelId)),
   };
   return { reads: createPackageScan(deps), workspace: deps.workspace, resolveFile: deps.resolveFile, deps };
 }
@@ -448,7 +470,24 @@ export function createUploadRunnerCore(options: { slotDecisions?: (channelId: st
       await videoDetails.applyFieldsUpdate({ credentialRef, expectedChannelId: channelId, videoId, patch: { privacyStatus: "private", publishAt, containsSyntheticMedia } });
     },
     // BL-257 (review M1): the owner's package review now -- a queued row he no longer covers is cancelled before any byte.
-    ownerReview: async (channelId) => reviewGateOf(await readOwnerReviewState(channelId)),
+    ownerReview: async (channelId) => reviewGateOf(await ownerReviewStateFor(channelId)),
+    // BL-265 (ADR 0072 §4): a queued row's manifest read once (hash and text of the same bytes), and the scan's own checks of a
+    // re-packaged one with fresh facts.
+    async readManifest(channelId, manifestPath) {
+      const file = await deps.files.resolve(channelId, manifestPath);
+      if (!file || file.bytes > 1024 * 1024) return null;
+      const bytes = await readFile(file.path);
+      return { sha256: createHash("sha256").update(bytes).digest("hex"), text: bytes.toString("utf8") };
+    },
+    async packageProblemsNow(channelId, manifestPath, manifestSha256) {
+      const scanned = await createPackageScanReads().reads.scan(channelId);
+      if (scanned.status !== "ok") return { problems: [{ code: scanned.status }] };
+      const found = scanned.packages.find((p) => p.manifestPath === manifestPath);
+      if (!found || found.manifestSha256 !== manifestSha256) return "changed";
+      // An upload record next to it: the package is on YouTube already (from either computer) -- never sent again.
+      if (found.youtube !== null) return { problems: [{ code: "youtube_record_exists" }] };
+      return { problems: found.problems };
+    },
     // Review #1 (BL-225): the plan's decision on a row's slot now, from the composition layer (absent: the row's own date stands).
     ...(options.slotDecisions
       ? { slotDecision: async (channelId: string, slotId: string) => (await options.slotDecisions!(channelId)).get(slotId) ?? null }
@@ -657,12 +696,10 @@ export function createAutoPrivateUploadCore(options: { slotDecisions?: (channelI
     liveVideos: (channelId) => localHeldVideos(channelId),
     peerUploads: (channelId) => peerUploadsOf(channelId),
     async triedHashes(channelId) {
-      const tried = await listTriedManifestHashes(channelId);
-      // BL-257 (ADR 0070 §5, AC-PR-11): a manifest the owner approved in package review whose rows here were all cancelled before
-      // reaching YouTube, before that approval, is not "tried" (the cancelled WWE V6-V11); any other row keeps it the owner's.
-      const excused = triedExceptionsOf(await readOwnerReviewState(channelId), await listUploadRowsForTriedRule(channelId));
-      for (const sha of excused) tried.delete(sha);
-      return tried;
+      // BL-257 (ADR 0070 §5, AC-PR-11), BL-265 (ADR 0072 §6): the rows here keyed by their media (by the manifest for an older row);
+      // a key the owner approved in package review whose rows were all cancelled before reaching YouTube, before that approval, is
+      // not "tried" (the cancelled WWE V6-V11); any other row keeps it the owner's. The rule is package-reviews' own.
+      return triedPackagesOf(triedKeysOf(await ownerReviewStateFor(channelId), await listUploadRowsForTriedRule(channelId)));
     },
     async videoFile(channelId, relativePath) {
       const workspace = await files.workspace(channelId);
@@ -763,14 +800,14 @@ export function createUploadQueueControlCore(
     // One try per manifest version, as for the automatic upload -- except a version whose rows the Producer itself queued and
     // cancelled (review #4: a cancelled owner's or automatic row stays the owner's, so the Producer cannot replace his approval).
     async blockedHashes(channelId) {
-      const rows = await listPublishingUploads({ channelId, limit: 5000 });
-      const blocked = new Set(rows.filter((row) => !(row.status === "cancelled" && row.errorCode === CANCELLED_BY_PRODUCER && row.queuedBy === "producer")).map((row) => row.manifestSha256));
+      // The Producer's own cancels free their key (review #4); every other row blocks it -- by its media when it froze the mp4's
+      // sha256, else by its manifest (BL-265, ADR 0072 §6).
+      const all = await listUploadRowsForTriedRule(channelId);
+      const producerCancelled = new Set(all.filter((row) => row.status === "cancelled" && row.errorCode === CANCELLED_BY_PRODUCER && row.queuedBy === "producer").map((row) => row.id));
       // PRD-REQ-0195 C (owner TG 2340 via the Producer, 2026-11-16): the same exception as the automatic upload (BL-257, ADR 0070
-      // §5) -- a manifest the owner approved in package review whose rows here were all cancelled before reaching YouTube, before
-      // that approval, may be queued by the Producer too (WWE V7: upload_already_tried). The rule is package-reviews' own.
-      const excused = triedExceptionsOf(await readOwnerReviewState(channelId), await listUploadRowsForTriedRule(channelId));
-      for (const sha of excused) blocked.delete(sha);
-      return blocked;
+      // §5) -- a key the owner approved in package review whose rows here were all cancelled before reaching YouTube, before that
+      // approval, may be queued by the Producer too (WWE V7: upload_already_tried). The rule is package-reviews' own.
+      return triedPackagesOf(triedKeysOf(await ownerReviewStateFor(channelId), all.filter((row) => !producerCancelled.has(row.id))));
     },
     ...(options.slotDecisions ? { slotDecisions: options.slotDecisions } : {}),
     async videoFile(channelId, relativePath) {
@@ -1073,3 +1110,81 @@ export function createReleaseRecodeCore(options: {
   });
 }
 export { renamedForCode, rewriteManifest, type ReleaseRecodeInput, type ReleaseRecodeResult, type RecodeVideoList } from "./release-recode";
+
+/**
+ * BL-265 (ADR 0072 §5, AGENTS.md §F «Package metadata after upload»): the packaging fix of an uploaded video -- the owner's routes and
+ * the Producer's tool, one service. The write is video-details' own (`applyFieldsUpdate`); this wires the package scan, this
+ * computer's upload rows and audit, the device gate and publishing's own localization read.
+ */
+export function createPackageMetadataCore() {
+  const scan = createPackageScanCore();
+  const settings = createPublishingSettingsCore();
+  const videoDetails = createVideoDetailsCore();
+  const resolved = (userId: string, scopes: readonly string[]) => resolveGoogleCredentials({ credentialRef: { userId }, requiredScopes: scopes });
+  return createPackageMetadata({
+    async findPackage(channelId, video) {
+      const result = await scan.scan(channelId);
+      if (result.status !== "ok") return result.status;
+      const named = result.packages.filter((p) => p.video === video && p.pkg && p.manifestSha256);
+      if (named.length === 0) return "not_found";
+      if (named.length > 1) return "ambiguous";
+      const p = named[0];
+      return { pkg: p.pkg!, manifestSha256: p.manifestSha256!, manifestPath: p.manifestPath, folder: p.folder, videoId: p.youtube?.videoId ?? null, thumbnailPath: p.thumbnailPath };
+    },
+    channelTags: async (channelId) => (await settings.read(channelId)).settings.channelTags ?? [],
+    async uploadRows(channelId, video) {
+      return (await listPublishingUploads({ channelId, limit: 5000 })).filter((row) => row.video === video).map((row) => ({ status: row.status, videoId: row.videoId, packageJson: row.packageJson, finishedAt: row.finishedAt }));
+    },
+    async lastApplied(channelId, videoId) {
+      const events = (await listVideoEditAuditEventsByVideo(videoId)).filter((e) => e.channelId === channelId && e.eventType === "VERIFICATION");
+      for (const event of events.reverse()) {
+        const detail = event.detail as { source?: unknown; verified?: unknown; afterTexts?: { title?: unknown; description?: unknown; tags?: unknown } };
+        const after = detail?.afterTexts;
+        if (detail?.source === "package_metadata" && after && typeof after.title === "string" && typeof after.description === "string" && Array.isArray(after.tags)) {
+          return { title: after.title, description: after.description, tags: after.tags.filter((t): t is string => typeof t === "string") };
+        }
+      }
+      return null;
+    },
+    async lastThumbnailSha256(channelId, videoId) {
+      const events = (await listVideoEditAuditEventsByVideo(videoId)).filter((e) => e.channelId === channelId && e.eventType === "RESULT");
+      for (const event of events.reverse()) {
+        const detail = event.detail as { event?: unknown; sha256?: unknown };
+        if (detail?.event === "video_thumbnails.replaced" && typeof detail.sha256 === "string") return detail.sha256;
+      }
+      return null;
+    },
+    async fileSha256(channelId, relativePath) {
+      const file = await scan.resolvePackageFile(channelId, relativePath);
+      return file ? sha256OfFile(file.path) : null;
+    },
+    assertDeviceAvailable: () => assertDeviceAvailableForMutation(rawSqlClient),
+    async credentialRef(channelId, actor) {
+      if (actor.kind === "owner") return { userId: actor.userId };
+      const channel = (await listStoredChannels()).find((c) => c.channelId === channelId);
+      if (!channel?.connectedUserId) throw new DomainError({ code: "CHANNEL_NOT_ACTIVE", message: "This channel has no connected Google account on this computer.", details: { channelId } });
+      return { userId: channel.connectedUserId };
+    },
+    async snapshot({ credentialRef, channelId, videoId }) {
+      try {
+        return await videoDetails.getSnapshot({ credentialRef, expectedChannelId: channelId, videoId });
+      } catch (error) {
+        // Only YouTube's own "no such video" is a missing video; any other failure is reported as it is.
+        if (isDomainError(error) && error.code === "not_found" && (error.details as { reason?: unknown } | undefined)?.reason === "no_item") return "not_found";
+        throw error;
+      }
+    },
+    async localizationLanguages({ credentialRef, videoId }) {
+      try {
+        const youtube = await createYoutubeClient(authorizedOAuth(await resolved(credentialRef.userId, [YOUTUBE_READ_SCOPE])));
+        const context = await getVideoMetadataContext(youtube, videoId);
+        return context ? Object.keys(context.localizations).sort() : null;
+      } catch {
+        return null;
+      }
+    },
+    applyFields: (args) => videoDetails.applyFieldsUpdate(args),
+    audit: ({ channelId, videoId, eventType, detail }) => insertVideoEditAuditEvent({ channelId, videoId, eventType, detail }),
+  });
+}
+export type { PackageMetadataActor, PackageMetadataApplyResult, PackageMetadataPreview } from "./package-metadata";

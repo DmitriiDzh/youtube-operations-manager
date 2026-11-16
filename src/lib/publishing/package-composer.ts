@@ -4,7 +4,7 @@ import { isNamedAfterRelease, isVideoFileName, stripBom, VIDEOS_FOLDER, videoNum
 import {
   imageKindOf,
   isSafeRelativePath,
-  packageProblems,
+  packageChecks,
   RELEASE_PACKAGE_FILE_PATTERN,
   RELEASE_PACKAGE_SCHEMA,
   THUMBNAIL_MAX_BYTES,
@@ -91,6 +91,8 @@ export type PackageDraft = {
   languages: { defaultLanguage: string | null; defaultAudioLanguage: string | null };
   /** What the scan would say about this package (the same checks as before an upload). */
   problems: PackageProblem[];
+  /** BL-265 (ADR 0072 §3): what the scan would only warn about (chapters, test thumbnails) -- shown, never blocking. */
+  warnings: PackageProblem[];
   existing: { exists: boolean; replaceable: boolean; reason: "uploaded" | "queued" | null };
 };
 
@@ -236,7 +238,7 @@ export function createPackageComposer(deps: ComposerDeps) {
       ready: true,
       problems: [],
     };
-    const problems = packageProblems(
+    const { problems, warnings } = packageChecks(
       pkg,
       {
         video: { exists: videoFile !== null, sizeBytes: videoFile?.bytes ?? null, durationSeconds, probeFailed: videoFile !== null && probed === null, noProbe: probed === "no_ffprobe" },
@@ -260,6 +262,7 @@ export function createPackageComposer(deps: ComposerDeps) {
       durationSeconds,
       languages: { defaultLanguage: channel.defaultLanguage, defaultAudioLanguage: channel.defaultAudioLanguage },
       problems,
+      warnings,
       existing: await existingOf(channelId, video, files),
     };
     return { workspace, pkg, draft, channel };

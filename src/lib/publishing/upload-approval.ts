@@ -11,9 +11,10 @@ import { DomainError } from "@/lib/shared-domain";
 import type { PackageScanResult } from "./package-scan";
 import type { PublishingSettingsView } from "./settings-service";
 import { uploadTags, type PublishingSettings } from "./settings";
-import { packageLocalizationSet, tagsLength } from "./packages";
+import { tagsLength } from "./packages";
+import { approvedPackageOf } from "./approved-package";
 import { estimateUploadUnits, isDeferredPublishAt } from "./publish-dates";
-import { normalizeLineEndings, type ApprovedPackage } from "./upload-runner";
+import type { ApprovedPackage } from "./upload-runner";
 
 export { estimateUploadUnits };
 
@@ -141,26 +142,9 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
     }
 
     const rows: StoredPublishingUpload[] = chosen.map(({ item, found, pkg }) => {
-      const folder = found.folder;
-      const approved: ApprovedPackage = {
-        video: pkg.video,
-        // Lines end in LF on YouTube; the factory's Windows text may carry CRLF (review question).
-        title: pkg.title,
-        description: normalizeLineEndings(pkg.description),
-        tags: uploadTags(pkg.tags, view.settings.channelTags ?? []),
-        defaultLanguage: pkg.defaultLanguage,
-        defaultAudioLanguage: pkg.defaultAudioLanguage,
-        manifestPath: found.manifestPath,
-        videoFile: `${folder}/${pkg.files.video}`,
-        thumbnailFile: `${folder}/${pkg.files.thumbnail}`,
-        sizeBytes: pkg.sizeBytes,
-        // Review L5: the runner checks an automatic row's file against it before a session starts.
-        ...(args.mode.kind !== "owner" && pkg.sha256 ? { videoSha256: pkg.sha256 } : {}),
-        // BL-225 stage 3 (ADR 0051 §8): a v2 package's translations (as the shared rules send them), its own AI flag and its slot.
-        ...(packageLocalizationSet(pkg) ? { localizations: packageLocalizationSet(pkg)! } : {}),
-        ...(typeof pkg.containsSyntheticMedia === "boolean" ? { containsSyntheticMedia: pkg.containsSyntheticMedia } : {}),
-        ...(pkg.slotId ? { slotId: pkg.slotId } : {}),
-      };
+      // BL-265 (ADR 0072 §4, AC-MG-21): the one manifest -> row builder; every row whose manifest states the mp4's sha256 freezes it
+      // (the owner's approval rows too), so the runner hashes the file before the first byte and only such a row takes a re-package.
+      const approved: ApprovedPackage = approvedPackageOf(pkg, { manifestPath: found.manifestPath, folder: found.folder }, view.settings);
       return {
         id: deps.newId(),
         channelId: args.channelId,

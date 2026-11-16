@@ -219,16 +219,18 @@ export function slotNoticesOf(channel: Channel, snapshot: PublishingPlansSnapsho
 /**
  * BL-257 (ADR 0070, PACKAGE_REVIEW_PLAN.md AC-PR-13): every owner decision on a final package -- approved or returned -- gives one
  * file `REVIEW-DECISION-package-<video>-<decisionId>.md`. The latest decision on a manifest is the one that counts (the owner may
- * change his mind before the upload); an earlier one says so.
+ * change his mind before the upload); an earlier one says so. BL-265 (ADR 0072 §2, AC-MG-07): a packaging comment gives one file too
+ * (status `packaging_comment`); it never changes the gate.
  */
 export function packageNoticesOf(channel: Channel, snapshot: PackageReviewsSnapshot, sinceMs: number): ReviewDecisionNotice[] {
   const all = Object.values(snapshot.decisions);
   const out: ReviewDecisionNotice[] = [];
   for (const d of all) {
-    if (d.by !== "owner" || (d.kind !== "approved" && d.kind !== "returned") || !after(d.at, sinceMs)) continue;
+    if (d.by !== "owner" || (d.kind !== "approved" && d.kind !== "returned" && d.kind !== "packaging_comment") || !after(d.at, sinceMs)) continue;
     // The package-reviews rule (review L1: the document's seq, then the time, then the id) says which decision stands.
-    const standing = latestOwnerDecision(d.manifestSha256, all);
+    const standing = d.kind === "packaging_comment" ? null : latestOwnerDecision(d.manifestSha256, all);
     const later = standing && standing.id !== d.id ? standing : null;
+    const media = typeof d.videoSha256 === "string" ? [{ label: "Video sha256", value: `${d.videoSha256} (${d.videoSizeBytes ?? "?"} bytes)` }] : [];
     out.push({
       kind: "package",
       channelId: channel.channelId,
@@ -242,8 +244,12 @@ export function packageNoticesOf(channel: Channel, snapshot: PackageReviewsSnaps
       context: [
         { label: "Video", value: d.video },
         { label: "Manifest sha256", value: d.manifestSha256 },
-        ...(d.kind === "approved" ? [{ label: "Next", value: "the package is ready: the automatic upload (or producer_upload_queue_add) takes it; the owner's slot approval gives the date" }] : []),
-        ...(d.kind === "returned" ? [{ label: "Next", value: "the package stays out of the upload and the plan until the owner approves a new version (re-package it)" }] : []),
+        ...media,
+        ...(d.kind === "approved" ? [{ label: "Next", value: "the video (this mp4) is approved: every package of it is ready -- a re-package of only its packaging keeps the approval; the automatic upload (or producer_upload_queue_add) takes it; the owner's slot approval gives the date" }] : []),
+        ...(d.kind === "returned" ? [{ label: "Next", value: "this mp4 stays out of the upload and the plan; a package with a new mp4 is reviewed again" }] : []),
+        ...(d.kind === "packaging_comment"
+          ? [{ label: "Next", value: "a comment on the packaging (title, description, tags, thumbnail, translations): it blocks nothing -- re-package if you agree; an uploaded video's texts are fixed with producer_video_metadata_update (dry run first)" }]
+          : []),
         ...(later ? [{ label: "Counts", value: `no: a later owner decision (${later.id}) decides this manifest` }] : []),
       ],
       attachments: [],

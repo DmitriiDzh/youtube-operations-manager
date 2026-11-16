@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { ownerReviewStateOf, triedKeysOf } from "@/lib/package-reviews/model";
+import { mediaKeyOf } from "./owner-review-gate";
 import type { StoredPublishingUpload } from "@/lib/db";
 import { isDomainError } from "@/lib/shared-domain";
 import type { SlotDecision } from "./auto-upload";
@@ -149,7 +151,12 @@ function harness(rows: StoredPublishingUpload[], options: { packages?: ScannedPa
     scan: async () => ({ status: "ok", packages: options.packages ?? [] }),
     liveVideos: async () => new Set([...store.values()].filter((r) => ACTIVE.has(r.status) || r.status === "done").map((r) => r.video)),
     peerUploads: async () => new Map((options.peers ?? []).map((v) => [v, { host: "Windows", uploaded: false }])),
-    blockedHashes: async () => new Set([...store.values()].filter((r) => !(r.status === "cancelled" && r.errorCode === CANCELLED_BY_PRODUCER && r.queuedBy === "producer")).map((r) => r.manifestSha256)),
+    // BL-265 (ADR 0072 §6): the real rule over the rows that are not the Producer's own cancels (no review gate on this channel).
+    blockedHashes: async () => {
+      const rows = [...store.values()].filter((r) => !(r.status === "cancelled" && r.errorCode === CANCELLED_BY_PRODUCER && r.queuedBy === "producer"));
+      const keys = triedKeysOf(ownerReviewStateOf({ exists: false, required: null, decisions: {} }), rows.map((r) => ({ manifestSha256: r.manifestSha256, video: r.video, videoSha256: (JSON.parse(r.packageJson) as { videoSha256?: string }).videoSha256 ?? null, sizeBytes: r.totalBytes, status: r.status, videoId: r.videoId, createdAtMs: r.createdAt.getTime() })));
+      return { manifests: keys.manifests, media: new Set(keys.media.map((k) => mediaKeyOf(k.video, k.videoSha256, k.sizeBytes))) };
+    },
     ...(options.slots ? { slotDecisions: async () => options.slots! } : {}),
     videoFile: async (_channelId, relativePath) => ({ path: `/ws/${relativePath}`, bytes: options.fileBytes ?? 1000, mtimeMs: 1 }),
     hashFile: async (path) => {
@@ -296,6 +303,14 @@ test("AC-UQ-08: the add is refused, nothing queued, for every failed check; the 
   const midway = harness([], { packages: [pkg("V61")], switchOn: () => ++reads < 2 });
   await refused(midway.control.add({ channelId: "UC_x", video: "V61" }, PRODUCER), "upload_auto_switch_off");
   assert.equal(midway.store.size, 0);
+});
+
+test("AC-MG-35 (Producer): a failed row of V61's mp4 refuses the add of a re-packaged V61 (same mp4, new manifest); a row of another mp4 does not", async () => {
+  const frozen = (sha: string) => JSON.stringify({ title: "Old", videoSha256: sha });
+  const same = harness([row("f", { video: "V61", manifestSha256: "mf-old", status: "failed", totalBytes: 1000, packageJson: frozen(SHA) })], { packages: [pkg("V61")] });
+  await refused(same.control.add({ channelId: "UC_x", video: "V61" }, PRODUCER), "upload_already_tried");
+  const other = harness([row("f", { video: "V61", manifestSha256: "mf-old", status: "failed", totalBytes: 1000, packageJson: frozen("0".repeat(64)) })], { packages: [pkg("V61")] });
+  assert.equal((await other.control.add({ channelId: "UC_x", video: "V61" }, PRODUCER)).upload.status, "queued");
 });
 
 test("AC-UQ-08: a version only the Producer cancelled can be added again; one the owner cancelled stays his", async () => {

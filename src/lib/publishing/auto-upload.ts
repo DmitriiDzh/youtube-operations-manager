@@ -8,6 +8,7 @@
 import { isDomainError } from "@/lib/shared-domain";
 import type { PackageScanResult, ScannedPackage } from "./package-scan";
 import { approvalNamesUpload, type SlotDecision } from "./slot-decision";
+import { isTriedPackage, mediaKeyOf, type TriedPackages } from "./owner-review-gate";
 import { AUTO_UPLOAD_WAIT_CODES } from "./upload-approval";
 
 /** `userId` null: the channel has no connected account on this computer (it is skipped, with the reason recorded). */
@@ -31,8 +32,11 @@ export type AutoUploadDeps = {
   /** The videos held by an upload row on this computer, and those another computer reports (the approval's own reads). */
   liveVideos(channelId: string): Promise<Set<string>>;
   peerUploads(channelId: string): Promise<Map<string, { host: string | null; uploaded: boolean }>>;
-  /** The manifest hashes that already have an upload row here -- automatic or manual, any status (review M1). */
-  triedHashes(channelId: string): Promise<Set<string>>;
+  /**
+   * What already had an upload row here -- automatic or manual, any status (review M1). BL-265 (ADR 0072 §6): by media key for rows
+   * that froze the mp4's sha256, by manifest hash for older rows; the owner-review exception already applied (package-reviews' rule).
+   */
+  triedHashes(channelId: string): Promise<TriedPackages>;
   /** The package's video file by the workspace rule, with its size and modification time; null when it is not there. */
   videoFile(channelId: string, relativePath: string): Promise<{ path: string; bytes: number; mtimeMs: number } | null>;
   /** The SHA-256 (lower-case hex) of a whole file. Costly on a multi-GB video: called only after the size matched, once per key. */
@@ -100,8 +104,8 @@ export type PackageCheckContext = {
   /** Videos held by an upload row here, and those a peer reports. */
   live: Set<string>;
   peers: Map<string, { host: string | null; uploaded: boolean }>;
-  /** Manifest hashes that may not be queued again (the caller's own "tried" rule). */
-  tried: Set<string>;
+  /** What may not be queued again (the caller's own "tried" rule): manifest versions and, BL-265, media keys. */
+  tried: TriedPackages;
   /** The plan's decision on each slot of the channel; null: the plan module is off (no slot is vetoed, none gives a date). */
   slots: Map<string, SlotDecision> | null;
   videoFile(relativePath: string): Promise<{ path: string; bytes: number; mtimeMs: number } | null>;
@@ -129,7 +133,7 @@ export async function checkPackageForQueue(p: ScannedPackage, ctx: PackageCheckC
   const expected = p.pkg.sha256 ?? null;
   if (!expected) return { ok: false, reason: "no_sha256", video };
   if (ctx.live.has(video) || ctx.peers.has(video)) return { ok: false, reason: "held", video };
-  if (ctx.tried.has(p.manifestSha256)) return { ok: false, reason: "tried", video };
+  if (isTriedPackage(ctx.tried, { manifestSha256: p.manifestSha256, video, videoSha256: expected, sizeBytes: p.pkg.sizeBytes })) return { ok: false, reason: "tried", video };
   const file = await ctx.videoFile(`${p.folder}/${p.pkg.files.video}`);
   if (!file || file.bytes !== p.pkg.sizeBytes) return { ok: false, reason: "size_mismatch", video }; // a different size is never hashed
   let actual: string;
@@ -254,7 +258,8 @@ export function createAutoPrivateUpload(deps: AutoUploadDeps) {
               // read-back); otherwise private without a date, as before -- the plan sets the date later when the slot is approved.
               const slotPublishAt = check.slotPublishAt;
               const queued = await deps.queue({ channelId: channel.channelId, userId: channel.userId, manifestPath: p.manifestPath, manifestSha256: p.manifestSha256, scanned, switchOn, slotPublishAt });
-              tried.add(p.manifestSha256);
+              tried.manifests.add(p.manifestSha256);
+              tried.media.add(mediaKeyOf(p.pkg.video, check.videoSha256, p.pkg.sizeBytes));
               result.queued.push({ channelId: channel.channelId, video: queued.video, uploadId: queued.id, manifestSha256: p.manifestSha256 });
             } catch (error) {
               const code = isDomainError(error) ? error.code : "refused";
