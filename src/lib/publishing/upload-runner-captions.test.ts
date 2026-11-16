@@ -391,3 +391,18 @@ test("review #1 a fresh insert whose re-reads end FAILED -> mismatch, date withh
   assert.deepEqual([steps.captions, steps.captionsTrack?.trackId, steps.publishAt, h.row().errorCode], ["mismatch", "NEW", "withheld", "verify_mismatch"]);
   assert.ok((steps.notes ?? []).some((n) => /unknownFormat/.test(n)));
 });
+
+test("review #2 an insert that keeps failing after its attempt mark gives up after MAX_RETRIES: captions failed, date withheld", async () => {
+  let calls = 0;
+  const h = harness(row(PKG), async (args) => {
+    calls += 1;
+    await args.onAttempt([]);
+    throw Object.assign(new Error("read ETIMEDOUT"), { code: "ETIMEDOUT" });
+  });
+  await h.runAll(60);
+  // MAX_RETRIES (10) retries after the first attempt, then giveUp -- never a retry every 30 s for ever.
+  assert.equal(calls, 11);
+  const steps = h.steps();
+  assert.deepEqual([h.row().status, steps.captions, steps.publishAt, h.row().errorCode], ["done", "failed", "withheld", "step_failed"]);
+  assert.ok((steps.notes ?? []).some((n) => /^captions: .*ETIMEDOUT/.test(n)));
+});

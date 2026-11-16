@@ -856,9 +856,12 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
           // Saved before the insert: a lost answer is then adopted on the retry, never inserted twice (AC-CAP-27).
           onAttempt: async (trackIdsBefore) => {
             steps.captionsAttempt = { at: now().toISOString(), trackIdsBefore };
-            if (!(await saveSteps(job, steps))) throw new Error("The upload row changed while its captions were written.");
+            // The retries in a row are kept (review #2): an insert that keeps failing after its mark must reach MAX_RETRIES and give
+            // up (`failed`, date withheld), never be retried every 30 s for ever. `steps` carries the row's count as read.
+            const stepsJson = JSON.stringify(steps);
+            if (!(await deps.store.update(job.id, "finishing", { stepsJson, updatedAt: now() }))) throw new Error("The upload row changed while its captions were written.");
             // An error after this point is handled on the row as saved (onError reads its steps), so the mark survives a lost answer.
-            job = { ...job, stepsJson: JSON.stringify({ ...steps, retries: 0 }) };
+            job = { ...job, stepsJson };
           },
           ...creds,
         });
