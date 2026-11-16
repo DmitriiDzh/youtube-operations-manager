@@ -172,14 +172,14 @@ export function createOperationRegistry(options: OperationRegistryOptions = {}) 
       return entries.get(id)?.snapshot;
     },
 
-    /** Operations of one channel, newest first; `activeOnly` hides finished ones. */
-    list(filter: { channelId: string; kind?: string; activeOnly?: boolean }): OperationSnapshot[] {
+    /** Operations of one channel (BL-258: every channel when `channelId` is absent), newest first; `activeOnly` hides finished ones. */
+    list(filter: { channelId?: string; kind?: string; activeOnly?: boolean }): OperationSnapshot[] {
       sweep();
       return [...entries.values()]
         .map((entry) => entry.snapshot)
         .filter(
           (snap) =>
-            snap.channelId === filter.channelId &&
+            (filter.channelId === undefined || snap.channelId === filter.channelId) &&
             (filter.kind === undefined || snap.kind === filter.kind) &&
             (!filter.activeOnly || ACTIVE.has(snap.status))
         )

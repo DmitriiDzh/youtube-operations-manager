@@ -328,6 +328,7 @@ export type DomainErrorCode =
   | "publishing_plan_slot_vetoed"
   | "publishing_plan_slot_not_packaged"
   | "publishing_plan_slot_past"
+  | "publishing_plan_slot_too_soon"
   | "release_folder_not_found"
   | "release_folder_ambiguous"
   | "release_folder_name_invalid"

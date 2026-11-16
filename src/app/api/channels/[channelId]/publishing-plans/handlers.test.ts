@@ -29,6 +29,11 @@ function make(options: { session?: { user: { id: string } } | null; refuse?: Dom
         if (options.refuse) throw options.refuse;
         return { plan: {} as never, decided: ["s1"], replacedVetoed: [] };
       },
+      retime: async (...args) => {
+        calls.push(["retime", ...args]);
+        if (options.refuse) throw options.refuse;
+        return { plan: {} as never, changed: true, approved: true };
+      },
       setApprovalStage: async (...args) => {
         calls.push(["stage", ...args]);
         if (options.refuse) throw options.refuse;
@@ -76,6 +81,7 @@ test("BL-235: the plan's week coverage is read for weekStart in the plan's zone 
       ownerList: async () => ({ plans: [], waiting: 0, approvalStage: "packaged" as const }),
       ownerGet: async () => ({ plan: { weekStart: "2026-11-02", timeZone: "Asia/Tokyo" } as never }),
       decide: async () => ({ plan: {} as never, decided: [], replacedVetoed: [] }),
+      retime: async () => ({ plan: {} as never, changed: false, approved: false }),
       setApprovalStage: async () => ({ approvalStage: "slot" as const, changed: true }),
     }),
     coverage: async (...args) => {
@@ -104,4 +110,20 @@ test("AC-WP-50: the stage route needs a session and the active channel; it passe
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), { approvalStage: "slot", changed: true });
   assert.deepEqual(calls, [["stage", "UC_active", { stage: "slot" }, "u1"]]);
+});
+
+test("BL-256: the retime route needs a session and the active channel; it passes channel, week, body and the session's user; too soon is 409", async () => {
+  const anonymous = make({ session: null });
+  const body = { slotId: "s1", contentHash: "a".repeat(64), date: "2026-10-27", publishAt: "2026-10-27T20:00", approve: true };
+  assert.equal((await anonymous.handlers.retime(post(body), ctx({ channelId: "UC_active", weekStart: "2026-10-26" }))).status, 401);
+  const other = make();
+  assert.equal((await other.handlers.retime(post(body), ctx({ channelId: "UC_other", weekStart: "2026-10-26" }))).status, 403);
+  assert.deepEqual([...anonymous.calls, ...other.calls], []);
+  const { handlers, calls } = make();
+  assert.equal((await handlers.retime(post(body), ctx({ channelId: "UC_active", weekStart: "2026-10-26" }))).status, 200);
+  assert.deepEqual(calls, [["retime", "UC_active", "2026-10-26", body, "u1"]]);
+  const soon = make({ refuse: new DomainError({ code: "publishing_plan_slot_too_soon", message: "soon" }) });
+  const res = await soon.handlers.retime(post(body), ctx({ channelId: "UC_active", weekStart: "2026-10-26" }));
+  assert.equal(res.status, 409);
+  assert.equal((await res.json()).error, "publishing_plan_slot_too_soon");
 });

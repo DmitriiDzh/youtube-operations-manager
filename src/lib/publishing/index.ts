@@ -678,6 +678,16 @@ export async function listChannelUploads(channelId: string) {
 }
 
 /**
+ * BL-258 (owner msg 4385): this computer's open uploads of every channel, each queued row with its place in the shared queue -- the
+ * header's «Выполняется в фоне».
+ */
+export async function listActiveUploadsWithQueue() {
+  const active = await listPublishingUploads({ statuses: ACTIVE_UPLOAD_STATUSES, limit: 500 });
+  const { positions } = queuePositions(active);
+  return active.map((row) => ({ ...row, queuePosition: positions.get(row.id) ?? null }));
+}
+
+/**
  * BL-239 (UPLOAD_QUEUE_CONTROL_PLAN.md §6): the owner's list -- the channel's uploads with each queued row's place in the shared
  * queue of this computer (every channel) and the queue's length, so the ↑↓ arrows show what they change.
  */
