@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { credentialRefSchema } from "@/lib/video-metadata/schemas";
+import { VERIFY_UNCHANGED_FIELDS } from "./contracts";
 export { parseWithSchema, formatZodError } from "./contracts";
 
 /** YouTube counts `description` in bytes (UTF-8), not JS string length -- an emoji or
@@ -87,6 +88,13 @@ export const applyFieldsUpdateInputSchema = previewFieldsUpdateInputSchema.exten
   /** BL-186 stage 3: more read-back retries (10 s apart) for a caller writing to a fresh broadcast, whose tags read back tens of
    * seconds late (spike C). Default: the owner-chosen 3. */
   readBackRetries: z.number().int().min(0).max(12).optional(),
+  /** BL-265 (ADR 0072 §5): untouched fields the read-back must also find unchanged; a field also in the patch is not allowed. */
+  verifyUnchanged: z.array(z.enum(VERIFY_UNCHANGED_FIELDS)).max(VERIFY_UNCHANGED_FIELDS.length).optional(),
+  /** BL-265: what the caller adds to this write's BACKUP / RESULT / VERIFICATION audit rows (e.g. `source: package_metadata`). */
+  auditContext: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null(), z.array(z.string())])).optional(),
+}).refine((input) => !(input.verifyUnchanged ?? []).some((field) => field in input.patch), {
+  message: "verifyUnchanged must not name a field the patch writes",
+  path: ["verifyUnchanged"],
 });
 
 export type VideoDetailsPatchInput = z.infer<typeof videoDetailsPatchSchema>;

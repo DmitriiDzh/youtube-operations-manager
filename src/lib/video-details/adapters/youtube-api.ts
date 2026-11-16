@@ -26,6 +26,7 @@ function toSnapshot(videoId: string, context: NonNullable<Awaited<ReturnType<typ
   return {
     videoId,
     etag: context.etag,
+    channelId: context.snippet.channelId ?? null,
     title: context.snippet.title ?? "",
     description: context.snippet.description ?? "",
     tags: context.snippet.tags ?? [],
@@ -66,7 +67,37 @@ export function statusPartOf(readStatus: Record<string, unknown>, patch: VideoDe
   return status;
 }
 
-export function createVideoDetailsYoutubeApiAdapter() {
+/**
+ * The snippet part a patch sends (a full read-merge-write): the snippet as just read with the patch's fields on top, only the writable
+ * ones; `defaultAudioLanguage` sent back as read unless the patch changes it -- except `zxx` (RISK-102: rejected when echoed).
+ */
+export function snippetPartOf(readSnippet: Record<string, unknown>, patch: VideoDetailsPatch): Record<string, unknown> {
+  return pickWritableSnippetFields(
+    { ...readSnippet, ...patch },
+    // Written when the patch changes it; otherwise the value just read is kept (RISK-102: "Fix all" changing only defaultLanguage
+    // reset the audio language to en-US, 2026-10-12) -- never a stored copy.
+    { includeDefaultAudioLanguage: "defaultAudioLanguage" in patch ? true : "keep" }
+  ) as Record<string, unknown>;
+}
+
+type YoutubeClient = Awaited<ReturnType<typeof createAuthorizedClient>>;
+
+/** The adapter's outside calls, injectable for the order test (BL-265 AC-MG-24); production uses the real gateways. */
+export type VideoDetailsYoutubeIo = {
+  createClient(credentials: ResolvedCredentials): Promise<YoutubeClient> | YoutubeClient;
+  readContext(youtube: YoutubeClient, videoId: string): ReturnType<typeof getVideoDetailsContext>;
+  assertLiveWrites(): Promise<void>;
+  applyUpdate(args: Parameters<typeof applyVideoDetailsUpdate>[0]): Promise<unknown>;
+};
+
+export const PRODUCTION_IO: VideoDetailsYoutubeIo = {
+  createClient: (credentials) => createAuthorizedClient(credentials),
+  readContext: (youtube, videoId) => getVideoDetailsContext(youtube, videoId),
+  assertLiveWrites: () => assertLiveWritesAuthorized(),
+  applyUpdate: (args) => applyVideoDetailsUpdate(args),
+};
+
+export function createVideoDetailsYoutubeApiAdapter(io: VideoDetailsYoutubeIo = PRODUCTION_IO) {
   return {
     async getSnapshot(args: { credentials: ResolvedCredentials; videoId: string }): Promise<VideoDetailsSnapshot> {
       const youtube = await createAuthorizedClient(args.credentials);
@@ -94,10 +125,10 @@ export function createVideoDetailsYoutubeApiAdapter() {
       patch: VideoDetailsPatch;
       readBackRetries?: number;
     }): Promise<{ before: VideoDetailsSnapshot; after: VideoDetailsSnapshot }> {
-      await assertLiveWritesAuthorized();
-
-      const youtube = await createAuthorizedClient(args.credentials);
-      const context = await getVideoDetailsContext(youtube, args.videoId);
+      // BL-265 (ADR 0072 §5, as AC-TH-07): client -> fresh read -> refusal checks -> Live writes -> write. Live writes is checked
+      // immediately before the gateway call (it was the first statement), so a switch-off during the read still stops the write.
+      const youtube = await io.createClient(args.credentials);
+      const context = await io.readContext(youtube, args.videoId);
       if (!context) {
         throw new DomainError({
           code: "not_found",
@@ -125,20 +156,12 @@ export function createVideoDetailsYoutubeApiAdapter() {
       const touchesRecordingDetails = "recordingDate" in args.patch;
       const touchesPaidPlacement = "paidProductPlacement" in args.patch;
 
-      await applyVideoDetailsUpdate({
+      await io.assertLiveWrites();
+      await io.applyUpdate({
         youtube,
         videoId: args.videoId,
         parts: {
-          ...(touchesSnippet
-            ? {
-                snippet: pickWritableSnippetFields(
-                  { ...context.snippet, ...args.patch },
-                  // Written when the patch changes it; otherwise the value just read is kept (RISK-102: "Fix all" changing only
-                  // defaultLanguage reset the audio language to en-US, 2026-10-12) -- never a stored copy.
-                  { includeDefaultAudioLanguage: "defaultAudioLanguage" in args.patch ? true : "keep" }
-                ) as typeof context.snippet,
-              }
-            : {}),
+          ...(touchesSnippet ? { snippet: snippetPartOf(context.snippet as Record<string, unknown>, args.patch) as typeof context.snippet } : {}),
           ...(touchesStatus
             ? {
                 status: statusPartOf(context.status as Record<string, unknown>, args.patch) as typeof context.status,
@@ -161,7 +184,7 @@ export function createVideoDetailsYoutubeApiAdapter() {
         patch: args.patch,
         ...(args.readBackRetries !== undefined ? { retries: args.readBackRetries } : {}),
         read: async () => {
-          const verifiedContext = await getVideoDetailsContext(youtube, args.videoId);
+          const verifiedContext = await io.readContext(youtube, args.videoId);
           if (!verifiedContext) {
             throw new DomainError({
               code: "update_failed",

@@ -164,6 +164,8 @@ export function PublishingUploads({ channelId, visible, refreshKey }: { channelI
       const reason = row.errorMessage?.replace(/^YouTube \w+ the video: /, "") ?? "";
       return row.errorCode && FAILED_KEYS.has(row.errorCode) ? t(`publishingUploads.failed.${row.errorCode}` as UiTextKey, { reason }) : row.errorMessage;
     }
+    // BL-265 (ADR 0072 §4): a queued row stopped because its package now names another mp4 or slot.
+    if (row.status === "cancelled" && (row.errorCode === "media_changed" || row.errorCode === "package_slot_changed")) return t(`publishingUploads.cancelled.${row.errorCode}` as UiTextKey);
     // Owner msgs 3510/3511: a failed step before the date leaves the video private without one -- said with the step's error.
     const withheld = steps.publishAt === "withheld" ? ` ${t("publishingUploads.result.publish_at_withheld")}` : "";
     if (row.status === "done" && row.errorCode === "verify_mismatch") return t("publishingUploads.result.verify_mismatch", { fields: (steps.verify?.mismatches ?? []).join(", ") }) + withheld;

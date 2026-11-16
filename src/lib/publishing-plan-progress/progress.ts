@@ -65,6 +65,8 @@ export function progressOfPackage(scanned: ScannedPackage, channelSyntheticMedia
       thumbnailPath: scanned.thumbnailPath,
       testThumbnails: (pkg.thumbnails ?? []).filter((t) => t.role === "test").length,
       problems: scanned.problems.map((p) => p.code),
+      // BL-265: warnings only when there are some (the package's shape is unchanged otherwise).
+      ...((scanned.warnings ?? []).length > 0 ? { warnings: (scanned.warnings ?? []).map((p) => p.code) } : {}),
       // BL-242 (ADR 0062 §2): part of what the owner approves in the `packaged` stage.
       manifestSha256: scanned.manifestSha256,
       // BL-257 (ADR 0070): the owner's return comment from package review, for the slot's status line (only when returned).

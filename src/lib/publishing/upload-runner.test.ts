@@ -3,7 +3,7 @@ import test from "node:test";
 import type { StoredPublishingUpload } from "@/lib/db";
 import { DomainError } from "@/lib/shared-domain";
 import { DEFAULT_PUBLISHING_SETTINGS, type PublishingSettings } from "./settings";
-import { classifyUploadError, createUploadRunner, holdsPackage, holdsSlot, isCancellable, isPublishAtSet, readBackMismatches, type ApprovedPackage, type InsertResource, type UploadRunnerDeps, type VideoReadBack } from "./upload-runner";
+import { classifyUploadError, createUploadRunner, holdsPackage, isPlanChangeCancel, holdsSlot, isCancellable, isPublishAtSet, readBackMismatches, type ApprovedPackage, type InsertResource, type UploadRunnerDeps, type VideoReadBack } from "./upload-runner";
 
 // BL-182 stage 2 -- the upload runner against fakes (no real YouTube call, DEVELOPMENT_PLAYBOOK §6.11). Requirements: the
 // acceptance list in upload-runner.acceptance.test.ts (FO-REQ-0023 §4 B5–B7 and §5; ADR 0037; owner msgs 2725/2727; owner msgs
@@ -1491,9 +1491,12 @@ test("BL-257 M1: approved with the same thumbnail file -> the upload proceeds", 
   assert.ok(h.yt.log.length > 0, "the upload reached the (fake) YouTube");
 });
 
-test("BL-257 M1: thumbnail swapped after the approval -> cancelled, nothing sent", async () => {
+// Changed by BL-265 (owner TG 2340, ADR 0072 §1): the thumbnail is packaging, no longer part of the approval -- a swapped thumbnail
+// file does not withdraw it (was: "thumbnail swapped after the approval -> cancelled").
+test("BL-265 AC-MG-01/05: thumbnail swapped after the approval -> the upload still proceeds", async () => {
   const { h } = await runReview([{ id: "d1", kind: "approved", at: "2026-10-13T09:00:00.000Z" }], "9".repeat(64));
-  assert.deepEqual([h.row().status, h.row().errorCode, h.yt.log], ["cancelled", "owner_review_withdrawn", []]);
+  assert.notEqual(h.row().status, "cancelled");
+  assert.ok(h.yt.log.length > 0);
 });
 
 test("BL-257 M1: a channel without the gate (no document) uploads as before", async () => {
@@ -1502,4 +1505,165 @@ test("BL-257 M1: a channel without the gate (no document) uploads as before", as
   await h.runAll();
   assert.notEqual(h.row().status, "cancelled");
   assert.ok(h.yt.log.length > 0);
+});
+
+// ---- BL-265 (MEDIA_GATE_PLAN.md §3.2-§3.3, AC-MG-14..21; ADR 0072 §4): a queued row takes a re-package of only its packaging ----
+// Expected values come from the plan: before the identity read and `begin`, a queued row whose manifest changed reads it ONCE; same
+// channel, video, slot, mp4 sha256 and size, no blocking problem and the gate -> the row's package is replaced (one conditional
+// update, `steps.repackaged`, audit `publishing.upload_package_refreshed`) and the insert carries the NEW texts; another mp4 ->
+// cancelled `media_changed`; another slot -> cancelled `package_slot_changed`; a blocking problem -> failed `package_changed`; an
+// unreadable manifest waits up to 10 minutes; a row with a session or without the frozen mp4 identity never takes one.
+const MP4_SHA = "e".repeat(64);
+const OLD_MANIFEST_SHA = "a1".repeat(32);
+const NEW_MANIFEST_SHA = "b2".repeat(32);
+const FROZEN: ApprovedPackage = { ...PKG, videoSha256: MP4_SHA, slotId: "slot-1" };
+const releaseText = (over: Record<string, unknown> = {}) =>
+  `﻿${JSON.stringify({
+    schema: "yt-release-package/2",
+    channelId: "UC_t",
+    video: "V65",
+    mix: null,
+    plannedPublishDate: "2026-10-24",
+    files: { video: "V65 Tropico Jazz.mp4", thumbnail: "Thumbnail_V65_B.jpg" },
+    sizeBytes: 10,
+    durationSeconds: 60,
+    title: "A better title",
+    description: "New description\r\n",
+    tags: ["jazz", "sunrise"],
+    defaultLanguage: "en",
+    defaultAudioLanguage: "en",
+    ready: true,
+    problems: [],
+    sha256: MP4_SHA,
+    slotId: "slot-1",
+    ...over,
+  })}`;
+function repackHarness(options: { text?: string | (() => string); manifestSha?: string; problems?: Array<{ code: string }>; frozen?: ApprovedPackage; row?: Partial<StoredPublishingUpload>; mp4Sha?: string } = {}) {
+  const audits: Array<Record<string, unknown>> = [];
+  const reads: string[] = [];
+  const h = harness([job({ manifestSha256: OLD_MANIFEST_SHA, slotId: "slot-1", packageJson: JSON.stringify(options.frozen ?? FROZEN), ...options.row })], {
+    audit: async ({ detail }) => void audits.push(detail as Record<string, unknown>),
+    readManifest: async (_c, manifestPath) => {
+      reads.push(manifestPath);
+      return { sha256: options.manifestSha ?? NEW_MANIFEST_SHA, text: typeof options.text === "function" ? options.text() : (options.text ?? releaseText()) };
+    },
+    packageProblemsNow: async () => ({ problems: options.problems ?? [] }),
+    files: {
+      resolve: async (_c, relativePath) => ({ path: `/ws/${relativePath}`, bytes: relativePath.endsWith(".mp4") ? 10 : 100 }),
+      readChunk: async (_p, start, length) => VIDEO_BYTES.subarray(start, start + length),
+      sha256: async (p) => (p.endsWith(".mp4") ? (options.mp4Sha ?? MP4_SHA) : "x"),
+      writeRecord: async () => undefined,
+    },
+  });
+  return { h, audits, reads };
+}
+
+test("AC-MG-14: a metadata-only re-package of a queued row -> the insert carries the NEW title, description and tags; the row names the new manifest, steps.repackaged has one entry, audited", async () => {
+  const { h, audits } = repackHarness();
+  await h.runAll();
+  const snippet = h.yt.videos[0].resource.snippet;
+  assert.deepEqual([snippet.title, snippet.description, snippet.tags], ["A better title", "New description\n", ["jazz", "sunrise"]]);
+  assert.equal(h.row().manifestSha256, NEW_MANIFEST_SHA);
+  const steps = JSON.parse(h.row().stepsJson);
+  assert.equal(steps.repackaged.length, 1);
+  assert.deepEqual([steps.repackaged[0].from, steps.repackaged[0].to], [OLD_MANIFEST_SHA, NEW_MANIFEST_SHA]);
+  assert.deepEqual(steps.repackaged[0].fields, ["title", "description", "tags", "thumbnailFile"]);
+  const refreshed = audits.find((a) => a.event === "publishing.upload_package_refreshed");
+  assert.deepEqual([refreshed?.from, refreshed?.to, refreshed?.changedFields], [OLD_MANIFEST_SHA, NEW_MANIFEST_SHA, ["title", "description", "tags", "thumbnailFile"]]);
+  const frozen = JSON.parse(h.row().packageJson) as ApprovedPackage;
+  assert.deepEqual([frozen.videoSha256, frozen.sizeBytes, frozen.slotId, frozen.thumbnailFile], [MP4_SHA, 10, "slot-1", "04 Videos/10 October/1024 V65/Thumbnail_V65_B.jpg"]);
+  assert.equal(h.row().publishAt, "2026-10-24T12:00:00.000Z", "the date the row was queued with stays");
+  assert.equal(h.row().status, "done");
+});
+
+test("AC-MG-15: a re-package naming another mp4 (sha256, or size) -> cancelled media_changed, nothing sent (no identity read, no begin)", async () => {
+  for (const over of [{ sha256: "f".repeat(64) }, { sizeBytes: 11 }]) {
+    let identityReads = 0;
+    const { h, audits } = repackHarness({ text: releaseText(over) });
+    h.deps.assertWriteChannel = async () => void identityReads++;
+    await h.runAll();
+    assert.deepEqual([h.row().status, h.row().errorCode, h.yt.log, identityReads], ["cancelled", "media_changed", [], 0], JSON.stringify(over));
+    assert.ok(audits.some((a) => a.event === "publishing.upload_cancelled_media_changed"));
+  }
+});
+
+test("AC-MG-16: a re-package to another plan slot -> cancelled package_slot_changed, nothing sent", async () => {
+  const { h, audits } = repackHarness({ text: releaseText({ slotId: "slot-2" }) });
+  await h.runAll();
+  assert.deepEqual([h.row().status, h.row().errorCode, h.yt.log], ["cancelled", "package_slot_changed", []]);
+  assert.ok(audits.some((a) => a.event === "publishing.upload_cancelled_slot_changed"));
+});
+
+test("AC-MG-17: the new manifest has a blocking problem (a 101-character title) -> failed package_changed, nothing sent", async () => {
+  const { h } = repackHarness({ text: releaseText({ title: "x".repeat(101) }), problems: [{ code: "title_too_long" }] });
+  await h.runAll();
+  assert.deepEqual([h.row().status, h.row().errorCode, h.yt.log], ["failed", "package_changed", []]);
+  assert.match(h.row().errorMessage ?? "", /title_too_long/);
+});
+
+test("AC-MG-17 (gate): a re-package the owner's gate does not cover -> cancelled owner_review_withdrawn, nothing sent", async () => {
+  const { h } = repackHarness({ problems: [{ code: "owner_review_pending" }] });
+  await h.runAll();
+  assert.deepEqual([h.row().status, h.row().errorCode, h.yt.log], ["cancelled", "owner_review_withdrawn", []]);
+});
+
+test("AC-MG-18: an unparseable manifest -> the row stays queued and is retried; after 10 minutes still unparseable -> failed package_changed; nothing sent", async () => {
+  const { h, reads } = repackHarness({ text: '{"schema": "yt-release-pack' });
+  await h.runner.tick();
+  assert.equal(h.row().status, "queued");
+  assert.equal(JSON.parse(h.row().stepsJson).repackageWaitSince, NOW.toISOString());
+  assert.equal(h.row().nextAttemptAt?.toISOString(), new Date(NOW.getTime() + 60_000).toISOString());
+  h.clock.at = new Date(NOW.getTime() + 30_000);
+  await h.runner.tick();
+  assert.equal(reads.length, 1, "not tried again before its next attempt");
+  h.clock.at = new Date(NOW.getTime() + 9 * 60_000);
+  await h.runner.tick();
+  assert.deepEqual([h.row().status, reads.length], ["queued", 2]);
+  h.clock.at = new Date(NOW.getTime() + 10 * 60_000);
+  await h.runner.tick();
+  assert.deepEqual([h.row().status, h.row().errorCode, h.yt.log], ["failed", "package_changed", []]);
+});
+
+test("AC-MG-18: a manifest that becomes readable within the wait is taken then", async () => {
+  let text = "{";
+  const { h } = repackHarness({ text: () => text });
+  await h.runner.tick();
+  assert.equal(h.row().status, "queued");
+  text = releaseText();
+  h.clock.at = new Date(NOW.getTime() + 61_000);
+  await h.runAll();
+  assert.equal(h.row().status, "done");
+  assert.equal(JSON.parse(h.row().stepsJson).repackageWaitSince, undefined);
+  assert.equal(h.yt.videos[0].resource.snippet.title, "A better title");
+});
+
+test("AC-MG-19: a row with a session (uploading) never takes a new manifest: its insert, steps and read-back use the frozen package", async () => {
+  const { h, reads } = repackHarness({ row: { status: "uploading", sessionUri: null } });
+  await h.runAll();
+  assert.equal(reads.length, 0, "the manifest is not even read");
+  assert.equal(h.yt.videos[0].resource.snippet.title, PKG.title);
+  assert.equal(h.row().manifestSha256, OLD_MANIFEST_SHA);
+  assert.equal(h.row().status, "done");
+});
+
+test("AC-MG-20: a row without the frozen mp4 sha256 and a changed manifest -> failed package_changed (as before)", async () => {
+  const { h } = repackHarness({ frozen: { ...PKG, slotId: "slot-1" } });
+  await h.runAll();
+  assert.deepEqual([h.row().status, h.row().errorCode, h.yt.log], ["failed", "package_changed", []]);
+});
+
+test("AC-MG-21: a row that froze the mp4 sha256 is refused (VIDEO_HASH_MISMATCH) when the file differs -- the owner's row too", async () => {
+  const { h } = repackHarness({ manifestSha: OLD_MANIFEST_SHA, mp4Sha: "0".repeat(64), row: { queuedBy: "owner", automatic: false } });
+  await h.runAll();
+  assert.deepEqual([h.row().status, h.yt.log], ["failed", []]);
+  assert.equal(h.row().errorCode, "video_hash_mismatch");
+});
+
+// MEDIA_GATE_PLAN.md §3.2: a row cancelled package_slot_changed (nothing sent) is a plan change -- it never makes the package "tried",
+// so the re-packaged video is queued again under the plan's rules (the automatic upload / the Producer's add drop such rows).
+test("BL-265 §3.2: only a cancelled package_slot_changed row without a video id is a plan change (not a try)", () => {
+  assert.equal(isPlanChangeCancel({ status: "cancelled", errorCode: "package_slot_changed", videoId: null }), true);
+  assert.equal(isPlanChangeCancel({ status: "cancelled", errorCode: "media_changed", videoId: null }), false);
+  assert.equal(isPlanChangeCancel({ status: "cancelled", errorCode: "owner_review_withdrawn", videoId: null }), false);
+  assert.equal(isPlanChangeCancel({ status: "failed", errorCode: "package_slot_changed", videoId: null }), false);
 });

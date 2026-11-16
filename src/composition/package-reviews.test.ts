@@ -70,7 +70,10 @@ test("BL-257: the scan's packages as the review screen needs them", () => {
     videoPath: "04 Videos/11 November/1115 V11/V11 Final.mp4",
     thumbnailPath: "04 Videos/11 November/1115 V11/Thumb.jpg",
     videoSha256: "f".repeat(64),
+    // BL-265 (ADR 0072 §1): the media key's size (the manifest's sizeBytes) and the uploaded video's id.
+    videoSizeBytes: 10,
     uploaded: false,
+    videoId: null,
     otherProblems: [],
   });
   assert.deepEqual(result.packages.map((p) => [p.manifestSha256[0], p.uploaded, p.otherProblems]), [["a", false, []], ["b", false, ["thumbnail_missing"]], ["c", true, []]]);

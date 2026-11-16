@@ -5283,6 +5283,37 @@ from the channel's own workspace images, behind the same identity check and Live
   `local-file-response`, `isOwnerBrowserRequest`); Media → «Видео на проверку» (`MEDIA_TABS` value `packages`); the week-plan slot line
   from `PlanSlotPackage.reviewComment` and the problem codes; review-notify kind `package` (`packageNoticesOf`).
 
+## BL-265 — the media-only gate and packaging fixes after upload (ADR 0072, MEDIA_GATE_PLAN.md)
+
+- **Gate key.** `package-reviews/model.ts`: `OwnerReviewState` = `{ required, decisions (approved/returned only, in seq/at/id order),
+  aliases }`; `decisionCovers(d, key, aliases)` -- the same manifest SHA-256 always (BL-257 decisions have nothing else), else a decision
+  with `videoSha256` + `videoSizeBytes` equal to the package's under the same code or `aliases.get(d.video) === key.video` (V -> S, one
+  way); `standingDecision` = the latest covering one across both kinds. `reviewGateOf(state).problemOf({ manifestSha256, video,
+  videoSha256, videoSizeBytes })` is the scan's and runner's port (`publishing/owner-review-gate.ts`, no thumbnail). Aliases come from
+  `video-projects.recodeAliasesOf` through `publishing.ownerReviewStateFor` and `composition/package-reviews.ts` (a port, §M).
+- **Decisions.** `decide` writes `videoSha256` / `videoSizeBytes` (an approval only after the mp4 is `sizeBytes` long and hashes to
+  `sha256`; a return when the manifest states them) and keeps `manifestSha256` and the thumbnail hash so a BL-257 build reads it as
+  manifest-only. `packaging_comment` (comment required) on any package, uploaded included; dropped by older builds; never in the gate.
+  The recode's `carryDecision` copies only a decision without the media key (the 11 live WWE decisions); a media decision returns its
+  kind with `wrote: false`.
+- **Checks.** `packages.ts` `packageChecks` splits `PACKAGE_WARNING_CODES` off; `packageProblems` = the blocking list.
+- **Runner refresh.** `upload-runner.ts`: deps `readManifest` (hash + text of one read) and `packageProblemsNow` (the scan's checks);
+  `takeRepackage` runs only for a `queued` row with a frozen `videoSha256`, before identity and `begin`; the row is rebuilt with
+  `approved-package.ts` `approvedPackageOf` (the one manifest -> row builder, also used by the approval and the packaging fix) in one
+  conditional update. Tried keys: `listUploadRowsForTriedRule` returns the frozen `videoSha256`; `package-reviews.triedKeysOf` returns
+  manifest hashes (old rows) and media keys; `owner-review-gate.isTriedPackage` checks both; the exception per key also accepts a BL-257
+  approval of one of the rows' manifests.
+- **Packaging fix.** `publishing/package-metadata.ts` (`createPackageMetadataCore` in `publishing/index.ts`): `inspect` (package with a
+  video id, YouTube's text limits, no active upload row here, device gate, fresh snapshot: `not_found` (reason `no_item`) -> `video_missing`,
+  `snapshot.channelId` != channel -> `video_not_in_channel`), three-way per field with `package-text.ts` (`samePackagingValue`: title
+  exact, description `youtubeDescriptionText`, tags unordered; also `readBackMismatches`); baseline = the latest `package_metadata`
+  VERIFICATION audit's `afterTexts`, else the finished upload row's package. `apply` sends only differing fields through
+  `video-details.applyFieldsUpdate` with `expectedEtag`, `verifyUnchanged` (category, languages -- not a `zxx` audio language -- privacy,
+  publishAt) and `auditContext`, then compares the localization language set before/after (`getVideoMetadataContext`).
+- **video-details.** `adapters/youtube-api.ts` takes injectable I/O; order client -> read -> refusal checks -> Live writes -> write;
+  `snippetPartOf` (full snippet read-merge-write); snapshot `channelId`; `applyFieldsUpdate` input `verifyUnchanged` / `auditContext`;
+  `read-back.ts` `youtubeDescriptionText` in `sameFieldValue`.
+
 ## BL-263 — the second video code `S<n>` and the Short recode (ADR 0071, SHORT_VIDEO_CODE_PLAN.md)
 
 - **One code rule.** `src/lib/shared-video-code/` (pure, no dependencies; `sync-gateway`, the Factory server and client components

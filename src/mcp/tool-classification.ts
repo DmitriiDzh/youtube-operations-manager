@@ -187,6 +187,7 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   producer_upload_queue_move: "producer-only",
   producer_upload_queue_cancel: "producer-only",
   producer_video_thumbnail_replace: "producer-only",
+  producer_video_metadata_update: "producer-only",
   // BL-241 (ADR 0061): the Producer's clip review tools -- on its endpoint only; only the owner decides a clip (Web UI).
   producer_clip_review_submit: "producer-only",
   producer_clip_review_list: "producer-only",

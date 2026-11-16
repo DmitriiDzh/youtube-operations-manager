@@ -177,6 +177,8 @@ export function createVideoDetailsServices(deps: ServiceDependencies) {
           });
         }
 
+        // BL-265 (ADR 0072 §5): the caller's own context on every audit row of this write (e.g. source: package_metadata, actor).
+        const context = parsedInput.auditContext ?? {};
         const backupRecord = await deps.backup.captureBackup({
           channelId: guardrail.expectedChannelId,
           operationId: deps.idGenerator(),
@@ -202,10 +204,10 @@ export function createVideoDetailsServices(deps: ServiceDependencies) {
           channelId: guardrail.expectedChannelId,
           videoId: parsedInput.videoId,
           eventType: "BACKUP",
-          detail: { backupPath: backupRecord.path },
+          detail: { ...context, backupPath: backupRecord.path },
         });
 
-        const { after } = await deps.youtubeApi.applyPatch({
+        const { before: writtenBefore, after } = await deps.youtubeApi.applyPatch({
           credentials,
           videoId: parsedInput.videoId,
           patch: parsedInput.patch,
@@ -220,7 +222,7 @@ export function createVideoDetailsServices(deps: ServiceDependencies) {
           channelId: guardrail.expectedChannelId,
           videoId: parsedInput.videoId,
           eventType: "RESULT",
-          detail: { patch: parsedInput.patch },
+          detail: { ...context, patch: parsedInput.patch },
         });
 
         // Verification (AGENTS.md §G): confirm every patched field actually reads back as sent,
@@ -234,18 +236,23 @@ export function createVideoDetailsServices(deps: ServiceDependencies) {
           isUnverifiable(field, after[field as keyof VideoDetailsSnapshot])
         );
 
+        // BL-265 (ADR 0072 §5): the untouched fields the caller named must read back as they were read just before the write (the
+        // adapter's own `before`, not an earlier snapshot).
+        const changedUntouched = (parsedInput.verifyUnchanged ?? []).filter((field) => !sameFieldValue(field, after[field], writtenBefore[field]));
+        const allVerified = verified && changedUntouched.length === 0;
+
         await deps.auditStore.record({
           channelId: guardrail.expectedChannelId,
           videoId: parsedInput.videoId,
           eventType: "VERIFICATION",
-          detail: unverifiable.length > 0 ? { verified, unverifiable } : { verified },
+          detail: { ...context, verified: allVerified, ...(unverifiable.length > 0 ? { unverifiable } : {}), ...(changedUntouched.length > 0 ? { changedUntouched } : {}) },
         });
 
-        if (!verified) {
+        if (!allVerified) {
           throw new DomainError({
             code: "update_failed",
-            message: "Post-write verification found at least one field did not match what was sent",
-            details: { videoId: parsedInput.videoId, patch: parsedInput.patch, after },
+            message: verified ? `Post-write verification found a field that was not written changed: ${changedUntouched.join(", ")}` : "Post-write verification found at least one field did not match what was sent",
+            details: { videoId: parsedInput.videoId, patch: parsedInput.patch, after, ...(changedUntouched.length > 0 ? { changedUntouched } : {}) },
           });
         }
 

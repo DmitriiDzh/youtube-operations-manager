@@ -293,3 +293,15 @@ test("BL-243 AC-WP-85: the deleted package holds its slot until a check 24 h aft
   const unknown = harness([deleted("2026-11-03T10:00:00.000Z", null), fresh]);
   assert.deepEqual((await unknown.approval.approve({ channelId: "UC_t", userId: "u", items: [item("V80")], shownSettings: SETTINGS })).uploads.map((u) => u.video), ["V80"], "no upload time: freed");
 });
+
+// BL-265 (MEDIA_GATE_PLAN.md §3.3, AC-MG-21; owner TG 4578 Q9 accepted): every new row whose manifest states the mp4's sha256 freezes
+// it -- the owner's approval rows too -- so the runner hashes the file before the first byte and only such a row takes a re-package.
+test("AC-MG-21: the owner's approval row freezes the manifest's mp4 sha256 (and none when the manifest states none)", async () => {
+  const sha = "e".repeat(64);
+  const withSha = scanned("V65");
+  withSha.pkg = { ...withSha.pkg!, sha256: sha };
+  const h = harness([withSha, scanned("V66")]);
+  await h.approval.approve({ channelId: "UC_t", userId: "u-owner", items: [item("V65"), item("V66")], shownSettings: SETTINGS });
+  assert.equal(JSON.parse(h.inserted[0].packageJson).videoSha256, sha);
+  assert.equal("videoSha256" in JSON.parse(h.inserted[1].packageJson), false);
+});

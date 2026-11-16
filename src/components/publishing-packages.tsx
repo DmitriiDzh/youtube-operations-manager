@@ -12,6 +12,7 @@ import { BusyOverlay, StatusNotice, useBusyAction } from "./busy-feedback";
 import { ConfirmDialog } from "./confirm-dialog";
 import { LoadingIndicator } from "./operation-progress";
 import { PublishingNewPackage } from "./publishing-new-package";
+import { PackagingActions } from "./package-packaging-actions";
 import { PublishingUploads } from "./publishing-uploads";
 import { parseQuotaBlock, QuotaBlockDialog, type QuotaBlock } from "./quota-block-dialog";
 import { useUiText } from "./ui-text-provider";
@@ -31,6 +32,10 @@ type PackageRow = {
   orientation?: "vertical" | "horizontal" | null;
   state: "not_ready" | "ready" | "uploaded_private" | "scheduled" | "published" | "uploaded_unknown" | "deleted_on_youtube";
   problems: Problem[];
+  /** BL-265 (ADR 0072 §3): what the checks only warn about (chapters, test thumbnails) -- shown, never blocking. */
+  warnings?: Problem[];
+  /** BL-265: an uploaded package's fields whose text differs from the synced copy of the video (null: unknown). */
+  youtubeTextsDiffer?: Array<"title" | "description" | "tags"> | null;
   youtube: { videoId: string } | null;
   manifestSha256: string | null;
   pkg: { defaultLanguage: string; defaultAudioLanguage: string; tags: string[] } | null;
@@ -305,6 +310,20 @@ export function PublishingPackages({ channelId, visible }: { channelId: string |
                           <li key={i}>{problemText(problem)}</li>
                         ))}
                       </ul>
+                    )}
+                    {(p.warnings ?? []).length > 0 && (
+                      <div className="text-xs text-amber-300/90">
+                        <p>{t("publishingPackages.warnings")}</p>
+                        <ul className="list-disc space-y-0.5 pl-4">
+                          {(p.warnings ?? []).map((problem, i) => (
+                            <li key={i}>{problemText(problem)}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {/* BL-265 (ADR 0072 §8, AC-MG-38): an uploaded package's packaging can still be fixed and commented, on any channel. */}
+                    {p.youtube && p.state !== "deleted_on_youtube" && p.manifestSha256 && p.video && (
+                      <PackagingActions channelId={channelId} video={p.video} manifestSha256={p.manifestSha256} differs={p.youtubeTextsDiffer ?? null} onChanged={() => void load()} />
                     )}
                   </div>
                 </li>

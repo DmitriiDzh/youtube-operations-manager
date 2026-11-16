@@ -15,12 +15,13 @@ test("durations", () => {
   assert.deepEqual([durationLabel(58), durationLabel(754), durationLabel(3725), durationLabel(0)], ["0:58", "12:34", "1:02:05", "0:00"]);
 });
 
-test("AC-PR-04/05: actions by state", () => {
-  assert.deepEqual(actionsOf({ state: "pending", hasVideoSha256: true }), { approve: true, ret: true });
-  assert.deepEqual(actionsOf({ state: "pending", hasVideoSha256: false }), { approve: false, ret: true });
-  assert.deepEqual(actionsOf({ state: "approved", hasVideoSha256: true }), { approve: false, ret: true });
-  assert.deepEqual(actionsOf({ state: "returned", hasVideoSha256: true }), { approve: true, ret: false });
-  assert.deepEqual(actionsOf({ state: "uploaded", hasVideoSha256: true }), { approve: false, ret: false });
+// BL-265 (AC-MG-07): every package also offers «Комментарий к упаковке», uploaded ones included.
+test("AC-PR-04/05, AC-MG-07: actions by state", () => {
+  assert.deepEqual(actionsOf({ state: "pending", hasVideoSha256: true }), { approve: true, ret: true, comment: true });
+  assert.deepEqual(actionsOf({ state: "pending", hasVideoSha256: false }), { approve: false, ret: true, comment: true });
+  assert.deepEqual(actionsOf({ state: "approved", hasVideoSha256: true }), { approve: false, ret: true, comment: true });
+  assert.deepEqual(actionsOf({ state: "returned", hasVideoSha256: true }), { approve: true, ret: false, comment: true });
+  assert.deepEqual(actionsOf({ state: "uploaded", hasVideoSha256: true }), { approve: false, ret: false, comment: true });
   assert.deepEqual([returnCommentReady(""), returnCommentReady("  \n"), returnCommentReady(" x ")], [false, false, true]);
 });
 

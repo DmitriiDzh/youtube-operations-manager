@@ -21,6 +21,10 @@ export type PackageReviewDto = {
   decidedOn: string | null;
   hasVideoSha256: boolean;
   otherProblems: string[];
+  /** BL-265 (ADR 0072 §2): the owner's packaging comments on this video, newest first (never part of the gate). */
+  packagingComments?: Array<{ id: string; comment: string; at: string; device: string | null }>;
+  /** BL-265: the YouTube video id once uploaded, else null. */
+  videoId?: string | null;
 };
 
 export type PackageReviewsDto = {
@@ -47,13 +51,16 @@ export function durationLabel(seconds: number): string {
   return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${s}` : `${m}:${s}`;
 }
 
-/** Which actions a package offers: the owner may change his mind until the upload; approval needs the video's checksum. */
-export function actionsOf(item: Pick<PackageReviewDto, "state" | "hasVideoSha256">): { approve: boolean; ret: boolean } {
-  if (item.state === "uploaded") return { approve: false, ret: false };
-  return { approve: item.state !== "approved" && item.hasVideoSha256, ret: item.state !== "returned" };
+/**
+ * Which actions a package offers: the owner may change his mind about the video until the upload; approval needs the video's
+ * checksum. BL-265 (ADR 0072 §2, AC-MG-07): a packaging comment is offered on every package, uploaded ones included.
+ */
+export function actionsOf(item: Pick<PackageReviewDto, "state" | "hasVideoSha256">): { approve: boolean; ret: boolean; comment: boolean } {
+  if (item.state === "uploaded") return { approve: false, ret: false, comment: true };
+  return { approve: item.state !== "approved" && item.hasVideoSha256, ret: item.state !== "returned", comment: true };
 }
 
-/** A return needs a comment with at least one character that is not a space. */
+/** A return (and a packaging comment) needs a comment with at least one character that is not a space. */
 export function returnCommentReady(comment: string): boolean {
   return comment.trim().length > 0;
 }

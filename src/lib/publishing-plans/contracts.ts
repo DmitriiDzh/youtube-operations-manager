@@ -45,6 +45,8 @@ export type PlanSlotPackage = {
   testThumbnails: number;
   /** The package's problems (codes), empty when ready. */
   problems: string[];
+  /** BL-265 (ADR 0072 §3): what the checks only warn about (codes: chapters, test thumbnails); absent or [] when none. Never blocking. */
+  warnings?: string[];
   /** BL-242 (ADR 0062 §2): the manifest file's SHA-256 (null when it could not be read): part of what the owner approves. */
   manifestSha256: string | null;
   /**

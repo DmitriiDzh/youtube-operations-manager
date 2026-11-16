@@ -3,6 +3,8 @@ import test from "node:test";
 import type { StoredPublishingUpload } from "@/lib/db";
 import { createAutoPrivateUpload, type AutoUploadDeps, type AutoUploadWaiting, type SlotDecision } from "./auto-upload";
 import type { ScannedPackage } from "./package-scan";
+import { mediaKeyOf } from "./owner-review-gate";
+import { ownerReviewStateOf, triedKeysOf } from "@/lib/package-reviews/model";
 import { packageProblems, type ReleasePackage } from "./packages";
 import { DEFAULT_PUBLISHING_SETTINGS } from "./settings";
 import { createUploadApproval, type UploadApprovalDeps } from "./upload-approval";
@@ -121,8 +123,12 @@ function harness(initial: { packages: ScannedPackage[]; enabled?: boolean; files
     scan: async () => (state.noWorkspace ? { status: "no_workspace" } : { status: "ok", packages: state.packages }),
     liveVideos: approvalDeps.liveVideos,
     peerUploads: approvalDeps.peerUploads,
-    // Review M1: every row here counts as tried, automatic or the owner's, whatever its status.
-    triedHashes: async () => new Set(state.rows.map((row) => row.manifestSha256)),
+    // Review M1: every row here counts as tried, automatic or the owner's, whatever its status. BL-265 (ADR 0072 §6): by the real
+    // rule -- a row that froze the mp4's sha256 makes its media tried, an older row its manifest (no review gate on this channel).
+    triedHashes: async () => {
+      const keys = triedKeysOf(ownerReviewStateOf({ exists: false, required: null, decisions: {} }), state.rows.map((row) => ({ manifestSha256: row.manifestSha256, video: row.video, videoSha256: (JSON.parse(row.packageJson) as { videoSha256?: string }).videoSha256 ?? null, sizeBytes: row.totalBytes, status: row.status, videoId: row.videoId, createdAtMs: row.createdAt.getTime() })));
+      return { manifests: keys.manifests, media: new Set(keys.media.map((k) => mediaKeyOf(k.video, k.videoSha256, k.sizeBytes))) };
+    },
     videoFile: async (_channelId, relativePath) => {
       const file = state.files[relativePath];
       return file ? { path: `/ws/${relativePath}`, bytes: file.bytes, mtimeMs: file.mtimeMs } : null;
@@ -259,7 +265,7 @@ test("AC-AU-07: a peer that starts the same package while the video is hashed st
     scan: async () => ({ status: "ok", packages: [p] }),
     liveVideos: async () => new Set(),
     peerUploads: async () => new Map(),
-    triedHashes: async () => new Set(),
+    triedHashes: async () => ({ manifests: new Set<string>(), media: new Set<string>() }),
     videoFile: async () => ({ path: "/ws/v", bytes: 1000, mtimeMs: 1 }),
     hashFile: async () => {
       h.state.peers.set("V65", { host: "Windows", uploaded: false });
@@ -290,7 +296,9 @@ test("AC-AU-07: a peer that starts the same package while the video is hashed st
   assert.equal(h.state.rows.length, 0);
 });
 
-test("AC-AU-08: a failed automatic upload is not queued again for the same manifest hash; a changed manifest (new hash) is", async () => {
+// Changed by BL-265 (ADR 0072 §6, AC-MG-35): "tried" is by the mp4 for a row that froze its sha256 -- a new manifest of the SAME mp4
+// (new texts only) is tried too (it may already exist on YouTube); a new mp4 is a new try.
+test("AC-AU-08 / AC-MG-35: a failed automatic upload is not queued again for the same mp4 (not even under a re-packaged manifest); a new mp4 is", async () => {
   const p = scanned(release("V65"), "mf-1");
   const h = harness({ packages: [p], files: fileOf(p) });
   await h.auto.tick();
@@ -298,8 +306,13 @@ test("AC-AU-08: a failed automatic upload is not queued again for the same manif
   h.state.rows[0] = { ...h.state.rows[0], status: "failed", errorCode: "package_changed", finishedAt: NOW };
   assert.deepEqual((await h.auto.tick()).queued, []);
   assert.equal(h.state.rows.length, 1);
-  // The factory wrote a new manifest (new hash): a new try.
-  h.state.packages = [scanned(release("V65"), "mf-2")];
+  // A re-package with only new texts (same mp4): still tried.
+  h.state.packages = [scanned(release("V65", { title: "Another title" }), "mf-1b")];
+  assert.deepEqual((await h.auto.tick()).queued, []);
+  // The factory made a new mp4 (new sha256) and a new manifest: a new try.
+  const renewed = scanned(release("V65", { sha256: HASH_B }), "mf-2");
+  h.state.packages = [renewed];
+  h.state.files = fileOf(renewed, { hash: HASH_B });
   assert.deepEqual((await h.auto.tick()).queued, [{ channelId: CHANNEL, video: "V65", uploadId: "up-2", manifestSha256: "mf-2" }]);
   assert.deepEqual(h.state.rows.map((row) => [row.manifestSha256, row.status, row.automatic]), [["mf-1", "failed", true], ["mf-2", "queued", true]]);
 });
@@ -382,7 +395,7 @@ test("the switch turned off while a video was hashed: nothing is queued", async 
     scan: async () => ({ status: "ok", packages: [p] }),
     liveVideos: async () => new Set(),
     peerUploads: async () => new Map(),
-    triedHashes: async () => new Set(),
+    triedHashes: async () => ({ manifests: new Set<string>(), media: new Set<string>() }),
     videoFile: async () => ({ path: "/ws/v", bytes: 1000, mtimeMs: 1 }),
     hashFile: async () => HASH_A,
     queue: async () => {
@@ -439,7 +452,7 @@ test("waiting reasons: a refusal for one package (tags over 500 characters) is r
     scan: async () => ({ status: "ok", packages: [p] }),
     liveVideos: async () => new Set(),
     peerUploads: async () => new Map(),
-    triedHashes: async () => new Set(),
+    triedHashes: async () => ({ manifests: new Set<string>(), media: new Set<string>() }),
     videoFile: async () => ({ path: "/ws/v", bytes: 1000, mtimeMs: 1 }),
     hashFile: async () => HASH_A,
     queue: (input) =>
@@ -541,7 +554,7 @@ test("review L3: switched off while a video is hashed -- the standing reasons ar
     scan: async () => ({ status: "ok", packages: [a] }),
     liveVideos: async () => new Set(),
     peerUploads: async () => new Map(),
-    triedHashes: async () => new Set(),
+    triedHashes: async () => ({ manifests: new Set<string>(), media: new Set<string>() }),
     videoFile: async () => ({ path: "/ws/v", bytes: 1000, mtimeMs: 1 }),
     hashFile: async () => HASH_A,
     queue: async () => {
@@ -575,7 +588,7 @@ test("review L4: one channel's failure does not stop the others; it is recorded 
     },
     liveVideos: async () => new Set(queued),
     peerUploads: async () => new Map(),
-    triedHashes: async () => new Set(),
+    triedHashes: async () => ({ manifests: new Set<string>(), media: new Set<string>() }),
     videoFile: async () => ({ path: "/ws/v", bytes: 1000, mtimeMs: 1 }),
     hashFile: async () => HASH_A,
     queue: async (input) => {

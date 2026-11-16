@@ -48,7 +48,13 @@
 // whose earlier rows here were all cancelled before that approval (same shape; one refusal fewer).
 // 1.23.0 (BL-263, PRD-REQ-0194, ADR 0071): video codes may be `S<n>` (a WWE Short) besides `V<n>` -- in agent_get_publishing_calendar,
 // producer_upload_queue_* (`video`: 'V61' or 'S14') and the wake file names (REVIEW-DECISION-package-S14-...). Additive; no tool added.
-export const PRODUCER_API_VERSION = "1.23.0";
+// 1.24.0 (BL-265, PRD-REQ-0195 B, owner TG 4578/4581, ADR 0072): producer_video_metadata_update -- fix an uploaded video's title /
+// description / tags from its package's current manifest (dryRun first; refuses any conflict); permission METADATA_WRITE and
+// metadataTools in producer_get_capabilities. agent_get_publishing_calendar's packages gain `warnings` (codes that never block); the
+// owner's package review gates the VIDEO (mp4) only, so a re-package of only its packaging stays ready; producer_upload_queue_add's
+// "tried" rule keys a row by its mp4; wake files gain the status packaging_comment (REVIEW-DECISION-package-<video>-<id>.md); upload
+// rows gain the error codes media_changed / package_slot_changed. Additive.
+export const PRODUCER_API_VERSION = "1.24.0";
 
 /** The channel agent's READ tools the Producer gets; each call names its channel and runs in that channel's agent scope. */
 export const PRODUCER_CHANNEL_TOOLS: Readonly<Record<string, { capability: string }>> = Object.freeze({
@@ -126,6 +132,7 @@ export const PRODUCER_ONLY_TOOLS = [
   "producer_clip_review_get",
   "producer_clip_review_withdraw",
   "producer_video_thumbnail_replace",
+  "producer_video_metadata_update",
 ] as const;
 
 /**
@@ -144,6 +151,13 @@ export const PRODUCER_UPLOAD_QUEUE_TOOLS = ["producer_upload_queue_list", "produ
  * video's custom thumbnail through `src/lib/video-thumbnails/` (backup, identity check, Live writes, read-back, audit); nothing else.
  */
 export const PRODUCER_THUMBNAIL_TOOLS = ["producer_video_thumbnail_replace"] as const;
+
+/**
+ * BL-265 (ADR 0072 §5, owner TG 4578/4581): the Producer's packaging-fix tool -- exactly this one, the test pins the list. It writes an
+ * uploaded video's title / description / tags from its package's current manifest through `src/lib/publishing/package-metadata.ts`
+ * (video-details' writer: identity check, backup, Live writes, read-back, audit), refusing any conflict; nothing else.
+ */
+export const PRODUCER_METADATA_TOOLS = ["producer_video_metadata_update"] as const;
 
 export const PRODUCER_CLIP_REVIEW_TOOLS = ["producer_clip_review_submit", "producer_clip_review_list", "producer_clip_review_get", "producer_clip_review_withdraw"] as const;
 

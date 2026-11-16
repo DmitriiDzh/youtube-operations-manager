@@ -419,6 +419,16 @@ export type DomainErrorCode =
   | "thumbnail_file_invalid"
   | "video_not_in_channel"
   | "thumbnail_step_pending"
+  // BL-265 (ADR 0072 §5, MEDIA_GATE_PLAN.md §3.4): the packaging fix after upload -- the package has no upload record naming a video;
+  // its texts break YouTube's limits; the video is not on YouTube (any more); this computer's upload of it has not finished its
+  // read-back; a field differs on YouTube from both what the upload sent and the package (the Producer never overrides one).
+  | "package_metadata_not_uploaded"
+  | "package_metadata_invalid"
+  | "video_missing"
+  | "upload_steps_pending"
+  | "package_metadata_conflict"
+  // Review fix 2: the package was re-packaged between the preview and the apply.
+  | "package_metadata_manifest_changed"
   | "video_in_dispute"
   // BL-263 (ADR 0071 §2): a given S code is already known on the channel (details.source).
   | "video_number_taken"

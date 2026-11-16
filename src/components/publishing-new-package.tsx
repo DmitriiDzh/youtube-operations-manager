@@ -26,6 +26,8 @@ type Draft = {
   durationSeconds: number | null;
   languages: { defaultLanguage: string | null; defaultAudioLanguage: string | null };
   problems: Problem[];
+  /** BL-265: what the checks only warn about (chapters, test thumbnails). */
+  warnings?: Problem[];
   existing: { exists: boolean; replaceable: boolean; reason: "uploaded" | "queued" | null };
 };
 /** What the owner typed; absent = take the folder's own value. */
@@ -288,6 +290,16 @@ export function PublishingNewPackage({ channelId, onClose, onSaved }: { channelI
                       <p className="mb-1 text-amber-200">{t("publishingNewPackage.problems")}</p>
                       <ul className="list-disc space-y-0.5 pl-4 text-amber-100/90">
                         {draft.problems.map((problem) => (
+                          <li key={`${problem.code}-${JSON.stringify(problem.params ?? {})}`}>{problemText(problem)}</li>
+                        ))}
+                      </ul>
+                    </>
+                  )}
+                  {!checking && (draft.warnings ?? []).length > 0 && (
+                    <>
+                      <p className="mb-1 mt-1 text-zinc-400">{t("publishingNewPackage.warnings")}</p>
+                      <ul className="list-disc space-y-0.5 pl-4 text-zinc-300">
+                        {(draft.warnings ?? []).map((problem) => (
                           <li key={`${problem.code}-${JSON.stringify(problem.params ?? {})}`}>{problemText(problem)}</li>
                         ))}
                       </ul>

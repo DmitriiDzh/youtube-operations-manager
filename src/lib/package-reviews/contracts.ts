@@ -21,13 +21,25 @@ export const PACKAGE_REVIEW_LIMITS = Object.freeze({
 });
 
 /**
- * What the package scan needs to know of a channel (ADR 0070 §2-§3): whether the gate is on, and for each manifest version whose
- * LATEST owner decision is an approval the thumbnail hash it covers (and when), or whose latest is a return the comment.
+ * What the gate needs to know of a channel (ADR 0070 §1, ADR 0072 §1): whether it is on, the owner's well-formed approvals and returns
+ * (oldest first, packaging comments left out) and the BL-263 recode aliases (V -> S) known here. Which decision stands is
+ * `model.standingDecision`'s rule.
  */
 export type OwnerReviewState = {
   required: boolean;
-  approved: Map<string, { thumbnailSha256: string | null; at: string }>;
-  returned: Map<string, string>;
+  decisions: PackageReviewDecision[];
+  aliases: ReadonlyMap<string, string>;
+};
+
+/**
+ * BL-265 (ADR 0072 §1): what identifies a package for the gate -- its manifest version (a BL-257 decision stands for it alone) and its
+ * media key (channel implied, video code, the manifest's mp4 `sha256` + `sizeBytes`). Null where unknown.
+ */
+export type ReviewKey = {
+  manifestSha256: string | null;
+  video: string | null;
+  videoSha256: string | null;
+  videoSizeBytes: number | null;
 };
 
 export type PackageReviewItemState = "pending" | "approved" | "returned" | "uploaded";
@@ -47,9 +59,9 @@ export type PackageReviewItem = {
   /** Relative to the workspace (the package's default thumbnail), or null when the file is missing. */
   thumbnailPath: string | null;
   state: PackageReviewItemState;
-  /** The latest owner decision for this manifest, or null. */
+  /** The owner's decision that stands for this package's media (ADR 0072 §1), or null. */
   decision: "approved" | "returned" | null;
-  /** The latest owner decision's comment for this manifest (a return always has one), else null. */
+  /** That decision's comment (a return always has one), else null. */
   comment: string | null;
   decidedAt: string | null;
   decidedOn: string | null;
@@ -57,6 +69,10 @@ export type PackageReviewItem = {
   hasVideoSha256: boolean;
   /** The package's other problems (codes): the factory still has to fix them before it can be ready. */
   otherProblems: string[];
+  /** BL-265 (ADR 0072 §2): the owner's packaging comments on this package's video (newest first), never part of the gate. */
+  packagingComments: Array<{ id: string; comment: string; at: string; device: string | null }>;
+  /** BL-265: the YouTube video id once uploaded (the review screen links the uploaded package's own row), else null. */
+  videoId: string | null;
 };
 
 export type PackageReviewsView = {
@@ -88,7 +104,11 @@ export type ReviewPackage = {
   thumbnailPath: string | null;
   /** The manifest's `sha256` of the video (lower-case hex), or null. */
   videoSha256: string | null;
+  /** BL-265: the manifest's `sizeBytes` of the video (the media key's size). */
+  videoSizeBytes: number;
   uploaded: boolean;
+  /** BL-265: the YouTube video id from the upload record, else null. */
+  videoId?: string | null;
   /** Problem codes of the scan other than this module's own. */
   otherProblems: string[];
 };

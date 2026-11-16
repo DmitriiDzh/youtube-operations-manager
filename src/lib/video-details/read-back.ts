@@ -36,6 +36,13 @@ export function isUnverifiable(field: string, readBack: unknown): boolean {
 const UNORDERED_FIELDS = new Set<string>(["tags"]);
 const sortedCopy = (list: unknown[]) => [...list].map((item) => JSON.stringify(item)).sort();
 
+/**
+ * BL-265 (ADR 0072 §7): a description as YouTube keeps it -- LF line ends and no trailing line breaks (seen on the first real uploads,
+ * 2026-10-13: YouTube drops a description's trailing line breaks; the factory's files carry CR). The one comparison rule
+ * `src/lib/publishing/package-text.ts` shares.
+ */
+export const youtubeDescriptionText = (text: string) => text.replace(/\r\n?/g, "\n").trimEnd();
+
 /** Whether a read-back value is what was written: instants compare as instants, lists by content, the rest exactly. */
 export function sameFieldValue(field: string, readBack: unknown, written: unknown): boolean {
   if (isUnverifiable(field, readBack)) return true;
@@ -45,6 +52,8 @@ export function sameFieldValue(field: string, readBack: unknown, written: unknow
     return !Number.isNaN(a) && a === b;
   }
   if (UNORDERED_FIELDS.has(field) && Array.isArray(readBack) && Array.isArray(written)) return JSON.stringify(sortedCopy(readBack)) === JSON.stringify(sortedCopy(written));
+  // BL-265: a description YouTube echoes without its trailing line breaks (or with LF for CRLF) is the text written.
+  if (field === "description" && typeof readBack === "string" && typeof written === "string") return youtubeDescriptionText(readBack) === youtubeDescriptionText(written);
   return Array.isArray(readBack) || Array.isArray(written) ? JSON.stringify(readBack) === JSON.stringify(written) : readBack === written;
 }
 

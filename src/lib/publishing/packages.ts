@@ -246,8 +246,28 @@ export function chapterProblems(description: string, durationSeconds: number | n
   return [];
 }
 
-/** Every reason the package cannot be uploaded now (FO-REQ-0023 §4 B2), in the order the owner would fix them. */
+/**
+ * BL-265 (ADR 0072 §3, MEDIA_GATE_PLAN.md §3.1): the codes that are only warnings -- YouTube accepts such a package (a description
+ * whose timestamps are no valid chapters just shows none; test thumbnails are never uploaded, Test & Compare is manual). Shown, never
+ * blocking. Every other code keeps a package not ready.
+ */
+export const PACKAGE_WARNING_CODES: readonly string[] = ["chapters_first_not_zero", "chapters_too_few", "chapter_too_short", "test_thumbnail_missing", "test_thumbnail_not_image", "test_thumbnail_too_large"];
+
+/** BL-265: the package's checks split into blocking problems (not ready) and warnings (shown only). */
+export function packageChecks(pkg: ReleasePackage, facts: PackageFacts, channel: ChannelExpectations): { problems: PackageProblem[]; warnings: PackageProblem[] } {
+  const all = allPackageChecks(pkg, facts, channel);
+  return { problems: all.filter((p) => !PACKAGE_WARNING_CODES.includes(p.code)), warnings: all.filter((p) => PACKAGE_WARNING_CODES.includes(p.code)) };
+}
+
+/**
+ * Every reason the package cannot be uploaded now (FO-REQ-0023 §4 B2), in the order the owner would fix them. BL-265: only YouTube's
+ * and YTM's hard limits -- the warnings (`PACKAGE_WARNING_CODES`) are `packageChecks`' second list.
+ */
 export function packageProblems(pkg: ReleasePackage, facts: PackageFacts, channel: ChannelExpectations): PackageProblem[] {
+  return packageChecks(pkg, facts, channel).problems;
+}
+
+function allPackageChecks(pkg: ReleasePackage, facts: PackageFacts, channel: ChannelExpectations): PackageProblem[] {
   const problems: PackageProblem[] = [];
   if (pkg.channelId !== channel.channelId) problems.push({ code: "other_channel", params: { channelId: pkg.channelId } });
   if (!pkg.ready || pkg.problems.length > 0) problems.push({ code: "factory_not_ready", params: { problems: pkg.problems.join("; ") } });

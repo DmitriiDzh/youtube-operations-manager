@@ -1410,6 +1410,25 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   `REVIEW-DECISION-package-<video>-<decisionId>.md`. Ни один MCP-путь не решает и не переключает (`package-reviews/boundaries.test.ts`).
   Это не писатель YouTube.
 
+### 2.9bm Ворота только по медиа и правка упаковки после загрузки (BL-265, PRD-REQ-0195 B, ADR 0072, `docs/roadmap/plans/MEDIA_GATE_PLAN.md`) — **IMPLEMENTED на ветке** `feature/bl-265-media-gate` (ждёт ревью и разрешения на мердж)
+
+- **Ворота по медиа:** решение владельца (`package-reviews/model.ts`, `standingDecision`) покрывает mp4 — `videoSha256` + `videoSizeBytes`
+  манифеста под кодом видео или его алиасом перекодировки BL-263 (порт `recodeAliases` из `video-projects`, только в композиции и
+  `publishing/index.ts`); решение до BL-265 покрывает свой манифест (двойное чтение, без миграции). Один порядок для обоих видов.
+  Обложка больше не часть одобрения. Новый вид `packaging_comment` (комментарий к упаковке) ворот не меняет и будит Продюсера.
+  Перекодировка копирует только решение до BL-265; решение по mp4 идёт за алиасом без копии.
+- **Только жёсткие пределы:** `packageChecks` → блокирующие `problems` и `warnings` (главы, тестовые обложки); `ScannedPackage.warnings`,
+  календарь/план (Agent 4.22.0, Factory 1.51.0, Producer 1.24.0).
+- **Очередь:** строка `queued` с замороженным `videoSha256` (теперь у каждой новой строки, и у одобрений владельца) берёт перепаковку
+  только упаковки (`upload-runner.ts` `takeRepackage`: один раз читаемый манифест, тот же канал/видео/слот/mp4, без блокирующих проблем,
+  ворота) — `steps.repackaged`, аудит `publishing.upload_package_refreshed`; другой mp4 → `media_changed`, другой слот →
+  `package_slot_changed`, нечитаемый манифест ждёт до 10 мин. «Tried» — по ключу медиа (`triedKeysOf`).
+- **Правка упаковки после загрузки:** `publishing/package-metadata.ts` (без нового писателя: `video-details.applyFieldsUpdate`) —
+  название/описание/теги из текущего манифеста, тройная проверка, отказ при незавершённой загрузке; маршрут
+  `/api/channels/[channelId]/publishing/package-metadata`, кнопки на строке загруженного пакета в «Ролики и релизы»
+  (`package-packaging-actions.tsx`), инструмент Продюсера `producer_video_metadata_update` (конфликт — отказ). В `video-details`: Live writes
+  прямо перед записью, `channelId` в снимке, `verifyUnchanged`, правило описания в сверке.
+
 ### 2.9bh Решения владельца будят Продюсера (BL-248, FO-REQ-0052 + PRD-REQ-0063, ADR 0066, `docs/roadmap/plans/REVIEW_NOTIFY_PLAN.md`) — **IMPLEMENTED, влито в `dev` (`b598da19`)**
 
 - **Что:** на каждое решение владельца в проверке — один Markdown-файл `REVIEW-DECISION-<kind>-<itemId>-<decisionId>.md` во

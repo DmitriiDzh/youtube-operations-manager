@@ -2301,13 +2301,19 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
   `src/lib/publishing/package-scan.ts` and the upload runner (BL-257, ADR 0070).
 - **Risk:** (1) the owner's switch and decisions live in an Automerge document carried by Syncthing; anything that can write that
   folder (or the app-data document) can forge an «approved» record with `by: "owner"` -- the same accepted trust model as clip
-  reviews (RISK-149) and the weekly plan. An approval still needs the manifest's video SHA-256 to match the file and covers one
-  thumbnail hash, and a forged one cannot bypass the upload's identity check, Live writes or the slot approval for a date.
+  reviews (RISK-149) and the weekly plan. An approval still needs the manifest's video SHA-256 to match the file (BL-265, ADR 0072:
+  it covers the mp4 -- `sha256` + `sizeBytes` under its video code -- and no longer any thumbnail or text, so a forged one still needs a
+  matching mp4 hash, and the runner hashes the file again before the first byte), and a forged one cannot bypass the upload's identity
+  check, Live writes or the slot approval for a date.
   (2) Which decision stands is ordered by the document's `seq` (one above the highest seen when written), then the wall-clock `at`:
   a decision made after seeing another orders after it whatever the clocks say, but two decisions made offline on both computers at
   once share a `seq` and fall back to the clocks, so a skewed clock can pick the "wrong" one. The tried-hash exception compares the
   upload rows' local creation time with the approval's `at` from the deciding computer: a skewed clock there can excuse a row made
   just after the approval, or keep one made just before it tried.
+  (3) BL-265 (ADR 0072): the standing decision is now chosen across every decision that covers the same video -- other manifests of
+  the same mp4 included -- so the `seq`/clock ordering above now spans manifests, not one manifest; and a return written by an older
+  build carries no media key, so it holds only its own manifest: after a re-package of the same mp4, an earlier media approval
+  covers the new manifest again. Both computers update together (the Mac uploads), which keeps this window short.
 - **Mitigation:** decisions are owner-only Web UI actions (no MCP path, boundaries test); the screen shows the standing decision and
   the computer it was made on; the upload runner re-checks the review before a queued row starts; the tried exception applies only
   while the gate is on and only to rows cancelled before reaching YouTube.

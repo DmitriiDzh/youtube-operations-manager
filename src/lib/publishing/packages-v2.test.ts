@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { packageProblems, parseReleasePackage, type ChannelExpectations, type PackageFacts } from "./packages";
+import { packageChecks, packageProblems, parseReleasePackage, type ChannelExpectations, type PackageFacts } from "./packages";
 
 // BL-225 stage 2 (WEEKLY_PUBLISHING_PLAN.md AC-WP-20..22; FO-REQ-0040 item 2; owner msg 3511 answer 4). Requirements:
 // - `yt-release-package/2` is additive to v1: slotId, localizations { <lang>: { title, description } }, containsSyntheticMedia
@@ -88,9 +88,14 @@ test("AC-WP-20/21: thumbnails need exactly one default, files inside the folder,
   assert.deepEqual(codes({ localizations: ["ja"] }), ["field_invalid"]);
 });
 
-test("AC-WP-21: every test thumbnail is held to 2 MB and JPEG/PNG; 2 097 152 bytes passes, one byte more does not", () => {
+// AC-WP-21 changed by BL-265 (MEDIA_GATE_PLAN.md §3.1 table, AC-MG-13; owner TG 4578 «Warnings list accepted»): the test-thumbnail
+// checks stay, but they are warnings now (test thumbnails are never uploaded) -- `packageChecks().warnings`, not blocking problems.
+test("AC-WP-21 / AC-MG-13: every test thumbnail is held to 2 MB and JPEG/PNG -- as a warning; 2 097 152 bytes passes, one byte more warns; the default thumbnail still blocks", () => {
   const pkg = parseReleasePackage(V2).pkg!;
-  const withTest = (test: NonNullable<PackageFacts["testThumbnails"]>[number]) => packageProblems(pkg, { ...FACTS, testThumbnails: [test] }, CHANNEL);
+  const withTest = (test: NonNullable<PackageFacts["testThumbnails"]>[number]) => packageChecks(pkg, { ...FACTS, testThumbnails: [test] }, CHANNEL).warnings;
+  for (const test of [{ file: "b.jpg", exists: true, sizeBytes: 2_097_153, kind: "jpeg" as const }, { file: "b.jpg", exists: false, sizeBytes: null, kind: null }]) {
+    assert.deepEqual(packageProblems(pkg, { ...FACTS, testThumbnails: [test] }, CHANNEL), [], "never blocking");
+  }
   assert.deepEqual(withTest({ file: "b.jpg", exists: true, sizeBytes: 2_097_152, kind: "jpeg" }), []);
   assert.deepEqual(withTest({ file: "b.jpg", exists: true, sizeBytes: 2_097_153, kind: "jpeg" }), [{ code: "test_thumbnail_too_large", params: { file: "b.jpg", bytes: 2_097_153, max: 2_097_152 } }]);
   assert.deepEqual(withTest({ file: "b.gif", exists: true, sizeBytes: 10, kind: "other" }).map((p) => p.code), ["test_thumbnail_not_image"]);

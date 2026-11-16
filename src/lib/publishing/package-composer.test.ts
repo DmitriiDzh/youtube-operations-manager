@@ -151,7 +151,9 @@ test("draft: V56's folder fills the title, description, files, size, duration an
 test("draft: the owner's edits are checked like a package (a too-long title, chapters not starting at 0:00) and a picked file must be the folder's own", async () => {
   const { composer } = setup();
   const draft = await composer.draft(CHANNEL, { folder: V56_FOLDER, title: "x".repeat(101), description: "00:05 A\n10:00 B\n20:00 C" });
-  assert.deepEqual(draft.problems.map((p) => p.code).sort(), ["chapters_first_not_zero", "title_too_long"].sort());
+  // BL-265 (MEDIA_GATE_PLAN.md §3.1, AC-MG-13): chapters are a warning now, the title a blocking problem.
+  assert.deepEqual(draft.problems.map((p) => p.code), ["title_too_long"]);
+  assert.deepEqual(draft.warnings.map((p) => p.code), ["chapters_first_not_zero"]);
   await assert.rejects(() => composer.draft(CHANNEL, { folder: V56_FOLDER, files: { thumbnail: "../../secret.jpg" } }), refusedWith("package_file_invalid"));
   await assert.rejects(() => composer.draft(CHANNEL, { folder: V56_FOLDER, files: { video: "Thumbnail_V56.jpg" } }), refusedWith("package_file_invalid"));
 });

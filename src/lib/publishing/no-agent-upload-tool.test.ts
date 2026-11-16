@@ -5,7 +5,7 @@ import test from "node:test";
 import { MCP_TOOL_CLASSIFICATION } from "@/mcp/tool-classification";
 import { FACTORY_TOOL_NAMES } from "@/mcp/factory-server";
 import { WORKER_FACTORY_TOOLS } from "@/mcp/worker-factory-tools";
-import { PRODUCER_THUMBNAIL_TOOLS, PRODUCER_UPLOAD_QUEUE_TOOLS } from "@/mcp/producer-tools";
+import { PRODUCER_METADATA_TOOLS, PRODUCER_THUMBNAIL_TOOLS, PRODUCER_UPLOAD_QUEUE_TOOLS } from "@/mcp/producer-tools";
 
 // AC-UP-14 (FO-REQ-0023 §4 B9; ADR 0037 §1: "uploads or scheduling by an agent or the Producer, who get read-only tools" are out of
 // scope): no MCP tool uploads, schedules or cancels an upload, and no MCP or agent endpoint code reaches the upload approval, the
@@ -144,4 +144,25 @@ test("AC-AU-11: setAutoPrivateUploadEnabled is called only by the Settings route
   }
   assert.deepEqual(callers.sort(), ["app/api/settings/route.ts", "lib/db.ts"]);
   assert.deepEqual(Object.keys(MCP_TOOL_CLASSIFICATION).filter((name) => /auto.*upload|auto_private/i.test(name)), []);
+});
+
+// BL-265 (MEDIA_GATE_PLAN.md AC-MG-34; owner TG 4578/4581, ADR 0072 §8 -- a new requirement, not a relaxation): the Producer fixes an
+// uploaded video's title / description / tags from its package. Exactly one tool, producer-only; the factory and the channel workers
+// have no metadata tool; the packaging-fix service is reached only by the Producer session wiring and the owner's route.
+test("BL-265 AC-MG-34: the Producer's metadata tool is exactly one, producer-only; the factory and workers have none", () => {
+  assert.deepEqual([...PRODUCER_METADATA_TOOLS], ["producer_video_metadata_update"]);
+  assert.equal(MCP_TOOL_CLASSIFICATION.producer_video_metadata_update, "producer-only");
+  const metadataLike = (name: string) => /metadata_update|video_metadata|package_metadata|packaging/i.test(name);
+  assert.deepEqual(Object.keys(MCP_TOOL_CLASSIFICATION).filter(metadataLike), ["producer_video_metadata_update"]);
+  assert.deepEqual((FACTORY_TOOL_NAMES as readonly string[]).filter(metadataLike), []);
+  assert.deepEqual(Object.keys(WORKER_FACTORY_TOOLS).filter(metadataLike), []);
+  assert.deepEqual(Object.values(WORKER_FACTORY_TOOLS).map((tool) => tool.agentName).filter(metadataLike), []);
+});
+
+test("BL-265 AC-MG-34: createPackageMetadataCore is used only by the Producer session wiring and the owner's package-metadata route", async () => {
+  const callers: string[] = [];
+  for (const file of await files(SRC)) {
+    if (/\bcreatePackageMetadataCore\b/.test(await readFile(file, "utf8"))) callers.push(path.relative(SRC, file));
+  }
+  assert.deepEqual(callers.sort(), ["app/api/channels/[channelId]/publishing/package-metadata/handlers.ts", "lib/producer-mcp-endpoint/session-deps.ts", "lib/publishing/index.ts"]);
 });

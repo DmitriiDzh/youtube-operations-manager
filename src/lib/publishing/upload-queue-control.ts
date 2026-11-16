@@ -10,6 +10,7 @@ import type { StoredPublishingUpload } from "@/lib/db";
 import { DomainError, type DomainErrorCode } from "@/lib/shared-domain";
 import { checkPackageForQueue, type SlotDecision } from "./auto-upload";
 import type { PackageScanResult } from "./package-scan";
+import type { TriedPackages } from "./owner-review-gate";
 import { compareQueueOrder, isCancellable, isPublishAtSet, isSending, type ApprovedPackage } from "./upload-runner";
 
 /** Who acts on the queue: the owner in the Web UI (his Google user), or the Producer (its token). */
@@ -39,8 +40,11 @@ export type UploadQueueControlDeps = {
   scan(channelId: string): Promise<PackageScanResult>;
   liveVideos(channelId: string): Promise<Set<string>>;
   peerUploads(channelId: string): Promise<Map<string, { host: string | null; uploaded: boolean }>>;
-  /** Manifest hashes of the channel with a row here that is not a Producer cancel: the Producer does not queue them again. */
-  blockedHashes(channelId: string): Promise<Set<string>>;
+  /**
+   * What of the channel has a row here that is not a Producer cancel: the Producer does not queue it again. BL-265 (ADR 0072 §6): by
+   * media key for rows that froze the mp4's sha256, by manifest hash for older rows (package-reviews' rule).
+   */
+  blockedHashes(channelId: string): Promise<TriedPackages>;
   /** The weekly plan's decisions (the composition layer); absent: the plan module is off. */
   slotDecisions?(channelId: string): Promise<Map<string, SlotDecision>>;
   videoFile(channelId: string, relativePath: string): Promise<{ path: string; bytes: number; mtimeMs: number } | null>;
@@ -269,7 +273,7 @@ export function createUploadQueueControl(deps: UploadQueueControlDeps) {
           case "held":
             throw refuse("upload_already_queued", `${video} is already queued or uploaded (here or on another computer).`, { channelId, video });
           case "tried":
-            throw refuse("upload_already_tried", `${video}: this manifest version already had an upload on this computer; it stays the owner's to queue again.`, { channelId, video });
+            throw refuse("upload_already_tried", `${video}: this video (its mp4, or this manifest version for an older upload) already had an upload on this computer; it stays the owner's to queue again.`, { channelId, video });
           case "size_mismatch":
             throw refuse("upload_video_mismatch", `${video}: the video file is missing or its size is not the manifest's sizeBytes.`, { channelId, video, reason: "size" });
           case "hash_failed":
