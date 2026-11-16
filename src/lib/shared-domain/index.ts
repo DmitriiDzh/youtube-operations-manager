@@ -334,6 +334,19 @@ export type DomainErrorCode =
   | "release_folder_name_invalid"
   | "release_folder_target_exists"
   | "release_folder_busy"
+  // BL-263 (SHORT_VIDEO_CODE_PLAN.md §6.1, ADR 0071 §4): factory_release_recode's refusals. INVALID: not a V / not a strict S;
+  // NOT_SHORT: no « Short» folder or a horizontal frame; TARGET_EXISTS: the S code or a target name is known; BUSY: an upload,
+  // cross-post or live rotation uses it (or a step failed and was undone); ELSEWHERE: another computer reports an upload row of it;
+  // APPROVAL_STANDING: an owner approval still has an upload or a date to give; ROLLBACK_FAILED: a failed step could not be undone.
+  | "release_recode_invalid"
+  | "release_recode_not_found"
+  | "release_recode_ambiguous"
+  | "release_recode_not_short"
+  | "release_recode_target_exists"
+  | "release_recode_busy"
+  | "release_recode_elsewhere"
+  | "release_recode_approval_standing"
+  | "release_recode_rollback_failed"
   // BL-241 (CLIP_REVIEWS_PLAN.md, ADR 0061) -- clips for review. NOT_FOUND: no such clip in the channel; NOT_PENDING: the clip is
   // decided or withdrawn (details.status); WORKSPACE_UNAVAILABLE: no workspace folder here; FILE_UNAVAILABLE: the path is not a
   // regular file strictly inside the workspace (details.reason); NOT_VIDEO: not .mp4/.webm; DURATION_OUT_OF_RANGE: not 5-300 s;
@@ -407,6 +420,8 @@ export type DomainErrorCode =
   | "video_not_in_channel"
   | "thumbnail_step_pending"
   | "video_in_dispute"
+  // BL-263 (ADR 0071 §2): a given S code is already known on the channel (details.source).
+  | "video_number_taken"
   // BL-221: «Привязать к видео» -- the number already has its YouTube video, or that video is already another number's.
   | "video_already_linked"
   // BL-221: «Привязать к видео» refused while this computer uploads the number.

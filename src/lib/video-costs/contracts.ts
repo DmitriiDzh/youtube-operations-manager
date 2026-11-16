@@ -65,7 +65,8 @@ export type OwnRunRows = {
   gemini: VideoCostGeminiJobRow[];
 };
 
-export type VideoStateInfo = { state: "in_work" | "packaged" | "published" | "cancelled"; folder: string | null };
+/** BL-263: `recoded` + `recodedTo` -- a V moved to an S by `factory_release_recode`; its runs count under the S (ADR 0071 §5). */
+export type VideoStateInfo = { state: "in_work" | "packaged" | "published" | "cancelled" | "recoded"; folder: string | null; recodedTo?: string | null };
 
 export const COST_FILE_SCHEMA = "ytm.video-cost";
 

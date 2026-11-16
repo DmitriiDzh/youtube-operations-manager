@@ -12,11 +12,16 @@ export { DomainError, isDomainError };
 // ports wired by the composition layer.
 // ---------------------------------------------------------------------------
 
-/** `V1`, `V49`: `V` and a number without leading zeros (the `^V\d+$` of the plan, bounded). */
+/** A video code: `V1`, `V49` or (BL-263) `S14` -- the series letter and a number without leading zeros (`src/lib/shared-video-code`). */
 export { VIDEO_NUMBER_PATTERN } from "@/lib/sync-gateway";
 
-export type VideoState = "in_work" | "packaged" | "published" | "cancelled";
-export const VIDEO_STATES: readonly VideoState[] = ["in_work", "packaged", "published", "cancelled"];
+/**
+ * BL-263 (ADR 0071 §5): `recoded` -- a V code some computer reports cancelled with `replacedBy` an S code (`factory_release_recode`
+ * moved the video to that S); `recodedTo` names it. A recoded V is never in dispute, names no YouTube video, takes no new link and
+ * still counts toward the next V.
+ */
+export type VideoState = "in_work" | "packaged" | "published" | "cancelled" | "recoded";
+export const VIDEO_STATES: readonly VideoState[] = ["in_work", "packaged", "published", "cancelled", "recoded"];
 
 /** BL-243: what the synced copy says of the channel's videos (for `existsOnChannel` / `removedAt`). */
 export type ChannelCopy = { listed: ReadonlyMap<string, string>; removed: ReadonlyMap<string, string>; checkedAt: string | null };
@@ -58,15 +63,19 @@ export type VideoConflict = {
   thisComputerInvolved: boolean;
   /** This computer's reservation is the one that loses. */
   thisComputerLoses: boolean;
-  /** The next free number, offered to the losing computer (null on the others). */
+  /** The next free number, offered to the losing computer (null on the others, and always null for an S code: BL-263). */
   suggestedVideo: string | null;
 };
 
 export type VideoProject = {
   channelId: string;
   video: string;
-  /** The number of `video` (49 for V49), for sorting. */
+  /** The number of `video` (49 for V49, 14 for S14), for sorting. */
   number: number;
+  /** BL-263: the series of `video` -- `V` (YTM gives the next one) or `S` (a Short; the factory's piece number). */
+  series: "V" | "S";
+  /** BL-263: the S code a recoded V became (state `recoded`), else null. */
+  recodedTo: string | null;
   workingTitle: string | null;
   state: VideoState;
   sources: VideoSource[];

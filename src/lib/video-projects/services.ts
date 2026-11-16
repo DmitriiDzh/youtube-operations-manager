@@ -4,8 +4,8 @@ import { VIDEO_RESERVATIONS_REPORT_FORMAT, type VideoReservationsReport } from "
 import { uploadRecordFileName } from "@/lib/workspace-videos";
 import { DomainError, isDomainError, type LinkCandidate, type OwnReservation, type VideoProject, type VideoProjectsDeps } from "./contracts";
 import { linkSuggestions } from "./linking";
-import { buildVideoList, knownNumbers, nextVideoNumber, type VideoListInput } from "./numbering";
-import { createVideoInputSchema, jobVideoInputSchema, linkVideoInputSchema, listVideosInputSchema, videoNumberSchema, videoRefInputSchema } from "./schemas";
+import { buildVideoList, knownNumbers, nextVideoNumber, recodeAliases, type VideoListInput } from "./numbering";
+import { createVideoInputSchema, jobVideoInputSchema, linkVideoInputSchema, listVideosInputSchema, videoNumberSchema, videoRefInputSchema, vNumberSchema } from "./schemas";
 
 // BL-194 stage 1 (VIDEO_COST_PLAN.md §2, ADR 0040): reserving a number, the channel's list of videos with its conflicts, the
 // losing computer's renumbering, and the one check every link to a video passes (`assertAttachable`). The Web routes, the API
@@ -91,6 +91,37 @@ export function createVideoProjectsService(deps: VideoProjectsDeps) {
     return { video, gathered };
   }
 
+  /**
+   * BL-263 (ADR 0071 §2, plan §4): a reservation of a GIVEN S code (the factory's piece number) -- refused as `video_number_taken`
+   * when any source of the channel already knows it: any computer's reservation (cancelled ones included -- a code is never given
+   * twice), a folder, `video_registry.csv`, an upload row here or a `Sn_youtube.json` (a peer's upload report reaches the list only
+   * through its reservations/folders, so `upload` covers this computer's rows).
+   */
+  async function reserveGiven(channelId: string, video: string, workingTitle: string | null): Promise<{ video: string; gathered: Awaited<ReturnType<typeof gather>> }> {
+    const gathered = await gather(channelId);
+    if (gathered.workspace !== "ok") throw unavailable(channelId, gathered.workspaceReason ?? "the workspace folder cannot be read");
+    const input = gathered.input;
+    const reservations = [...input.own.reservations, ...input.peers.flatMap((p) => p.reservations)].filter((r) => r.channelId === channelId);
+    const source = reservations.some((r) => r.video === video || r.replacedBy === video)
+      ? "reservation"
+      : (input.folders ?? []).some((f) => f.video === video)
+        ? "folder"
+        : (input.uploadRecords ?? []).some((r) => r.video === video)
+          ? "upload_record"
+          : input.uploads.some((u) => u.video === video)
+            ? "upload"
+            : (input.registry ?? []).some((r) => r.vNumber === video)
+              ? "registry"
+              : null;
+    if (source) {
+      throw new DomainError({ code: "video_number_taken", message: `${video} is already known for ${channelId} (${source}); a code is never given twice.`, details: { channelId, video, source } });
+    }
+    const row: OwnReservation = { channelId, video, workingTitle, reservedAt: deps.now().toISOString(), state: "in_work", cancelledAt: null, replacedBy: null };
+    if (!(await deps.store.insert(row))) throw new DomainError({ code: "video_number_taken", message: `${video} is already reserved on this computer`, details: { channelId, video, source: "reservation" } });
+    input.own.reservations.push(row);
+    return { video, gathered };
+  }
+
   const projectOf = (gathered: Awaited<ReturnType<typeof gather>>, video: string): VideoProject => {
     const found = buildVideoList(gathered.input).find((v) => v.video === video);
     if (!found) throw new DomainError({ code: "video_not_found", message: `No video ${video} in ${gathered.input.channelId}`, details: { channelId: gathered.input.channelId, video } });
@@ -106,7 +137,13 @@ export function createVideoProjectsService(deps: VideoProjectsDeps) {
     const video = parseWithSchema(videoNumberSchema, raw, "video number");
     const [device, own, peers] = await Promise.all([deps.ownDevice(), deps.store.list(channelId), deps.peers()]);
     const mine = own.some((r) => r.video === video && r.state === "in_work");
-    const peerActive = peers.some((p) => p.deviceId !== device.deviceId && p.reservations.some((r) => r.channelId === channelId && r.video === video && r.state === "in_work"));
+    const others = peers.filter((p) => p.deviceId !== device.deviceId);
+    const peerActive = others.some((p) => p.reservations.some((r) => r.channelId === channelId && r.video === video && r.state === "in_work"));
+    // BL-263: a V another computer recoded to an S (cancelled, `replacedBy` S) is never attachable, even while this one holds it.
+    const recoded = recodeAliases(channelId, [own, ...others.map((p) => p.reservations)]).get(video);
+    if (recoded) {
+      throw new DomainError({ code: "video_not_found", message: `${video} was recoded to ${recoded}; link ${recoded} instead.`, details: { channelId, video, reason: "recoded", recodedTo: recoded } });
+    }
     if (mine && !peerActive) return video;
     const gathered = await gather(channelId);
     const found = buildVideoList(gathered.input).find((v) => v.video === video);
@@ -144,6 +181,9 @@ export function createVideoProjectsService(deps: VideoProjectsDeps) {
     if (project.state === "cancelled") {
       throw new DomainError({ code: "video_not_found", message: `${video} was given up; nothing to link.`, details: { channelId, video } });
     }
+    if (project.state === "recoded") {
+      throw new DomainError({ code: "video_not_found", message: `${video} was recoded to ${project.recodedTo}; nothing to link.`, details: { channelId, video, reason: "recoded", recodedTo: project.recodedTo } });
+    }
     if (project.youtubeVideoId) {
       throw new DomainError({ code: "video_already_linked", message: `${video} is already linked to ${project.youtubeVideoId}; nothing was changed.`, details: { channelId, video, videoId: project.youtubeVideoId } });
     }
@@ -166,12 +206,19 @@ export function createVideoProjectsService(deps: VideoProjectsDeps) {
   return {
     publishOwnReport: () => publishOwnReport(true),
 
-    /** «Новый ролик» / `factory_video_create`: the next free number of the channel, with an optional working title. */
+    /**
+     * «Новый ролик» / `factory_video_create`: the next free V of the channel, with an optional working title; BL-263: or a given
+     * S code (`video`), reserved as given and refused when already known (`video_number_taken`). A given V is refused.
+     */
     async createVideo(raw: unknown): Promise<{ video: VideoProject }> {
       const input = parseWithSchema(createVideoInputSchema, raw, "new video");
+      if (input.video !== undefined && !input.video.startsWith("S")) {
+        throw new DomainError({ code: "validation_failed", message: "Only an S code can be given; V numbers are given by YT Manager (leave video out).", details: { field: "video", reason: "v_numbers_are_given" } });
+      }
       await requireConnected(input.channelId);
       const title = input.workingTitle ? input.workingTitle : null;
-      const { video, gathered } = await deps.withLock(() => reserveNext(input.channelId, title));
+      const given = input.video;
+      const { video, gathered } = await deps.withLock(() => (given ? reserveGiven(input.channelId, given, title) : reserveNext(input.channelId, title)));
       await publishOwnReport();
       return { video: projectOf(gathered, video) };
     },
@@ -197,7 +244,13 @@ export function createVideoProjectsService(deps: VideoProjectsDeps) {
      * of the disputed number is released (kept as cancelled, with the number taken instead), the working title moves along.
      */
     async renumber(raw: unknown): Promise<{ video: VideoProject; replaced: string }> {
-      const input = parseWithSchema(videoRefInputSchema, raw, "renumber");
+      const ref = parseWithSchema(videoRefInputSchema, raw, "renumber");
+      // BL-263: an S code is never renumbered -- its number is the factory's, there is no "next S"; the losing computer's
+      // reservation is cancelled instead.
+      if (!vNumberSchema.safeParse(ref.video).success) {
+        throw new DomainError({ code: "validation_failed", message: `${ref.video} is an S code: it is never renumbered; cancel this computer's reservation instead.`, details: { channelId: ref.channelId, video: ref.video, reason: "s_code_not_renumbered" } });
+      }
+      const input = ref;
       await requireConnected(input.channelId);
       const result = await deps.withLock(async () => {
         const before = await gather(input.channelId);

@@ -651,3 +651,28 @@ test("BL-243 AC-WP-83: a vetoed slot whose video reappeared after video_missing 
   const error = await refusal(h.service.save({ channelId: CH, weekStart: WEEK, removeSlotIds: ["s1"] }, "worker"));
   assert.deepEqual(((error as { details?: { refused?: Array<{ slotId: string; reason: string }> } }).details?.refused ?? []).map((r) => [r.slotId, r.reason]), [["s1", "slot_uploaded"]]);
 });
+
+// BL-263 (SHORT_VIDEO_CODE_PLAN.md §6.5, AC-SC-14b; ADR 0071 §5): after V1 is recoded to S1 the slot's package names S1 with a new
+// manifest SHA-256. An approval made with the uploaded video's id (V1, aa, vid1) still covers it -- the video id is the identity --
+// when the progress says V1 was recoded to S1; one made before the upload (no video id) does not: the slot asks again.
+test("BL-263 AC-SC-14b: an approval naming V1 + vid1 covers the recoded S1 package of vid1; a pre-upload approval or another id does not", async () => {
+  const h = harness();
+  await week(h);
+  h.progress.set("s1", packaged({ video: "V1" }, "vid1"));
+  await approve(h, "s1");
+  const recoded = (over: Partial<PlanSlotProgress> = {}): PlanSlotProgress => ({ ...packaged({ video: "S1", manifestSha256: BB }, "vid1"), recodedFrom: ["V1"], ...over });
+  h.progress.set("s1", recoded());
+  assert.equal(slotOf(await get(h), "s1").approval, "approved");
+  // Without the alias (the list unreadable) the changed package needs the owner again -- never a wrong "approved".
+  h.progress.set("s1", { ...recoded(), recodedFrom: undefined });
+  assert.equal(slotOf(await get(h), "s1").approval, "needs_approval");
+  // Another video id is not covered, alias or not.
+  h.progress.set("s1", { ...packaged({ video: "S1", manifestSha256: BB }, "vid2"), recodedFrom: ["V1"] });
+  assert.equal(slotOf(await get(h), "s1").approval, "needs_approval");
+
+  // s2: approved before the upload (no video id) -> after the recode the slot asks again.
+  h.progress.set("s2", packaged({ video: "V2" }));
+  await approve(h, "s2");
+  h.progress.set("s2", { ...packaged({ video: "S2", manifestSha256: BB }, "vid2"), recodedFrom: ["V2"] });
+  assert.equal(slotOf(await get(h), "s2").approval, "needs_approval");
+});

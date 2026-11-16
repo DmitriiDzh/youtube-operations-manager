@@ -369,7 +369,13 @@ export function pinFactoryDepsToChannel(
       attachRender: byChannel((input) => deps().storyboards.attachRender(input)),
     },
     videos: {
-      create: byChannel((input) => deps().videos.create(input)),
+      // BL-263 (ADR 0071 §2, decision 2026-11-16): a given S code is the Factory Operator's only; a worker gets the next V.
+      create: byChannel((input) => {
+        if (record(input).video !== undefined) {
+          throw new DomainError({ code: "validation_failed", message: "Only the Factory Operator gives an S code (factory_video_create); leave video out to get the next V.", details: { field: "video", reason: "s_codes_factory_only" } });
+        }
+        return deps().videos.create(input);
+      }),
       list: byChannel((input) => deps().videos.list(input)),
       cost: byChannel((input) => deps().videos.cost(input)),
     },

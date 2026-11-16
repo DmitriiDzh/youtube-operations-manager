@@ -631,3 +631,115 @@ test("BL-243 AC-WP-82: agent/factory video list -- existsOnChannel and removedAt
   const v73 = (await failing.service.listVideos({ channelId: UC1 })).videos.find((v) => v.video === "V73")!;
   assert.deepEqual([v73.existsOnChannel, v73.removedAt], [null, null]);
 });
+
+// ---------------------------------------------------------------------------------------------------------------------------------
+// BL-263 (SHORT_VIDEO_CODE_PLAN.md §4, §6.4, §10 AC-SC-06..09, 15, 20; ADR 0071 §2, §5). Expected codes by hand from the plan: the next
+// V is the highest known V + 1 and S codes never count; a given S is reserved as given, refused when any source knows it; an S is
+// never renumbered; a V cancelled with replacedBy an S is "recoded".
+
+const wweFolders = (): VideoFolder[] => [
+  ...Array.from({ length: 26 }, (_, i) => folder(`04 Videos/11 November/11${String(i + 1).padStart(2, "0")} V${i + 1}`, `V${i + 1}`)),
+  ...Array.from({ length: 18 }, (_, i) => folder(`04 Videos/11 November/1130 S${i + 5} Short`, `S${i + 5}`)),
+];
+
+test("BL-263 AC-SC-06: V1..V26 known, S5..S22 folders and an S900 reservation -> factory_video_create {} gives V27", async () => {
+  const { h, service } = harness({ workspace: { [UC1]: { status: "ok", folders: wweFolders(), registry: [] } } });
+  h.own.push(reservation(UC1, "S900", "2026-10-16T10:00:00.000Z"));
+  const { video } = await service.createVideo({ channelId: UC1 });
+  assert.equal(video.video, "V27");
+  assert.equal(video.series, "V");
+  assert.equal((await service.listVideos({ channelId: UC1 })).nextVideo, "V28");
+});
+
+test("BL-263 AC-SC-07: a given S23 is reserved; again S23, an S12 folder, or a cancelled S23 -> video_number_taken with the source", async () => {
+  const { h, service } = harness({ workspace: { [UC1]: { status: "ok", folders: [folder("04 Videos/11 November/1120 S12 Short", "S12")], registry: [] } } });
+  const { video } = await service.createVideo({ channelId: UC1, video: "S23", workingTitle: "Piece 23" });
+  assert.deepEqual([video.video, video.series, video.number, video.state, video.workingTitle], ["S23", "S", 23, "in_work", "Piece 23"]);
+  const taken = async (input: Record<string, unknown>, source: string) =>
+    assert.rejects(service.createVideo(input), (e: unknown) => isDomainError(e) && e.code === "video_number_taken" && (e.details as { source?: string }).source === source);
+  await taken({ channelId: UC1, video: "S23" }, "reservation");
+  await taken({ channelId: UC1, video: "S12" }, "folder");
+  // Cancelled: still refused (a code is never given twice).
+  await service.cancelVideo({ channelId: UC1, video: "S23" });
+  await taken({ channelId: UC1, video: "S23" }, "reservation");
+  // A peer's reservation of S24, an upload row here of S25, a record of S26.
+  h.peers = [peerReport("win-device", [reservation(UC1, "S24", "2026-10-16T10:00:00.000Z")])];
+  h.uploads[UC1] = [{ video: "S25", status: "done", videoId: "vidvidvid25" }];
+  await taken({ channelId: UC1, video: "S24" }, "reservation");
+  await taken({ channelId: UC1, video: "S25" }, "upload");
+  // S codes never moved the next V.
+  assert.equal((await service.listVideos({ channelId: UC1 })).nextVideo, "V1");
+  // The report now names an S code: version 2 (plan §5).
+  assert.equal(h.published.at(-1)?.version, 2);
+});
+
+test("BL-263 AC-SC-08: a given V30 is refused (validation_failed, v_numbers_are_given); S0 / S01 / s14 are refused as invalid", async () => {
+  const { h, service } = harness();
+  await assert.rejects(service.createVideo({ channelId: UC1, video: "V30" }), (e: unknown) => isDomainError(e) && e.code === "validation_failed" && (e.details as { reason?: string }).reason === "v_numbers_are_given");
+  for (const bad of ["S0", "S01", "s14", "S1000000", "X5", ""]) await rejects(service.createVideo({ channelId: UC1, video: bad }), "validation_failed");
+  assert.deepEqual(h.own, [], "nothing reserved");
+});
+
+test("BL-263 AC-SC-09: two computers holding S23 in work -> a conflict without suggestedVideo, video_in_dispute on links, renumber refused", async () => {
+  const { h, service } = harness();
+  h.own.push(reservation(UC1, "S23", "2026-10-17T09:00:00.000Z"));
+  h.peers = [peerReport("win-device", [reservation(UC1, "S23", "2026-10-17T08:00:00.000Z")])];
+  const s23 = (await service.listVideos({ channelId: UC1 })).videos.find((v) => v.video === "S23");
+  assert.ok(s23?.conflict);
+  assert.equal(s23.conflict.thisComputerLoses, true);
+  assert.equal(s23.conflict.suggestedVideo, null, "there is no next S");
+  await rejects(service.assertAttachable(UC1, "S23"), "video_in_dispute");
+  await assert.rejects(service.renumber({ channelId: UC1, video: "S23" }), (e: unknown) => isDomainError(e) && e.code === "validation_failed" && (e.details as { reason?: string }).reason === "s_code_not_renumbered");
+  assert.equal(h.own[0].state, "in_work", "nothing changed");
+});
+
+test("BL-263 AC-SC-11 / §7: the list is highest first -- the V block, then S, each numerically (S10 above S2)", async () => {
+  const { service } = harness({
+    workspace: { [UC1]: { status: "ok", folders: ["S10", "V2", "S2", "V10"].map((v) => folder(`04 Videos/11 November/1120 ${v}`, v)), registry: [] } },
+  });
+  assert.deepEqual((await service.listVideos({ channelId: UC1 })).videos.map((v) => v.video), ["V10", "V2", "S10", "S2"]);
+});
+
+test("BL-263 AC-SC-15 (alias): V14 cancelled with replacedBy S12 here -> listed recoded → S12, no video id, refuses links, counts toward the next V", async () => {
+  const { h, service } = harness({
+    workspace: { [UC1]: { status: "ok", folders: [folder("04 Videos/11 November/1120 S12 Short", "S12", ["S12_release.json", "S12_youtube.json"])], registry: [], uploadRecords: [{ video: "S12", videoId: "6Zt6kYUUMVo" }] } },
+  });
+  h.own.push(reservation(UC1, "V26", "2026-10-10T00:00:00.000Z"));
+  h.own.push(reservation(UC1, "V14", "2026-10-01T00:00:00.000Z", { state: "cancelled", cancelledAt: "2026-11-16T00:00:00.000Z", replacedBy: "S12" }));
+  h.own.push(reservation(UC1, "S12", "2026-11-16T00:00:00.000Z"));
+  h.uploads[UC1] = [{ video: "S12", status: "done", videoId: "6Zt6kYUUMVo" }];
+  const list = await service.listVideos({ channelId: UC1 });
+  const v14 = list.videos.find((v) => v.video === "V14")!;
+  assert.deepEqual([v14.state, v14.recodedTo, v14.youtubeVideoId, v14.conflict], ["recoded", "S12", null, null]);
+  const s12 = list.videos.find((v) => v.video === "S12")!;
+  assert.deepEqual([s12.state, s12.youtubeVideoId], ["published", "6Zt6kYUUMVo"]);
+  assert.equal(list.nextVideo, "V27");
+  await assert.rejects(service.assertAttachable(UC1, "V14"), (e: unknown) => isDomainError(e) && e.code === "video_not_found" && (e.details as { reason?: string; recodedTo?: string }).reason === "recoded" && (e.details as { recodedTo?: string }).recodedTo === "S12");
+  assert.equal(await service.assertAttachable(UC1, "S12"), "S12");
+  assert.equal((await service.createVideo({ channelId: UC1 })).video.video, "V27");
+});
+
+test("BL-263 AC-SC-20: on the peer -- its own in-work V14 shows recoded (not in dispute) when the other computer reports V14→S12", async () => {
+  const { h, service } = harness({ deviceId: "win-device" });
+  h.own.push(reservation(UC1, "V14", "2026-10-01T00:00:00.000Z"));
+  h.peers = [
+    peerReport("mac-device", [
+      reservation(UC1, "V14", "2026-10-01T00:00:00.000Z", { state: "cancelled", cancelledAt: "2026-11-16T00:00:00.000Z", replacedBy: "S12" }),
+      reservation(UC1, "S12", "2026-11-16T00:00:00.000Z"),
+    ]),
+  ];
+  const v14 = (await service.listVideos({ channelId: UC1 })).videos.find((v) => v.video === "V14")!;
+  assert.deepEqual([v14.state, v14.recodedTo, v14.conflict], ["recoded", "S12", null]);
+  // Its own V14 reservation is not attachable any more, even on the fast path (this computer alone holds it in work).
+  await rejects(service.assertAttachable(UC1, "V14"), "video_not_found");
+  // A conflict renumber is V→V and is never read as a recode.
+  h.peers = [peerReport("mac-device", [reservation(UC1, "V14", "2026-10-01T00:00:00.000Z", { state: "cancelled", cancelledAt: "2026-11-16T00:00:00.000Z", replacedBy: "V27" })])];
+  assert.equal((await service.listVideos({ channelId: UC1 })).videos.find((v) => v.video === "V14")!.state, "in_work");
+});
+
+test("BL-263 §5: a reservations report without an S code stays version 1 exactly as before", async () => {
+  const { h, service } = harness();
+  await service.createVideo({ channelId: UC1 });
+  assert.equal(h.published.at(-1)?.version, 1);
+  assert.deepEqual(Object.keys(h.published.at(-1)!), ["format", "version", "deviceId", "hostName", "updatedAt", "reservations"]);
+});

@@ -244,19 +244,31 @@ export function createVideoCostsService(deps: VideoCostsDeps) {
   /** Every computer's runs of one channel, with whose they are and what they came to. */
   async function channelRuns(channelId: string): Promise<{ runs: CostRun[]; computers: CostComputer[] }> {
     if (!(await deps.isChannelConnected(channelId))) throw noChannel(channelId);
-    const [own, peers, storyboards] = await Promise.all([ownReport(), peerReports(), storyboardsOf(channelId)]);
-    return channelRunsFrom(channelId, own, peers.reports, storyboards);
+    const [own, peers, storyboards, aliases] = await Promise.all([ownReport(), peerReports(), storyboardsOf(channelId), aliasesOf(channelId)]);
+    return channelRunsFrom(channelId, own, peers.reports, storyboards, aliases);
+  }
+
+  /**
+   * BL-263 (ADR 0071 §5, plan §6.4): V codes recoded to an S (any computer) -- a run linked to the V (a peer's own job included)
+   * counts under the S. A list that cannot be read: no alias (every run stays under its own code).
+   */
+  async function aliasesOf(channelId: string, known?: Map<string, VideoStateInfo>): Promise<Map<string, string>> {
+    const states = known ?? (await deps.videoStates(channelId).catch(() => new Map<string, VideoStateInfo>()));
+    const out = new Map<string, string>();
+    for (const [video, info] of states) if (info.state === "recoded" && info.recodedTo) out.set(video, info.recodedTo);
+    return out;
   }
 
   /** The same, from inputs already read (one read per refresh tick, however many videos). */
-  function channelRunsFrom(channelId: string, own: VideoCostsReport, peers: VideoCostsReport[], storyboards: StoryboardPicks[]): { runs: CostRun[]; computers: CostComputer[] } {
+  function channelRunsFrom(channelId: string, own: VideoCostsReport, peers: VideoCostsReport[], storyboards: StoryboardPicks[], aliases: Map<string, string> = new Map()): { runs: CostRun[]; computers: CostComputer[] } {
     const chosen = chosenTakes(storyboards);
     const reports = [{ report: own, thisComputer: true }, ...peers.filter((p) => p.deviceId !== own.deviceId).map((report) => ({ report, thisComputer: false }))];
     const runs: CostRun[] = [];
     for (const { report, thisComputer } of reports) {
       for (const run of report.runs) {
         if (run.channelId !== channelId) continue;
-        runs.push({ ...run, deviceId: report.deviceId, hostName: report.hostName, thisComputer, result: resultOf(run, chosen), estimate: ESTIMATE_BASES.has(run.basis) });
+        const video = run.video ? (aliases.get(run.video) ?? run.video) : null;
+        runs.push({ ...run, video, deviceId: report.deviceId, hostName: report.hostName, thisComputer, result: resultOf(run, chosen), estimate: ESTIMATE_BASES.has(run.basis) });
       }
     }
     runs.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || (a.runId < b.runId ? -1 : a.runId > b.runId ? 1 : a.deviceId < b.deviceId ? -1 : 1));
@@ -441,7 +453,7 @@ export function createVideoCostsService(deps: VideoCostsDeps) {
         try {
           if (!(await deps.isChannelConnected(channelId))) continue;
           const [states, storyboards] = await Promise.all([deps.videoStates(channelId), storyboardsOf(channelId)]);
-          const { runs, computers } = channelRunsFrom(channelId, own, peers.reports, storyboards);
+          const { runs, computers } = channelRunsFrom(channelId, own, peers.reports, storyboards, await aliasesOf(channelId, states));
           for (const [video, info] of states) {
             if (!info.folder || (info.state !== "packaged" && info.state !== "published")) continue;
             if (!folderSchema.safeParse(info.folder).success) continue;

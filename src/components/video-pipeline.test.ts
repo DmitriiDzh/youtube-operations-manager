@@ -30,3 +30,9 @@ test("BL-221: «Привязать к видео» is offered for a number with 
   // Review: never while this computer uploads the number.
   assert.equal(canLink({ state: "packaged", folder: "f", youtubeVideoId: null, uploading: true }), false);
 });
+
+// BL-263 (ADR 0071 §5): a recoded V stands on no column and is never linked by hand -- its S code is the board's entry.
+test("BL-263: a recoded V is on no column and cannot be linked", () => {
+  assert.equal(pipelinePhase({ state: "recoded", hasVideoFile: true }, null), null);
+  assert.equal(canLink({ state: "recoded", folder: "04 Videos/11 November/1120 V14 Short", youtubeVideoId: null }), false);
+});

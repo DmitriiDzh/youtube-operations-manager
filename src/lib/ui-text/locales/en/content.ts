@@ -479,6 +479,7 @@ export const content = {
   "videoProjects.state.packaged": "Package ready",
   "videoProjects.state.published": "Uploaded",
   "videoProjects.state.cancelled": "Cancelled",
+  "videoProjects.state.recoded": "Recoded",
   "videoProjects.untitled": "No working title",
   "videoProjects.reservedHere": "Started {date} on this computer",
   "videoProjects.reservedOn": "Started {date} on {computer}",

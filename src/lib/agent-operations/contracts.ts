@@ -123,7 +123,10 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // slots' package gains reviewComment (his return comment). Additive.
 // 4.20.0 (BL-256): agent_publishing_plan_get / _list -- a plan's and a slot's updatedBy may be owner (he moved a slot's day or time in
 // the Web UI; that revokes his approval of the old time, so an agent saving the old time back never restores it). Additive.
-export const AGENT_API_VERSION = "4.20.0";
+// 4.21.0 (BL-263, PRD-REQ-0194, ADR 0071): video codes may be `S<n>` (a WWE Short) besides `V<n>` -- agent_video_list (state recoded +
+// recodedTo, series), agent_video_get_cost and the publishing calendar. agent_video_create gives the next V only (a given S code is the
+// Factory Operator's: validation_failed reason s_codes_factory_only). Additive.
+export const AGENT_API_VERSION = "4.21.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry

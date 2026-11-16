@@ -483,6 +483,7 @@ export const content: Record<keyof typeof en, string> = {
   "videoProjects.state.packaged": "Пакет готов",
   "videoProjects.state.published": "Загружен",
   "videoProjects.state.cancelled": "Отменён",
+  "videoProjects.state.recoded": "Перекодирован",
   "videoProjects.untitled": "Без рабочего названия",
   "videoProjects.reservedHere": "Начат {date} на этом компьютере",
   "videoProjects.reservedOn": "Начат {date} на компьютере {computer}",
