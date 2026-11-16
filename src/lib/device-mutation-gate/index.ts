@@ -1,5 +1,5 @@
 import type { SqlExecutor } from "@/lib/db-backup/contracts";
-import { OperationLockError, describeOperationLock, getOperationLock } from "@/lib/operation-lock";
+import { OperationLockError, describeOperationLock, getOperationLock, isProcessAlive } from "@/lib/operation-lock";
 
 /**
  * The app-wide pre-mutation gate (architecture audit 2026-10-01, M5): previously owned by the
@@ -94,5 +94,30 @@ export async function assertNoOperationLock(client: SqlExecutor): Promise<void> 
   const lock = await getOperationLock(client);
   if (lock) {
     throw new OperationLockError({ heldBy: lock, stale: describeOperationLock(lock).stale });
+  }
+}
+
+/**
+ * Owner msg 4556 (2026-11-16): an owner's save from the Web UI failed with "A export operation is already in progress" because
+ * the automatic device-sync export held the lock for a few seconds. Before the gate refuses, wait for a live process's EXPORT to
+ * finish (an export writes only the sync folder, so nothing it does is undone by waiting). An import or a migration is never waited
+ * for, and a stale lock (dead holder) is not either -- both are refused at once, exactly as before. Gives up after `timeoutMs`; the
+ * gate then refuses as usual.
+ */
+export async function waitForExportLockRelease(
+  client: SqlExecutor,
+  options: { timeoutMs?: number; pollMs?: number; sleep?: (ms: number) => Promise<void>; alive?: (pid: number) => boolean; now?: () => number } = {}
+): Promise<void> {
+  const timeoutMs = options.timeoutMs ?? 20_000;
+  const pollMs = options.pollMs ?? 250;
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const alive = options.alive ?? isProcessAlive;
+  const now = options.now ?? Date.now;
+  const start = now();
+  for (;;) {
+    const lock = await getOperationLock(client);
+    if (!lock || lock.operationType !== "export" || !alive(lock.holderPid)) return;
+    if (now() - start >= timeoutMs) return;
+    await sleep(pollMs);
   }
 }
