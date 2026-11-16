@@ -91,6 +91,7 @@ const EXPECTED_TOOLS = [
   "factory_publishing_plan_save",
   "factory_release_folder_rename",
   "factory_release_hold",
+  "factory_release_recode",
   "factory_restart_status",
   "factory_sfx_create_job",
   "factory_speech_create_job",
@@ -207,6 +208,7 @@ test("AC-FO-09 (amended by ADR 0025/0026): writes are exactly the named media/se
     "factory_publishing_plan_save",
     "factory_release_folder_rename",
     "factory_release_hold",
+    "factory_release_recode",
     "factory_sfx_create_job",
     "factory_speech_create_job",
     "factory_storyboard_attach_render",
@@ -238,10 +240,12 @@ function importsOf(source: string): string[] {
   return [...source.matchAll(/(?:^|\n)\s*(?:import|export)\s[^;]*?from\s+"([^"]+)"/g)].map((m) => m[1]);
 }
 
-test("§2.5(3): factory-server.ts imports only the MCP SDK, zod and shared-domain -- no domain module, gateway, db or channel-scope state", async () => {
+test("§2.5(3): factory-server.ts imports only the MCP SDK, zod, shared-domain and shared-video-code -- no domain module, gateway, db or channel-scope state", async () => {
   const imports = importsOf(await readFile("src/mcp/factory-server.ts", "utf8"));
+  // BL-263 (ADR 0071 §1): `shared-video-code` is a pure, dependency-free rule module (the one video-code pattern), like
+  // shared-domain -- not a domain module, gateway, db or state; the input schemas take the code rule from it instead of a regex copy.
   const allowed = (spec: string) =>
-    spec === "zod" || spec === "@/lib/shared-domain" || spec.startsWith("@modelcontextprotocol/sdk/");
+    spec === "zod" || spec === "@/lib/shared-domain" || spec === "@/lib/shared-video-code" || spec.startsWith("@modelcontextprotocol/sdk/");
   assert.deepEqual(imports.filter((spec) => !allowed(spec)), []);
   assert.ok(imports.length >= 3, "the scan must actually see the imports");
 });
@@ -286,6 +290,8 @@ test("§2.5(3): the factory route and endpoint reach only the allowlisted module
     "@/composition/publishing-coverage",
     // BL-261: the release-folder rename only (a local file move and this computer's upload rows; no upload, no YouTube call).
     "@/composition/release-folder-rename",
+    // BL-263: the release recode (composition: video list, approvals, storyboards, peer rows handed to publishing).
+    "@/composition/release-recode",
     // BL-227 (LANGUAGES_REVIEW_PLAN.md §5): the localization-review module's check report (it decides nothing).
     "@/lib/localization-review",
     // BL-184 (STORYBOARD_PLAN.md §2.6): the storyboards module for the factory_storyboard_* tools.
@@ -360,7 +366,7 @@ test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.23.0 
   // BL-227 (LANGUAGES_REVIEW_PLAN.md §5: "Factory API 1.34.0"): one new tool, additive -> 1.34.0.
   // BL-233 (FO-REQ-0047 ask 3): factory_live_get_status gains `encoders` and `upload`, additive -> 1.37.0.
   // BL-234 (FO-REQ-0048): factory_live_get_status gains `sources`, additive -> 1.38.0.
-  assert.equal(FACTORY_API_VERSION, "1.48.0"); // BL-261 (new requirement, owner TG 3521): factory_release_folder_rename (additive) -> 1.48.0; BL-256 (new requirement, owner msgs 4380/4383): updatedBy may be owner (additive) -> 1.47.0; BL-257 (new requirement ADR 0070): plan package review codes and reviewComment (additive); BL-253: factory_sfx_create_job / factory_music_create_job (additive); BL-250: elevenlabs accountLimit / monthlyLimit (additive); BL-243: statusCode video_deleted_on_youtube (additive); BL-242: plan approvalStage, state planned, approval awaiting_package (additive) -> 1.42.0. BL-240: plan slots replacesSlotId, vetoed slots removable (additive) -> 1.41.0. // BL-236: speech and voice tools (additive) -> 1.40.0. // BL-235: factory_publishing_coverage (additive) -> 1.39.0. // BL-230: factory_media_create_runtime checks github.com sources (new errors) -> 1.36.0. 1.35.0 = BL-229 part B (MUSIC_LIBRARY_PLAN.md §3): review forms, genre, answers -- additive -> 1.35.0.
+  assert.equal(FACTORY_API_VERSION, "1.50.0"); // BL-263 fix (changed requirement, owner TG 4584): factory_release_recode carries the owner's package-review decision instead of refusing, result review, busy reason review_carry_failed (additive) -> 1.50.0; BL-263 (new requirement PRD-REQ-0194, ADR 0071): S codes, factory_video_create.video, factory_release_recode (additive) -> 1.49.0; BL-261 (new requirement, owner TG 3521): factory_release_folder_rename (additive) -> 1.48.0; BL-256 (new requirement, owner msgs 4380/4383): updatedBy may be owner (additive) -> 1.47.0; BL-257 (new requirement ADR 0070): plan package review codes and reviewComment (additive); BL-253: factory_sfx_create_job / factory_music_create_job (additive); BL-250: elevenlabs accountLimit / monthlyLimit (additive); BL-243: statusCode video_deleted_on_youtube (additive); BL-242: plan approvalStage, state planned, approval awaiting_package (additive) -> 1.42.0. BL-240: plan slots replacesSlotId, vetoed slots removable (additive) -> 1.41.0. // BL-236: speech and voice tools (additive) -> 1.40.0. // BL-235: factory_publishing_coverage (additive) -> 1.39.0. // BL-230: factory_media_create_runtime checks github.com sources (new errors) -> 1.36.0. 1.35.0 = BL-229 part B (MUSIC_LIBRARY_PLAN.md §3): review forms, genre, answers -- additive -> 1.35.0.
   const agentOperations = await readFile("src/lib/agent-operations/contracts.ts", "utf8");
   assert.equal(agentOperations.includes("FACTORY_API_VERSION"), false);
 });

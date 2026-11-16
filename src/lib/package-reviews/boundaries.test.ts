@@ -58,7 +58,23 @@ test("AC-PR-08: the owner's surface is created only by the composition file, whi
     if (content.includes("@/composition/package-reviews")) composers.push(rel);
   }
   assert.deepEqual(creators.sort(), ["composition/package-reviews.ts", "lib/package-reviews/index.ts"]);
+  // Owner TG 4584: the recode's composition imports only `afterReviewCarried` (the media memo and the Inbox nudge), never the surface.
   assert.deepEqual(composers.sort(), ["app/api/channels/[channelId]/package-reviews/handlers.ts"]);
+  const recodeComposition = await readFile(path.join(SRC, "composition", "release-recode.ts"), "utf8");
+  assert.deepEqual([...recodeComposition.matchAll(/import\s*\{([^}]*)\}\s*from\s*["']\.\/package-reviews["']/g)].map((m) => m[1].trim()), ["afterReviewCarried"]);
+});
+
+// Owner TG 4584 (BL-263 fix): the one writer outside the owner's surface -- the carry of the owner's existing decision to a recoded
+// package's new manifest. Only the recode's composition calls it; no MCP server, agent endpoint, route or other module names it.
+const CARRY = ["carryReviewDecision", "ForRecode"].join("");
+
+test("TG 4584: the review carry is exported by package-reviews and called only by the recode's composition", async () => {
+  const users: string[] = [];
+  for (const file of await files(SRC)) {
+    const content = await readFile(file, "utf8");
+    if (content.includes(CARRY)) users.push(path.relative(SRC, file).split(path.sep).join("/"));
+  }
+  assert.deepEqual(users.sort(), ["composition/release-recode.ts", "lib/package-reviews/index.ts"]);
 });
 
 test("AC-PR-08: no MCP tool, worker tool or factory tool reviews packages", () => {

@@ -1,17 +1,37 @@
 import { existsOnChannelOf } from "@/lib/shared-video-presence";
 import { isNamedAfterRelease, isVideoFileName, releaseManifestFileName, uploadRecordFileName, type VideoFolder, type VideoRegistryRow } from "@/lib/workspace-videos";
-import { VIDEO_NUMBER_PATTERN } from "@/lib/sync-gateway";
+import { compareVideoCodesDesc, isStrictSCode, isStrictVCode, isVideoCode } from "@/lib/shared-video-code";
 import type { ChannelCopy, OwnReservation, ReservationView, UploadRecordLink, VideoConflict, VideoProject, VideoSource, VideoState } from "./contracts";
 
 // BL-194 stage 1 (VIDEO_COST_PLAN.md §2, ADR 0040): the pure rules -- the next number, the list of a channel's videos, and the
 // duplicates two computers made. No I/O.
 
-/** 49 for `V49`; null for anything that is not a video number. */
+/** 49 for `V49`; null for anything that is not a strict V number (BL-263: an S code never counts toward the next V). */
 export function videoNumberValue(video: string): number | null {
-  return VIDEO_NUMBER_PATTERN.test(video) ? Number(video.slice(1)) : null;
+  return isStrictVCode(video) ? Number(video.slice(1)) : null;
 }
 
-/** One above the highest number known, `V1` when none is. */
+/** BL-263: `{ series, number }` of a strict code (V or S) the list keeps; null for anything else (`V07` is not listed, as before). */
+export function strictVideoCode(video: string): { series: "V" | "S"; number: number } | null {
+  return isVideoCode(video) ? { series: video[0] as "V" | "S", number: Number(video.slice(1)) } : null;
+}
+
+/**
+ * BL-263 (ADR 0071 §5, plan §6.4): the recode alias -- every V code that any computer reports cancelled with `replacedBy` an S code,
+ * mapped to that S. A conflict renumber is always V→V, so V→S can only be a recode. The first report naming one wins.
+ */
+export function recodeAliases(channelId: string, lists: Array<Array<{ channelId: string; video: string; state: string; replacedBy: string | null }>>): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const list of lists) {
+    for (const r of list) {
+      if (r.channelId !== channelId || r.state !== "cancelled" || !r.replacedBy) continue;
+      if (isStrictVCode(r.video) && isStrictSCode(r.replacedBy) && !out.has(r.video)) out.set(r.video, r.replacedBy);
+    }
+  }
+  return out;
+}
+
+/** One above the highest V number known, `V1` when none is (BL-263: S codes never count). */
 export function nextVideoNumber(known: Iterable<string>): string {
   let highest = 0;
   for (const video of known) {
@@ -46,7 +66,8 @@ export function knownNumbers(input: VideoListInput): string[] {
     ...(input.registry ?? []).map((r) => r.vNumber ?? ""),
     ...input.uploads.map((u) => u.video),
   ];
-  return all.filter((v) => videoNumberValue(v) !== null);
+  // BL-263: an S code is known too (a given S is refused when known), but only V codes raise the next V (`nextVideoNumber`).
+  return all.filter((v) => strictVideoCode(v) !== null);
 }
 
 /** The earlier reservation first; equal times: the lower device id first. */
@@ -87,7 +108,7 @@ export function buildVideoList(input: VideoListInput): VideoProject[] {
   };
   const addReservations = (deviceId: string, hostName: string | null, thisComputer: boolean, list: OwnReservation[]) => {
     for (const r of list) {
-      if (r.channelId !== input.channelId || videoNumberValue(r.video) === null) continue;
+      if (r.channelId !== input.channelId || strictVideoCode(r.video) === null) continue;
       const e = entry(r.video);
       e.sources.add("reservation");
       e.reservations.push({ deviceId, hostName, thisComputer, reservedAt: r.reservedAt, workingTitle: r.workingTitle, state: r.state, replacedBy: r.replacedBy });
@@ -102,14 +123,14 @@ export function buildVideoList(input: VideoListInput): VideoProject[] {
     if (!e.folder) e.folder = folder;
   }
   for (const row of input.registry ?? []) {
-    if (!row.vNumber || videoNumberValue(row.vNumber) === null) continue;
+    if (!row.vNumber || strictVideoCode(row.vNumber) === null) continue;
     const e = entry(row.vNumber);
     e.sources.add("registry");
     e.registry = true;
     e.registryId ??= row.videoId;
   }
   for (const upload of input.uploads) {
-    if (videoNumberValue(upload.video) === null) continue;
+    if (strictVideoCode(upload.video) === null) continue;
     const e = entry(upload.video);
     e.sources.add("upload");
     e.uploads.push(upload.status);
@@ -123,29 +144,38 @@ export function buildVideoList(input: VideoListInput): VideoProject[] {
 
   const suggestion = nextVideoNumber(knownNumbers(input));
   const copy = input.channelCopy ?? null;
+  const aliases = recodeAliases(input.channelId, [input.own.reservations, ...input.peers.filter((p) => p.deviceId !== input.own.deviceId).map((p) => p.reservations)]);
   const out: VideoProject[] = [];
   for (const [video, e] of entries) {
+    const code = strictVideoCode(video);
+    const series = code?.series ?? "V";
+    const recodedTo = aliases.get(video) ?? null;
     const sorted = [...e.reservations].sort(byPrecedence);
     const active = sorted.filter((r) => r.state === "in_work");
     const activeDevices = new Set(active.map((r) => r.deviceId));
     let conflict: VideoConflict | null = null;
-    if (activeDevices.size > 1) {
+    // BL-263: a recoded V is never in dispute (a peer still holding it in work follows the alias); an S conflict has no
+    // suggested number (there is no "next S": the number is the factory's).
+    if (activeDevices.size > 1 && !recodedTo) {
       const winner = active[0];
       const thisComputerInvolved = active.some((r) => r.thisComputer);
       const thisComputerLoses = thisComputerInvolved && !winner.thisComputer;
-      conflict = { reservations: active, winnerDeviceId: winner.deviceId, thisComputerInvolved, thisComputerLoses, suggestedVideo: thisComputerLoses ? suggestion : null };
+      conflict = { reservations: active, winnerDeviceId: winner.deviceId, thisComputerInvolved, thisComputerLoses, suggestedVideo: thisComputerLoses && series === "V" ? suggestion : null };
     }
     const lead = active[0] ?? sorted[0] ?? null;
     const files = e.folder?.files ?? [];
     const published = files.includes(uploadRecordFileName(video)) || e.registry || e.uploads.some((s) => PUBLISHED_UPLOAD.has(s));
     const packaged = files.includes(releaseManifestFileName(video)) || e.uploads.some((s) => !DEAD_UPLOAD.has(s));
     const onlyCancelled = sorted.length > 0 && active.length === 0 && !e.folder && !e.registry && e.uploads.length === 0;
-    const state: VideoState = published ? "published" : packaged ? "packaged" : onlyCancelled ? "cancelled" : "in_work";
-    const youtubeVideoId = e.recordId ?? e.uploadId ?? e.registryId;
+    const state: VideoState = recodedTo ? "recoded" : published ? "published" : packaged ? "packaged" : onlyCancelled ? "cancelled" : "in_work";
+    // BL-263: a recoded V names no YouTube video (the S code does now), so Content shows the S code for it.
+    const youtubeVideoId = recodedTo ? null : (e.recordId ?? e.uploadId ?? e.registryId);
     out.push({
       channelId: input.channelId,
       video,
-      number: videoNumberValue(video) ?? 0,
+      number: code?.number ?? 0,
+      series,
+      recodedTo,
       workingTitle: lead?.workingTitle ?? null,
       state,
       sources: (["reservation", "folder", "registry", "upload"] as const).filter((s) => e.sources.has(s)),
@@ -165,5 +195,6 @@ export function buildVideoList(input: VideoListInput): VideoProject[] {
       uploading: e.uploads.some((s) => !DEAD_UPLOAD.has(s) && !PUBLISHED_UPLOAD.has(s)),
     });
   }
-  return out.sort((a, b) => b.number - a.number);
+  // BL-263 (plan §7): highest first -- the V block, then S, each by number.
+  return out.sort((a, b) => compareVideoCodesDesc(a.video, b.video));
 }

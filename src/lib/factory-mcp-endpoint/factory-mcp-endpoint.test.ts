@@ -165,6 +165,8 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
     // BL-261: the release-folder rename is a fake that records what reached it.
     releaseFolders: {
       rename: async (input) => (mediaCalls.push(`folders.rename:${input.video}:${input.newName}:${input.dryRun ?? false}`), { dryRun: input.dryRun ?? false }),
+      // BL-263: the recode is a fake that records what reached it.
+      recode: async (input) => (mediaCalls.push(`folders.recode:${input.video}:${input.newCode}:${input.dryRun ?? false}`), { dryRun: input.dryRun ?? false }),
     },
     // BL-227: the check-report surface is a fake that records what reached it.
     localizationChecks: {
@@ -407,6 +409,7 @@ test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exact
     "factory_publishing_plan_list",
     "factory_publishing_plan_save",
     "factory_release_folder_rename",
+    "factory_release_recode",
     "factory_storyboard_attach_render",
     "factory_storyboard_create",
     "factory_storyboard_get",
@@ -475,7 +478,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.48.0", // BL-261 (new requirement): factory_release_folder_rename (1.48.0); BL-256 (new requirement): plan updatedBy may be owner (1.47.0); BL-257 (new requirement ADR 0070): plan package review codes and reviewComment; BL-253: factory_sfx_create_job / factory_music_create_job; BL-250: elevenlabs accountLimit / monthlyLimit; BL-243: statusCode video_deleted_on_youtube; BL-242: plan approvalStage / planned / awaiting_package; 1.41.0 = BL-240: plan slots replacesSlotId; 1.40.0 = BL-236: factory_speech_* and factory_voice_*; 1.39.0 = BL-235: factory_publishing_coverage; 1.38.0 = BL-234: factory_live_get_status gains sources; BL-233: factory_live_get_status gains encoders / upload; 1.36.0 = BL-230: runtime creation checks github.com sources; 1.35.0 = BL-229 part B: plan review forms, wave genre, verdict answers; 1.34.0 (BL-227): factory_localization_report_checks; 1.33.0 (BL-225): factory_publishing_plan_save / _get / _list; 1.32.0 (BL-223): factory_channel_get_branding / factory_channel_save_branding; 1.31.0 (BL-221: factory_video_list gains youtubeVideoId / hasVideoFile (additive); 1.30.0 (BL-220): the three restart tools
+    factoryApiVersion: "1.50.0", // BL-263 fix (owner TG 4584): factory_release_recode carries the package review, result review (1.50.0); BL-263 (new requirement PRD-REQ-0194, ADR 0071): S codes, factory_release_recode (1.49.0); BL-261 (new requirement): factory_release_folder_rename (1.48.0); BL-256 (new requirement): plan updatedBy may be owner (1.47.0); BL-257 (new requirement ADR 0070): plan package review codes and reviewComment; BL-253: factory_sfx_create_job / factory_music_create_job; BL-250: elevenlabs accountLimit / monthlyLimit; BL-243: statusCode video_deleted_on_youtube; BL-242: plan approvalStage / planned / awaiting_package; 1.41.0 = BL-240: plan slots replacesSlotId; 1.40.0 = BL-236: factory_speech_* and factory_voice_*; 1.39.0 = BL-235: factory_publishing_coverage; 1.38.0 = BL-234: factory_live_get_status gains sources; BL-233: factory_live_get_status gains encoders / upload; 1.36.0 = BL-230: runtime creation checks github.com sources; 1.35.0 = BL-229 part B: plan review forms, wave genre, verdict answers; 1.34.0 (BL-227): factory_localization_report_checks; 1.33.0 (BL-225): factory_publishing_plan_save / _get / _list; 1.32.0 (BL-223): factory_channel_get_branding / factory_channel_save_branding; 1.31.0 (BL-221: factory_video_list gains youtubeVideoId / hasVideoFile (additive); 1.30.0 (BL-220): the three restart tools
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",
@@ -546,6 +549,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
       "factory_publishing_plan_list",
       "factory_publishing_coverage",
       "factory_release_folder_rename",
+      "factory_release_recode",
       "factory_localization_report_checks",
       "factory_localization_requests_list",
       "factory_localization_request_claim",
@@ -605,6 +609,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
       "factory_channel_save_branding",
       "factory_publishing_plan_save",
       "factory_release_folder_rename",
+      "factory_release_recode",
       "factory_localization_report_checks",
       "factory_localization_request_claim",
       "factory_localization_request_complete",
@@ -1704,4 +1709,38 @@ test("BL-253: factory_sfx_create_job / factory_music_create_job pass the gate fi
     assert.equal(body.result?.isError, true, `${name} ${JSON.stringify(args)}`);
     assert.deepEqual(toolDeps.mediaCalls, [], name);
   }
+});
+
+// BL-263 (AC-SC-01/08; ADR 0071 §2): factory_video_create takes an optional S code -- it passes the gate and reaches the module; a
+// given V is refused validation_failed (reason v_numbers_are_given) and S0 / S01 / s14 as invalid, before the gate.
+test("BL-263: factory_video_create { video: 'S23' } reaches the module; a given V or a malformed S never does", async () => {
+  const { endpoint, tokenServices, toolDeps } = setupWithDeps();
+  const { token } = await tokenServices.issueToken({});
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_video_create", { channelId: "UC_A", video: "S23" }), withToken(token))))).isError, false);
+  assert.deepEqual(toolDeps.mediaCalls, ["gate", "video.create:UC_A"]);
+  toolDeps.mediaCalls.length = 0;
+  const v = await toolResult(await endpoint.handle(rpc(call("factory_video_create", { channelId: "UC_A", video: "V30" }), withToken(token))));
+  assert.equal(v.isError, true);
+  assert.equal((v.payload as { error: { code: string; details: { reason: string } } }).error.details.reason, "v_numbers_are_given");
+  for (const bad of ["S0", "S01", "s14", "S1000000", "SV1", ""]) {
+    const body = await (await endpoint.handle(rpc(call("factory_video_create", { channelId: "UC_A", video: bad }), withToken(token)))).json();
+    assert.equal(Boolean(body.result?.isError ?? body.error), true, bad);
+  }
+  assert.deepEqual(toolDeps.mediaCalls, []);
+});
+
+// BL-263 review LOW 6: factory_release_folder_rename takes the V spellings it took before (`V\d{1,6}`, a legacy V07 included) plus a
+// strict S; factory_release_recode reaches only the module with its inputs.
+test("BL-263: factory_release_folder_rename keeps the old V acceptance (V07) and adds S; S014 is refused before the module", async () => {
+  const { endpoint, tokenServices, toolDeps } = setupWithDeps();
+  const { token } = await tokenServices.issueToken({});
+  for (const video of ["V07", "V65", "S14"]) {
+    assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_release_folder_rename", { channelId: "UC_A", video, newName: `1115 ${video} Short`, dryRun: true }), withToken(token))))).isError, false, video);
+  }
+  assert.deepEqual(toolDeps.mediaCalls, ["folders.rename:V07:1115 V07 Short:true", "folders.rename:V65:1115 V65 Short:true", "folders.rename:S14:1115 S14 Short:true"]);
+  toolDeps.mediaCalls.length = 0;
+  const body = await (await endpoint.handle(rpc(call("factory_release_folder_rename", { channelId: "UC_A", video: "S014", newName: "x", dryRun: true }), withToken(token)))).json();
+  assert.equal(Boolean(body.result?.isError ?? body.error), true);
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_release_recode", { channelId: "UC_A", video: "V14", newCode: "S12", dryRun: true }), withToken(token))))).isError, false);
+  assert.deepEqual(toolDeps.mediaCalls, ["folders.recode:V14:S12:true"]);
 });

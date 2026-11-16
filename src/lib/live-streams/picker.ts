@@ -1,5 +1,6 @@
 import { isNamedAfterRelease, videoNumberOfFolder, VIDEOS_FOLDER, type VideoRegistryRow } from "@/lib/workspace-videos";
 import { DURATION_TOLERANCE_SECONDS } from "./contracts";
+import { parseVideoCode } from "@/lib/shared-video-code";
 
 // BL-187 (LIVE_STREAMS_FIELDS_PLAN.md §2.4): the «Добавить видео…» dialog's rows -- the channel workspace's video files
 // under `04 Videos/`, each with the YouTube video it is (when the app knows it) and whether it can be added. Pure: the
@@ -66,8 +67,11 @@ function isPublicNow(video: PickerVideo, now: Date): boolean {
 
 const newestFirst = (a: PickerVideo, b: PickerVideo) => (b.publishedAt ?? "").localeCompare(a.publishedAt ?? "");
 
+/** BL-263 (plan §7): ascending V then S, each by number (an S code ranks after every V). */
 function releaseNumber(vNumber: string | null): number {
-  return vNumber ? Number(vNumber.slice(1)) : Number.POSITIVE_INFINITY;
+  const code = vNumber ? parseVideoCode(vNumber) : null;
+  if (!code) return Number.POSITIVE_INFINITY;
+  return code.series === "S" ? 10_000_000 + code.number : code.number;
 }
 
 export function buildPickerRows(input: PickerInputs): PickerRow[] {

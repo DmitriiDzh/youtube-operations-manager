@@ -65,7 +65,8 @@ export type OwnRunRows = {
   gemini: VideoCostGeminiJobRow[];
 };
 
-export type VideoStateInfo = { state: "in_work" | "packaged" | "published" | "cancelled"; folder: string | null };
+/** BL-263: `recoded` + `recodedTo` -- a V moved to an S by `factory_release_recode`; its runs count under the S (ADR 0071 §5). */
+export type VideoStateInfo = { state: "in_work" | "packaged" | "published" | "cancelled" | "recoded"; folder: string | null; recodedTo?: string | null };
 
 export const COST_FILE_SCHEMA = "ytm.video-cost";
 
@@ -101,6 +102,8 @@ export type VideoCostsDeps = {
   storyboards(channelId: string): Promise<StoryboardPicks[]>;
   /** The channel's videos by number (state, folder); throws when they cannot be listed (then nothing is dropped from the report). */
   videoStates(channelId: string): Promise<Map<string, VideoStateInfo>>;
+  /** BL-263: the channel's recode aliases V → S (a light read of the reservations); absent: taken from `videoStates`. */
+  recodeAliases?(channelId: string): Promise<Map<string, string>>;
   costFiles: {
     /** The parsed file, or null when it is not there. */
     read(channelId: string, relativePath: string): Promise<unknown | null>;

@@ -353,8 +353,8 @@ export function pinFactoryDepsToChannel(
       get: byChannel((input) => deps().publishingPlans.get(input)),
       list: byChannel((input) => deps().publishingPlans.list(input)),
     },
-    // BL-261: renaming release folders is the Factory Operator's only.
-    releaseFolders: { rename: refused },
+    // BL-261 / BL-263: renaming and recoding release folders are the Factory Operator's only.
+    releaseFolders: { rename: refused, recode: refused },
     // BL-235: the coverage of the worker's own channel (a read).
     publishingCoverage: {
       get: async (input) => deps().publishingCoverage.get(pinChannel(input, channelId) as { channelId: string; days?: number }),
@@ -369,7 +369,13 @@ export function pinFactoryDepsToChannel(
       attachRender: byChannel((input) => deps().storyboards.attachRender(input)),
     },
     videos: {
-      create: byChannel((input) => deps().videos.create(input)),
+      // BL-263 (ADR 0071 §2, decision 2026-11-16): a given S code is the Factory Operator's only; a worker gets the next V.
+      create: byChannel((input) => {
+        if (record(input).video !== undefined) {
+          throw new DomainError({ code: "validation_failed", message: "Only the Factory Operator gives an S code (factory_video_create); leave video out to get the next V.", details: { field: "video", reason: "s_codes_factory_only" } });
+        }
+        return deps().videos.create(input);
+      }),
       list: byChannel((input) => deps().videos.list(input)),
       cost: byChannel((input) => deps().videos.cost(input)),
     },

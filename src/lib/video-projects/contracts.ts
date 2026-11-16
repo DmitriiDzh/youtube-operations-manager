@@ -12,11 +12,16 @@ export { DomainError, isDomainError };
 // ports wired by the composition layer.
 // ---------------------------------------------------------------------------
 
-/** `V1`, `V49`: `V` and a number without leading zeros (the `^V\d+$` of the plan, bounded). */
+/** A video code: `V1`, `V49` or (BL-263) `S14` -- the series letter and a number without leading zeros (`src/lib/shared-video-code`). */
 export { VIDEO_NUMBER_PATTERN } from "@/lib/sync-gateway";
 
-export type VideoState = "in_work" | "packaged" | "published" | "cancelled";
-export const VIDEO_STATES: readonly VideoState[] = ["in_work", "packaged", "published", "cancelled"];
+/**
+ * BL-263 (ADR 0071 §5): `recoded` -- a V code some computer reports cancelled with `replacedBy` an S code (`factory_release_recode`
+ * moved the video to that S); `recodedTo` names it. A recoded V is never in dispute, names no YouTube video, takes no new link and
+ * still counts toward the next V.
+ */
+export type VideoState = "in_work" | "packaged" | "published" | "cancelled" | "recoded";
+export const VIDEO_STATES: readonly VideoState[] = ["in_work", "packaged", "published", "cancelled", "recoded"];
 
 /** BL-243: what the synced copy says of the channel's videos (for `existsOnChannel` / `removedAt`). */
 export type ChannelCopy = { listed: ReadonlyMap<string, string>; removed: ReadonlyMap<string, string>; checkedAt: string | null };
@@ -58,15 +63,19 @@ export type VideoConflict = {
   thisComputerInvolved: boolean;
   /** This computer's reservation is the one that loses. */
   thisComputerLoses: boolean;
-  /** The next free number, offered to the losing computer (null on the others). */
+  /** The next free number, offered to the losing computer (null on the others, and always null for an S code: BL-263). */
   suggestedVideo: string | null;
 };
 
 export type VideoProject = {
   channelId: string;
   video: string;
-  /** The number of `video` (49 for V49), for sorting. */
+  /** The number of `video` (49 for V49, 14 for S14), for sorting. */
   number: number;
+  /** BL-263: the series of `video` -- `V` (YTM gives the next one) or `S` (a Short; the factory's piece number). */
+  series: "V" | "S";
+  /** BL-263: the S code a recoded V became (state `recoded`), else null. */
+  recodedTo: string | null;
   workingTitle: string | null;
   state: VideoState;
   sources: VideoSource[];
@@ -96,6 +105,9 @@ export type VideoProject = {
   /** BL-243: when the sync found `youtubeVideoId` removed (ISO), else null. */
   removedAt: string | null;
 };
+
+/** BL-263: an unfinished recode journal of the channel (`src/lib/release-recode-journals`). */
+export type PendingRecode = { journal: string; video: string; newCode: string; startedAt: string | null; done: string[] };
 
 /** BL-221: a synced video of the channel the owner may link a number to (a local read; never YouTube). */
 export type LinkCandidate = {
@@ -149,6 +161,11 @@ export type VideoProjectsDeps = {
   channelVideos?(channelId: string): Promise<LinkCandidate[]>;
   /** BL-221: writes a `Vn_youtube.json` (workspace-relative path) that must not exist yet, inside the channel workspace. */
   writeUploadRecord?(channelId: string, relativePath: string, record: unknown): Promise<void>;
+  /**
+   * BL-263: the channel's unfinished `factory_release_recode` journals (a crashed recode the next real call undoes); while one exists
+   * its V and S take no new link and the S is not given. Absent or failing: none known.
+   */
+  pendingRecodes?(channelId: string): Promise<PendingRecode[]>;
   now(): Date;
   /** Reservations of one process run one at a time (read the highest number, then take the next). */
   withLock<T>(fn: () => Promise<T>): Promise<T>;

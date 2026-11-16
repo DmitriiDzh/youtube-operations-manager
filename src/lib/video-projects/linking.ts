@@ -1,4 +1,5 @@
 import type { LinkCandidate } from "./contracts";
+import { videoNumberOfFolder } from "@/lib/workspace-videos";
 
 // BL-221 (docs/roadmap/plans/CONTENT_UX_PLAN.md stage B, owner msgs 3448/3449/3451): which synced videos the owner is offered when
 // linking a number uploaded outside the app. Never by title (AGENTS.md §F): by the folder's MMDD date against the video's publish
@@ -9,7 +10,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /** The `MMDD` of a `…/<MMDD Vn>` folder; null for any other name or an impossible date. */
 export function folderMonthDay(folder: string): { month: number; day: number } | null {
   const name = folder.slice(folder.lastIndexOf("/") + 1);
-  const match = /^(\d{2})(\d{2})\s+V\d+/i.exec(name);
+  // BL-263: the shared folder rule (`MMDD Vn` or `MMDD Sn`).
+  const match = videoNumberOfFolder(name) ? /^(\d{2})(\d{2})\s/.exec(name) : null;
   if (!match) return null;
   const month = Number(match[1]);
   const day = Number(match[2]);

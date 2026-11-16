@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { RUNPOD_DATACENTER_ID_PATTERN } from "@/lib/media-gateway";
 import { MAX_CONCURRENT_SESSIONS_RANGE, MEDIA_CUDA_VERSIONS, RUNTIME_ID_PATTERN } from "./contracts";
+import { VIDEO_CODE_PATTERN } from "@/lib/shared-video-code";
 export { parseWithSchema, formatZodError } from "./contracts";
 
 /** RunPod datacenter ids look like `EU-RO-1`, `EUR-IS-1`, `US-TX-3`. */
@@ -174,7 +175,7 @@ export const createJobInputSchema = z
     /** BL-184 stage 2 (FO-REQ-0024 B4): the storyboard segment this video renders; checked by the storyboard gate. */
     storyboard: z.object({ storyboardId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/), segmentId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/) }).strict().optional(),
     /** BL-194 (ADR 0040): the channel's video number this job is for; omitted = its storyboard's, else its plan's. */
-    videoNumber: z.string().regex(/^V[1-9][0-9]{0,5}$/, "a video number such as V49").optional(),
+    videoNumber: z.string().regex(VIDEO_CODE_PATTERN, "a video code such as V49 or S14").optional(),
   })
   .strict();
 

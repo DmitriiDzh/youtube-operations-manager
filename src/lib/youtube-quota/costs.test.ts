@@ -18,6 +18,21 @@ test("known Data API methods cost what Google's table says", () => {
     // BL-223: determine_quota_cost lists channelBanners.insert at 50 and channels.update at 50.
     "channelBanners.insert": 50,
     "channels.update": 50,
+    // Full table re-checked 2026-11-16 (owner msg 4594): videos.insert 1 call in its own bucket; the rows added then.
+    "videos.insert": 1,
+    "thumbnails.set": 50,
+    "captions.delete": 50,
+    "channelSections.insert": 50,
+    "commentThreads.insert": 50,
+    "comments.setModerationStatus": 50,
+    "videos.getRating": 1,
+    "videos.reportAbuse": 50,
+    "watermarks.set": 50,
+    "liveChatMessages.list": 5,
+    "liveChatMessages.insert": 20,
+    "liveChatBans.insert": 200,
+    "liveChatModerators.list": 50,
+    "superChatEvents.list": 1,
   };
   for (const [method, units] of Object.entries(expected)) assert.equal(quotaUnitsForCall("data", method), units, method);
   assert.equal(quotaUnitsForCall("analytics", "reports.query"), 1);

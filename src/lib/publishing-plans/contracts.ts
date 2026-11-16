@@ -74,6 +74,11 @@ export type PlanSlotProgress = {
   package?: PlanSlotPackage | null;
   /** Review #3: the date the uploaded video carries (UTC), if any: the slot is not released before it. */
   publishAt?: string | null;
+  /**
+   * BL-263 (ADR 0071 §5, plan §6.5): the V codes recoded to this package's S code (`factory_release_recode`), so an approval naming
+   * the old V still covers the package when it names the same, non-null video id. Absent: none.
+   */
+  recodedFrom?: string[];
 };
 
 /** Why an agent's save was refused, one entry per problem (`validation_failed`, `details.refused`). */

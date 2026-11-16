@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { VIDEO_CODE_PATTERN } from "@/lib/shared-video-code";
 
 // BL-184 (FO-REQ-0024 §4 B1, C; docs/roadmap/plans/STORYBOARD_PLAN.md §2): what the Operator sends for a storyboard, and what the
 // owner sends from the Web UI. Strict: an unknown field is refused, so a typo never becomes a silently ignored setting.
@@ -45,7 +46,7 @@ export const storyboardContentSchema = z
 export type StoryboardContentInput = z.infer<typeof storyboardContentSchema>;
 
 /** BL-194 (ADR 0040): the channel's video number this storyboard is for (`V49`); checked against the channel by video-projects. */
-const videoNumber = z.string().regex(/^V[1-9][0-9]{0,5}$/, "a video number such as V49");
+const videoNumber = z.string().regex(VIDEO_CODE_PATTERN, "a video code such as V49 or S14");
 export const createStoryboardInputSchema = storyboardContentSchema
   .extend({ channelId: z.string().min(1), storyboardId: id.optional(), planId: z.string().max(80).nullable().optional(), videoNumber: videoNumber.nullable().optional() })
   .strict();

@@ -107,7 +107,7 @@ export const errors: Record<keyof typeof en, string> = {
   "errors.upload_already_queued": "Это видео уже в очереди загрузки или уже загружено.",
   "errors.package_no_workspace": "У канала нет рабочей папки на этом компьютере (Настройки → Каналы).",
   "errors.package_workspace_unavailable": "Рабочую папку канала сейчас нельзя использовать.",
-  "errors.package_folder_invalid": "Это не папка ролика (04 Videos/<месяц>/<ММДД Vn>).",
+  "errors.package_folder_invalid": "Это не папка ролика (04 Videos/<месяц>/<ММДД Vn> или <ММДД Sn>).",
   "errors.package_file_invalid": "Этого файла нет в папке ролика.",
   "errors.package_no_video": "Выберите файл видео.",
   "errors.package_no_thumbnail": "Выберите обложку.",

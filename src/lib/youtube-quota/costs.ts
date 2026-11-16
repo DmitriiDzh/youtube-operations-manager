@@ -1,5 +1,5 @@
 // BL-117 -- what one API call costs in quota units. Source of truth: Google's official page
-// https://developers.google.com/youtube/v3/determine_quota_cost (read 2026-10-03). A pure leaf like the rest of this
+// https://developers.google.com/youtube/v3/determine_quota_cost (read 2026-10-03; re-checked in full 2026-11-16, owner msg 4594: every row of the table is listed below). A pure leaf like the rest of this
 // module. An unknown method is `null` (shown as "unknown"), never a guessed number.
 
 export type QuotaLedgerService = "data" | "analytics";
@@ -30,12 +30,21 @@ export const DATA_API_UNIT_COSTS: Readonly<Record<string, number>> = {
   "comments.insert": 50,
   "comments.update": 50,
   "comments.delete": 50,
+  "comments.setModerationStatus": 50,
   "commentThreads.list": 1,
+  "commentThreads.insert": 50,
+  "commentThreads.update": 50,
+  "channelSections.list": 1,
+  "channelSections.insert": 50,
+  "channelSections.update": 50,
+  "channelSections.delete": 50,
   "captions.list": 50,
   "captions.insert": 400,
   "captions.update": 450,
   "captions.delete": 50,
   "thumbnails.set": 50,
+  "watermarks.set": 50,
+  "watermarks.unset": 50,
   // BL-223 (CHANNEL_BRANDING_PLAN.md "API facts"): "A call to this method has a quota cost of 50 units" (channelBanners/insert, U6).
   "channelBanners.insert": 50,
   "activities.list": 1,
@@ -44,6 +53,13 @@ export const DATA_API_UNIT_COSTS: Readonly<Record<string, number>> = {
   "videoCategories.list": 1,
   "i18nLanguages.list": 1,
   "i18nRegions.list": 1,
+  "guideCategories.list": 1,
+  "videoAbuseReportReasons.list": 1,
+  "videos.getRating": 1,
+  "videos.reportAbuse": 50,
+  "members.list": 1,
+  "membershipsLevels.list": 1,
+  "superChatEvents.list": 1,
   // BL-176: live streaming. The Quota Calculator first lists these in its 2026-10-08 version, every one at 1 unit
   // (read 2026-10-11); check the Cloud Console after the first real calls.
   "liveBroadcasts.list": 1,
@@ -57,6 +73,17 @@ export const DATA_API_UNIT_COSTS: Readonly<Record<string, number>> = {
   "liveStreams.insert": 1,
   "liveStreams.update": 1,
   "liveStreams.delete": 1,
+  // Live chat (2026-11-16 table): not called by this app today; listed so a future caller is never "unknown".
+  "liveChatMessages.list": 5,
+  "liveChatMessages.streamList": 5,
+  "liveChatMessages.insert": 20,
+  "liveChatMessages.delete": 20,
+  "liveChatMessages.transition": 20,
+  "liveChatBans.insert": 200,
+  "liveChatBans.delete": 200,
+  "liveChatModerators.list": 50,
+  "liveChatModerators.insert": 200,
+  "liveChatModerators.delete": 200,
 };
 
 /** YouTube Analytics API. This repo's own live evidence (2026-09-22): a 28-query collection moved usage by exactly 28. */
@@ -81,5 +108,5 @@ export function countsAgainstPool(service: QuotaLedgerService, method: string): 
 
 /** Methods that change channel content: the history says "changed", not just "called". Live methods change it at 1 unit. */
 export function isWriteMethod(method: string): boolean {
-  return /\.(insert|update|delete|rate|bind|transition|insertCuepoint|set)$/.test(method);
+  return /\.(insert|update|delete|rate|bind|transition|insertCuepoint|set|unset|setModerationStatus|reportAbuse)$/.test(method);
 }

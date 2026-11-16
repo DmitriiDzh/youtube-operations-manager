@@ -69,8 +69,13 @@ export function packageReady(progress: PlanSlotProgress | null): boolean {
  * BL-242: an approval made with `approved` names the package `current` is: the same video and manifest, and the same video id --
  * an approval made before the upload (no video id) also covers the video that upload made of that manifest.
  */
-export function fingerprintCovers(approved: PublishingPlanPackageFingerprint, current: PublishingPlanPackageFingerprint | null): boolean {
-  return current !== null && approved.video === current.video && approved.manifestSha256 === current.manifestSha256 && (approved.videoId === null || approved.videoId === current.videoId);
+export function fingerprintCovers(approved: PublishingPlanPackageFingerprint, current: PublishingPlanPackageFingerprint | null, recodedFrom: readonly string[] = []): boolean {
+  if (current === null) return false;
+  if (approved.video === current.video && approved.manifestSha256 === current.manifestSha256 && (approved.videoId === null || approved.videoId === current.videoId)) return true;
+  // BL-263 (ADR 0071 §5, plan §6.5): an approval naming a V that was recoded to the current S code still covers it when it names the
+  // same, non-null video id (the video id is the identity, AGENTS.md §F); the manifest SHA-256 changed with the recode. An approval
+  // made before the upload (no video id) is not carried: the slot asks again, which by ADR 0062 §4 changes no date.
+  return recodedFrom.includes(approved.video) && approved.videoId !== null && current.videoId !== null && approved.videoId === current.videoId;
 }
 
 /**
@@ -178,7 +183,7 @@ export function slotViewOf(args: {
   if (args.stage === "packaged") {
     const current = fingerprintOf(args.progress);
     const standing = standingPackageApprovalOf(counted, meta.timeZone, content);
-    if (standing && fingerprintCovers(standing.package, current)) {
+    if (standing && fingerprintCovers(standing.package, current, args.progress?.recodedFrom ?? [])) {
       contentHash = standing.contentHash;
       approval = "approved";
       fingerprint = standing.package;

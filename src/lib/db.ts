@@ -12432,6 +12432,186 @@ export async function rewritePublishingUploadPaths(
   });
 }
 
+/**
+ * BL-263 (SHORT_VIDEO_CODE_PLAN.md §6.2 step 5, ADR 0071 §4): what a recode of `from` (a V) to `to` (an S) changes in this computer's
+ * database, read BEFORE the change and kept in the recode's journal -- so a failed or crashed recode can be undone whether or not
+ * the transaction committed (`undoVideoRecodeRows` only puts back a value that still is the new one).
+ */
+export type VideoRecodeSnapshot = {
+  channelId: string;
+  from: string;
+  to: string;
+  uploads: Array<{ id: string; video: string; manifestPath: string; manifestSha256: string; packageJson: string; videoId: string | null }>;
+  /** This computer's reservation of `from` as it was (null: none). */
+  reservation: { workingTitle: string | null; reservedAt: string; state: "in_work" | "cancelled"; cancelledAt: string | null; replacedBy: string | null } | null;
+  mediaJobs: string[];
+  geminiJobs: string[];
+  speechJobs: string[];
+  plans: string[];
+  socialJobs: Array<{ jobId: string; manifestSha256: string }>;
+  /** The orientation memo of `from` (null: none). */
+  orientation: "vertical" | "horizontal" | null;
+};
+
+/** The new values of a recode (the upload rows' new paths / package / manifest hash, the new S reservation). */
+export type VideoRecodePlan = {
+  uploads: Array<{ id: string; manifestPath: string; manifestSha256: string; packageJson: string }>;
+  /** When the S reservation is made and the V one cancelled (ISO). */
+  at: string;
+  /** The finished cross-post jobs' new manifest hash. */
+  manifestSha256: string;
+};
+
+/**
+ * BL-263 (release_recode_busy reason job_running): how many media / Gemini / speech jobs of this computer linked to `video` on
+ * `channelId` are not finished (a running job would write its result under the old code).
+ */
+export async function countActiveVideoJobs(channelId: string, video: string, database: AppDb = db): Promise<number> {
+  const media = await database.select({ id: mediaJobs.id }).from(mediaJobs).where(and(eq(mediaJobs.channelId, channelId), eq(mediaJobs.video, video), notInArray(mediaJobs.status, ["done", "failed", "cancelled"])));
+  const gemini = await database.select({ id: geminiMediaJobs.jobId }).from(geminiMediaJobs).where(and(eq(geminiMediaJobs.channelId, channelId), eq(geminiMediaJobs.video, video), inArray(geminiMediaJobs.status, ["queued", "submitting", "running"])));
+  const speech = await database.select({ id: elevenlabsSpeechJobs.jobId }).from(elevenlabsSpeechJobs).where(and(eq(elevenlabsSpeechJobs.channelId, channelId), eq(elevenlabsSpeechJobs.video, video), inArray(elevenlabsSpeechJobs.status, ["queued", "submitting", "running"])));
+  return media.length + gemini.length + speech.length;
+}
+
+/** BL-263: reads every row a recode of `from` → `to` on `channelId` would change (the given upload rows; jobs, plans, social jobs, memo). */
+export async function snapshotVideoRecodeRows(channelId: string, from: string, to: string, uploadIds: readonly string[], database: AppDb = db): Promise<VideoRecodeSnapshot> {
+  const uploads = uploadIds.length === 0 ? [] : await database.select().from(publishingUploads).where(and(eq(publishingUploads.channelId, channelId), inArray(publishingUploads.id, [...uploadIds])));
+  const [reservation] = await database.select().from(videoReservations).where(and(eq(videoReservations.channelId, channelId), eq(videoReservations.video, from)));
+  const ids = async (rows: Promise<Array<{ id: string }>>) => (await rows).map((r) => r.id).sort();
+  const settings = JSON.parse((await getAppSetting(VIDEO_ORIENTATIONS_SETTING_KEY, database)) ?? "{}") as Record<string, Record<string, unknown>>;
+  const memo = settings?.[channelId]?.[from];
+  return {
+    channelId,
+    from,
+    to,
+    uploads: uploads
+      .map((u) => ({ id: u.id, video: u.video, manifestPath: u.manifestPath, manifestSha256: u.manifestSha256, packageJson: u.packageJson, videoId: u.videoId ?? null }))
+      .sort((a, b) => (a.id < b.id ? -1 : 1)),
+    reservation: reservation ? { workingTitle: reservation.workingTitle ?? null, reservedAt: reservation.reservedAt, state: reservation.state, cancelledAt: reservation.cancelledAt ?? null, replacedBy: reservation.replacedBy ?? null } : null,
+    mediaJobs: await ids(database.select({ id: mediaJobs.id }).from(mediaJobs).where(and(eq(mediaJobs.channelId, channelId), eq(mediaJobs.video, from)))),
+    geminiJobs: await ids(database.select({ id: geminiMediaJobs.jobId }).from(geminiMediaJobs).where(and(eq(geminiMediaJobs.channelId, channelId), eq(geminiMediaJobs.video, from)))),
+    speechJobs: await ids(database.select({ id: elevenlabsSpeechJobs.jobId }).from(elevenlabsSpeechJobs).where(and(eq(elevenlabsSpeechJobs.channelId, channelId), eq(elevenlabsSpeechJobs.video, from)))),
+    plans: await ids(database.select({ id: generationPlans.id }).from(generationPlans).where(and(eq(generationPlans.channelId, channelId), eq(generationPlans.video, from)))),
+    socialJobs: (
+      await database
+        .select({ jobId: socialPostJobs.jobId, manifestSha256: socialPostJobs.manifestSha256 })
+        .from(socialPostJobs)
+        .where(and(eq(socialPostJobs.channelId, channelId), eq(socialPostJobs.video, from), inArray(socialPostJobs.status, ["published", "failed"])))
+    ).sort((a, b) => (a.jobId < b.jobId ? -1 : 1)),
+    orientation: memo === "vertical" || memo === "horizontal" ? memo : null,
+  };
+}
+
+/**
+ * BL-263: the recode's database step, in ONE transaction -- every row changes only while it still holds the snapshot's value (and an
+ * upload row only while no runner leases it); anything else throws and nothing changes. Upload rows: code, manifest path, manifest
+ * hash, package (video id kept). Reservations: `from` cancelled with `replacedBy: to` (inserted cancelled when this computer has none),
+ * `to` in work with `from`'s working title. Job / plan links, finished cross-post jobs (code + manifest hash), the orientation memo key.
+ */
+export async function recodeVideoRows(snapshot: VideoRecodeSnapshot, plan: VideoRecodePlan, database: AppDb = db): Promise<void> {
+  const { channelId, from, to } = snapshot;
+  await database.transaction(async (tx) => {
+    const t = tx as unknown as AppDb;
+    for (const update of plan.uploads) {
+      const before = snapshot.uploads.find((u) => u.id === update.id);
+      if (!before) throw new Error(`upload ${update.id} is not in the recode's snapshot`);
+      const result = await t
+        .update(publishingUploads)
+        .set({ video: to, manifestPath: update.manifestPath, manifestSha256: update.manifestSha256, packageJson: update.packageJson, updatedAt: new Date() })
+        .where(
+          and(
+            eq(publishingUploads.id, update.id),
+            eq(publishingUploads.channelId, channelId),
+            eq(publishingUploads.video, from),
+            eq(publishingUploads.manifestPath, before.manifestPath),
+            eq(publishingUploads.manifestSha256, before.manifestSha256),
+            inArray(publishingUploads.status, ["queued", "done", "failed", "cancelled"]),
+            or(isNull(publishingUploads.leaseUntil), lte(publishingUploads.leaseUntil, new Date()))
+          )
+        )
+        .returning({ id: publishingUploads.id });
+      if (result.length !== 1) throw new Error(`upload ${update.id} changed while the release was recoded`);
+    }
+    if (snapshot.reservation) {
+      const result = await t
+        .update(videoReservations)
+        .set({ state: "cancelled", cancelledAt: snapshot.reservation.cancelledAt ?? plan.at, replacedBy: to })
+        .where(and(eq(videoReservations.channelId, channelId), eq(videoReservations.video, from), eq(videoReservations.state, snapshot.reservation.state)))
+        .returning({ video: videoReservations.video });
+      if (result.length !== 1) throw new Error(`the reservation of ${from} changed while the release was recoded`);
+    } else {
+      await t.insert(videoReservations).values({ channelId, video: from, workingTitle: null, reservedAt: plan.at, state: "cancelled", cancelledAt: plan.at, replacedBy: to });
+    }
+    // The S reservation is new (the recode refused a known S); a row there already makes the insert fail and the transaction roll back.
+    await t.insert(videoReservations).values({ channelId, video: to, workingTitle: snapshot.reservation?.workingTitle ?? null, reservedAt: plan.at, state: "in_work", cancelledAt: null, replacedBy: null });
+    const relink = async (rows: Promise<unknown[]>, expected: number, what: string) => {
+      if ((await rows).length !== expected) throw new Error(`${what} linked to ${from} changed while the release was recoded`);
+    };
+    if (snapshot.mediaJobs.length > 0) await relink(t.update(mediaJobs).set({ video: to }).where(and(eq(mediaJobs.channelId, channelId), eq(mediaJobs.video, from), inArray(mediaJobs.id, snapshot.mediaJobs))).returning({ id: mediaJobs.id }), snapshot.mediaJobs.length, "media jobs");
+    if (snapshot.geminiJobs.length > 0) await relink(t.update(geminiMediaJobs).set({ video: to }).where(and(eq(geminiMediaJobs.channelId, channelId), eq(geminiMediaJobs.video, from), inArray(geminiMediaJobs.jobId, snapshot.geminiJobs))).returning({ id: geminiMediaJobs.jobId }), snapshot.geminiJobs.length, "Gemini jobs");
+    if (snapshot.speechJobs.length > 0) await relink(t.update(elevenlabsSpeechJobs).set({ video: to }).where(and(eq(elevenlabsSpeechJobs.channelId, channelId), eq(elevenlabsSpeechJobs.video, from), inArray(elevenlabsSpeechJobs.jobId, snapshot.speechJobs))).returning({ id: elevenlabsSpeechJobs.jobId }), snapshot.speechJobs.length, "speech jobs");
+    if (snapshot.plans.length > 0) await relink(t.update(generationPlans).set({ video: to }).where(and(eq(generationPlans.channelId, channelId), eq(generationPlans.video, from), inArray(generationPlans.id, snapshot.plans))).returning({ id: generationPlans.id }), snapshot.plans.length, "plans");
+    for (const job of snapshot.socialJobs) {
+      await relink(
+        t.update(socialPostJobs).set({ video: to, manifestSha256: plan.manifestSha256 }).where(and(eq(socialPostJobs.jobId, job.jobId), eq(socialPostJobs.channelId, channelId), eq(socialPostJobs.video, from), inArray(socialPostJobs.status, ["published", "failed"]))).returning({ id: socialPostJobs.jobId }),
+        1,
+        "cross-post jobs"
+      );
+    }
+    if (snapshot.orientation) {
+      const all = JSON.parse((await getAppSetting(VIDEO_ORIENTATIONS_SETTING_KEY, t)) ?? "{}") as Record<string, Record<string, string>>;
+      const own = { ...(all[channelId] ?? {}) };
+      delete own[from];
+      own[to] = snapshot.orientation;
+      await setAppSetting(VIDEO_ORIENTATIONS_SETTING_KEY, JSON.stringify({ ...all, [channelId]: own }), t);
+    }
+  });
+}
+
+/**
+ * BL-263: undoes `recodeVideoRows` from its snapshot, in one transaction, whether or not it committed: a row is put back only where it
+ * still holds the recode's new value (so running it twice, or after a recode that never committed, changes nothing more).
+ */
+export async function undoVideoRecodeRows(snapshot: VideoRecodeSnapshot, plan: VideoRecodePlan, database: AppDb = db): Promise<void> {
+  const { channelId, from, to } = snapshot;
+  await database.transaction(async (tx) => {
+    const t = tx as unknown as AppDb;
+    for (const before of snapshot.uploads) {
+      const after = plan.uploads.find((u) => u.id === before.id);
+      if (!after) continue;
+      await t
+        .update(publishingUploads)
+        .set({ video: before.video, manifestPath: before.manifestPath, manifestSha256: before.manifestSha256, packageJson: before.packageJson, updatedAt: new Date() })
+        .where(and(eq(publishingUploads.id, before.id), eq(publishingUploads.channelId, channelId), eq(publishingUploads.video, to), eq(publishingUploads.manifestPath, after.manifestPath)));
+    }
+    await t.delete(videoReservations).where(and(eq(videoReservations.channelId, channelId), eq(videoReservations.video, to), eq(videoReservations.reservedAt, plan.at), eq(videoReservations.state, "in_work")));
+    if (snapshot.reservation) {
+      await t
+        .update(videoReservations)
+        .set({ state: snapshot.reservation.state, cancelledAt: snapshot.reservation.cancelledAt, replacedBy: snapshot.reservation.replacedBy })
+        .where(and(eq(videoReservations.channelId, channelId), eq(videoReservations.video, from), eq(videoReservations.replacedBy, to)));
+    } else {
+      await t.delete(videoReservations).where(and(eq(videoReservations.channelId, channelId), eq(videoReservations.video, from), eq(videoReservations.replacedBy, to), eq(videoReservations.reservedAt, plan.at)));
+    }
+    if (snapshot.mediaJobs.length > 0) await t.update(mediaJobs).set({ video: from }).where(and(eq(mediaJobs.channelId, channelId), eq(mediaJobs.video, to), inArray(mediaJobs.id, snapshot.mediaJobs)));
+    if (snapshot.geminiJobs.length > 0) await t.update(geminiMediaJobs).set({ video: from }).where(and(eq(geminiMediaJobs.channelId, channelId), eq(geminiMediaJobs.video, to), inArray(geminiMediaJobs.jobId, snapshot.geminiJobs)));
+    if (snapshot.speechJobs.length > 0) await t.update(elevenlabsSpeechJobs).set({ video: from }).where(and(eq(elevenlabsSpeechJobs.channelId, channelId), eq(elevenlabsSpeechJobs.video, to), inArray(elevenlabsSpeechJobs.jobId, snapshot.speechJobs)));
+    if (snapshot.plans.length > 0) await t.update(generationPlans).set({ video: from }).where(and(eq(generationPlans.channelId, channelId), eq(generationPlans.video, to), inArray(generationPlans.id, snapshot.plans)));
+    for (const job of snapshot.socialJobs) {
+      await t.update(socialPostJobs).set({ video: from, manifestSha256: job.manifestSha256 }).where(and(eq(socialPostJobs.jobId, job.jobId), eq(socialPostJobs.channelId, channelId), eq(socialPostJobs.video, to)));
+    }
+    if (snapshot.orientation) {
+      const all = JSON.parse((await getAppSetting(VIDEO_ORIENTATIONS_SETTING_KEY, t)) ?? "{}") as Record<string, Record<string, string>>;
+      const own = { ...(all[channelId] ?? {}) };
+      if (own[to] !== undefined && own[from] === undefined) {
+        own[from] = own[to];
+        delete own[to];
+        await setAppSetting(VIDEO_ORIENTATIONS_SETTING_KEY, JSON.stringify({ ...all, [channelId]: own }), t);
+      }
+    }
+  });
+}
+
 export async function listPublishingUploads(
   /** Review #6 (BL-225): `withSlot` -- only rows that name a weekly-plan slot, filtered before the limit. */
   filter: { channelId?: string; statuses?: readonly PublishingUploadStatus[]; limit: number; withSlot?: boolean },

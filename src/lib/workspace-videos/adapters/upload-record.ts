@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { link, realpath, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { isPathInsideOrEqual } from "@/lib/local-path-validation";
+import { READABLE_VIDEO_CODE_SOURCE } from "@/lib/shared-video-code";
 
 /**
  * A `Vn_youtube.json` next to a release, inside the channel workspace (its real folder checked), written whole or not at all.
@@ -16,7 +17,8 @@ export async function writeUploadRecordFile(
 ): Promise<void> {
   const slash = relativePath.lastIndexOf("/");
   const name = relativePath.slice(slash + 1);
-  if (!/^V\d+_youtube\.json$/.test(name)) throw new Error(`Not an upload record name: ${name}`);
+  // BL-263: today's lenient V or a strict S code.
+  if (!new RegExp(`^${READABLE_VIDEO_CODE_SOURCE}_youtube\\.json$`).test(name)) throw new Error(`Not an upload record name: ${name}`);
   const workspace = await realpath(workspacePath);
   const folder = slash < 0 ? workspace : await realpath(path.join(workspace, ...relativePath.slice(0, slash).split("/")));
   if (folder === workspace || !isPathInsideOrEqual(workspace, folder)) throw new Error("The package folder is outside the channel workspace.");

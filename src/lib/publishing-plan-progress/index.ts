@@ -25,6 +25,19 @@ const packagesOf = createPackagesReader({
   cache: packagesCache,
 });
 
+/** BL-263: S code → the V codes recoded to it (the video list's recode alias); a list that cannot be read: none. */
+async function recodedBySCode(channelId: string): Promise<Map<string, string[]>> {
+  try {
+    const { createVideoProjectsServiceForProduction } = await import("@/lib/video-projects");
+    const out = new Map<string, string[]>();
+    // A light read of the reservations (no workspace walk): this port runs on every plan poll.
+    for (const [v, s] of await createVideoProjectsServiceForProduction().recodeAliasesOf(channelId)) out.set(s, [...(out.get(s) ?? []), v]);
+    return out;
+  } catch {
+    return new Map();
+  }
+}
+
 /** The plan's progress port: the packages (`built`, `packaged`) and this computer's uploads (`uploading`, `failed`, `scheduled`, `published`). */
 export const publishingPlanProgress: NonNullable<PublishingPlansPorts["progress"]> = async (channelId, _weekStart, slotIds): Promise<PlanProgressResult> => {
   const found = await packagesOf(channelId);
@@ -37,6 +50,14 @@ export const publishingPlanProgress: NonNullable<PublishingPlansPorts["progress"
     removedVideoIds: found.removedVideoIds,
     deletedVideosBySlot: found.packages ? deletedVideosBySlot(found.packages, rows) : new Map(),
   });
+  // BL-263 (plan §6.5): the V codes recoded to each slot's S package, so the owner's approval of the uploaded V still counts.
+  const recoded = await recodedBySCode(channelId);
+  if (recoded.size > 0) {
+    for (const [slotId, slot] of progress) {
+      const from = slot.package ? recoded.get(slot.package.video) : undefined;
+      if (from) progress.set(slotId, { ...slot, recodedFrom: from });
+    }
+  }
   // The packages could not be read: save()'s approval rule then keeps the older, stricter one.
   return { progress, packagesUnavailable: found.packages === null };
 };
