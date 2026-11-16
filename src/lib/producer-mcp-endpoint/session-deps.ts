@@ -107,6 +107,13 @@ export function createProducerSessionDeps(
   // endpoint (no-agent-upload-tool.test.ts). "Connected here" is the Producer's own rule (Settings → Channels).
   const queue = () => createUploadQueueControlCore({ channelUser: resolveChannelUser, ...(options.slotDecisions ? { slotDecisions: options.slotDecisions } : {}) });
   const producer = { kind: "producer" as const, tokenId: session.tokenId };
+  // BL-267: the Producer's plan writes (propose, a real move) pass the device mutation gate like its other writes (operation lock,
+  // recovery mode); reads and dry runs do not.
+  const mutationGate = async () => {
+    const { rawSqlClient } = await import("@/lib/db");
+    const { assertDeviceAvailableForMutation } = await import("@/lib/device-mutation-gate");
+    await assertDeviceAvailableForMutation(rawSqlClient);
+  };
   const plansOf = (): PublishingPlansProducerSurface => {
     if (!options.publishingPlans) throw new Error("The weekly plan is not wired to this Producer session.");
     return options.publishingPlans();
@@ -156,10 +163,14 @@ export function createProducerSessionDeps(
     // wiring of the plan's Producer surface to an MCP endpoint (no approve, veto or template decision is reachable).
     plans: {
       templateGet: async (input) => ({ ...(await plansOf().templateGet(input.channelId)) }),
-      templatePropose: async (input) => ({ ...(await plansOf().templatePropose(input.channelId, input.template)) }),
+      templatePropose: async (input) => {
+        await mutationGate();
+        return { ...(await plansOf().templatePropose(input.channelId, input.template)) };
+      },
       get: async (input) => ({ ...(await plansOf().get(input)) }),
       list: async (input) => ({ ...(await plansOf().list(input)) }),
       move: async (input) => {
+        if (input.dryRun !== true) await mutationGate();
         const { channelId, ...rest } = input;
         return { ...(await plansOf().move(channelId, rest)) };
       },

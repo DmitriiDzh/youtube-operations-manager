@@ -201,3 +201,13 @@ test("AC-WT-05: two computers each write a first template version; after merge b
   await win.core.mergeIncoming(CH, await mac.core.exportBytes(CH));
   assert.equal(templateInForce(await win.core.read(CH))?.version.horizonWeeks, 4);
 });
+
+// BL-267 (Operator Op4, AC-WT-47): the one serializer -- exactly the week-template/1 fields bundle 2.5.48 reads (template.days[*][*]
+// kind / hours / publishTimeUtc, horizonWeeks, displayTimeZone) plus the version's identity; an entry has no other field.
+test("AC-WT-47: templateViewOf carries exactly the pinned fields", async () => {
+  const { templateViewOf } = await import("./template");
+  const view = templateViewOf(CH, { id: "tv_1", format: "week-template/1", days: { fri: [{ kind: "long", hours: 8, publishTimeUtc: "12:00" }], mon: [{ kind: "short", publishTimeUtc: "12:00" }] }, horizonWeeks: 2, displayTimeZone: "Asia/Tokyo", contentHash: "h", by: "owner", device: "Mac", at: "2026-11-16T12:00:00Z", seq: 3 });
+  assert.deepEqual(Object.keys(view), ["format", "channelId", "versionId", "contentHash", "horizonWeeks", "displayTimeZone", "days", "by", "at"]);
+  assert.deepEqual(view.days, { mon: [{ kind: "short", publishTimeUtc: "12:00" }], fri: [{ kind: "long", hours: 8, publishTimeUtc: "12:00" }] });
+  assert.deepEqual([view.format, view.horizonWeeks, view.displayTimeZone], ["week-template/1", 2, "Asia/Tokyo"]);
+});

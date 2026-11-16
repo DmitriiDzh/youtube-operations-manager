@@ -273,6 +273,9 @@ export type PublishingPlansPorts = {
   moveYoutube?: PlanMoveYoutubePort;
 };
 
+/** BL-267 (plan §3.3): a slot a template change would start or stop dating (the owner's apply dialog). */
+export type TemplateEffectSlot = { slotId: string; weekStart: string; publishAtUtc: string; video: string | null; youtubePublishAt: string | null };
+
 /** BL-267: what a move may do to a slot's video on YouTube (read first, write after the plan change). */
 export type PlanMoveYoutubePort = {
   /** Read only: `moves` -- private and dated (the move writes the new date); `plan_only` -- private, no date; else refused with a code. */

@@ -30,6 +30,14 @@ export async function collectWeeklyTemplateBuild(channelId: string): Promise<Wee
     if ((payload as { channelId?: unknown } | null)?.channelId !== channelId) {
       throw new DomainError({ code: "validation_failed", message: "The payload names another channel", details: { refused: [{ field: "channelId", reason: "channel_mismatch" }] } });
     }
+    // Durable across restarts (the collected-job memory is per process): a week that already has a plan is never saved over by a
+    // job's payload -- the owner's or the Producer's moves since stay as they are.
+    const weekStart = (payload as { weekStart?: unknown }).weekStart;
+    const exists = await plans.get({ channelId, weekStart }).then(
+      () => true,
+      (error: unknown) => ((error as { code?: unknown })?.code === "publishing_plan_not_found" ? false : Promise.reject(error))
+    );
+    if (exists) throw new DomainError({ code: "validation_failed", message: "That week already has a plan", details: { refused: [{ field: "weekStart", reason: "week_has_plan" }] } });
     await plans.save(payload, "factory");
   });
 }

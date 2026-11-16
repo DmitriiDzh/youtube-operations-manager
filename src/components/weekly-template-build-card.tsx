@@ -25,6 +25,7 @@ export function WeeklyTemplateBuildCard({ channelId, visible }: { channelId: str
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [collected, setCollected] = useState<WeeklyTemplateCollect | null>(null);
+  const [python, setPython] = useState("");
 
   const load = useCallback(async () => {
     if (!base) return;
@@ -69,6 +70,30 @@ export function WeeklyTemplateBuildCard({ channelId, visible }: { channelId: str
     }
   }
 
+  async function stop() {
+    if (!base) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`${base}/stop`, { method: "POST" });
+      setNotice(res.ok ? t("weekTemplate.build.stopped") : t("weekTemplate.build.failed", { code: String(res.status) }));
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function savePython() {
+    setBusy(true);
+    try {
+      const res = await fetch("/api/weekly-build/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ pythonPath: python.trim() || null }) });
+      setNotice(res.ok ? t("weekTemplate.build.pythonSaved") : t("weekTemplate.build.failed", { code: String(res.status) }));
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const running = view?.running === true;
   const slots = view?.status?.slots ?? [];
   const accepted = collected?.results.filter((r) => r.status === "accepted").length ?? 0;
   return (
@@ -83,8 +108,24 @@ export function WeeklyTemplateBuildCard({ channelId, visible }: { channelId: str
         <ActionButton busy={busy} busyLabel={t("weekTemplate.saving")} disabled={busy || !state.inForce || view?.readiness.ready === false} onClick={() => setConfirm(true)} className="rounded-md bg-violet-600 px-4 py-2 font-semibold text-white hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-40">
           {t("weekTemplate.build.start")}
         </ActionButton>
+        {running && (
+          <button type="button" disabled={busy} onClick={() => void stop()} className="rounded-md border border-red-900 px-3 py-2 text-red-300 hover:bg-red-950/50 disabled:opacity-40">
+            {t("weekTemplate.build.stop")}
+          </button>
+        )}
         {view?.readiness.ready === false && <span className="text-xs text-amber-300">{view.readiness.message}</span>}
       </div>
+      {view?.readiness.ready === false && view.readiness.code === "python_missing" && (
+        <div className="flex flex-wrap items-end gap-2 text-sm">
+          <label className="flex flex-col gap-1 text-xs text-zinc-400">
+            {t("weekTemplate.build.python")}
+            <input type="text" value={python} placeholder="/usr/bin/python3" disabled={busy} onChange={(e) => setPython(e.target.value)} className="w-72 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-100" />
+          </label>
+          <button type="button" disabled={busy} onClick={() => void savePython()} className="rounded-md border border-zinc-600 px-3 py-1 text-zinc-200 hover:bg-zinc-800 disabled:opacity-40">
+            {t("weekTemplate.build.pythonSave")}
+          </button>
+        </div>
+      )}
       {notice && <p className="text-sm text-zinc-300">{notice}</p>}
       {collected && (
         <div className="space-y-1 text-sm">

@@ -213,3 +213,36 @@ test("AC-WT-37 (O10): social posts follow the plan -- template-dated and explici
   await h.service.templateOwnerSave(CH, { template: { ...WWE, days: { ...WWE.days, mon: [{ kind: "short", publishTimeUtc: "12:00" }] } } }, "u1");
   assert.equal(new Map((await h.service.socialSlotStates(CH)).map((s) => [s.slotId, s])).get("L")?.approved, false, "entry removed");
 });
+
+test("AC-WT-35 (zone change): a save changing only the plan's zone re-times dated slots -> slot_dated", async () => {
+  const h = harness();
+  await setup(h);
+  h.progress.set("L", pkg("V1", 600, "not_required", { videoId: "vid1", publishAt: "2026-11-23T15:00:00.000Z" }));
+  const error = await h.service.save({ channelId: CH, weekStart: WEEK, timeZone: "Europe/Moscow" }, "worker").then(() => null, (e: unknown) => e);
+  assert.ok(isDomainError(error));
+  assert.deepEqual((error.details as { refused: Array<{ slotId: string; reason: string }> }).refused.map((r) => [r.slotId, r.reason]), [["L", "slot_dated"]]);
+});
+
+test("AC-WT-28 (effect): applying a template lists the slots it starts or stops dating; nothing is written", async () => {
+  const h = harness();
+  await setup(h, [slot("L", "2026-11-24", "00:00"), slot("X", "2026-11-25", "10:00")]);
+  h.progress.set("L", pkg("V1", 600, "not_required"));
+  h.progress.set("X", pkg("V2", 600, "not_required", { videoSha: SHA("2") }));
+  // X is Wed 2026-11-25 01:00Z: a template with a long at Wed 01:00Z dates X; Monday's long entry removed stops dating L.
+  const next = { ...WWE, days: { ...WWE.days, mon: [{ kind: "short", publishTimeUtc: "12:00" }], wed: [{ kind: "long", publishTimeUtc: "01:00" }] } };
+  const before = JSON.stringify(await h.core.read(CH));
+  const effect = await h.service.templateEffect(CH, { template: next });
+  assert.deepEqual(effect.gain.map((s) => s.slotId), ["X"]);
+  assert.deepEqual(effect.lose.map((s) => s.slotId), ["L"]);
+  assert.equal(JSON.stringify(await h.core.read(CH)), before);
+});
+
+test("plan §3.8: a template-dated slot needs nothing from the owner; a ready off-template one does (the badge)", async () => {
+  const h = harness();
+  await setup(h, [slot("L", "2026-11-24", "00:00"), slot("X", "2026-11-25", "10:00")]);
+  h.progress.set("L", pkg("V1", 600, "not_required"));
+  h.progress.set("X", pkg("V2", 600, "not_required", { videoSha: SHA("2") }));
+  const plan = (await h.service.get({ channelId: CH, weekStart: WEEK })).plan;
+  assert.deepEqual(plan.counts, { slots: 2, approved: 1, needsApproval: 1, vetoed: 0 });
+  assert.equal((await h.service.ownerList(CH)).waiting, 1);
+});

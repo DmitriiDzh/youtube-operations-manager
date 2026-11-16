@@ -112,4 +112,13 @@ export const weekTemplate: Record<keyof typeof en, string> = {
   "weekTemplate.build.refusedPayload": "Неделя {week}: отказ ({code})",
   "weekTemplate.build.pushFailed": "Фабрике не сообщено: {reason}",
   "weekTemplate.build.waitingVideo": "ждёт видео",
+  "weekTemplate.effect.loading": "Проверяю, какие слоты он меняет…",
+  "weekTemplate.effect.failed": "Не удалось проверить, какие слоты он меняет.",
+  "weekTemplate.effect.gain": "Слотов получат дату по нему: {count}",
+  "weekTemplate.effect.lose": "Слотов он больше не датирует (дата, уже стоящая на YouTube, остаётся): {count}",
+  "weekTemplate.build.stop": "Остановить после текущего видео",
+  "weekTemplate.build.stopped": "STOP поставлен: сборка закончится после текущего видео.",
+  "weekTemplate.build.python": "Python на этом компьютере",
+  "weekTemplate.build.pythonSave": "Сохранить",
+  "weekTemplate.build.pythonSaved": "Сохранено.",
 };

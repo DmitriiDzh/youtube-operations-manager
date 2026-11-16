@@ -20,6 +20,7 @@ function make(options: { session?: { user: { id: string } } | null; refuse?: Dom
     service: () => ({
       templateGet: async () => ({ template: null, proposal: null, matchRules: {} as never }),
       move: async () => ({}) as never,
+      templateEffect: async () => ({ gain: [], lose: [] }),
       templateOwnerSave: async () => ({ template: null, proposal: null, matchRules: {} as never, changed: false }),
       templateOwnerDecide: async () => ({ template: null, proposal: null, matchRules: {} as never }),
       templateOwnerWithdraw: async () => ({ template: null, proposal: null, matchRules: {} as never, changed: false }),
@@ -85,6 +86,7 @@ test("BL-235: the plan's week coverage is read for weekStart in the plan's zone 
     service: () => ({
       templateGet: async () => ({ template: null, proposal: null, matchRules: {} as never }),
       move: async () => ({}) as never,
+      templateEffect: async () => ({ gain: [], lose: [] }),
       templateOwnerSave: async () => ({ template: null, proposal: null, matchRules: {} as never, changed: false }),
       templateOwnerDecide: async () => ({ template: null, proposal: null, matchRules: {} as never }),
       templateOwnerWithdraw: async () => ({ template: null, proposal: null, matchRules: {} as never, changed: false }),

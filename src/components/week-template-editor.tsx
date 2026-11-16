@@ -215,6 +215,7 @@ export function WeekTemplateEditor({ channelId, visible }: { channelId: string; 
       {confirm?.kind === "apply" && (
         <ConfirmDialog title={t("weekTemplate.confirm.applyTitle")} description={t("weekTemplate.confirm.applyText")} confirmLabel={t("weekTemplate.apply")} confirmBusyLabel={busy ? t("weekTemplate.saving") : null} onCancel={() => setConfirm(null)} onConfirm={() => void post("", { template: confirm.template, ...(basedOn ? { basedOn } : {}) })}>
           <DiffList before={inForce} after={confirm.template} />
+          <EffectList base={base} template={confirm.template} ownerZone={ownerZone} />
         </ConfirmDialog>
       )}
       {confirm?.kind === "withdraw" && (
@@ -230,6 +231,7 @@ export function WeekTemplateEditor({ channelId, visible }: { channelId: string; 
           onConfirm={() => void post("/decisions", { action: confirm.kind, versionId: confirm.proposal.versionId, contentHash: confirm.proposal.contentHash })}
         >
           <DiffList before={inForce} after={confirm.proposal} />
+          {confirm.kind === "accept" && <EffectList base={base} template={confirm.proposal} ownerZone={ownerZone} />}
         </ConfirmDialog>
       )}
     </section>
@@ -248,5 +250,45 @@ function DiffList({ before, after }: { before: TemplateDto | null; after: Templa
         </li>
       ))}
     </ul>
+  );
+}
+
+type EffectSlot = { slotId: string; publishAtUtc: string; video: string | null; youtubePublishAt: string | null };
+
+/** BL-267 (AC-WT-28): which slots the template would start or stop dating -- asked from the server when the dialog opens. */
+function EffectList({ base, template, ownerZone }: { base: string; template: TemplateDto; ownerZone: string | null }) {
+  const t = useT();
+  const [effect, setEffect] = useState<{ gain: EffectSlot[]; lose: EffectSlot[] } | "failed" | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void fetch(`${base}/effect`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ template }) })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((body) => !cancelled && setEffect(body))
+      .catch(() => !cancelled && setEffect("failed"));
+    return () => {
+      cancelled = true;
+    };
+  }, [base, template]);
+  if (effect === null) return <p className="text-xs text-zinc-500">{t("weekTemplate.effect.loading")}</p>;
+  if (effect === "failed") return <p className="text-xs text-amber-300">{t("weekTemplate.effect.failed")}</p>;
+  const line = (s: EffectSlot) => {
+    const p = localAndUtc(s.publishAtUtc, ownerZone);
+    return `${s.video ?? s.slotId} · ${p.localYmd} ${p.local} (${p.utc} UTC)`;
+  };
+  return (
+    <div className="mt-2 space-y-1 text-sm">
+      <p className="text-zinc-200">{t("weekTemplate.effect.gain", { count: effect.gain.length })}</p>
+      {effect.gain.map((s) => (
+        <p key={s.slotId} className="text-xs text-emerald-300">
+          {line(s)}
+        </p>
+      ))}
+      <p className="text-zinc-200">{t("weekTemplate.effect.lose", { count: effect.lose.length })}</p>
+      {effect.lose.map((s) => (
+        <p key={s.slotId} className="text-xs text-amber-300">
+          {line(s)}
+        </p>
+      ))}
+    </div>
   );
 }

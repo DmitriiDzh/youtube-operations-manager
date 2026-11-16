@@ -8,6 +8,8 @@
 export const WEEKLY_PLAN_WORKFLOW = "13 Weekly_Plan v1";
 /** The first bundle with `auto`, `status --json` and the launcher's `start --json`. */
 export const MIN_BUNDLE_VERSION = "2.5.42";
+/** BL-267 (Operator Op4): the first bundle with `auto --template` and `factory_publishing_template_get`. */
+export const MIN_TEMPLATE_BUNDLE_VERSION = "2.5.48";
 export const WEEKLY_BUILD_DAYS_MIN = 1;
 export const WEEKLY_BUILD_DAYS_MAX = 14;
 export const WEEKLY_BUILD_DAYS_DEFAULT = 7;

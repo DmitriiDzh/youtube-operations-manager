@@ -2,6 +2,7 @@ import path from "node:path";
 import { DomainError } from "@/lib/shared-domain";
 import {
   MIN_BUNDLE_VERSION,
+  MIN_TEMPLATE_BUNDLE_VERSION,
   WEEKLY_BUILD_DATE_FIRST_OFFSET,
   WEEKLY_BUILD_DATE_LAST_OFFSET,
   WEEKLY_BUILD_DAYS_MAX,
@@ -386,6 +387,10 @@ export function createWeeklyBuildServices(deps: WeeklyBuildDeps) {
         const status = await readStatus(ctx);
         if (isRunningState(status.job?.state)) {
           throw new DomainError({ code: "weekly_build_job_running", message: `The weekly build already runs (job ${status.job!.jobId}).`, details: { jobId: status.job!.jobId } });
+        }
+        const cmp = compareVersions(ctx.bundle, MIN_TEMPLATE_BUNDLE_VERSION);
+        if (cmp === null || cmp < 0) {
+          throw new DomainError({ code: "weekly_build_unavailable", message: `The channel is pinned to factory bundle ${ctx.bundle}; building by template needs ${MIN_TEMPLATE_BUNDLE_VERSION} or newer.`, details: { channelId, code: "bundle_too_old" } });
         }
         if (!deps.fs.writeFile) throw new DomainError({ code: "weekly_build_unavailable", message: "This computer cannot write the template file.", details: { channelId } });
         const file = path.join(ctx.workspace, ...WEEK_TEMPLATE_FILE);

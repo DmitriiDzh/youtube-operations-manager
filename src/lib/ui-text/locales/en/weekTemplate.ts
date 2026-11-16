@@ -110,4 +110,13 @@ export const weekTemplate = {
   "weekTemplate.build.refusedPayload": "Week {week}: refused ({code})",
   "weekTemplate.build.pushFailed": "The factory was not told: {reason}",
   "weekTemplate.build.waitingVideo": "waiting for the video",
+  "weekTemplate.effect.loading": "Checking which slots it changes…",
+  "weekTemplate.effect.failed": "Could not check which slots it changes.",
+  "weekTemplate.effect.gain": "Slots that get a date from it: {count}",
+  "weekTemplate.effect.lose": "Slots it no longer dates (a date already on YouTube stays): {count}",
+  "weekTemplate.build.stop": "Stop after the current video",
+  "weekTemplate.build.stopped": "STOP is set: the build ends after the current video.",
+  "weekTemplate.build.python": "Python on this computer",
+  "weekTemplate.build.pythonSave": "Save",
+  "weekTemplate.build.pythonSaved": "Saved.",
 } as const;

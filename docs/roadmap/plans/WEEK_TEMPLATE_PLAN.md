@@ -524,8 +524,13 @@ Other consumers:
 
 - `retime()` (BL-256, the owner's in-week move with `approve`) stays in the module for its tests and the old route, but the Web UI
   uses `move()` only; retire it with its route in the review if wanted.
-- Not built: the template editor's "effect on the plan's slots" count (§3.3) -- the dialog lists the per-day changes only; the Producer
-  wake file for template decisions (`REVIEW-DECISION-template-…`): `notifyOwnerDecision` is called, but review-notify has no template
-  source yet.
+- The apply / accept dialog lists the per-day changes and the slots the template would start or stop dating (`templateEffect`,
+  `POST .../template/effect`, read-only).
+- Not built: the Producer wake file for template decisions (`REVIEW-DECISION-template-…`): `notifyOwnerDecision` is called, but review-notify has
+  no template source yet.
+- `approval` in the views stays the explicit owner approval (deprecated); `dating` is the truth. `needsOwner` / `counts.approved` /
+  the plan state follow `dating` (plan §3.8 badge: off-template ready slots and slots waiting for the media review).
+- A collected template build never saves over a week that already has a plan (durable across restarts); `--template` needs bundle
+  2.5.48 or newer.
 - «Собрать неделю по шаблону» collects a finished job's payloads when the card is open (the server remembers each job once); the
   `job.result.{plan,payloads}` field in `13 status --json` is the contract to confirm with the Operator.

@@ -551,8 +551,8 @@ function SlotRow(props: {
   const { slot, plan, mode, at } = props;
   const wall = wallParts(slot.publishAt);
   const owner = zonedParts(slot.publishAtUtc, props.ownerZone);
-  const dayLabel = t("weekPlan.slotDay", { weekday: t(weekdayKey(wall.weekday)), day: wall.day });
-  const ownerLabel = owner.ymd === slot.date ? owner.time : t("weekPlan.slotDay", { weekday: t(weekdayKey(owner.weekday)), day: `${owner.day} ${owner.time}` });
+  // BL-267 (O6): the day and the time both in the owner's zone (UTC beside the time, the channel's time on hover).
+  const dayLabel = t("weekPlan.slotDay", { weekday: t(weekdayKey(owner.weekday)), day: owner.day });
   const changed = slot.changedAfterApproval && !slot.vetoed ? changedField(slot, plan.timeZone) : null;
   const pipeline = pipelineOf(slot);
   const busyHere = props.busy?.endsWith(`:${slot.slotId}`) ?? false;
@@ -613,6 +613,8 @@ function SlotRow(props: {
   else if (slot.approval === "approved") meta = { text: t("weekPlan.approved", { at: at(slot.approvedAt ?? slot.updatedAt) }), tone: "text-emerald-300" };
   // BL-242: nothing to approve until the package is ready -- a short status, no button.
   else if (slot.approval === "awaiting_package") meta = { text: t("weekPlan.awaitingPackage"), tone: "text-sky-300/80" };
+  // BL-267: a slot the template dates says so in its dating chip (below), not «не одобрен».
+  else if (slot.dating) meta = { text: "", tone: "text-zinc-400" };
   else if (mode === "one") meta = { text: t("weekPlan.notApproved"), tone: "text-zinc-400" };
   else meta = { text: slot.note ? t("weekPlan.agentNote", { note: slot.note }) : "", tone: "text-zinc-400" };
 
@@ -629,7 +631,6 @@ function SlotRow(props: {
           {/* BL-267 (O6, AC-WT-43): the owner's own time with UTC beside it; the channel's time on hover. */}
           <div className="text-sm" title={t("weekTemplate.channelTime", { time: wall.time, zone: plan.timeZone })}>
             {t("weekTemplate.time", { local: owner.time, utc: localAndUtc(slot.publishAtUtc, props.ownerZone).utc })}
-            {!sameClock(slot, props.ownerZone) && !slot.vetoed && <span className="ml-1 text-zinc-500">{t("weekPlan.ownerTime", { time: ownerLabel })}</span>}
           </div>
         </div>
         {pkg?.thumbnailPath ? (

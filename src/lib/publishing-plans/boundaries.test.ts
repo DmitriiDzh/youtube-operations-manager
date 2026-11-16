@@ -113,3 +113,19 @@ test("AC-WP-50: no MCP path names the approval-stage setter; only publishing-pla
   }
   assert.deepEqual(callers.sort(), ["app/api/channels/[channelId]/publishing-plans/handlers.ts", "lib/publishing-plans/services.ts"]);
 });
+
+// BL-267 (WEEK_TEMPLATE_PLAN.md AC-WT-06, ADR 0073 §1): no MCP path reaches the owner's template decisions (approve / edit, accept or
+// reject a proposal, withdraw) or the template effect; the Producer's surface has the propose and the move, never a decision.
+test("AC-WT-06: no MCP server, agent endpoint or MCP route names a template decision; the Producer surface has none", async () => {
+  const { producerSurface } = await import("./services");
+  const roots = ["mcp", "app/api/mcp", "lib/agent-mcp-endpoint", "lib/producer-mcp-endpoint", "lib/factory-mcp-endpoint", "lib/agent-operations", "composition"];
+  const offenders: string[] = [];
+  for (const root of roots) {
+    for (const file of await files(path.join(SRC, root))) {
+      if (/\b(templateOwnerSave|templateOwnerDecide|templateOwnerWithdraw|templateEffect|addTemplateRecords)\b/.test(await readFile(file, "utf8"))) offenders.push(path.relative(SRC, file));
+    }
+  }
+  assert.deepEqual(offenders, []);
+  const fake = new Proxy({}, { get: () => async () => ({}) }) as never;
+  assert.deepEqual(Object.keys(producerSurface(fake)).sort(), ["get", "list", "move", "templateGet", "templatePropose"]);
+});

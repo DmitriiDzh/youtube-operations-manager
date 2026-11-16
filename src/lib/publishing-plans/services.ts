@@ -2,9 +2,9 @@ import { parseWithSchema } from "@/lib/shared-domain";
 import type { PublishingPlanDecision, PublishingPlanMeta, PublishingPlanPackageFingerprint, PublishingPlanSlot, PublishingPlansSnapshot } from "@/lib/sync-gateway";
 import { isValidIanaTimezone } from "@/lib/zoned-time";
 import { isDeletedOnYoutube } from "@/lib/shared-video-presence";
-import { DEFAULT_APPROVAL_STAGE, DomainError, PUBLISHING_PLAN_LIMITS, type PlanMoveResult, type PlanSaveRefusal, type PlanSlotDecision, type PlanProgressResult, type PlanSlotProgress, type PlanSummary, type PlanView, type PublishingPlanActor, type PublishingPlanApprovalStage, type PublishingPlansPorts, type ReplacedSlot, type SocialSlotState, SOCIAL_LOOKBACK_MS } from "./contracts";
+import { DEFAULT_APPROVAL_STAGE, DomainError, PUBLISHING_PLAN_LIMITS, type PlanMoveResult, type PlanSaveRefusal, type PlanSlotDecision, type PlanProgressResult, type PlanSlotProgress, type PlanSummary, type PlanView, type PublishingPlanActor, type PublishingPlanApprovalStage, type PublishingPlansPorts, type ReplacedSlot, type SocialSlotState, type TemplateEffectSlot, SOCIAL_LOOKBACK_MS } from "./contracts";
 import { addDays, approvalStandsOn, contentHashOf, contentOf, decisionsForStage, decisionStateOf, fingerprintOf, instantOf, isCalendarDate, isMonday, mediaOfProgress, planViewOf, slotViewOf, standingPackageApprovalOf, standingVetoOf, decisionOrder, lastApprovedPackageOf } from "./model";
-import { matchSlots, templateInForce, type MatchSlot, type SlotMatch } from "./template";
+import { matchSlots, templateHashOf, templateInForce, validateTemplate, type MatchSlot, type SlotMatch } from "./template";
 import { createTemplateServices } from "./template-services";
 import { moveSlotInputSchema } from "./schemas";
 import { approvalStageInputSchema, getPlanInputSchema, listPlansInputSchema, ownerDecisionInputSchema, ownerRetimeInputSchema, PLAN_LIST_DEFAULT_LIMIT, savePlanInputSchema, type OwnerDecisionInput } from "./schemas";
@@ -277,11 +277,14 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
 
       // BL-267 (ADR 0073 §5, plan §3.7, AC-WT-35): an agent never re-times a slot whose video has a date on YouTube (`slot_dated`);
       // only the owner or the Producer moves it.
-      for (const upsert of upserts) {
-        const before = current.get(upsert.slotId);
-        if (!before || (before.date === upsert.date && before.publishAt === upsert.publishAt && existing?.timeZone === timeZone)) continue;
-        const p = channel.progress.get(upsert.slotId);
-        if (p && !isDeletedOnYoutube(p) && (p.publishAt || p.foreignPublishAt)) refused.push({ slotId: upsert.slotId, field: "publishAt", reason: "slot_dated" });
+      // A zone change re-times every slot of the week, so then every current slot is checked, not only the sent ones.
+      const zoneChanging = existing !== null && existing.timeZone !== timeZone;
+      for (const slot of zoneChanging ? [...current.values()].map((c) => upserts.find((u) => u.slotId === c.slotId) ?? c) : upserts) {
+        const before = current.get(slot.slotId);
+        if (!before || (before.date === slot.date && before.publishAt === slot.publishAt && !zoneChanging)) continue;
+        if (toRemove.includes(slot.slotId)) continue;
+        const p = channel.progress.get(slot.slotId);
+        if (p && !isDeletedOnYoutube(p) && (p.publishAt || p.foreignPublishAt)) refused.push({ slotId: slot.slotId, field: zoneChanging && before.publishAt === slot.publishAt ? "timeZone" : "publishAt", reason: "slot_dated" });
       }
       const removes: string[] = [];
       const vetoedRemoves: string[] = [];
@@ -824,6 +827,46 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
     });
   }
 
+  /**
+   * BL-267 (plan §3.3, AC-WT-28): what applying a template would change -- the live future slots that would start or stop being dated by
+   * the template. Read-only (the owner's dialog). Dates already on YouTube never move or go because of a template change.
+   */
+  async function templateEffect(channelId: string, input: unknown): Promise<{ gain: TemplateEffectSlot[]; lose: TemplateEffectSlot[] }> {
+    await assertChannel(channelId);
+    const result = validateTemplate((input as { template?: unknown } | null)?.template, channelId, isValidIanaTimezone);
+    if (!result.ok) throw new DomainError({ code: "validation_failed", message: "The template is not valid", details: { refused: result.refused } });
+    const snapshot = await ports.store.read(channelId);
+    const state = await channelState(channelId, snapshot, Object.values(snapshot.slots).map((s) => s.slotId), true);
+    const hash = templateHashOf(result.content);
+    const candidate: PublishingPlansSnapshot = {
+      ...snapshot,
+      templateVersions: { ...(snapshot.templateVersions ?? {}), __effect: { id: "__effect", format: "week-template/1", ...result.content, contentHash: hash, by: "owner", device: null, at: ports.now().toISOString(), seq: Number.MAX_SAFE_INTEGER } },
+      templateDecisions: { ...(snapshot.templateDecisions ?? {}), __effect: { id: "__effect", versionId: "__effect", contentHash: hash, kind: "approved", by: "owner", device: null, at: ports.now().toISOString(), seq: Number.MAX_SAFE_INTEGER } },
+    };
+    const datedBy = (snap: PublishingPlansSnapshot) => {
+      const matches = matchesOf(snap, state.progress);
+      const out = new Map<string, { source: string | null; slot: TemplateEffectSlot }>();
+      for (const meta of Object.values(snap.plans)) {
+        for (const slot of planViewOf({ stage: DEFAULT_APPROVAL_STAGE, channelId, meta, slots: slotsOf(snap, meta.weekStart), decisions: decisionsOf(snap, meta.weekStart), progress: state.progress, now: ports.now(), matches }).slots) {
+          if (slot.vetoed || slot.released) continue;
+          out.set(slot.slotId, { source: slot.dating.source, slot: { slotId: slot.slotId, weekStart: meta.weekStart, publishAtUtc: slot.publishAtUtc, video: slot.package?.video ?? null, youtubePublishAt: slot.youtubePublishAt } });
+        }
+      }
+      return out;
+    };
+    const before = datedBy(snapshot);
+    const after = datedBy(candidate);
+    const gain: TemplateEffectSlot[] = [];
+    const lose: TemplateEffectSlot[] = [];
+    for (const [id, a] of after) {
+      const b = before.get(id);
+      if (a.source === "template" && b?.source !== "template") gain.push(a.slot);
+      if (a.source !== "template" && b?.source === "template") lose.push(a.slot);
+    }
+    const order = (x: TemplateEffectSlot, y: TemplateEffectSlot) => Date.parse(x.publishAtUtc) - Date.parse(y.publishAtUtc);
+    return { gain: gain.sort(order), lose: lose.sort(order) };
+  }
+
   const template = createTemplateServices(ports, assertChannel);
 
   return {
@@ -835,6 +878,7 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
     templateOwnerSave: template.ownerSave,
     templateOwnerDecide: template.ownerDecide,
     templateOwnerWithdraw: template.ownerWithdraw,
+    templateEffect,
     slotDecisions,
     socialSlotStates,
     ownerList: async (channelId: string): Promise<{ plans: PlanSummary[]; waiting: number; approvalStage: PublishingPlanApprovalStage }> => {
@@ -862,7 +906,7 @@ export function agentSurface(service: PublishingPlansAgentSurface): PublishingPl
 }
 
 /** What the owner's Web UI routes get: the plans, one plan, the decisions and (BL-242) the approval stage. */
-export type PublishingPlansOwnerSurface = Pick<PublishingPlansService, "ownerList" | "ownerGet" | "decide" | "retime" | "setApprovalStage" | "templateGet" | "templateOwnerSave" | "templateOwnerDecide" | "templateOwnerWithdraw"> & {
+export type PublishingPlansOwnerSurface = Pick<PublishingPlansService, "ownerList" | "ownerGet" | "decide" | "retime" | "setApprovalStage" | "templateGet" | "templateOwnerSave" | "templateOwnerDecide" | "templateOwnerWithdraw" | "templateEffect"> & {
   /** BL-267 (ADR 0073 §5): the owner's move -- always as the owner. */
   move(channelId: string, input: unknown, userId: string): Promise<PlanMoveResult>;
 };
@@ -873,6 +917,7 @@ export function ownerSurface(service: Omit<PublishingPlansOwnerSurface, "move"> 
     templateOwnerSave: (channelId, input, userId) => service.templateOwnerSave(channelId, input, userId),
     templateOwnerDecide: (channelId, input, userId) => service.templateOwnerDecide(channelId, input, userId),
     templateOwnerWithdraw: (channelId, userId) => service.templateOwnerWithdraw(channelId, userId),
+    templateEffect: (channelId, input) => service.templateEffect(channelId, input),
     ownerList: (channelId) => service.ownerList(channelId),
     ownerGet: (channelId, weekStart) => service.ownerGet(channelId, weekStart),
     decide: (channelId, weekStart, input, userId) => service.decide(channelId, weekStart, input, userId),

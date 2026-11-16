@@ -316,11 +316,19 @@ export function planStateOf(slots: readonly PlanSlotView[]): PlanState {
   if (slots.length === 0) return "empty";
   if (slots.some(needsOwner)) return "awaiting_approval";
   if (slots.every((s) => s.released)) return "past";
-  return slots.some((s) => !s.vetoed && !s.released && s.approval === "awaiting_package") ? "planned" : "approved";
+  return slots.some((s) => !s.vetoed && !s.released && (s.approval === "awaiting_package" || s.dating.state === "on_template_awaiting_package")) ? "planned" : "approved";
 }
 
-/** A slot the owner still has to decide on: not vetoed, not released, not approved. */
-export const needsOwner = (s: PlanSlotView): boolean => !s.vetoed && !s.released && s.approval === "needs_approval";
+/**
+ * A slot the owner still has to decide on: not vetoed, not released, not approved. BL-267 (plan §3.8): a slot the template dates (or
+ * will date once its package is there) needs nothing from him; one that waits for his media review, or a ready one off the template /
+ * on a taken position, does (his explicit date or a move).
+ */
+export const needsOwner = (s: PlanSlotView): boolean => {
+  if (s.vetoed || s.released || s.dating.source !== null) return false;
+  if (s.dating.state === "awaiting_media_review") return true;
+  return s.approval === "needs_approval" && (s.dating.state === "off_template" || s.dating.state === "position_taken");
+};
 
 export function planViewOf(args: {
   stage: PublishingPlanApprovalStage;
@@ -359,7 +367,8 @@ export function planViewOf(args: {
     state: planStateOf(views),
     counts: {
       slots: views.length,
-      approved: live.filter((s) => s.approval === "approved").length,
+      // BL-267: dated by the plan -- the template or the owner's explicit date.
+      approved: live.filter((s) => s.approval === "approved" || s.dating.source === "template").length,
       needsApproval: views.filter(needsOwner).length,
       vetoed: views.length - live.length,
     },

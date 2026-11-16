@@ -122,6 +122,13 @@ export function createPublishingPlanRouteHandlers(deps: PublishingPlanRouteDeps 
         return NextResponse.json(await deps.service().templateOwnerDecide(channelId, input, userId));
       }),
 
+    /** BL-267 (AC-WT-28): POST `{ template }` -- which slots a template would start or stop dating (read-only, for the dialog). */
+    templateEffect: (request: Request, context: Params<Base>) =>
+      guarded(context, async ({ channelId }) => {
+        const input = await request.json().catch(() => null);
+        return NextResponse.json(await deps.service().templateEffect(channelId, input));
+      }),
+
     /** BL-267: POST -- «Даты по шаблону» off. */
     templateWithdraw: (_request: Request, context: Params<Base>) => guarded(context, async ({ channelId }, userId) => NextResponse.json(await deps.service().templateOwnerWithdraw(channelId, userId))),
 
