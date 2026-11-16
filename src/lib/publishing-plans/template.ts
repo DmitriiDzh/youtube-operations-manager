@@ -200,12 +200,17 @@ export function fitsEntry(entry: WeekTemplateEntry, kind: "long" | "short", seco
 }
 
 /**
- * Every slot's place in the template (pure). A vetoed slot claims nothing (its state is reported but never `match`). Of two or more
- * live slots fitting one position, the earliest `createdAt` (then the smaller `slotId`) takes it; the others are `position_taken`.
+ * Every slot's place in the template (pure). A vetoed slot claims nothing (its state is reported but never `match`). The live slots
+ * at one instant are assigned to that instant's entries by priority -- the earliest `createdAt` (then the smaller `slotId`) first --
+ * each preferring the most specific entry it fits (one with `hours` before one without, then the lower index), with augmenting paths
+ * (review 2026-11-16 #6): a later slot may shift an earlier one to another entry it also fits, but never takes its position away, and
+ * a free position is never reported as taken. A fitting slot left without an entry is `position_taken` (held by the slot on its
+ * preferred entry).
  */
 export function matchSlots(days: WeekTemplateDays, slots: readonly MatchSlot[]): Map<string, SlotMatch> {
   const out = new Map<string, SlotMatch>();
-  const claims = new Map<string, Array<{ slot: MatchSlot; position: TemplatePosition; entry: WeekTemplateEntry }>>();
+  type Candidate = { slot: MatchSlot; date: string; day: WeekTemplateDay; fits: Array<{ entry: WeekTemplateEntry; index: number }> };
+  const byInstant = new Map<string, Candidate[]>();
   for (const slot of slots) {
     const day = templateDayOf(slot.instant);
     const time = utcTimeOf(slot.instant);
@@ -224,24 +229,44 @@ export function matchSlots(days: WeekTemplateDays, slots: readonly MatchSlot[]):
       out.set(slot.slotId, { state: "kind_unclear" });
       continue;
     }
-    const fit = entries.find((e) => fitsEntry(e.entry, kind, slot.durationSeconds!));
-    if (!fit) {
+    const fits = entries
+      .filter((e) => fitsEntry(e.entry, kind, slot.durationSeconds!))
+      .sort((a, b) => Number(a.entry.hours === undefined) - Number(b.entry.hours === undefined) || a.index - b.index);
+    if (fits.length === 0 || slot.vetoed) {
       out.set(slot.slotId, { state: "off_template" });
       continue;
     }
-    const position = { date, day, index: fit.index };
-    if (slot.vetoed) {
-      out.set(slot.slotId, { state: "off_template" });
-      continue;
-    }
-    const key = `${date}|${fit.index}`;
-    claims.set(key, [...(claims.get(key) ?? []), { slot, position, entry: fit.entry }]);
+    const key = `${date}|${time}`;
+    byInstant.set(key, [...(byInstant.get(key) ?? []), { slot, date, day, fits }]);
   }
-  for (const group of claims.values()) {
-    const sorted = [...group].sort((a, b) => Date.parse(a.slot.createdAt) - Date.parse(b.slot.createdAt) || a.slot.slotId.localeCompare(b.slot.slotId));
-    const [first, ...rest] = sorted;
-    out.set(first.slot.slotId, { state: "match", position: first.position, entry: first.entry });
-    for (const other of rest) out.set(other.slot.slotId, { state: "position_taken", position: other.position, heldBy: first.slot.slotId });
+  for (const group of byInstant.values()) {
+    const ordered = [...group].sort((a, b) => Date.parse(a.slot.createdAt) - Date.parse(b.slot.createdAt) || a.slot.slotId.localeCompare(b.slot.slotId));
+    /** entry index -> the candidate holding it. */
+    const holder = new Map<number, Candidate>();
+    const assigned = new Map<Candidate, number>();
+    const augment = (c: Candidate, seen: Set<number>): boolean => {
+      for (const f of c.fits) {
+        if (seen.has(f.index)) continue;
+        seen.add(f.index);
+        const other = holder.get(f.index);
+        if (!other || augment(other, seen)) {
+          holder.set(f.index, c);
+          assigned.set(c, f.index);
+          return true;
+        }
+      }
+      return false;
+    };
+    for (const c of ordered) augment(c, new Set());
+    for (const c of ordered) {
+      const index = assigned.get(c);
+      if (index !== undefined) {
+        out.set(c.slot.slotId, { state: "match", position: { date: c.date, day: c.day, index }, entry: c.fits.find((f) => f.index === index)!.entry });
+      } else {
+        const preferred = c.fits[0];
+        out.set(c.slot.slotId, { state: "position_taken", position: { date: c.date, day: c.day, index: preferred.index }, heldBy: holder.get(preferred.index)!.slot.slotId });
+      }
+    }
   }
   return out;
 }

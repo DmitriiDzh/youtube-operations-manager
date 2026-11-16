@@ -113,6 +113,31 @@ test("AC-WT-11 (O4): two shorts on one position -- the first created takes it; v
   assert.deepEqual([m.get("L")?.state, m.get("S")?.state], ["match", "match"]);
 });
 
+test("review 2026-11-16 #6: a free position is never reported as taken -- the specific entry first, then an assignment per instant", () => {
+  // Two long entries at Mon 12:00Z: index 0 any long (no hours), index 1 a 3 h long. A 3 h video (created first) fits both, a 1 h
+  // video only index 0. Both are dated: the 3 h video takes the specific entry, the 1 h one the open one.
+  const days = daysOf({ ...WWE, days: { mon: [{ kind: "long", publishTimeUtc: "12:00" }, { kind: "long", hours: 3, publishTimeUtc: "12:00" }] } });
+  const order = (first: string, second: string) => [
+    slot(first === "h3" ? "h3" : "h1", "2026-11-23T12:00:00Z", first === "h3" ? 10800 : 3600, { createdAt: "2026-11-16T10:00:00Z" }),
+    slot(second === "h3" ? "h3" : "h1", "2026-11-23T12:00:00Z", second === "h3" ? 10800 : 3600, { createdAt: "2026-11-16T11:00:00Z" }),
+  ];
+  for (const [a, b] of [["h3", "h1"], ["h1", "h3"]]) {
+    const m = matchSlots(days, order(a, b));
+    assert.deepEqual([m.get("h3")?.state, m.get("h1")?.state], ["match", "match"], `${a} created first`);
+    assert.equal((m.get("h3") as { position: { index: number } }).position.index, 1);
+    assert.equal((m.get("h1") as { position: { index: number } }).position.index, 0);
+  }
+  // Overlapping ±10 % buckets: entries 3 h (2.7–3.3) and 3.25 h (2.925–3.575); a 3.1 h video (fits both, created first) and a 2.8 h
+  // one (fits only 3 h).
+  const buckets = daysOf({ ...WWE, days: { mon: [{ kind: "long", hours: 3, publishTimeUtc: "12:00" }, { kind: "long", hours: 3.25, publishTimeUtc: "12:00" }] } });
+  const m2 = matchSlots(buckets, [slot("a", "2026-11-23T12:00:00Z", 3.1 * 3600), slot("b", "2026-11-23T12:00:00Z", 2.8 * 3600, { createdAt: "2026-11-16T11:00:00Z" })]);
+  assert.deepEqual([m2.get("a")?.state, m2.get("b")?.state], ["match", "match"]);
+  // A third slot with no entry left is taken -- by the slot on its preferred entry; the first created keeps its place.
+  const three = matchSlots(days, [...order("h3", "h1"), slot("h1b", "2026-11-23T12:00:00Z", 3600, { createdAt: "2026-11-16T12:00:00Z" })]);
+  assert.deepEqual([three.get("h3")?.state, three.get("h1")?.state, three.get("h1b")?.state], ["match", "match", "position_taken"]);
+  assert.equal((three.get("h1b") as { heldBy: string }).heldBy, "h1");
+});
+
 test("AC-WT-12/13: an S code over 180 s is unclear; a slot on a template time without a package awaits it", () => {
   const days = wweDays();
   assert.equal(matchSlots(days, [slot("s7", "2026-11-23T15:00:00Z", 200, { video: "S7" })]).get("s7")?.state, "kind_unclear");
