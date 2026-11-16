@@ -31,7 +31,7 @@ const tropico = work({
     { planId: "T-1", title: "T-1", device: null, waiting: 3 },
     { planId: "T-2", title: "T-2", device: null, waiting: 2 },
   ],
-  notices: [{ planId: "T-1", planTitle: "Jazz wave 1", device: null, notice: { kind: "stage_complete", stageId: "generate", title: "Generate" } }],
+  notices: [{ planId: "T-1", planTitle: "Jazz wave 1", device: null, notice: { kind: "attempts_exhausted", count: 2 } }],
 });
 
 test("AC-BL-04/06: only channels that are not active get entries; one review entry per channel with its split and each wave; one per plan notice", () => {
@@ -48,24 +48,22 @@ test("AC-BL-04/06: only channels that are not active get entries; one review ent
   assert.deepEqual(fromJapan, [
     { key: "UC_tropico:review", channelId: "UC_tropico", text: "Media: 5 tracks waiting for review", href: "/media/plans" },
     // BL-184 stage 3: a plan's notice opens that plan (Media's kind tabs could hide it under the first tab).
-    { key: "UC_tropico:here:T-1:stage_complete", channelId: "UC_tropico", text: "Media: plan Jazz wave 1, stage complete: Generate", href: "/media/plans/T-1/review" },
+    { key: "UC_tropico:here:T-1:attempts_exhausted", channelId: "UC_tropico", text: "Media: plan Jazz wave 1, attempts used up for 2 items", href: "/media/plans/T-1/review" },
   ]);
-  assert.deepEqual(otherChannelEntries(t, [japan, tropico], null).map((e) => e.key), ["UC_japan:review", "UC_tropico:review", "UC_tropico:here:T-1:stage_complete"], "no active channel: every channel");
+  assert.deepEqual(otherChannelEntries(t, [japan, tropico], null).map((e) => e.key), ["UC_japan:review", "UC_tropico:review", "UC_tropico:here:T-1:attempts_exhausted"], "no active channel: every channel");
   assert.deepEqual(otherChannelEntries(t, [work({ channelId: "UC_quiet" })], null), [], "nothing open, no entry");
 });
 
-test("AC-BL-04: every notice kind has its words; the plan title names the plan", () => {
+test("AC-BL-04: every notice kind shown in the bell has its words; the plan title names the plan", () => {
   const notices = work({
     channelId: "UC_x",
     notices: [
-      { planId: "P", planTitle: "Plan P", device: null, notice: { kind: "plan_complete" } },
       { planId: "P", planTitle: "Plan P", device: null, notice: { kind: "attempts_exhausted", count: 2 } },
       { planId: "P", planTitle: "", device: null, notice: { kind: "budget_80" } },
       { planId: "P", planTitle: "Plan P", device: null, notice: { kind: "budget_100" } },
     ],
   });
   assert.deepEqual(otherChannelEntries(t, [notices], null).map((e) => e.text), [
-    "Media: plan Plan P complete",
     "Media: plan Plan P, attempts used up for 2 items",
     "Media: plan P has used 80% of its budget",
     "Media: plan Plan P has reached its budget",
@@ -91,17 +89,16 @@ test("BL-162 AC-UX-09: a review address may open a wave, on this device's plan o
   assert.equal(planReviewHref("R-1", undefined, ""), "/media/plans/R-1/review", "an empty wave is no wave");
 });
 
-test("AC-BL-04 (review round 1): one entry per plan and notice kind -- a plan's completed stages are one entry naming them all", () => {
-  const work2 = work({
+test("owner msg 4535: a completed stage or a completed plan is not a bell entry -- the bell holds what waits for the owner", () => {
+  const done = work({
     channelId: "UC_x",
     notices: [
       { planId: "P", planTitle: "Plan P", device: null, notice: { kind: "stage_complete", stageId: "generate", title: "Generate" } },
-      { planId: "P", planTitle: "Plan P", device: null, notice: { kind: "stage_complete", stageId: "validate", title: "Validator" } },
+      { planId: "P", planTitle: "Plan P", device: null, notice: { kind: "plan_complete" } },
       { planId: "Q", planTitle: "Plan Q", device: { deviceId: "win", hostname: null }, notice: { kind: "stage_complete", stageId: "generate", title: "Generate" } },
     ],
   });
-  assert.deepEqual(otherChannelEntries(t, [work2], null).map((e) => [e.key, e.text]), [
-    ["UC_x:here:P:stage_complete", "Media: plan Plan P, stage complete: Generate, Validator"],
-    ["UC_x:win:Q:stage_complete", "Media: plan Plan Q, stage complete: Generate"],
-  ]);
+  assert.deepEqual(otherChannelEntries(t, [done], null), []);
+  const mixed = work({ ...done, notices: [...done.notices, { planId: "P", planTitle: "Plan P", device: null, notice: { kind: "budget_100" } }] });
+  assert.deepEqual(otherChannelEntries(t, [mixed], null).map((e) => e.key), ["UC_x:here:P:budget_100"], "the other notices stay");
 });
