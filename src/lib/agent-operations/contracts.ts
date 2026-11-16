@@ -126,7 +126,9 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // 4.21.0 (BL-263, PRD-REQ-0194, ADR 0071): video codes may be `S<n>` (a WWE Short) besides `V<n>` -- agent_video_list (state recoded +
 // recodedTo, series), agent_video_get_cost and the publishing calendar. agent_video_create gives the next V only (a given S code is the
 // Factory Operator's: validation_failed reason s_codes_factory_only). Additive.
-export const AGENT_API_VERSION = "4.21.0";
+// 4.22.0 (BL-265, PRD-REQ-0195 B, ADR 0072): agent_get_publishing_calendar's packages and the plan's packages gain `warnings` (codes
+// that never block); the review gate's owner_review_* codes now follow the video (mp4), not the manifest. Additive.
+export const AGENT_API_VERSION = "4.22.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry

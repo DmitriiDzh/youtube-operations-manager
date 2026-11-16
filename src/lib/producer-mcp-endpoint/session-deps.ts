@@ -17,7 +17,7 @@ import { createPortfolioOverviewServices, createUploadMilestonesServices } from 
 import { createReachReportsCore } from "@/lib/reach-reports";
 import { PRODUCER_API_VERSION } from "@/mcp/producer-tools";
 import { createLiveAnalyticsCore } from "@/lib/live-analytics";
-import { createUploadQueueControlCore, type SlotDecision } from "@/lib/publishing";
+import { createPackageMetadataCore, createUploadQueueControlCore, type SlotDecision } from "@/lib/publishing";
 import { createClipReviewsProducerCore } from "@/lib/clip-reviews";
 import type { ProducerMcpSession } from "./index";
 
@@ -132,6 +132,14 @@ export function createProducerSessionDeps(
     // BL-255 (ADR 0069, owner msgs 4380/4383): the thumbnail writer -- the only wiring of it to an MCP endpoint.
     thumbnails: {
       replace: async (input) => ({ ...(await createVideoThumbnailsCore().replace(input, producer)) }),
+    },
+    // BL-265 (ADR 0072 §5, owner TG 4578/4581): the packaging fix -- the only wiring of it to an MCP endpoint; actor producer (no
+    // conflict override).
+    packageMetadata: {
+      update: async (input) =>
+        input.dryRun === true
+          ? { ...(await createPackageMetadataCore().preview(input.channelId, { video: input.video }, { kind: "producer" })) }
+          : { ...(await createPackageMetadataCore().apply(input.channelId, { video: input.video }, { kind: "producer" })) },
     },
     // BL-241 (ADR 0061): the clips for review -- the module's Producer surface only (submit, withdraw, list, get); the owner's
     // decision is reachable only from the Web UI's clip-review routes (clip-reviews/boundaries.test.ts).
