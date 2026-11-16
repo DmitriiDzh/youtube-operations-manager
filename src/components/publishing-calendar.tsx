@@ -10,6 +10,7 @@ import { formatZonedDateAndTime } from "@/lib/zoned-time";
 import { useT } from "./ui-text-provider";
 import { VideoDetailModal } from "./video-detail-modal";
 import { VideoDetailsPanel } from "./video-details-panel";
+import { OrientationIcon, type Orientation } from "./orientation-icon";
 
 // BL-182 stage 1 (FO-REQ-0023 §4 C; PUBLISHING_PLAN.md §2 stage 1): Content → «Календарь». The questions the owner asks of it, in
 // order: until when is the channel covered (and is that soon), which days of the next two weeks have no video, what is waiting
@@ -75,6 +76,8 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
   // BL-221: the day the owner clicked (its videos with their views below the grid) and the synced views (a local read).
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const [views, setViews] = useState<Map<string, number | null>>(new Map());
+  // BL-259: the frame of each package's video, by manifest path and by uploaded video id.
+  const [orientations, setOrientations] = useState<Map<string, Orientation>>(new Map());
   const packagesReadAt = useRef(0);
   const [detailsDirty, setDetailsDirty] = useState(false);
 
@@ -93,7 +96,15 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
         const base = `/api/channels/${encodeURIComponent(channelId)}`;
         const [packagesRes, settingsRes] = await Promise.all([fetch(`${base}/publishing/packages`), fetch(`${base}/publishing-settings`)]);
         if (packagesRes.ok && settingsRes.ok) {
-          const scanned = (await packagesRes.json()) as { status: string; packages?: Array<{ manifestPath: string; video: string | null; title: string | null; plannedPublishDate: string | null; state: string }> };
+          const scanned = (await packagesRes.json()) as { status: string; packages?: Array<{ manifestPath: string; video: string | null; title: string | null; plannedPublishDate: string | null; state: string; orientation?: Orientation | null; youtube?: { videoId: string } | null }> };
+          // BL-259: each package's frame, by its manifest (a planned package) and by its uploaded video id (a YouTube entry).
+          const frames = new Map<string, Orientation>();
+          for (const p of scanned.packages ?? []) {
+            if (!p.orientation) continue;
+            frames.set(p.manifestPath, p.orientation);
+            if (p.youtube?.videoId) frames.set(p.youtube.videoId, p.orientation);
+          }
+          setOrientations(frames);
           const time = ((await settingsRes.json()) as { settings?: { publishTimeUtc?: string } }).settings?.publishTimeUtc ?? "12:00";
           setPackageEntries(
             (scanned.packages ?? [])
@@ -334,6 +345,7 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
                         title={`${entry.title}\n${t("publishingCalendar.packageHint")}`}
                         className={`block w-full truncate rounded border px-1 py-0.5 text-left text-[11px] ${KIND_STYLES.package}`}
                       >
+                        <OrientationIcon orientation={orientations.get(entry.videoId)} className="mr-0.5" />
                         {entry.at ? `${cellTime(entry.at)} ` : ""}
                         {entry.title}
                       </span>
@@ -346,6 +358,7 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
                       aria-label={entry.at ? `${entry.title}. ${timeHint(entry.at)}` : entry.title}
                       className={`block w-full truncate rounded border px-1 py-0.5 text-left text-[11px] ${KIND_STYLES[entry.kind]}`}
                     >
+                      <OrientationIcon orientation={orientations.get(entry.videoId)} className="mr-0.5" />
                       {entry.at ? `${cellTime(entry.at)} ` : ""}
                       {entry.title}
                     </button>
@@ -396,6 +409,7 @@ export function PublishingCalendar({ channelId, visible }: { channelId: string |
                 {(byDay.get(selectedDay) ?? []).map((entry) => (
                   <li key={entry.videoId} className="flex items-center gap-2">
                     <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[11px] ${KIND_STYLES[entry.kind]}`}>{t(`publishingCalendar.legend.${entry.kind === "unscheduled" ? "scheduled" : entry.kind}` as UiTextKey)}</span>
+                    <OrientationIcon orientation={orientations.get(entry.videoId)} />
                     {entry.kind === "package" ? (
                       <span className="min-w-0 flex-1 truncate text-zinc-300">{entry.title}</span>
                     ) : (

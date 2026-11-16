@@ -57,6 +57,8 @@ export const shell = {
   "shell.videoCountHint": "How YouTube counts: public videos only (no streams, recordings or unlisted videos). The full list is in Content → Videos.",
   "shell.activity": "Background activity",
   "activity.label": "Running in the background: {count}",
+  "orientation.vertical": "Vertical video (Shorts)",
+  "orientation.horizontal": "Horizontal video",
   "activity.title": "Running in the background",
   "activity.nothing": "Nothing is running.",
   "activity.group.operations": "Operations",

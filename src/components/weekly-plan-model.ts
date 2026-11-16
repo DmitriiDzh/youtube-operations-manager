@@ -39,7 +39,7 @@ export type PlanSlotDto = {
   statusCode: string | null;
   videoId: string | null;
   /** BL-225 stage 2: the release package that names the slot. */
-  package: { video: string; title: string; durationSeconds: number; languages: string[]; containsSyntheticMedia: boolean; thumbnailPath: string | null; testThumbnails: number; problems: string[]; manifestSha256?: string | null; reviewComment?: string | null } | null;
+  package: { video: string; title: string; durationSeconds: number; languages: string[]; containsSyntheticMedia: boolean; thumbnailPath: string | null; testThumbnails: number; problems: string[]; manifestSha256?: string | null; reviewComment?: string | null; orientation?: "vertical" | "horizontal" | null } | null;
   released: boolean;
   /** BL-242 R3: the date the slot's uploaded video carries on YouTube (UTC), or null/absent. */
   youtubePublishAt?: string | null;

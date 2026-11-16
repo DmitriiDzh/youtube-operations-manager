@@ -57,6 +57,8 @@ export const shell: Record<keyof typeof en, string> = {
   "shell.videoCountHint": "Так считает YouTube: только открытые видео (без эфиров, их записей и видео по ссылке). Полный список — в «Контент → Видео».",
   "shell.activity": "Фоновые задачи",
   "activity.label": "Выполняется в фоне: {count}",
+  "orientation.vertical": "Вертикальное видео (Shorts)",
+  "orientation.horizontal": "Горизонтальное видео",
   "activity.title": "Выполняется в фоне",
   "activity.nothing": "Ничего не выполняется.",
   "activity.group.operations": "Операции",

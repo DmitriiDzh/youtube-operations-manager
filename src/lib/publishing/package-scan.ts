@@ -43,6 +43,11 @@ export type ScannedPackage = {
   testThumbnailPaths?: string[];
   sizeBytes: number | null;
   durationSeconds: number | null;
+  /**
+   * BL-259 (owner msg 4397): the video's frame -- vertical (taller than wide: a Short) or horizontal -- from ffprobe on this
+   * computer, else as last read here (the mp4 may be deleted after upload); null when never known.
+   */
+  orientation?: "vertical" | "horizontal" | null;
   state: PackageState;
   problems: PackageProblem[];
   /** From `Vn_youtube.json`, once uploaded. BL-243: `removedAt` (ISO) when the sync found the video removed on YouTube. */
@@ -86,6 +91,10 @@ export type PackageScanDeps = {
   sha256(absolutePath: string): Promise<string>;
   /** ffprobe's duration in seconds; null when the file cannot be read as a video; "no_ffprobe" when ffprobe is not installed. */
   probeDuration(absolutePath: string, bytes: number): Promise<number | null | "no_ffprobe">;
+  /** BL-259: the video stream's width and height (ffprobe, same cache as the duration); null when unknown. Absent: not read. */
+  probeFrame?(absolutePath: string, bytes: number): Promise<{ width: number; height: number } | null>;
+  /** BL-259: the frames last read on this computer, by video number, and remembering a new one. Absent: no memo. */
+  orientations?: { get(channelId: string): Promise<Record<string, "vertical" | "horizontal">>; remember(channelId: string, video: string, orientation: "vertical" | "horizontal"): Promise<void> };
   channel(channelId: string): Promise<ChannelExpectations>;
   /**
    * The channel's synced videos (the local copy). BL-243: `publishedAt` -- YouTube's `snippet.publishedAt` as synced; a video is
@@ -151,7 +160,15 @@ export function createPackageScan(deps: PackageScanDeps) {
     return JSON.parse(stripBom(await deps.readText(path, MANIFEST_MAX_BYTES)));
   }
 
-  type Copy = { videos: Awaited<ReturnType<PackageScanDeps["videos"]>>; removed: Map<string, string>; checkedAt: string | null; review: OwnerReviewGate | null };
+  type Copy = {
+    videos: Awaited<ReturnType<PackageScanDeps["videos"]>>;
+    removed: Map<string, string>;
+    checkedAt: string | null;
+    review: OwnerReviewGate | null;
+    /** BL-259: the frames last read on this computer, by video number. */
+    orientations: Record<string, "vertical" | "horizontal">;
+    channelId: string;
+  };
 
   async function scanOne(workspace: string, manifestPath: string, channel: ChannelExpectations, copy: Copy): Promise<ScannedPackage | null> {
     const { videos } = copy;
@@ -189,6 +206,13 @@ export function createPackageScan(deps: PackageScanDeps) {
     const videoFile = await deps.resolveFile(workspace, `${folder}/${pkg.files.video}`);
     const probed = videoFile ? await deps.probeDuration(videoFile.path, videoFile.bytes) : null;
     const durationSeconds = typeof probed === "number" ? probed : null;
+    // BL-259: taller than wide is vertical (a Short); a square or wider frame is horizontal. Read now, else as last read here.
+    const frame = videoFile && deps.probeFrame ? await deps.probeFrame(videoFile.path, videoFile.bytes).catch(() => null) : null;
+    const probedOrientation = frame && frame.width > 0 && frame.height > 0 ? (frame.height > frame.width ? ("vertical" as const) : ("horizontal" as const)) : null;
+    if (probedOrientation && copy.orientations[pkg.video] !== probedOrientation && deps.orientations) {
+      await deps.orientations.remember(copy.channelId, pkg.video, probedOrientation).catch(() => undefined);
+    }
+    const orientation = probedOrientation ?? copy.orientations[pkg.video] ?? null;
     const thumbnailFile = await deps.resolveFile(workspace, `${folder}/${pkg.files.thumbnail}`);
     const thumbnailKind = thumbnailFile ? imageKindOf(await deps.readHead(thumbnailFile.path, 8)) : null;
     // BL-225 stage 2: every test thumbnail of a v2 package gets the default's checks (exists, JPEG/PNG by content, 2 MB).
@@ -238,6 +262,7 @@ export function createPackageScan(deps: PackageScanDeps) {
       testThumbnailPaths: testThumbnails.filter((t) => t.exists).map((t) => `${folder}/${t.file}`),
       sizeBytes: pkg.sizeBytes,
       durationSeconds: pkg.durationSeconds,
+      orientation,
       state,
       problems: state === "deleted_on_youtube" ? [{ code: VIDEO_DELETED_ON_YOUTUBE }] : record ? [] : problems,
       youtube: record
@@ -259,7 +284,7 @@ export function createPackageScan(deps: PackageScanDeps) {
       if (!workspace) return { status: "no_workspace" };
       const validation = await deps.validateWorkspace(workspace);
       if (!validation.ok) return { status: "workspace_unavailable", reason: validation.reason };
-      const [channel, videos, removed, checkedAt, manifests, review] = await Promise.all([
+      const [channel, videos, removed, checkedAt, manifests, review, orientations] = await Promise.all([
         deps.channel(channelId),
         deps.videos(channelId),
         // BL-243 (ADR 0063): an unreadable mark is "none known" (such packages read as before) and an unreadable sync time null --
@@ -271,8 +296,10 @@ export function createPackageScan(deps: PackageScanDeps) {
         findManifests(deps, workspace),
         // BL-257: a gate that cannot be read holds every package (fail closed), never a failed scan.
         deps.ownerReview ? deps.ownerReview(channelId).catch(() => CLOSED_OWNER_REVIEW_GATE) : Promise.resolve(null),
+        // BL-259: an unreadable memo is none.
+        deps.orientations ? deps.orientations.get(channelId).catch(() => ({})) : Promise.resolve({}),
       ]);
-      const copy: Copy = { videos, removed: new Map((removed ?? []).map((video) => [video.videoId, video.removedAt])), checkedAt, review };
+      const copy: Copy = { videos, removed: new Map((removed ?? []).map((video) => [video.videoId, video.removedAt])), checkedAt, review, orientations, channelId };
       const packages: ScannedPackage[] = [];
       for (const manifestPath of manifests) {
         const scanned = await scanOne(workspace, manifestPath, channel, copy);
