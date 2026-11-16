@@ -16,7 +16,9 @@ export type FfmpegTools = { ffmpegPath: string; ffprobePath: string; version: st
 export type MediaProbe = {
   durationSeconds: number | null;
   sizeBytes: number | null;
-  video: { codec: string; width: number | null; height: number | null; frameRate: number | null } | null;
+  /** BL-259: `rotation` -- the display rotation in degrees (a phone's 90 / -90 / 270 flag, from the rotate tag or the display
+   * matrix), absent when none; width and height stay as stored (before rotation). */
+  video: { codec: string; width: number | null; height: number | null; frameRate: number | null; rotation?: number } | null;
   audio: { codec: string; sampleRate: number | null; channels: number | null } | null;
   /** Number of audio and video streams (the encoder maps the first of each). */
   audioStreams: number;
@@ -128,11 +130,22 @@ function frameRateOf(value: unknown): number | null {
   return Math.round((num / den) * 1000) / 1000;
 }
 
+/** BL-259: the stream's display rotation in degrees (the rotate tag, else the display matrix side data); 0 when none. */
+function rotationOf(stream: { tags?: { rotate?: unknown }; side_data_list?: Array<{ rotation?: unknown }> }): number {
+  const tagged = toNumber(stream.tags?.rotate);
+  if (tagged !== null) return tagged;
+  for (const side of stream.side_data_list ?? []) {
+    const value = toNumber(side.rotation);
+    if (value !== null) return value;
+  }
+  return 0;
+}
+
 /** Parses `ffprobe -show_format -show_streams -of json` output. */
 export function parseProbe(json: string): MediaProbe {
   const data = JSON.parse(json) as {
     format?: { duration?: unknown; size?: unknown };
-    streams?: Array<{ codec_type?: string; codec_name?: string; width?: unknown; height?: unknown; r_frame_rate?: unknown; sample_rate?: unknown; channels?: unknown }>;
+    streams?: Array<{ codec_type?: string; codec_name?: string; width?: unknown; height?: unknown; r_frame_rate?: unknown; sample_rate?: unknown; channels?: unknown; tags?: { rotate?: unknown }; side_data_list?: Array<{ rotation?: unknown }> }>;
   };
   const streams = data.streams ?? [];
   const videos = streams.filter((s) => s.codec_type === "video");
@@ -142,7 +155,7 @@ export function parseProbe(json: string): MediaProbe {
   return {
     durationSeconds: toNumber(data.format?.duration),
     sizeBytes: toNumber(data.format?.size),
-    video: v ? { codec: v.codec_name ?? "unknown", width: toNumber(v.width), height: toNumber(v.height), frameRate: frameRateOf(v.r_frame_rate) } : null,
+    video: v ? { codec: v.codec_name ?? "unknown", width: toNumber(v.width), height: toNumber(v.height), frameRate: frameRateOf(v.r_frame_rate), ...(rotationOf(v) !== 0 ? { rotation: rotationOf(v) } : {}) } : null,
     audio: a ? { codec: a.codec_name ?? "unknown", sampleRate: toNumber(a.sample_rate), channels: toNumber(a.channels) } : null,
     audioStreams: audios.length,
     videoStreams: videos.length,
@@ -152,7 +165,7 @@ export function parseProbe(json: string): MediaProbe {
 export async function probeMedia(tools: Pick<FfmpegTools, "ffprobePath">, file: string, run: RunTool = runTool): Promise<MediaProbe> {
   const output = await run(
     tools.ffprobePath,
-    ["-v", "error", "-show_entries", "format=duration,size:stream=codec_type,codec_name,width,height,r_frame_rate,sample_rate,channels", "-of", "json", file],
+    ["-v", "error", "-show_entries", "format=duration,size:stream=codec_type,codec_name,width,height,r_frame_rate,sample_rate,channels:stream_tags=rotate:stream_side_data=rotation", "-of", "json", file],
     { timeoutMs: 60_000 }
   );
   return parseProbe(output);

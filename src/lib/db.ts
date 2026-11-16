@@ -7361,6 +7361,45 @@ export async function setAutoPrivateUploadPausedChannels(channelIds: readonly st
   await setAppSetting(AUTO_PRIVATE_UPLOAD_PAUSED_CHANNELS_SETTING_KEY, JSON.stringify([...new Set(channelIds)]));
 }
 
+/**
+ * BL-259 (owner msg 4397): each package video's frame (vertical / horizontal) as ffprobe last read it on this computer, kept per
+ * channel and video number -- so the icon stays after the local mp4 is deleted (BL-238). Device-local; a memo, never a decision.
+ */
+const VIDEO_ORIENTATIONS_SETTING_KEY = "video_orientations";
+export type VideoOrientation = "vertical" | "horizontal";
+
+export async function getVideoOrientations(channelId: string): Promise<Record<string, VideoOrientation>> {
+  try {
+    const all = JSON.parse((await getAppSetting(VIDEO_ORIENTATIONS_SETTING_KEY)) ?? "{}") as Record<string, Record<string, unknown>>;
+    const own = all[channelId] ?? {};
+    return Object.fromEntries(Object.entries(own).filter((entry): entry is [string, VideoOrientation] => entry[1] === "vertical" || entry[1] === "horizontal"));
+  } catch {
+    return {};
+  }
+}
+
+/** Review: one memo write at a time in this process (read-merge-write), so two scans never drop each other's entry. */
+let videoOrientationWrites: Promise<unknown> = Promise.resolve();
+
+export function rememberVideoOrientation(channelId: string, video: string, orientation: VideoOrientation): Promise<void> {
+  const run = videoOrientationWrites.then(() => writeVideoOrientation(channelId, video, orientation));
+  videoOrientationWrites = run.catch(() => undefined);
+  return run;
+}
+
+async function writeVideoOrientation(channelId: string, video: string, orientation: VideoOrientation): Promise<void> {
+  let all: Record<string, Record<string, VideoOrientation>> = {};
+  try {
+    const parsed = JSON.parse((await getAppSetting(VIDEO_ORIENTATIONS_SETTING_KEY)) ?? "{}") as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) all = parsed as typeof all;
+  } catch {
+    all = {};
+  }
+  if (all[channelId]?.[video] === orientation) return;
+  all[channelId] = { ...(all[channelId] ?? {}), [video]: orientation };
+  await setAppSetting(VIDEO_ORIENTATIONS_SETTING_KEY, JSON.stringify(all));
+}
+
 const AUTO_PRIVATE_UPLOAD_WAITING_SETTING_KEY = "auto_private_upload_waiting";
 
 /**
@@ -12360,6 +12399,39 @@ export async function getPublishingUpload(id: string, database: AppDb = db): Pro
 }
 
 /** Newest first; optional channel and status filters. */
+/**
+ * BL-261 (owner TG 3521 via the Operator): after a release folder was renamed, its upload rows name the new folder -- each row
+ * changes only while it still names the old manifest path and is not being sent (queued, or finished), all in one transaction.
+ * Returns how many rows changed; throws (nothing changed) when a row moved meanwhile.
+ */
+export async function rewritePublishingUploadPaths(
+  updates: ReadonlyArray<{ id: string; fromManifestPath: string; manifestPath: string; packageJson: string }>,
+  database: AppDb = db
+): Promise<number> {
+  if (updates.length === 0) return 0;
+  return database.transaction(async (tx) => {
+    let changed = 0;
+    for (const update of updates) {
+      const result = await tx
+        .update(publishingUploads)
+        .set({ manifestPath: update.manifestPath, packageJson: update.packageJson, updatedAt: new Date() })
+        .where(
+          and(
+            eq(publishingUploads.id, update.id),
+            eq(publishingUploads.manifestPath, update.fromManifestPath),
+            inArray(publishingUploads.status, ["queued", "done", "failed", "cancelled"]),
+            // Review: never under the runner's lease (it prepares a queued row with the old paths in hand).
+            or(isNull(publishingUploads.leaseUntil), lte(publishingUploads.leaseUntil, new Date()))
+          )
+        )
+        .returning({ id: publishingUploads.id });
+      if (result.length !== 1) throw new Error(`upload ${update.id} changed while the folder was renamed`);
+      changed += 1;
+    }
+    return changed;
+  });
+}
+
 export async function listPublishingUploads(
   /** Review #6 (BL-225): `withSlot` -- only rows that name a weekly-plan slot, filtered before the limit. */
   filter: { channelId?: string; statuses?: readonly PublishingUploadStatus[]; limit: number; withSlot?: boolean },

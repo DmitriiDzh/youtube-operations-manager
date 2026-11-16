@@ -444,3 +444,26 @@ test("AC-PR-07: a gate port that fails holds the package (owner_review_pending),
   const scanned = await scanV65({ ownerReview: async () => Promise.reject(new Error("document unreadable")) });
   assert.deepEqual([scanned.state, scanned.problems], ["not_ready", [{ code: "owner_review_pending" }]]);
 });
+
+// BL-259 (owner msg 4397): the frame mark. Taller than wide (1080x1920) is vertical; wider (1920x1080) or square is horizontal; the
+// frame read on this computer is remembered by video number and used when the mp4 is gone; nothing known -> null.
+test("BL-259: orientation from the probed frame, remembered; the memo stands in when the mp4 is gone; unknown is null", async () => {
+  const remembered: Array<[string, string, string]> = [];
+  const memo = (known: Record<string, "vertical" | "horizontal">) => ({ get: async () => known, remember: async (c: string, v: string, o: "vertical" | "horizontal") => void remembered.push([c, v, o]) });
+  const vertical = await scanV65({ probeFrame: async () => ({ width: 1080, height: 1920 }), orientations: memo({}) });
+  assert.equal(vertical.orientation, "vertical");
+  assert.deepEqual(remembered, [["UC_t", "V65", "vertical"]]);
+  assert.equal((await scanV65({ probeFrame: async () => ({ width: 1920, height: 1080 }) })).orientation, "horizontal");
+  assert.equal((await scanV65({ probeFrame: async () => ({ width: 1080, height: 1080 }) })).orientation, "horizontal");
+  // Already remembered the same way: not written again.
+  remembered.length = 0;
+  await scanV65({ probeFrame: async () => ({ width: 1080, height: 1920 }), orientations: memo({ V65: "vertical" }) });
+  assert.deepEqual(remembered, []);
+  // The mp4 deleted after upload: the memo answers.
+  const files = packageFiles("04 Videos/10 October/1024 V65", "V65");
+  delete files["04 Videos/10 October/1024 V65/V65 Tropico Jazz.mp4"];
+  assert.equal((await scanV65({ probeFrame: async () => ({ width: 1920, height: 1080 }), orientations: memo({ V65: "vertical" }) }, files)).orientation, "vertical");
+  // No frame and no memo; or a frame port that fails.
+  assert.equal((await scanV65({}, files)).orientation, null);
+  assert.equal((await scanV65({ probeFrame: async () => Promise.reject(new Error("ffprobe")) })).orientation, null);
+});

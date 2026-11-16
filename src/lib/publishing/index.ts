@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { open, realpath, stat } from "node:fs/promises";
+import { createReleaseFolderRename } from "./release-folder-rename";
+import { lstat, open, realpath, rename as renamePath, stat } from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
 import { YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
@@ -33,11 +34,17 @@ import {
   listQuotaCalls,
   reorderQueuedPublishingUploads,
   rawSqlClient,
+  rewritePublishingUploadPaths,
+  listSocialPostJobs,
+  listLiveStreamVideos,
+  listLiveStreamSources,
   removeLocalVideoRowIfUnreferenced,
   savePublishingG1Probe,
   stopPublishingUploadBeforeYoutube,
   updatePublishingUpload,
   type StoredPublishingUpload,
+  getVideoOrientations,
+  rememberVideoOrientation,
 } from "@/lib/db";
 import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
 import { createChannelSyncCore } from "@/lib/channel-sync";
@@ -196,6 +203,7 @@ export type PublishingCalendarCore = ReturnType<typeof createPublishingCalendarC
 const scanHolder = globalThis as typeof globalThis & { [key: symbol]: unknown };
 const FFMPEG_KEY = Symbol.for("ytom.publishing.ffmpeg");
 const PROBE_CACHE_KEY = Symbol.for("ytom.publishing.probeCache");
+const FRAME_CACHE_KEY = Symbol.for("ytom.publishing.frameCache");
 
 /** BL-182 stage 2: the channel's release packages under `04 Videos/`, checked again (Content → «Публикация»). Read-only. */
 export function createPackageScanCore() {
@@ -236,6 +244,7 @@ function createPackageScanReads() {
   const files = createWorkspaceVideoFiles();
   const videoStore = createChannelVideoStoreAdapter();
   const probeCache = (scanHolder[PROBE_CACHE_KEY] ??= new Map<string, number | null>()) as Map<string, number | null>;
+  const frameCache = (scanHolder[FRAME_CACHE_KEY] ??= new Map<string, { width: number; height: number } | null>()) as Map<string, { width: number; height: number } | null>;
   const ffmpeg = async () => {
     const found = await ((scanHolder[FFMPEG_KEY] ??= detectFfmpeg()) as Promise<FfmpegTools | null>);
     if (!found) scanHolder[FFMPEG_KEY] = undefined; // look again next time (ffmpeg may be installed meanwhile)
@@ -274,10 +283,19 @@ function createPackageScanReads() {
       if (probeCache.has(key)) return probeCache.get(key) ?? null;
       const tools = await ffmpeg();
       if (!tools) return "no_ffprobe";
-      const duration = await probeMedia(tools, absolutePath).then((probe) => probe.durationSeconds).catch(() => null);
-      probeCache.set(key, duration);
-      return duration;
+      const probe = await probeMedia(tools, absolutePath).catch(() => null);
+      probeCache.set(key, probe?.durationSeconds ?? null);
+      // BL-259: the same ffprobe call gives the frame (no second run).
+      // A phone's 90/270-degree flag shows the stored frame turned: its width and height swap on screen (review).
+      const quarter = Math.abs(Math.round((probe?.video?.rotation ?? 0) / 90)) % 2 === 1;
+      frameCache.set(key, probe?.video?.width && probe.video.height ? (quarter ? { width: probe.video.height, height: probe.video.width } : { width: probe.video.width, height: probe.video.height }) : null);
+      return probe?.durationSeconds ?? null;
     },
+    // BL-259 (owner msg 4397): the frame from the duration's ffprobe run (the scan probes the duration first).
+    async probeFrame(absolutePath, bytes) {
+      return frameCache.get(`${absolutePath}|${bytes}`) ?? null;
+    },
+    orientations: { get: (channelId) => getVideoOrientations(channelId), remember: (channelId, video, orientation) => rememberVideoOrientation(channelId, video, orientation) },
     async channel(channelId) {
       const baseline = await getChannelExpectedLanguages(channelId);
       return { channelId, defaultLanguage: baseline.defaultLanguage, defaultAudioLanguage: baseline.defaultAudioLanguage };
@@ -673,6 +691,16 @@ export async function listChannelUploads(channelId: string) {
 }
 
 /**
+ * BL-258 (owner msg 4385): this computer's open uploads of every channel, each queued row with its place in the shared queue -- the
+ * header's «Выполняется в фоне».
+ */
+export async function listActiveUploadsWithQueue() {
+  const active = await listPublishingUploads({ statuses: ACTIVE_UPLOAD_STATUSES, limit: 500 });
+  const { positions } = queuePositions(active);
+  return active.map((row) => ({ ...row, queuePosition: positions.get(row.id) ?? null }));
+}
+
+/**
  * BL-239 (UPLOAD_QUEUE_CONTROL_PLAN.md §6): the owner's list -- the channel's uploads with each queued row's place in the shared
  * queue of this computer (every channel) and the queue's length, so the ↑↓ arrows show what they change.
  */
@@ -897,3 +925,42 @@ export async function markUploadThumbnailSetLater(channelId: string, videoId: st
   }
   return marked;
 }
+
+/**
+ * BL-261 (owner TG 3521 via the Factory Operator): rename one release package's folder under `04 Videos/` and rewrite this
+ * computer's upload rows that name it. `invalidate`: the caller's package caches (the weekly plan's, composition) -- this module
+ * never imports them.
+ */
+export function createReleaseFolderRenameCore(options: { invalidate?: (channelId: string) => void } = {}) {
+  const scan = createPackageScanCore();
+  const reads = createPackageScanReads();
+  return createReleaseFolderRename({
+    workspace: (channelId) => reads.workspace(channelId),
+    scan: (channelId) => scan.scan(channelId),
+    uploads: (channelId) => listPublishingUploads({ channelId, limit: 5000 }),
+    peerUploads: (channelId) => peerUploadsOf(channelId),
+    async socialBusy(channelId, video) {
+      return (await listSocialPostJobs(channelId)).some((job) => job.video === video && (job.status === "uploading" || job.status === "processing"));
+    },
+    async livePaths(channelId) {
+      const [videos, sources] = await Promise.all([listLiveStreamVideos(channelId), listLiveStreamSources(channelId)]);
+      return [...videos, ...sources].map((row) => row.originalPath).filter((p): p is string => typeof p === "string");
+    },
+    now: () => new Date(),
+    exists: (absolutePath) => lstat(absolutePath).then(() => true, () => false),
+    async isRealFolder(workspace, relativeFolder) {
+      const absolute = path.join(workspace, ...relativeFolder.split("/"));
+      const info = await lstat(absolute).catch(() => null);
+      if (!info || !info.isDirectory() || info.isSymbolicLink()) return false;
+      const [root, real] = await Promise.all([realpath(path.join(workspace, VIDEOS_FOLDER)).catch(() => null), realpath(absolute).catch(() => null)]);
+      return root !== null && real !== null && real !== root && isPathInsideOrEqual(root, real);
+    },
+    rename: (from, to) => renamePath(from, to),
+    rewriteUploads: (updates) => rewritePublishingUploadPaths(updates),
+    assertMutationAllowed: () => assertDeviceAvailableForMutation(rawSqlClient),
+    audit: ({ channelId, video, detail }) => insertVideoEditAuditEvent({ channelId, videoId: `release-folder:${video}`, eventType: "RESULT", detail }),
+    invalidate: (channelId) => options.invalidate?.(channelId),
+    join: (...parts) => path.join(...parts),
+  });
+}
+export { folderNameProblem, rewritePaths, type ReleaseFolderRenameInput, type ReleaseFolderRenameResult } from "./release-folder-rename";

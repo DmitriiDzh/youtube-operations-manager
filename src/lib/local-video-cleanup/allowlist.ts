@@ -23,7 +23,8 @@ export function isAllowedReleaseVideo(relativePath: string, video: string, chann
   if (!monthMatch) return false;
   const mm = Number(monthMatch[1]);
   if (mm < 1 || mm > 12 || MONTHS[mm - 1] !== monthMatch[2]) return false;
-  const releaseMatch = /^(\d{2})(\d{2}) (V\d+)$/.exec(release);
+  // BL-261 (owner TG 3521): a Short's release folder may carry the « Short» suffix -- nothing else.
+  const releaseMatch = /^(\d{2})(\d{2}) (V\d+)(?: Short)?$/.exec(release);
   if (!releaseMatch) return false;
   const day = Number(releaseMatch[2]);
   if (releaseMatch[1] !== monthMatch[1] || day < 1 || day > 31 || releaseMatch[3] !== video) return false;

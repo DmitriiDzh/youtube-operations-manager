@@ -52,6 +52,8 @@ export type PlanSlotPackage = {
    * null. Shown on the slot only; not part of the package fingerprint an approval names.
    */
   reviewComment?: string | null;
+  /** BL-259 (owner msg 4397): the video's frame (vertical / horizontal), null or absent when not known. Not part of the fingerprint. */
+  orientation?: "vertical" | "horizontal" | null;
 };
 
 // BL-243: a slot whose only package names a video deleted on YouTube is `failed` with `VIDEO_DELETED_ON_YOUTUBE`
