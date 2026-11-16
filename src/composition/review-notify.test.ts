@@ -3,7 +3,7 @@ import test from "node:test";
 import type { PlanReviewActivity } from "@/lib/generation-plans";
 import type { ClipReviewsSnapshot, PackageReviewsSnapshot, PublishingPlansSnapshot, SharedPickAction, SharedPlan, SharedVerdict, StoryboardRecord } from "@/lib/sync-gateway";
 import { reviewFileName } from "@/lib/review-notify";
-import { clipNoticesOf, packageNoticesOf, planFeedOfActivity, planFeedOfPeerPlan, planFeedsOfOutgoing, slotNoticesOf, storyboardNoticesOf } from "./review-notify";
+import { clipNoticesOf, packageNoticesOf, planFeedOfActivity, planFeedOfPeerPlan, planFeedsOfOutgoing, slotNoticesOf, storyboardNoticesOf, templateNoticesOf } from "./review-notify";
 
 // BL-248 (REVIEW_NOTIFY_PLAN.md §2): only the owner's decisions become notices -- never the Producer's withdrawal or submit, never
 // the Operator's comments or replies. Expected values written out by hand from §2 / §4.
@@ -112,6 +112,32 @@ test("AC-RN-04: slots -- every owner decision with itemId <weekStart>_<slotId>",
   const notices = slotNoticesOf(CH, snapshot, SINCE);
   assert.deepEqual(notices.map((n) => [n.itemId, n.decisionId, n.status]), [["2026-11-09_s3", "pd1", "vetoed"]]);
   assert.ok(notices[0].context.some((l) => l.label === "Publish at" && l.value === "2026-11-11T18:00 (Asia/Tokyo)"));
+});
+
+test("BL-267 AC-WT-04: template decisions -- the owner's approve / reject / withdraw each give a notice; older ones none", () => {
+  const version = (id: string, by: "owner" | "producer") => ({ id, format: "week-template/1" as const, days: { mon: [{ kind: "long" as const, hours: 3, publishTimeUtc: "15:00" }] }, horizonWeeks: 4, displayTimeZone: "Asia/Tokyo", contentHash: "h".repeat(64), by, device: "Mac", at: "2026-11-16T10:00:00Z", seq: 1 });
+  const snapshot = {
+    plans: {},
+    slots: {},
+    decisions: {},
+    templateVersions: { tv1: version("tv1", "owner"), tv2: version("tv2", "producer") },
+    templateDecisions: {
+      a: { id: "a", versionId: "tv1", contentHash: "h".repeat(64), kind: "approved" as const, by: "owner" as const, device: "Mac", at: "2026-11-16T10:00:00Z", seq: 1 },
+      r: { id: "r", versionId: "tv2", contentHash: "h".repeat(64), kind: "rejected" as const, by: "owner" as const, device: "Win", at: "2026-11-16T11:00:00Z", seq: 2 },
+      w: { id: "w", versionId: "tv1", contentHash: "h".repeat(64), kind: "withdrawn" as const, by: "owner" as const, device: "Mac", at: "2026-11-16T12:00:00Z", seq: 3 },
+      old: { id: "old", versionId: "tv1", contentHash: "h".repeat(64), kind: "approved" as const, by: "owner" as const, device: "Mac", at: "2026-11-07T00:00:00Z", seq: 0 },
+    },
+  } as unknown as PublishingPlansSnapshot;
+  const notices = templateNoticesOf(CH, snapshot, SINCE);
+  assert.deepEqual(notices.map((n) => [n.kind, n.itemId, n.decisionId, n.status, n.decidedOn]), [
+    ["template", "tv1", "a", "approved", "Mac"],
+    ["template", "tv2", "r", "rejected", "Win"],
+    ["template", "tv1", "w", "withdrawn", "Mac"],
+  ]);
+  assert.ok(notices[0].context.some((l) => l.label === "Days (UTC)" && l.value === "mon long 3 h 15:00Z"));
+  assert.ok(notices[1].context.some((l) => l.label === "Proposed by" && l.value === "producer"));
+  assert.equal(notices[0].readTool, `producer_week_template_get {"channelId":"${CH.channelId}"}`);
+  assert.match(reviewFileName("template", "tv1", "a"), /^REVIEW-DECISION-template-tv1-a/);
 });
 
 test("plans -- this computer's verdict history, picks and «ни один не подходит» with stable entry ids", () => {

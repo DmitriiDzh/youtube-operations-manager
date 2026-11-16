@@ -89,6 +89,7 @@ const KIND_TITLE: Record<ReviewNoticeKind, string> = {
   plan: "generation plan review pass",
   slot: "weekly-plan slot",
   package: "final release package (owner's package review)",
+  template: "week template (dates by template)",
 };
 
 function frontMatter(fields: Array<[string, string | number | null]>): string {

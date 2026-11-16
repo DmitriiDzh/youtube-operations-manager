@@ -181,6 +181,45 @@ export function storyboardNoticesOf(channel: Channel, records: readonly Storyboa
   return out;
 }
 
+// --- week templates --------------------------------------------------------------------------------------------------------
+
+/**
+ * BL-267 (AC-WT-04, ADR 0073 §1): every owner decision on a week template -- his own edit (`approved`), an accepted or rejected
+ * Producer proposal, the template withdrawn -- one wake file each (`REVIEW-DECISION-template-<versionId>-<decisionId>.md`).
+ */
+export function templateNoticesOf(channel: Channel, snapshot: PublishingPlansSnapshot, sinceMs: number): ReviewDecisionNotice[] {
+  const out: ReviewDecisionNotice[] = [];
+  const versions = snapshot.templateVersions ?? {};
+  for (const d of Object.values(snapshot.templateDecisions ?? {})) {
+    if (d.by !== "owner" || !after(d.at, sinceMs)) continue;
+    const version = versions[d.versionId];
+    const days = version ? Object.entries(version.days).map(([day, entries]) => `${day} ${(entries ?? []).map((e) => `${e.kind}${e.hours !== undefined ? ` ${e.hours} h` : ""} ${e.publishTimeUtc}Z`).join(", ")}`).join("; ") : null;
+    out.push({
+      kind: "template",
+      channelId: channel.channelId,
+      channelName: channel.name,
+      itemId: d.versionId,
+      decisionId: d.id,
+      status: d.kind,
+      comment: null,
+      decidedAt: d.at,
+      decidedOn: d.device,
+      context: [
+        { label: "Template version", value: d.versionId },
+        ...(version ? [{ label: "Proposed by", value: version.by }] : []),
+        ...(days ? [{ label: "Days (UTC)", value: days }] : []),
+        ...(version ? [{ label: "Horizon", value: `${version.horizonWeeks} weeks` }] : []),
+        ...(version?.displayTimeZone ? [{ label: "Display time zone", value: version.displayTimeZone }] : []),
+        ...(d.kind === "approved" ? [{ label: "Next", value: "this template is in force: matching slots with a ready package (media approved where the gate is on) get their first date automatically" }] : []),
+      ],
+      attachments: [],
+      ytmPlace: "Контент → «План недели» → «Шаблон недели»",
+      readTool: `producer_week_template_get ${json({ channelId: channel.channelId })}`,
+    });
+  }
+  return out;
+}
+
 // --- weekly-plan slots -----------------------------------------------------------------------------------------------------
 
 /** §2: every slot decision (approved / revoked / vetoed / restored) -- all are the owner's. */
@@ -505,7 +544,12 @@ function createProductionReviewNotify(): ReviewNotify {
       },
       {
         name: "weekly plans",
-        list: (since) => perChannel(async (ch) => slotNoticesOf(ch, await readDocument(paths.publishingPlansDocDir, ch.channelId, () => createPublishingPlansCoreForProduction().read(ch.channelId)), Date.parse(since))),
+        list: (since) =>
+          perChannel(async (ch) => {
+            const snapshot = await readDocument(paths.publishingPlansDocDir, ch.channelId, () => createPublishingPlansCoreForProduction().read(ch.channelId));
+            // BL-267 (AC-WT-04): the owner's template decisions wake the Producer too.
+            return [...slotNoticesOf(ch, snapshot, Date.parse(since)), ...templateNoticesOf(ch, snapshot, Date.parse(since))];
+          }),
       },
     ],
     planSources: [
