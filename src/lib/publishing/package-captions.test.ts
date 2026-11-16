@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { CaptionWriteInput, CaptionWriteResult } from "@/lib/video-captions";
 import { sha256Hex } from "@/lib/video-captions/hash";
-import { createPackageCaptions, type PackageCaptionsDeps, type PackageCaptionsFound } from "./package-captions";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { writeUploadRecordFile } from "@/lib/workspace-videos";
+import { checksPassed } from "./plan-schedule";
+import { createPackageCaptions, recordWithCaption, stepsWithCaptionsSetLater, type PackageCaptionsDeps, type PackageCaptionsFound } from "./package-captions";
 import { parseReleasePackage } from "./packages";
 
 // BL-269 add path (VIDEO_CAPTIONS_PLAN.md §3.5, §3.7, §7: AC-CAP-31, 33, 36, 37, 46, 47; ADR 0074 §8, §10). Requirements:
@@ -202,4 +207,74 @@ test("review #5 the upload record still the runner's first one (result uploaded)
     await h.service.apply("UC_wwe", { video: "V27" }, producer);
     assert.equal(h.writes.length, 1);
   }
+});
+
+// ---- Production wiring (the builder's gaps): the record's read-modify-write and markUploadCaptionsSetLater's rule ----
+
+test("AC-CAP-37 the record rewrite: only `captions` changes -- every other key as read; the same track id replaced, others kept", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "captions-record-"));
+  try {
+    const folder = "04 Videos/11 November/1120 V27";
+    await mkdir(path.join(dir, ...folder.split("/")), { recursive: true });
+    const original = {
+      schema: "yt-release-upload/1",
+      channelId: "UC_wwe",
+      video: "V27",
+      videoId: "vid27",
+      publishAt: "2026-11-24T12:00:00.000Z",
+      uploadedAt: "2026-11-17T10:00:00.000Z",
+      device: { deviceId: "mac", hostname: "Mac" },
+      result: "verified",
+      mismatches: [],
+      videoSha256: "d".repeat(64),
+      videoSizeBytes: 10,
+      futureKey: { nested: [1, "two", null] },
+      captions: [
+        { trackId: "T1", language: "en", name: "", sha256: "1".repeat(64), at: "2026-11-17T10:05:00.000Z", by: "upload", verified: true },
+        { trackId: "T2", language: "en", name: "Old", sha256: "2".repeat(64), at: "2026-11-17T10:06:00.000Z", by: "owner", verified: false },
+      ],
+    };
+    const relative = `${folder}/V27_youtube.json`;
+    await writeUploadRecordFile(dir, relative, original);
+    const entry = { trackId: "T2", language: "en", name: "Old", sha256: SHA, at: "2026-11-17T12:00:00.000Z", by: "producer" as const, verified: true };
+    const read = JSON.parse(await readFile(path.join(dir, relative), "utf8")) as Record<string, unknown>;
+    await writeUploadRecordFile(dir, relative, recordWithCaption(read, entry));
+    const after = JSON.parse(await readFile(path.join(dir, relative), "utf8")) as Record<string, unknown>;
+    const { captions: beforeCaptions, ...beforeRest } = original;
+    const { captions: afterCaptions, ...afterRest } = after as typeof original;
+    assert.deepEqual(afterRest, beforeRest, "every other key exactly as read");
+    assert.deepEqual(Object.keys(after), Object.keys(original), "and in the same order");
+    assert.deepEqual(afterCaptions, [beforeCaptions[0], entry]);
+    // A record without `captions` gains just that key.
+    assert.deepEqual(recordWithCaption({ schema: "yt-release-upload/1", result: "verified" }, entry), { schema: "yt-release-upload/1", result: "verified", captions: [entry] });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("markUploadCaptionsSetLater's rule: an ended row of the video whose captions step did not pass -> verified with the track", () => {
+  const at = new Date("2026-11-17T12:00:00Z");
+  const track = { trackId: "NEW", language: "en", name: "", sha256: SHA };
+  const base = { thumbnail: "set", playlist: "none", verify: { result: "verified", mismatches: [] }, localizations: "none", publishAt: "withheld", notes: ["old note"] };
+  for (const captions of ["failed", "refused", "mismatch"]) {
+    const next = stepsWithCaptionsSetLater({ status: "done", videoId: "vid27", stepsJson: JSON.stringify({ ...base, captions }) }, "vid27", track, at);
+    assert.ok(next, captions);
+    const steps = JSON.parse(next);
+    assert.deepEqual([steps.captions, steps.captionsTrack], ["verified", { ...track, at: "2026-11-17T12:00:00.000Z" }]);
+    assert.deepEqual([steps.thumbnail, steps.playlist, steps.verify, steps.publishAt], [base.thumbnail, base.playlist, base.verify, "withheld"], "nothing else changes");
+    assert.equal(steps.notes[0], "old note");
+    assert.match(steps.notes[1], /captions: written later .* \(track NEW\)/);
+    assert.equal(checksPassed(steps), true, "the weekly plan may date the video now");
+  }
+  // Left as they are: another video, an active row, a step that passed or none, damaged steps.
+  const left = [
+    { status: "done", videoId: "other", stepsJson: JSON.stringify({ captions: "failed" }) },
+    { status: "finishing", videoId: "vid27", stepsJson: JSON.stringify({ captions: "failed" }) },
+    { status: "done", videoId: "vid27", stepsJson: JSON.stringify({ captions: "verified" }) },
+    { status: "done", videoId: "vid27", stepsJson: JSON.stringify({ captions: "none" }) },
+    { status: "done", videoId: "vid27", stepsJson: JSON.stringify({}) },
+    { status: "done", videoId: "vid27", stepsJson: "{not json" },
+    { status: "done", videoId: "vid27", stepsJson: "null" },
+  ];
+  for (const row of left) assert.equal(stepsWithCaptionsSetLater(row, "vid27", track, at), null, row.stepsJson);
 });

@@ -9,7 +9,7 @@ import { hostname } from "node:os";
 import path from "node:path";
 import { YOUTUBE_READ_SCOPE, YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
 import { createPackageMetadata } from "./package-metadata";
-import { createPackageCaptions } from "./package-captions";
+import { createPackageCaptions, recordWithCaption, stepsWithCaptionsSetLater } from "./package-captions";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { createChannelVideoStoreAdapter } from "@/lib/channel-video-store";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
@@ -1281,18 +1281,8 @@ export type { PackageMetadataActor, PackageMetadataApplyResult, PackageMetadataP
 export async function markUploadCaptionsSetLater(channelId: string, videoId: string, track: { trackId: string; language: string; name: string; sha256: string }, at: Date): Promise<number> {
   let marked = 0;
   for (const row of await listPublishingUploads({ channelId, limit: 500 })) {
-    if (row.videoId !== videoId || (ACTIVE_UPLOAD_STATUSES as readonly string[]).includes(row.status)) continue;
-    let steps: Record<string, unknown>;
-    try {
-      steps = JSON.parse(row.stepsJson) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
-    if (!steps || typeof steps !== "object" || !["failed", "refused", "mismatch"].includes(String(steps.captions))) continue;
-    const notes = Array.isArray(steps.notes) ? [...(steps.notes as unknown[])] : [];
-    notes.push(`captions: written later by the captions writer at ${at.toISOString()} (track ${track.trackId})`);
-    const next = { ...steps, captions: "verified", captionsTrack: { ...track, at: at.toISOString() }, notes };
-    if (await updatePublishingUpload(row.id, row.status, { stepsJson: JSON.stringify(next), updatedAt: at })) marked++;
+    const stepsJson = stepsWithCaptionsSetLater(row, videoId, track, at);
+    if (stepsJson !== null && (await updatePublishingUpload(row.id, row.status, { stepsJson, updatedAt: at }))) marked++;
   }
   return marked;
 }
@@ -1349,11 +1339,10 @@ export function createPackageCaptionsCore() {
     async writeRecordCaptions(channelId, recordPath, entry) {
       const record = await readRecord(channelId, recordPath);
       if (!record) throw new Error(`${recordPath} cannot be read`);
-      const before = Array.isArray(record.captions) ? (record.captions as Array<{ trackId?: unknown }>) : [];
       const workspace = await workspaces.getWorkspace({ channelId });
       if (!workspace.configured) throw new Error("This channel has no workspace folder on this computer.");
       // Only `captions` changes; every other key is written back as read (AC-CAP-37).
-      await writeUploadRecordFile(workspace.path, recordPath, { ...record, captions: [...before.filter((c) => c?.trackId !== entry.trackId), entry] });
+      await writeUploadRecordFile(workspace.path, recordPath, recordWithCaption(record, entry));
     },
     async frameMemo(channelId, video) {
       return (await getVideoOrientations(channelId))[video] ?? null;

@@ -61,6 +61,39 @@ export type PackageCaptionsResult = CaptionWriteResult & {
 
 const refuse = (code: DomainErrorCode, message: string, details: Record<string, unknown> = {}) => new DomainError({ code, message, details });
 
+/**
+ * AC-CAP-37 / AC-CAP-47: `Vn_youtube.json` with one `captions` entry added -- an entry of the same track id replaced, every other
+ * entry and every other key exactly as read. Pure (the production read-modify-write writes what this returns).
+ */
+export function recordWithCaption(record: Record<string, unknown>, entry: RecordCaptionEntry): Record<string, unknown> {
+  const before = Array.isArray(record.captions) ? (record.captions as Array<{ trackId?: unknown } | null>) : [];
+  return { ...record, captions: [...before.filter((c) => c?.trackId !== entry.trackId), entry] };
+}
+
+/**
+ * BL-269 (`markUploadCaptionsSetLater`): an ENDED upload row of `videoId` whose captions step did not pass (failed, refused,
+ * mismatch) gets `captions: "verified"`, the track and a note; anything else of its steps unchanged. null: the row is left (another
+ * video, still active, a step that passed or none, damaged steps). Pure.
+ */
+export function stepsWithCaptionsSetLater(
+  row: { status: string; videoId: string | null; stepsJson: string },
+  videoId: string,
+  track: { trackId: string; language: string; name: string; sha256: string },
+  at: Date
+): string | null {
+  if (row.videoId !== videoId || ACTIVE_UPLOAD.has(row.status)) return null;
+  let steps: Record<string, unknown>;
+  try {
+    steps = JSON.parse(row.stepsJson) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (!steps || typeof steps !== "object" || Array.isArray(steps) || !["failed", "refused", "mismatch"].includes(String(steps.captions))) return null;
+  const notes = Array.isArray(steps.notes) ? [...(steps.notes as unknown[])] : [];
+  notes.push(`captions: written later by the captions writer at ${at.toISOString()} (track ${track.trackId})`);
+  return JSON.stringify({ ...steps, captions: "verified", captionsTrack: { ...track, at: at.toISOString() }, notes });
+}
+
 export function createPackageCaptions(deps: PackageCaptionsDeps) {
   async function run(
     channelId: string,
