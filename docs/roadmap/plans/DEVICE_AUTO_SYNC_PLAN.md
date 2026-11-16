@@ -126,7 +126,11 @@ root also holds `change-drafts/`, `editorial-profile/`, and similar folders, whi
 
 - It runs server-side, from `src/instrumentation.ts`, in the web server process only.
 - It ticks every 30 s.
-- Export happens at most once per 60 s, only when dirty.
+- Export happens at most once per 60 s, only when dirty. **Amended 2026-11-17 (BL-270, owner TG 4662/4665):** at most once per
+  10 minutes; a change inside the window stays dirty and is exported by the first tick after it. The tick's dirty check reuses the
+  last full fingerprint while the transferred tables' change counters and `schema_version` are unchanged (at most 10 minutes);
+  the in-lock checks (AC-AS-05/07) stay full. The residual window for a change made just before switching computers grows from
+  about a minute to about 10 minutes (it fails toward "ask", never toward overwrite).
 - It also runs just before the idle auto-shutdown exits, when nothing is in flight.
 - There is no export in the SIGTERM handler. A process killed mid-export would leave a stale
   operation lock that is, by design, never auto-released. The residual loss window on a manual
