@@ -27,7 +27,7 @@ export const localVideoCleanup = {
   "cleanup.reason.uploadProblem": "загрузка завершилась с проблемой (сверка или шаг) — оставлено для владельца",
   "cleanup.reason.fileMissing": "файла уже не было (удалён вручную)",
   "cleanup.recovered": "удалён (записано после перезапуска), {size}",
-  "cleanup.reason.pathNotAllowed": "это не собственный «V<n> <канал>.mp4» релиза",
+  "cleanup.reason.pathNotAllowed": "это не собственный «V<n> <канал>.mp4» (или «S<n> <канал>.mp4») релиза",
   "cleanup.reason.symlink": "путь идёт через ссылку",
   "cleanup.reason.notAFile": "не обычный файл",
   "cleanup.reason.uploadIncomplete": "загрузка не завершена",

@@ -27,7 +27,7 @@ export const localVideoCleanup = {
   "cleanup.reason.uploadProblem": "the upload finished with a problem (read-back or a step); kept for the owner",
   "cleanup.reason.fileMissing": "the file was already gone (deleted by hand)",
   "cleanup.recovered": "deleted (logged after a restart), {size}",
-  "cleanup.reason.pathNotAllowed": "the file is not the release's own \"V<n> <channel>.mp4\"",
+  "cleanup.reason.pathNotAllowed": "the file is not the release's own \"V<n> <channel>.mp4\" (or \"S<n> <channel>.mp4\")",
   "cleanup.reason.symlink": "the path goes through a link",
   "cleanup.reason.notAFile": "not a plain file",
   "cleanup.reason.uploadIncomplete": "the upload is not complete",

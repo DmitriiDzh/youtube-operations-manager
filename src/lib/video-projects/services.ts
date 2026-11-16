@@ -1,5 +1,6 @@
 import { parseWithSchema } from "@/lib/shared-domain";
-import { VIDEO_RESERVATIONS_REPORT_FORMAT, VIDEO_RESERVATIONS_REPORT_VERSION, type VideoReservationsReport } from "@/lib/sync-gateway";
+import { reportVersionFor } from "@/lib/shared-video-code";
+import { VIDEO_RESERVATIONS_REPORT_FORMAT, type VideoReservationsReport } from "@/lib/sync-gateway";
 import { uploadRecordFileName } from "@/lib/workspace-videos";
 import { DomainError, isDomainError, type LinkCandidate, type OwnReservation, type VideoProject, type VideoProjectsDeps } from "./contracts";
 import { linkSuggestions } from "./linking";
@@ -37,7 +38,8 @@ export function createVideoProjectsService(deps: VideoProjectsDeps) {
     if (!force && body === lastPublished) return;
     const report: VideoReservationsReport = {
       format: VIDEO_RESERVATIONS_REPORT_FORMAT,
-      version: VIDEO_RESERVATIONS_REPORT_VERSION,
+      // BL-263 (plan §5): version 2 only when a reservation names an S code; else version 1 exactly as before.
+      version: reportVersionFor(reservations.flatMap((r) => [r.video, r.replacedBy])),
       deviceId: device.deviceId,
       hostName: device.hostName,
       updatedAt: deps.now().toISOString(),

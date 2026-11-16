@@ -2,6 +2,7 @@ import { DomainError } from "@/lib/shared-domain";
 import type { StoredPublishingUpload } from "@/lib/db";
 import { videoNumberOfFolder } from "@/lib/workspace-videos";
 import type { PackageScanResult } from "./package-scan";
+import { isReportVCode, isStrictSCode } from "@/lib/shared-video-code";
 
 // BL-261 (owner TG 3521 via the Factory Operator, 2026-11-15: the WWE Short folders get the « Short» suffix): rename one release
 // package's folder under `04 Videos/` -- the folder moves as a whole (manifest, video, thumbnails, the upload record), and this
@@ -96,7 +97,8 @@ export function createReleaseFolderRename(deps: ReleaseFolderRenameDeps) {
       const { channelId, video, newName } = input;
       const dryRun = input.dryRun === true;
       const details = { channelId, video, newName };
-      if (!/^V\d{1,6}$/.test(video)) throw refuse("release_folder_name_invalid", "video must be a video number like V65", { ...details, reason: "video" });
+      // BL-263: a video code (V or S); a rename never changes the code (that is `factory_release_recode`).
+      if (!(isReportVCode(video) || isStrictSCode(video))) throw refuse("release_folder_name_invalid", "video must be a video code like V65 or S14", { ...details, reason: "video" });
       const nameProblem = folderNameProblem(newName, video);
       if (nameProblem) throw refuse("release_folder_name_invalid", `The new folder name is not usable (${nameProblem})`, { ...details, reason: nameProblem });
       const workspace = await deps.workspace(channelId);

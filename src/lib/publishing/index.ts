@@ -12,7 +12,6 @@ import {
   createChannelPublishingSettingsCoreForProduction,
   createPublishingUploadsShareCoreForProduction,
   PUBLISHING_UPLOADS_REPORT_FORMAT,
-  PUBLISHING_UPLOADS_REPORT_VERSION,
 } from "@/lib/sync-gateway";
 import {
   clearPublishingG1Probe,
@@ -64,6 +63,7 @@ import { createWriteContextCore } from "@/lib/write-context";
 import { createYoutubeClient, getVideoUploadState, listPlaylistItemIdsByVideo, listUploadsPlaylistFirstPage } from "@/lib/youtube-read-gateway";
 import { createWorkspaceExchangeFsForPublishing, isRealVideoFolder, resolveWorkspaceFileForPublishing, writeVideoFolderFile } from "./adapters/files";
 import { createWorkspaceVideoFiles, videoNumberOfFolder, writeUploadRecordFile } from "@/lib/workspace-videos";
+import { reportVersionFor } from "@/lib/shared-video-code";
 import { createPackageScan, isPackageThumbnailPath, VIDEOS_FOLDER, type PackageScanDeps } from "./package-scan";
 import { imageKindOf } from "./packages";
 import { createPackageComposer } from "./package-composer";
@@ -497,7 +497,8 @@ export function createUploadRunnerCore(options: { slotDecisions?: (channelId: st
     const device = await thisDevice();
     const deviceId = (await createBootstrapConfigStore(getProductionAppPaths().bootstrapConfigPath).ensureExists()).deviceId;
     const hostName = (device.hostname ?? "").replace(/[^\p{L}\p{N} ._'-]/gu, "").slice(0, 64) || null;
-    await share.publishLocalReport({ format: PUBLISHING_UPLOADS_REPORT_FORMAT, version: PUBLISHING_UPLOADS_REPORT_VERSION, deviceId, hostName, updatedAt: new Date().toISOString(), uploads });
+    // BL-263 (plan §5): version 2 only when a row names an S code; a V-only report stays version 1 exactly as before.
+    await share.publishLocalReport({ format: PUBLISHING_UPLOADS_REPORT_FORMAT, version: reportVersionFor(uploads.map((u) => u.video)), deviceId, hostName, updatedAt: new Date().toISOString(), uploads });
     published = { key, at: Date.now() };
   }
   return {

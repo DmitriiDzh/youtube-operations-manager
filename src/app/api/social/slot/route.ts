@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { slotCrossPostPreview } from "@/composition/cross-posting-plan";
 import { DomainError, parseCrossPostBlock, videoProblems } from "@/lib/cross-posting";
+import { isReadableVideoCode } from "@/lib/shared-video-code";
 import { defaultSocialRouteDeps, socialHandler, type SocialRouteDeps } from "../shared";
 
 // BL-252 stage 2 (AC-XP-15): the social part of one weekly-plan slot's package for «План недели» -- networks, texts, problems
@@ -11,7 +12,7 @@ export function createSlotPreviewHandler(deps: SocialRouteDeps = defaultSocialRo
     const channelId = q.get("channelId")?.trim();
     const video = q.get("video")?.trim();
     const sha = q.get("manifestSha256")?.trim();
-    if (!channelId || !video || !sha || !/^V\d+$/.test(video) || !/^[0-9a-f]{64}$/.test(sha)) throw new DomainError({ code: "validation_failed", message: "channelId, video and manifestSha256 are required" });
+    if (!channelId || !video || !sha || !isReadableVideoCode(video) || !/^[0-9a-f]{64}$/.test(sha)) throw new DomainError({ code: "validation_failed", message: "channelId, video and manifestSha256 are required" });
     const preview = await slotCrossPostPreview(channelId, video, sha);
     if (!preview || preview.crossPost === null) return NextResponse.json({ targets: [], problems: [], jobs: [] });
     const { targets, problems } = parseCrossPostBlock(preview.crossPost);

@@ -238,10 +238,12 @@ function importsOf(source: string): string[] {
   return [...source.matchAll(/(?:^|\n)\s*(?:import|export)\s[^;]*?from\s+"([^"]+)"/g)].map((m) => m[1]);
 }
 
-test("§2.5(3): factory-server.ts imports only the MCP SDK, zod and shared-domain -- no domain module, gateway, db or channel-scope state", async () => {
+test("§2.5(3): factory-server.ts imports only the MCP SDK, zod, shared-domain and shared-video-code -- no domain module, gateway, db or channel-scope state", async () => {
   const imports = importsOf(await readFile("src/mcp/factory-server.ts", "utf8"));
+  // BL-263 (ADR 0071 §1): `shared-video-code` is a pure, dependency-free rule module (the one video-code pattern), like
+  // shared-domain -- not a domain module, gateway, db or state; the input schemas take the code rule from it instead of a regex copy.
   const allowed = (spec: string) =>
-    spec === "zod" || spec === "@/lib/shared-domain" || spec.startsWith("@modelcontextprotocol/sdk/");
+    spec === "zod" || spec === "@/lib/shared-domain" || spec === "@/lib/shared-video-code" || spec.startsWith("@modelcontextprotocol/sdk/");
   assert.deepEqual(imports.filter((spec) => !allowed(spec)), []);
   assert.ok(imports.length >= 3, "the scan must actually see the imports");
 });

@@ -1,14 +1,14 @@
 import { existsOnChannelOf } from "@/lib/shared-video-presence";
 import { isNamedAfterRelease, isVideoFileName, releaseManifestFileName, uploadRecordFileName, type VideoFolder, type VideoRegistryRow } from "@/lib/workspace-videos";
-import { VIDEO_NUMBER_PATTERN } from "@/lib/sync-gateway";
+import { isStrictVCode } from "@/lib/shared-video-code";
 import type { ChannelCopy, OwnReservation, ReservationView, UploadRecordLink, VideoConflict, VideoProject, VideoSource, VideoState } from "./contracts";
 
 // BL-194 stage 1 (VIDEO_COST_PLAN.md §2, ADR 0040): the pure rules -- the next number, the list of a channel's videos, and the
 // duplicates two computers made. No I/O.
 
-/** 49 for `V49`; null for anything that is not a video number. */
+/** 49 for `V49`; null for anything that is not a strict V number (BL-263: an S code never counts toward the next V). */
 export function videoNumberValue(video: string): number | null {
-  return VIDEO_NUMBER_PATTERN.test(video) ? Number(video.slice(1)) : null;
+  return isStrictVCode(video) ? Number(video.slice(1)) : null;
 }
 
 /** One above the highest number known, `V1` when none is. */

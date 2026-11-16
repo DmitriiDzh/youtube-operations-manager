@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { parseWithSchema } from "@/lib/shared-domain";
-import { VIDEO_COSTS_REPORT_FORMAT, VIDEO_COSTS_REPORT_MAX, VIDEO_COSTS_REPORT_VERSION, VIDEO_NUMBER_PATTERN, type SharedCostRun, type VideoCostsReport } from "@/lib/sync-gateway";
+import { compareVideoCodesDesc, reportVersionFor } from "@/lib/shared-video-code";
+import { VIDEO_COSTS_REPORT_FORMAT, VIDEO_COSTS_REPORT_MAX, VIDEO_NUMBER_PATTERN, type SharedCostRun, type VideoCostsReport } from "@/lib/sync-gateway";
 import {
   COST_FILE_SCHEMA,
   DomainError,
@@ -30,7 +31,7 @@ const REPUBLISH_MS = 10 * 60 * 1000;
 const UNITS = 10_000;
 
 const channelIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/, "a channel id");
-const videoNumberSchema = z.string().regex(VIDEO_NUMBER_PATTERN, "a video number such as V49");
+const videoNumberSchema = z.string().regex(VIDEO_NUMBER_PATTERN, "a video code such as V49 or S14");
 const summaryInputSchema = z.object({ channelId: channelIdSchema }).strict();
 const videoInputSchema = z.object({ channelId: channelIdSchema, video: videoNumberSchema }).strict();
 /** Workspace-relative, `/`-separated, never `.`/`..`/empty segments. */
@@ -219,7 +220,9 @@ export function createVideoCostsService(deps: VideoCostsDeps) {
     const [device, rows] = await Promise.all([deps.ownDevice(), deps.ownRows()]);
     const runs = buildOwnRuns(rows);
     const states = await statesFor([...new Set(runs.map((r) => r.channelId))]);
-    return { format: VIDEO_COSTS_REPORT_FORMAT, version: VIDEO_COSTS_REPORT_VERSION, deviceId: device.deviceId, hostName: device.hostName, updatedAt: deps.now().toISOString(), runs: selectReportRuns(runs, deps.now(), states) };
+    const selected = selectReportRuns(runs, deps.now(), states);
+    // BL-263 (plan §5): version 2 only when a run names an S code; else version 1 exactly as before.
+    return { format: VIDEO_COSTS_REPORT_FORMAT, version: reportVersionFor(selected.map((r) => r.video)), deviceId: device.deviceId, hostName: device.hostName, updatedAt: deps.now().toISOString(), runs: selected };
   }
 
   /** The peers' reports; `ok: false` when they could not be read (then only this computer's runs are known). */
@@ -403,7 +406,7 @@ export function createVideoCostsService(deps: VideoCostsDeps) {
       const { runs, computers } = await channelRuns(input.channelId);
       const byVideo = new Map<string, CostRun[]>();
       for (const r of runs) if (r.video) byVideo.set(r.video, [...(byVideo.get(r.video) ?? []), r]);
-      const videos = [...byVideo.entries()].map(([video, list]) => ({ video, totals: totalsOf(list) })).sort((a, b) => Number(b.video.slice(1)) - Number(a.video.slice(1)));
+      const videos = [...byVideo.entries()].map(([video, list]) => ({ video, totals: totalsOf(list) })).sort((a, b) => compareVideoCodesDesc(a.video, b.video));
       return { channelId: input.channelId, videos, unlinked: totalsOf(runs.filter((r) => !r.video)), computers };
     },
 

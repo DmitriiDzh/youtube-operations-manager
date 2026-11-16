@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { parseWithSchema } from "@/lib/shared-domain";
 import { PLAN_ITEM_MODES, PLAN_PICK_ACTIONS, PLAN_RECHECK_KINDS, PLAN_RESULTS, PLAN_REVIEW_FIELD_TYPES, PLAN_STAGE_KINDS, PLAN_STATUSES } from "./contracts";
+import { VIDEO_CODE_PATTERN } from "@/lib/shared-video-code";
 
 export { parseWithSchema };
 
@@ -177,7 +178,7 @@ export const referenceSchema = z
 const budgetSchema = z.object({ usd: z.number().min(0).max(100_000).nullable().optional(), gpuMinutes: z.number().min(0).max(1_000_000).nullable().optional() }).strict();
 
 /** BL-194 (ADR 0040): the channel's video number a plan works for (`V49`); checked against the channel by video-projects. */
-const videoNumberSchema = z.string().regex(/^V[1-9][0-9]{0,5}$/, "a video number such as V49");
+const videoNumberSchema = z.string().regex(VIDEO_CODE_PATTERN, "a video code such as V49 or S14");
 
 export const createPlanInputSchema = z
   .object({

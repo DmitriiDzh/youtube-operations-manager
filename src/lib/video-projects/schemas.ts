@@ -1,11 +1,11 @@
 import { z } from "zod";
-import { VIDEO_NUMBER_PATTERN } from "@/lib/sync-gateway";
+import { STRICT_V_CODE_PATTERN } from "@/lib/shared-video-code";
 
 // BL-194 stage 1: what the owner (Web UI), a script (API) and the Operator (Factory API) send. Strict: an unknown field is refused.
 
 const channelId = z.string().trim().min(1).max(64);
 /** A video number as given: `V49` (upper-case V, no leading zero). */
-export const videoNumberSchema = z.string().regex(VIDEO_NUMBER_PATTERN, "a video number such as V49");
+export const videoNumberSchema = z.string().regex(STRICT_V_CODE_PATTERN, "a video number such as V49");
 
 export const createVideoInputSchema = z
   .object({ channelId, workingTitle: z.string().trim().max(200).nullable().optional() })

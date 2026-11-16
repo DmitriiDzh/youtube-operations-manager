@@ -7,6 +7,7 @@
 export { DESCRIPTION_MAX_BYTES, imageKindOf, TAGS_MAX_CHARACTERS, tagsLength, THUMBNAIL_MAX_BYTES, TITLE_MAX_CHARACTERS } from "@/lib/youtube-video-fields";
 import { DESCRIPTION_MAX_BYTES, hasAngleBrackets, TAGS_MAX_CHARACTERS, tagsLength, THUMBNAIL_MAX_BYTES, TITLE_MAX_CHARACTERS } from "@/lib/youtube-video-fields";
 import { validateLocalizationSet, type LocalizationSetLimits } from "@/lib/shared-localization-set";
+import { isReadableVideoCode, READABLE_VIDEO_CODE_SOURCE } from "@/lib/shared-video-code";
 
 export const RELEASE_PACKAGE_SCHEMA = "yt-release-package/1";
 /**
@@ -26,7 +27,8 @@ const PACKAGE_LOCALIZATION_LIMITS: LocalizationSetLimits = {
 };
 
 export type PackageThumbnail = { file: string; role: "default" | "test" };
-export const RELEASE_PACKAGE_FILE_PATTERN = /^V\d+_release\.json$/;
+/** `V49_release.json` (today's lenient `V\d+`) or `S14_release.json` (a strict S code, BL-263). */
+export const RELEASE_PACKAGE_FILE_PATTERN = new RegExp(`^${READABLE_VIDEO_CODE_SOURCE}_release\\.json$`);
 /** Written next to the package after an upload (FO-REQ-0023 §4 A2). */
 export const youtubeRecordFileName = (video: string) => `${video}_youtube.json`;
 
@@ -110,7 +112,8 @@ export function parseReleasePackage(raw: unknown): { pkg: ReleasePackage | null;
   const num = (key: string) => (typeof raw[key] === "number" && Number.isFinite(raw[key]) ? (raw[key] as number) : (problems.push({ code: "field_invalid", params: { field: key } }), 0));
   const channelId = str("channelId");
   const video = str("video");
-  if (video && !/^V\d+$/.test(video)) problems.push({ code: "field_invalid", params: { field: "video" } });
+  // BL-263: today's lenient V, or a strict S (`S014` is not a code).
+  if (video && !isReadableVideoCode(video)) problems.push({ code: "field_invalid", params: { field: "video" } });
   const mix = typeof raw.mix === "number" && Number.isFinite(raw.mix) ? raw.mix : null;
   let plannedPublishDate: string | null = null;
   if (raw.plannedPublishDate !== undefined && raw.plannedPublishDate !== null) {

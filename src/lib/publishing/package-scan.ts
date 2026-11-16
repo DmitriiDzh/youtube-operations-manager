@@ -1,5 +1,6 @@
 import { existsOnChannelOf, VIDEO_DELETED_ON_YOUTUBE } from "@/lib/shared-video-presence";
-import { parseUploadRecord, stripBom, VIDEOS_FOLDER, walkVideosFolder, type DirEntry } from "@/lib/workspace-videos";
+import { parseUploadRecord, stripBom, VIDEOS_FOLDER, videoNumberOfFolder, walkVideosFolder, type DirEntry } from "@/lib/workspace-videos";
+import { compareVideoCodes } from "@/lib/shared-video-code";
 import {
   imageKindOf,
   packageProblems,
@@ -202,6 +203,13 @@ export function createPackageScan(deps: PackageScanDeps) {
     const parsed = parseReleasePackage(raw);
     if (!parsed.pkg) return { ...base, problems: parsed.problems };
     const pkg = parsed.pkg;
+    // BL-263 (plan §2 row 5, AC-SC-03): an S package's `video` must be the code its folder and file are named after (`S14` in a
+    // folder of `S15` is not uploaded). Checked only when an S code is involved, so every V package scans exactly as before.
+    const fileCode = manifestPath.slice(manifestPath.lastIndexOf("/") + 1).replace(/_release\.json$/, "");
+    const expectedCode = videoNumberOfFolder(folder.slice(folder.lastIndexOf("/") + 1)) ?? fileCode;
+    if ((pkg.video.startsWith("S") || expectedCode.startsWith("S") || fileCode.startsWith("S")) && (pkg.video !== expectedCode || pkg.video !== fileCode)) {
+      return { ...base, problems: [{ code: "field_invalid", params: { field: "video" } }] };
+    }
 
     const videoFile = await deps.resolveFile(workspace, `${folder}/${pkg.files.video}`);
     const probed = videoFile ? await deps.probeDuration(videoFile.path, videoFile.bytes) : null;
@@ -305,8 +313,9 @@ export function createPackageScan(deps: PackageScanDeps) {
         const scanned = await scanOne(workspace, manifestPath, channel, copy);
         if (scanned) packages.push(scanned);
       }
-      const number = (p: ScannedPackage) => Number(/\d+/.exec(p.video ?? p.manifestPath.split("/").pop() ?? "")?.[0] ?? 0);
-      packages.sort((a, b) => (a.plannedPublishDate ?? "9999") .localeCompare(b.plannedPublishDate ?? "9999") || number(a) - number(b));
+      // BL-263 (plan §7): by date, then the shared comparator (V before S, numeric). A V-only tie sorts by number as before.
+      const code = (p: ScannedPackage) => p.video ?? p.manifestPath.split("/").pop()?.replace(/_release\.json$/, "") ?? "";
+      packages.sort((a, b) => (a.plannedPublishDate ?? "9999").localeCompare(b.plannedPublishDate ?? "9999") || compareVideoCodes(code(a), code(b)));
       return { status: "ok", packages: markSharedSlots(packages) };
     },
   };

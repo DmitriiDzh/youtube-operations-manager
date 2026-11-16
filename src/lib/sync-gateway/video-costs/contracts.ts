@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { DomainError, isDomainError } from "@/lib/shared-domain";
+import { hasSCode } from "@/lib/shared-video-code";
 import { VIDEO_NUMBER_PATTERN } from "../video-reservations/contracts";
 
 export { DomainError, isDomainError };
@@ -12,7 +13,8 @@ export { DomainError, isDomainError };
 
 export const GLOBAL_DOCUMENT_KEY = "global";
 export const VIDEO_COSTS_REPORT_FORMAT = "ytm-video-costs";
-export const VIDEO_COSTS_REPORT_VERSION = 1;
+/** BL-263 (plan §5): the newest version this build reads; written as 2 only when the report holds an S code, else 1 as before. */
+export const VIDEO_COSTS_REPORT_VERSION = 2;
 /** A bound, not a working limit: the reporting computer keeps a bounded window (`src/lib/video-costs` retention). */
 export const VIDEO_COSTS_REPORT_MAX = 20_000;
 
@@ -56,13 +58,14 @@ export const sharedCostRunSchema = z
 export const videoCostsReportSchema = z
   .object({
     format: z.literal(VIDEO_COSTS_REPORT_FORMAT),
-    version: z.literal(VIDEO_COSTS_REPORT_VERSION),
+    version: z.union([z.literal(1), z.literal(2)]),
     deviceId: z.string().min(1).max(128),
     hostName: z.string().max(255).nullable(),
     updatedAt: iso,
     runs: z.array(sharedCostRunSchema).max(VIDEO_COSTS_REPORT_MAX),
   })
-  .strict();
+  .strict()
+  .refine((r) => r.version === 2 || !hasSCode(r.runs.map((x) => x.video)), { message: "a version 1 report holds no S code" });
 
 export type SharedCostRun = z.infer<typeof sharedCostRunSchema>;
 export type VideoCostsReport = z.infer<typeof videoCostsReportSchema>;

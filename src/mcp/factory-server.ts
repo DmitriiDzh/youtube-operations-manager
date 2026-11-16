@@ -12,6 +12,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { DomainError, isDomainError } from "@/lib/shared-domain";
+import { VIDEO_CODE_PATTERN } from "@/lib/shared-video-code";
 
 /**
  * The factory API's own version (independent of the channel agents' `AGENT_API_VERSION`). 1.1.0 (BL-132, ADR 0025): the
@@ -1744,7 +1745,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
   );
 
   const releaseFolderRenameInput = z
-    .object({ channelId: z.string().min(1).max(64), video: z.string().regex(/^V\d{1,6}$/), newName: z.string().min(1).max(120), dryRun: z.boolean().optional() })
+    .object({ channelId: z.string().min(1).max(64), video: z.string().regex(VIDEO_CODE_PATTERN), newName: z.string().min(1).max(120), dryRun: z.boolean().optional() })
     .strict();
   registerTool(
     "factory_release_folder_rename",
@@ -1957,7 +1958,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     },
     async (args) => successResult(await deps.videos.list(parseInput(videoListInput, args)))
   );
-  const videoCostInput = z.object({ channelId: z.string().min(1).max(64), video: z.string().regex(/^V[1-9][0-9]{0,5}$/) }).strict();
+  const videoCostInput = z.object({ channelId: z.string().min(1).max(64), video: z.string().regex(VIDEO_CODE_PATTERN) }).strict();
   registerTool(
     "factory_video_get_cost",
     {
