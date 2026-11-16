@@ -641,8 +641,9 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
             else {
               const media = mediaOfProgress(p);
               decisions.set(slot.slotId, { kind: "approved", publishAt: slot.publishAtUtc, package: { ...fp }, source: "template", ...(media ? { media } : {}) });
-              // A template date has no owner record: it orders after every decision naming the same video (the newest word).
-              const record = { id: `template:${slot.slotId}`, seq: Number.MAX_SAFE_INTEGER, at: ports.now().toISOString() } as PublishingPlanDecision;
+              // A template date has no owner record. Review #3 (ADR 0073 §3 "a veto wins over both"): it orders BEFORE every decision
+              // naming the same video, so a standing owner veto (or his own date) of that video always outranks it.
+              const record = { id: `template:${slot.slotId}`, seq: -1, at: new Date(0).toISOString() } as PublishingPlanDecision;
               naming.set(slot.slotId, { record, kind: "approved", package: fp });
             }
           } else decisions.set(slot.slotId, { kind: "pending" });

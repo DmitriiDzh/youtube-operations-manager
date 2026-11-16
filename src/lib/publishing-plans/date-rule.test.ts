@@ -140,6 +140,24 @@ test("AC-WT-19/20: a veto beats a template match; restore brings it back; a with
   assert.deepEqual([after.get("L")?.kind, after.get("X")?.kind], ["pending", "approved"]);
 });
 
+test("review #3 (ADR 0073 §3 'a veto wins over both'): a template date never outranks the owner's standing veto of the same video", async () => {
+  const h = harness();
+  // X off the template carries V5 (uploaded as vid5); the owner vetoes X (the veto names V5's package, vid5).
+  await setup(h, [slot("L", "2026-11-24", "00:00"), slot("X", "2026-11-25", "10:00")]);
+  h.progress.set("X", pkg("V5", 600, "not_required", { videoSha: SHA("5"), videoId: "vid5" }));
+  await h.service.decide(CH, WEEK, { action: "veto", slots: [{ slotId: "X" }] }, "u1");
+  // An agent re-points V5's manifest to L, on a template position: L would be template-dated naming vid5.
+  h.progress.delete("X");
+  h.progress.set("L", pkg("V5", 600, "not_required", { videoSha: SHA("5"), videoId: "vid5" }));
+  const decisions = await h.service.slotDecisions(CH);
+  assert.equal(decisions.get("L")?.kind, "pending", "the template date loses to the veto naming the same video");
+  assert.equal(decisions.get("X")?.kind, "vetoed");
+  assert.equal(decisionForRow({ slotId: "X", videoId: "vid5", manifestSha256: SHA("a") }, decisions)?.kind, "vetoed", "the video's row keeps no date");
+  // Restored: the template dates it again.
+  await h.service.decide(CH, WEEK, { action: "restore", slots: [{ slotId: "X" }] }, "u1");
+  assert.equal((await h.service.slotDecisions(CH)).get("L")?.kind, "approved");
+});
+
 test("AC-WT-21: removing the template entry of a dated slot leaves it pending (a pending slot is never undated)", async () => {
   const h = harness();
   await setup(h);
