@@ -60,7 +60,7 @@ function result(over: Partial<CaptionWriteResult> = {}): CaptionWriteResult {
   };
 }
 
-function harness(over: { found?: PackageCaptionsFound | "not_found"; rows?: Array<{ status: string; videoId: string | null; stepsJson: string }>; file?: Uint8Array | null; record?: Array<{ trackId: string; sha256: string }>; answer?: CaptionWriteResult } = {}) {
+function harness(over: { found?: PackageCaptionsFound | "not_found"; rows?: Array<{ status: string; videoId: string | null; stepsJson: string }>; file?: Uint8Array | null; record?: Array<{ trackId: string; sha256: string; verified?: boolean }>; answer?: CaptionWriteResult } = {}) {
   const writes: CaptionWriteInput[] = [];
   const recorded: unknown[] = [];
   const marked: unknown[] = [];
