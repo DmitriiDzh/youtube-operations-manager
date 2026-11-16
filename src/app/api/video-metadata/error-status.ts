@@ -245,6 +245,8 @@ const DOMAIN_ERROR_STATUS = {
   publishing_plan_slot_vetoed: 409,
   publishing_plan_slot_not_packaged: 409,
   publishing_plan_slot_past: 409,
+  // BL-256: the slot comes out in less than 15 minutes -- it can no longer be moved.
+  publishing_plan_slot_too_soon: 409,
   // BL-241 (ADR 0061): clips for review.
   clip_review_not_found: 404,
   clip_review_file_unavailable: 422,

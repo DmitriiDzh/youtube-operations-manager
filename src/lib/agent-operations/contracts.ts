@@ -121,7 +121,9 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // 4.19.0 (BL-257, ADR 0070): agent_get_publishing_calendar -- a package's problems gain owner_review_pending / owner_review_returned
 // (the owner reviews the channel's final packages in the Web UI before they are ready; no agent tool decides); agent_publishing_plan_get
 // slots' package gains reviewComment (his return comment). Additive.
-export const AGENT_API_VERSION = "4.19.0";
+// 4.20.0 (BL-256): agent_publishing_plan_get / _list -- a plan's and a slot's updatedBy may be owner (he moved a slot's day or time in
+// the Web UI; that revokes his approval of the old time, so an agent saving the old time back never restores it). Additive.
+export const AGENT_API_VERSION = "4.20.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry

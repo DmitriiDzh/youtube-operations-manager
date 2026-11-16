@@ -9,7 +9,8 @@ export { DomainError, isDomainError };
 // under `<weekStart>:<slotId>`, a decision under a fresh id, a plan's fields one by one. The meaning (validation, what is approved,
 // vetoed or locked) is the publishing-plans module's; this family stores and carries.
 
-export type PublishingPlanActor = "factory" | "worker";
+/** BL-256 (owner msgs 4380/4383): `owner` -- the owner moved a slot's day or time himself in the Web UI. */
+export type PublishingPlanActor = "factory" | "worker" | "owner";
 
 /** A plan's own fields: its week (a Monday) and the time zone its slots' times are in. */
 export type PublishingPlanMeta = {

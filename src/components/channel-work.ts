@@ -59,31 +59,18 @@ export function otherChannelEntries(t: Translate, channels: readonly PlanChannel
         href: only ? planReviewHref(only.planId, only.device) : "/media/plans",
       });
     }
-    // One entry per plan and notice kind (AC-BL-04): a plan's completed stages are one entry naming them all.
-    const stagesDone = new Map<string, string[]>();
-    for (const { planId, device, notice } of work.notices) {
-      if (notice.kind !== "stage_complete") continue;
-      const key = `${device?.deviceId ?? "here"}:${planId}`;
-      stagesDone.set(key, [...(stagesDone.get(key) ?? []), notice.title]);
-    }
-    const listed = new Set<string>();
+    // One entry per plan and notice kind (AC-BL-04). Owner msg 4535 (2026-11-16): «этап плана завершён» / «план выполнен»
+    // are not shown in the bell -- it holds only what waits for the owner; the plan card still shows them.
     for (const { planId, planTitle, device, notice } of work.notices) {
+      if (notice.kind === "stage_complete" || notice.kind === "plan_complete") continue;
       const plan = planTitle || planId;
       const planKey = `${device?.deviceId ?? "here"}:${planId}`;
-      if (notice.kind === "stage_complete") {
-        if (listed.has(planKey)) continue;
-        listed.add(planKey);
-      }
       const text =
-        notice.kind === "stage_complete"
-          ? t("channelWork.stageComplete", { plan, stage: (stagesDone.get(planKey) ?? [notice.title]).join(", ") })
-          : notice.kind === "plan_complete"
-            ? t("channelWork.planComplete", { plan })
-            : notice.kind === "attempts_exhausted"
-              ? t("channelWork.attemptsExhausted", { plan, count: notice.count })
-              : notice.kind === "budget_100"
-                ? t("channelWork.budget100", { plan })
-                : t("channelWork.budget80", { plan });
+        notice.kind === "attempts_exhausted"
+          ? t("channelWork.attemptsExhausted", { plan, count: notice.count })
+          : notice.kind === "budget_100"
+            ? t("channelWork.budget100", { plan })
+            : t("channelWork.budget80", { plan });
       // BL-184 stage 3 (independent review): to the plan itself -- Media's kind tabs could hide it under the first tab.
       entries.push({ key: `${work.channelId}:${planKey}:${notice.kind}`, channelId: work.channelId, text, href: planReviewHref(planId, device ?? undefined) });
     }
