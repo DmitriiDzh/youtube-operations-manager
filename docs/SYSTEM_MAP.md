@@ -1030,7 +1030,8 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   - BL-256 (ADR 0051 Amendment 1): владелец переносит слот на другой день недели и/или время («Изменить время» в строке слота,
     маршрут `/publishing-plans/[weekStart]/retime`, `retime()` в модуле): не снятый, не прошедший, не ближе 15 минут; старое
     одобрение отзывается, «Сохранить и одобрить» одобряет новое время тем же шагом — дату загруженного видео на YouTube переносит
-    цикл plan-schedule. `updatedBy: owner`; аудит `publishing_plan.retimed`. Factory API 1.47.0, Agent API 4.20.0.
+    цикл plan-schedule. `updatedBy: owner`; аудит `publishing_plan.retimed`. Factory API 1.47.0, Agent API 4.20.0. **BL-267 (ревью):
+    маршрут `retime` и `retime()` удалены — их заменил перенос `move()` (сначала YouTube, потом план).**
   - BL-263 (PRD-REQ-0194, owner TG 2332/2334/4553/4555, ADR 0071, `docs/roadmap/plans/SHORT_VIDEO_CODE_PLAN.md`) — **на ветке
     `feature/bl-263-short-video-code`, не влито в `dev`**: второй код видео `S<n>` для шортсов WWE. Общий модуль
     `src/lib/shared-video-code/` (§M, без зависимостей) — единственное место правил кода: строгий `^(V|S)[1-9][0-9]{0,5}$` для ввода,
@@ -1310,7 +1311,8 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Настройка:** путь к Python — `app_settings.weekly_build_settings` (`/api/weekly-build/settings`); пусто — обычные папки, потом PATH.
 - **Маршруты владельца** `/api/channels/[channelId]/weekly-build` (GET), `/dry-run`, `/start`, `/stop` (POST); MCP-инструмента нет
   (`no-agent.test.ts`). Ошибки: `weekly_build_unavailable` (409, `details.code`), `weekly_build_job_running` (409), `weekly_build_failed` (502).
-- **Web:** карточка «Сборка недели» над планом на вкладке Контент → «План недели» (`src/components/weekly-build-card.tsx`): календарь
+- **Web (до BL-267; карточка `weekly-build-card.tsx` удалена на ревью BL-267, её заменила «Собрать неделю по шаблону» —
+  `weekly-template-build-card.tsx`; маршруты ниже остались):** карточка «Сборка недели» над планом: календарь
   дат (завтра … +28, только отмеченные; `auto --dates`, перед запуском всегда пробный прогон, отказ фабрики `bad_dates` →
   `weekly_build_bad_dates` 422 с причиной по дате), «Собрать N дней» → подтверждение с пробным прогоном, ход и «Стоп», таблица слотов с проблемами, «Нужна упаковка» →
   «Разбудить агента» (`auto --wake`). Задача отсоединена запускатором: перезапуск сервера её не останавливает.

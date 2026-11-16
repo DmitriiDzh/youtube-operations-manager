@@ -131,11 +131,5 @@ export function createPublishingPlanRouteHandlers(deps: PublishingPlanRouteDeps 
 
     /** BL-267: POST -- «Даты по шаблону» off. */
     templateWithdraw: (_request: Request, context: Params<Base>) => guarded(context, async ({ channelId }, userId) => NextResponse.json(await deps.service().templateOwnerWithdraw(channelId, userId))),
-
-    retime: (request: Request, context: Params<Base & { weekStart: string }>) =>
-      guarded(context, async ({ channelId, weekStart }, userId) => {
-        const input = await request.json().catch(() => null);
-        return NextResponse.json(await deps.service().retime(channelId, weekStart, input, userId));
-      }),
   };
 }

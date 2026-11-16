@@ -68,22 +68,6 @@ export const approvalStageInputSchema = z.object({ stage: z.enum(["packaged", "s
 export type ApprovalStageInput = z.infer<typeof approvalStageInputSchema>;
 
 /**
- * BL-256 (owner msgs 4380/4383): the owner moves one slot to another day of its week and/or another time (Web UI only). `contentHash`
- * is the hash the screen showed (a slot changed meanwhile is refused); `approve` -- the new time is approved in the same step (the
- * plan-schedule pass then moves an uploaded video's date on YouTube).
- */
-export const ownerRetimeInputSchema = z
-  .object({
-    slotId,
-    contentHash: z.string().regex(/^[0-9a-f]{64}$/),
-    date: day,
-    publishAt: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/),
-    approve: z.boolean(),
-  })
-  .strict();
-export type OwnerRetimeInput = z.infer<typeof ownerRetimeInputSchema>;
-
-/**
  * BL-267 (ADR 0073 §5, plan §3.7): a move by the owner (Web UI) or the Producer (its tool) -- the slot by id (any week), the content
  * hash the mover was shown, the target week (a Monday), date and local wall time in the target plan's zone (the source plan's zone
  * when the target week has no plan yet). `dryRun`: checked and described, nothing written.
