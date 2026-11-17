@@ -1,6 +1,6 @@
 # 0074. English captions for WWE long videos -- one writer: insert, and update only on an explicit overwrite
 
-Status: Proposed (until the merge). The requirement is the owner's (Telegram 2026-11-16: msg 4590 «да» to `captions.insert`, English
+Status: Accepted (2026-11-17, owner «Да мерджи», TG 4674).
 only, burned-in subtitles off; msg 4592 captions only for WWE long horizontal videos). Request FO-REQ-0055 (Operator; bundle 2.5.46
 `12 --captions`).
 
@@ -98,7 +98,7 @@ No SQLite schema change (steps live in `steps_json`; the switch is a synced publ
 An older build ignores `captions` in a package and in the record; it would upload such a package without captions (both computers
 update together; the upload computer is the Mac). Rows queued before this build finish with `steps.captions: none`.
 
-## Proposed AGENTS.md §F bullet (added at merge)
+## AGENTS.md §F bullet (approved by the owner 2026-11-17, TG 4671/4674; now in AGENTS.md)
 
   **Captions writer (2026-11-16, owner, Telegram msgs 4590/4592, amended 2026-11-17 msg 4660, FO-REQ-0055, BL-269, ADR 0074):**
   `src/lib/video-captions/` may insert one English caption track (`captions.insert`) and, only on an explicit overwrite by the owner

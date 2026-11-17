@@ -789,7 +789,9 @@ any localization-deletion capability built on it) has authority over exactly two
 not the video's own `defaultLanguage`/`defaultAudioLanguage`, not tags, category, privacy,
 scheduling, or any other `snippet`/`status`/`recordingDetails` field (those belong to
 `src/lib/video-details/`, a structurally separate module, per AGENTS.md §F), and not captions/
-subtitles (a distinct YouTube API resource this application does not integrate with at all).
+subtitles (a distinct YouTube API resource; since 2026-11-17 written only by the separate captions writer
+`src/lib/video-captions/`, ADR 0074, BL-269 -- English, WWE long horizontal videos, insert or explicit owner/Producer
+overwrite, never delete -- never by this mechanism).
 Extending this mechanism to cover any additional field is a separate product decision requiring
 the project owner's own explicit authorization each time — never something a coding agent infers
 is safe merely because the underlying YouTube API technically allows it, and never done by quietly
