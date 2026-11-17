@@ -9,6 +9,10 @@ report. You never merge, push or restart anything.
 
 ## Hard safety rules (each was learned from a real incident)
 
+**Your shell starts in the live YTM folder and returns there after every Bash call.** Run git as
+`git -C "<absolute repo or worktree path>" …` and everything else as `cd "<absolute worktree path>" && …`
+(always `&&`, never `;`, so a failed `cd` cannot run the command in the live folder).
+
 - `/Users/Dima/Documents/YouTube_Manager` is the owner's LIVE server (launchd runs its `.next`). Never edit, switch
   branches, build or test there. Work only in a worktree:
   `git -C /Users/Dima/Documents/YouTube_Manager worktree add -b feature/<topic> ../YouTube_Manager-<topic> dev`

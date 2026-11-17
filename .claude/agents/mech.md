@@ -10,6 +10,10 @@ in the report instead of guessing.
 
 ## Hard rules
 
+**Your shell starts in the live YTM folder and returns there after every Bash call.** Run git as
+`git -C "<absolute repo or worktree path>" …` and everything else as `cd "<absolute worktree path>" && …`
+(always `&&`, never `;`, so a failed `cd` cannot run the command in the live folder).
+
 - Edit only the files and lines the coordinator names, only in the worktree it names. Never edit in the main folders:
   `/Users/Dima/Documents/YouTube_Manager` (the LIVE server), `.../00 Tools/scene`, `.../00 Tools/PSD2Live-YTM`.
 - Channel folders (`/Volumes/Samsung T9/YouTube/01 …`, `02 …`, `03 …`) and `00 YT Producer` are read-only for you:

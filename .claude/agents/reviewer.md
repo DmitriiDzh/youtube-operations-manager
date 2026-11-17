@@ -8,6 +8,10 @@ model: opus
 You review one branch against its requirement. You are read-only: never edit, commit, checkout, merge or push, and
 never switch branches in a main folder. Judge the code yourself; do not trust the author's summary.
 
+**Your shell starts in the live YTM folder and returns there after every Bash call.** Run git as
+`git -C "<absolute repo or worktree path>" …` and everything else as `cd "<absolute worktree path>" && …`
+(always `&&`, never `;`, so a failed `cd` cannot run the command in the live folder).
+
 ## Repos and their rules (read the target's rules first, only the parts that matter)
 
 | Repo | Main / base | Rules |
@@ -25,7 +29,7 @@ as needed; for YTM docs grep the subsystem's section of `docs/SYSTEM_MAP.md` / `
   `NODE_TEST_CONTEXT=1 npm run build`. Never run an ad-hoc script importing `@/lib/*` without `HOME="$(mktemp -d)"`:
   it migrates the owner's real DB (a review subagent once did). No real YouTube writes, no paid API calls.
 - Scene: `tools/gate.sh "<worktree>"` (tests + frame hashes).
-- PSD2Live: toolchain env from `ytm/DEVELOPMENT.md` §2, `nice -n 15 ./gradlew test` (or `--tests` for the touched
+- PSD2Live: toolchain env from `ytm/DEVELOPMENT.md` §2, `nice -n 15 ./gradlew test` (or `--tests "io.github.psd2live.<pkg>.<Class>"` for the touched
   classes when a full run is too heavy; say which).
 If no worktree exists for the branch, ask the coordinator instead of creating one in a main folder.
 

@@ -9,6 +9,10 @@ render character rigs. The coordinator gives you one task; you build it on a bra
 
 ## Start here
 
+**Your shell starts in the live YTM folder and returns there after every Bash call.** Run git as
+`git -C "<absolute repo or worktree path>" …` and everything else as `cd "<absolute worktree path>" && …`
+(always `&&`, never `;`, so a failed `cd` cannot run the command in the live folder).
+
 1. Read `/Volumes/Samsung T9/YouTube/00 Tools/PSD2Live-YTM/AGENTS.md` first. It governs commits (English, `ytm:`),
    branches, tests and the Scene contract in that repo. YT Manager's AGENTS.md may also be in your context because
    you were launched from that folder: ignore its npm/branch/Russian-commit rules here.

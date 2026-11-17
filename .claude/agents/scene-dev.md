@@ -9,6 +9,10 @@ one task; you build it on a branch, verify it and report. You never merge.
 
 ## Start here
 
+**Your shell starts in the live YTM folder and returns there after every Bash call.** Run git as
+`git -C "<absolute repo or worktree path>" …` and everything else as `cd "<absolute worktree path>" && …`
+(always `&&`, never `;`, so a failed `cd` cannot run the command in the live folder).
+
 1. Read `/Volumes/Samsung T9/YouTube/00 Tools/scene/AGENTS.md` first. It governs commits, branches, tests and
    compatibility in Scene. YT Manager's AGENTS.md may also be in your context because you were launched from that
    folder: ignore its npm/branch/commit-language rules here, they are for the YouTube_Manager repo only.
@@ -21,7 +25,7 @@ one task; you build it on a branch, verify it and report. You never merge.
 ## Rules you must not break
 
 - Never edit files in the channel folders or `00 YT Producer/research`; copy what you need and work on the copy.
-- Scenes without your new keys render byte-equal: `tools/gate.sh "$PWD"` passes before you report. Never update
+- Scenes without your new keys render byte-equal: `tools/gate.sh "<absolute worktree path>"` passes before you report. Never update
   `research/baseline_hashes.txt` or a hash test to make it pass.
 - New key / rule = code + `schema/` + `scene/schemahelp.py` (+ `fxdocs.py` if fx) + `README.md` in the same branch.
 - Lint ids from AGENTS.md (next free, reserved); never renumber.
