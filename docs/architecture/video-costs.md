@@ -31,7 +31,7 @@ Plan: `docs/roadmap/plans/VIDEO_COST_PLAN.md` §2 stage 1 (acceptance criteria 1
   only); an inherited video that cannot be linked or a failing lookup gives `null` and a log line. The ports are optional in the
   media modules (`videoLink`), so they run without the module; a given number is then refused.
 - **Surfaces.** Factory API 1.20.0 (`factory_video_create` gated write, `factory_video_list` read); Web routes under
-  `/api/channels/[channelId]/video-projects` with session + active channel (ADR 0004); Content → «Публикация» → «Ролики в работе»
+  `/api/channels/[channelId]/video-projects` with session + active channel (ADR 0004); Content → «План» → «Без слота» (the videos board; «Публикация» → «Ролики в работе» before BL-266)
   (own error boundary) and `VideoPicker` on the storyboard screen and the own-plan card.
 - **Limits.** A duplicate within the sync delay is resolved by hand; links made before it was seen stay (RISK-129). The cost per video
   is §52.

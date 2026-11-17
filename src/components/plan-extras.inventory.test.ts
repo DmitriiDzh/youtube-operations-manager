@@ -55,3 +55,29 @@ test("BL-266: the «Ролики и релизы» badge is counted on «Пла�
   assert.match(contentLayout, /item\.value === "week-plan" && badges\.releases > 0/);
   assert.ok(!contentLayout.includes('"publishing"'));
 });
+
+test("BL-266 review: both «⋯» settings links land on an anchor around their moved card in Settings → Channels", () => {
+  const pane = settingsPane("channels");
+  for (const [anchor, component] of [
+    ["PUBLISHING_SETTINGS_ANCHOR", "PublishingSettingsPanel"],
+    ["LOCAL_CLEANUP_ANCHOR", "LocalVideoCleanupCard"],
+  ] as const) {
+    const at = pane.indexOf(`id={${anchor}}`);
+    assert.ok(at >= 0 && pane.indexOf(`<${component} `, at) > at, `${anchor} wraps ${component}`);
+    assert.ok(planExtras.includes(`href={\`/settings/channels#\${${anchor}}\`}`), `link to ${anchor}`);
+  }
+});
+
+test("BL-266 review (BL-270): the uploads list and the bandwidth note poll only while shown and the browser tab is visible", () => {
+  const uploads = read("src/components/publishing-uploads.tsx");
+  const note = read("src/components/upload-bandwidth-note.tsx");
+  for (const [name, source] of [
+    ["publishing-uploads", uploads],
+    ["upload-bandwidth-note", note],
+  ] as const) {
+    assert.ok(!/setInterval\(/.test(source), `${name}: no plain setInterval`);
+    assert.match(source, /startVisibleInterval\(/, name);
+    assert.match(source, /if \(!visible\) return;/, name);
+  }
+  assert.match(uploads, /<UploadBandwidthNote visible=\{visible\} \/>/);
+});

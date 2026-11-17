@@ -19,7 +19,7 @@
 - **BL-263 (ADR 0071):** коды `S<n>` (шортсы; номер даёт фабрика, `factory_video_create.video`) рядом с `V<n>`; следующий V их не
   считает; состояние `recoded` + `recodedTo` у V, перекодированного в S (`factory_release_recode`); правила кода — `src/lib/shared-video-code/`.
 - **Web/API:** `/api/channels/[channelId]/video-projects` (+ `/[video]/renumber`, `/[video]/cancel`), `.../storyboards/[id]/video`,
-  `/api/generation-plans/[planId]/video`; Контент → «Публикация» → «Ролики в работе»; выбор ролика на экране раскадровки и в карточке плана.
+  `/api/generation-plans/[planId]/video`; Контент → «План» → «Без слота» (доска роликов; до BL-266 — «Публикация» → «Ролики в работе»); выбор ролика на экране раскадровки и в карточке плана.
 - **Доля счёта RunPod (этап 2, ADR 0041):** `media_jobs.started_at` / `gpu_finished_at` из событий websocket ComfyUI
   (`jobs.ts` `recordTiming`); `media-generation/cost-split.ts` делит счёт закончившейся сессии по заданиям пропорционально секундам
   GPU (запуск и простой пода — в долях), в 1/10000 USD наибольшим остатком; пропущенное время оценивается (`estimated`). Хранится

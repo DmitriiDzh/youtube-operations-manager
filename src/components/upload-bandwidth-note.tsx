@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useT } from "./ui-text-provider";
+import { startVisibleInterval } from "./visible-interval";
 
 // BL-233 (FO-REQ-0047): one line under a running stream and over the uploads list when a video upload on this computer is limited
 // or paused for the live streams. Nothing is shown while no upload runs, or when no limit applies.
@@ -10,11 +11,13 @@ type Report = { active: boolean; limit: "none" | "limited" | "held"; capMbps: nu
 
 const POLL_MS = 15_000;
 
-export function UploadBandwidthNote() {
+/** `visible`: the screen holding the note is shown (BL-266 review: no poll for a hidden tab of the app or a hidden browser tab). */
+export function UploadBandwidthNote({ visible }: { visible: boolean }) {
   const t = useT();
   const [report, setReport] = useState<Report>(null);
 
   useEffect(() => {
+    if (!visible) return;
     let stopped = false;
     const load = async () => {
       try {
@@ -26,12 +29,12 @@ export function UploadBandwidthNote() {
       }
     };
     void load();
-    const timer = setInterval(() => void load(), POLL_MS);
+    const stop = startVisibleInterval(() => void load(), POLL_MS);
     return () => {
       stopped = true;
-      clearInterval(timer);
+      stop();
     };
-  }, []);
+  }, [visible]);
 
   if (!report || !report.active || report.limit === "none") return null;
   if (report.limit === "held") {

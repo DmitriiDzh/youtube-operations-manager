@@ -835,6 +835,12 @@ export const content: Record<keyof typeof en, string> = {
   "planExtras.more.publishingSettings": "Настройки публикации канала (Настройки → Каналы)",
   "planExtras.more.cleanup": "Удалять локальную копию после загрузки (Настройки → Каналы)",
   "planExtras.packages.close": "Пакеты релизов и ручная загрузка",
+  "planExtras.mark.dispute": "{count, plural, one {# номер ролика взят} few {# номера роликов взяты} many {# номеров роликов взяты} other {# номера роликов взяты}} на двух компьютерах — откройте доску",
+  "planExtras.mark.disputeShort": "спорных: {count}",
+  "planExtras.mark.workspace": "Рабочая папка канала не задана или недоступна на этом компьютере: пакеты и папки не читаются",
+  "planExtras.mark.workspaceShort": "папка?",
+  "planExtras.mark.unlinkedCost": "{count, plural, one {# запуск генерации не привязан} few {# запуска генерации не привязаны} many {# запусков генерации не привязаны} other {# запуска генерации не привязаны}} к ролику — привяжите на доске",
+  "planExtras.mark.unlinkedCostShort": "траты?",
   "planExtras.settings.channel": "Канал: {channel}",
   "planExtras.settings.channelHint": "Настройки публикации и удаление локальных копий активного канала. Чтобы настроить другой канал, переключите канал вверху.",
 };

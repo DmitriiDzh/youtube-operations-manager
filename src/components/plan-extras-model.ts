@@ -6,7 +6,18 @@ import { pipelinePhase, type PipelineProject } from "./video-pipeline";
 
 export type PlanProjectRef = PipelineProject & { video: string };
 /** A row of the package scan, as far as slots are concerned: the package names its plan slot in `pkg.slotId` (package v2). */
-export type PlanPackageRef = { video: string | null; pkg: { slotId?: string | null } | null };
+export type PlanPackageRef = { video: string | null; pkg: { slotId?: string | null } | null; state?: string; problems?: Array<{ code: string }> };
+
+/**
+ * Does the package hold the slot it names? Not when its video was deleted on YouTube (BL-243: it holds no slot), nor when another
+ * package naming the same slot was uploaded (`slot_taken`, `markSharedSlots` in package-scan.ts). Packages naming one slot with none
+ * uploaded (`slot_duplicate`) still each claim it: the Operator fixes the slot ids, and the packages list shows the problem.
+ */
+export function holdsSlot(p: PlanPackageRef): boolean {
+  if (!p.video || !p.pkg?.slotId) return false;
+  if (p.state === "deleted_on_youtube") return false;
+  return !(p.problems ?? []).some((problem) => problem.code === "slot_taken");
+}
 
 /** The phases of a number still in work before YouTube (the board's «Подготовка», «Монтаж», «Пакет»). */
 const IN_WORK = new Set(["prep", "edit", "package"]);
@@ -16,7 +27,7 @@ const IN_WORK = new Set(["prep", "edit", "package"]);
  * «Без слота: N» line. A number counts once, in the order the projects list gives.
  */
 export function unslottedVideos(projects: readonly PlanProjectRef[], packages: readonly PlanPackageRef[]): string[] {
-  const slotted = new Set(packages.filter((p) => p.video && p.pkg?.slotId).map((p) => p.video as string));
+  const slotted = new Set(packages.filter(holdsSlot).map((p) => p.video as string));
   const out: string[] = [];
   for (const project of projects) {
     const phase = pipelinePhase(project, null);

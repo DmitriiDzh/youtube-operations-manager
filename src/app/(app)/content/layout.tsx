@@ -90,7 +90,7 @@ export default function ContentLayout({ children }: { children: ReactNode }) {
           {/* BL-266 (AGENTS.md §M): the former «Ролики и релизы» lines in their own boundary -- the plan works without them. */}
           <div className="mb-4">
             <FeatureErrorBoundary label={t("planExtras.packages.close")}>
-              <PlanExtras channelId={channel?.id ?? null} visible={tab === "week-plan"} onUploads={onUploads} onPackages={onPackages} packagesRefreshKey={packagesKey} />
+              <PlanExtras channelId={channel?.id ?? null} visible={tab === "week-plan"} projects={badges.projects} onProjects={badges.acceptProjects} onUploads={onUploads} onPackages={onPackages} packagesRefreshKey={packagesKey} />
             </FeatureErrorBoundary>
           </div>
           <FeatureErrorBoundary label={t("tabs.content.weekPlan")}>

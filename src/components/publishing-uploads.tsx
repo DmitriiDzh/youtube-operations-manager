@@ -7,6 +7,7 @@ import { errorText, type UiTextKey } from "@/lib/ui-text";
 import { ConfirmDialog } from "./confirm-dialog";
 import { useT } from "./ui-text-provider";
 import { UploadBandwidthNote } from "./upload-bandwidth-note";
+import { startVisibleInterval } from "./visible-interval";
 import { useUtcLocalHint } from "./utc-time-field";
 
 export type UploadRow = {
@@ -100,8 +101,8 @@ export function PublishingUploads({ channelId, visible, refreshKey, onRows }: { 
   useEffect(() => {
     if (!visible) return;
     void load();
-    const id = setInterval(() => void load(), active ? 5_000 : 30_000);
-    return () => clearInterval(id);
+    // BL-266 review (BL-270): no read while the browser tab is hidden; one at once when it is shown again.
+    return startVisibleInterval(() => void load(), active ? 5_000 : 30_000);
   }, [visible, load, active, refreshKey]);
 
   async function cancel(id: string) {
@@ -184,7 +185,7 @@ export function PublishingUploads({ channelId, visible, refreshKey, onRows }: { 
     <div className="space-y-2">
       <h4 className="text-sm font-medium text-zinc-200">{t("publishingUploads.title")}</h4>
       {/* BL-233: limited or paused while a live stream runs on this computer. */}
-      <UploadBandwidthNote />
+      <UploadBandwidthNote visible={visible} />
       {error && <p className="text-xs text-red-400">{error}</p>}
       <ul className="divide-y divide-zinc-800 rounded-lg border border-zinc-800">
         {/* BL-239: the queued rows first, in the order they start; the rest as listed (newest first). */}

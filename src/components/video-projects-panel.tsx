@@ -73,14 +73,14 @@ export function VideoProjectsPanel({
   channelId,
   visible,
   onlyVideos = null,
-  onChanged,
+  onList,
 }: {
   channelId: string | null;
   visible: boolean;
   /** BL-266: «План» → «Без слота» shows only these numbers on the board (null: every number). The header's actions stay. */
   onlyVideos?: ReadonlySet<string> | null;
-  /** BL-266: told after the list was read again (a new, renumbered or cancelled number), so «Без слота» recounts. */
-  onChanged?: () => void;
+  /** BL-266: each list this board reads (also after a new, renumbered or cancelled number), so «Без слота» recounts from it. */
+  onList?: (list: VideoListView) => void;
 }) {
   const { t } = useUiText();
   const [list, setList] = useState<VideoListView | null>(null);
@@ -101,10 +101,10 @@ export function VideoProjectsPanel({
 
   const base = channelId ? `/api/channels/${encodeURIComponent(channelId)}/video-projects` : null;
   // A ref, so a new callback from the parent never makes a new `load` (and a read loop).
-  const onChangedRef = useRef(onChanged);
+  const onListRef = useRef(onList);
   useEffect(() => {
-    onChangedRef.current = onChanged;
-  }, [onChanged]);
+    onListRef.current = onList;
+  }, [onList]);
 
   const load = useCallback(async () => {
     if (!base) return;
@@ -115,7 +115,7 @@ export function VideoProjectsPanel({
       if (!res.ok) throw new Error(errorText(t, data, t("videoProjects.loadFailed")));
       setList(data as VideoListView);
       setError(null);
-      onChangedRef.current?.();
+      onListRef.current?.(data as VideoListView);
     } catch (e) {
       setError(e instanceof Error ? e.message : t("videoProjects.loadFailed"));
     } finally {

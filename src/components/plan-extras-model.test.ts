@@ -59,3 +59,32 @@ test("BL-266: the queue line counts this channel's uploads not over yet and name
   // Nothing sending: the next in the queue is named.
   assert.deepEqual(uploadQueueSummary([row("V66", "queued", 0, { queuePosition: 3 }), row("V65", "queued", 0, { queuePosition: 1 })]).current, { video: "V65", status: "queued", percent: 0 });
 });
+
+test("BL-266 review: a package whose video was deleted on YouTube holds no slot -- its number counts as without a slot", () => {
+  // BL-243 (markSharedSlots): a package in `deleted_on_youtube` holds no slot. V30 is packaged again (not on YouTube any more).
+  assert.deepEqual(unslottedVideos([{ video: "V30", state: "packaged", hasVideoFile: true }], [{ video: "V30", pkg: { slotId: "s3" }, state: "deleted_on_youtube", problems: [] }]), ["V30"]);
+});
+
+test("BL-266 review: two packages naming one slot -- after one is uploaded the other holds none; before, both still claim it", () => {
+  const projects = [
+    { video: "V40", state: "packaged" as const, hasVideoFile: true },
+    { video: "V41", state: "packaged" as const, hasVideoFile: true },
+  ];
+  // V39 (uploaded, not a project in work here) took slot s4: V40 is marked `slot_taken` and holds no slot; V41 names its own slot.
+  assert.deepEqual(
+    unslottedVideos(projects, [
+      { video: "V39", pkg: { slotId: "s4" }, state: "scheduled", problems: [] },
+      { video: "V40", pkg: { slotId: "s4" }, state: "not_ready", problems: [{ code: "slot_taken" }] },
+      { video: "V41", pkg: { slotId: "s5" }, state: "ready", problems: [] },
+    ]),
+    ["V40"]
+  );
+  // Neither uploaded: both are `slot_duplicate` and both still claim s6 (nothing counted without a slot).
+  assert.deepEqual(
+    unslottedVideos(projects, [
+      { video: "V40", pkg: { slotId: "s6" }, state: "not_ready", problems: [{ code: "slot_duplicate" }] },
+      { video: "V41", pkg: { slotId: "s6" }, state: "not_ready", problems: [{ code: "slot_duplicate" }] },
+    ]),
+    []
+  );
+});

@@ -121,7 +121,7 @@ export const errors = {
   "errors.captions_step_pending": "This video's upload on this computer has not finished its steps yet. Try again once it is done.",
   "errors.captions_upload_unfinished": "This video's upload has not finished its steps yet. Add the captions once it is done, or on the computer that uploaded it.",
   "errors.captions_not_in_package": "The package states no captions.",
-  "errors.video_in_dispute": "This video number was taken on two computers at once. Nothing is linked to it until the computer that lost takes another number (Content → «Plan» → «No slot»).",
+  "errors.video_in_dispute": "This video number was taken on two computers at once. Nothing is linked to it until the computer that lost takes another number (Content → «Plan» → «No slot» → the number's card on the board, «Take Vn»).",
   "errors.video_costs_unavailable": "The cost of a channel's videos is shown only for a channel connected on this computer.",
   "errors.video_workspace_unavailable": "Video numbers need the channel connected here and its workspace folder readable on this computer.",
   "errors.upload_already_queued": "This video is already queued or already uploaded.",

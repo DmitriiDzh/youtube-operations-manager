@@ -40,6 +40,7 @@ import { RemoteAccessSettings } from "@/components/remote-access-settings";
 import { useAppChannel } from "@/components/app-channel";
 import { LocalVideoCleanupCard } from "@/components/local-video-cleanup-card";
 import { PublishingSettingsPanel } from "@/components/publishing-settings-panel";
+import { LOCAL_CLEANUP_ANCHOR, PUBLISHING_SETTINGS_ANCHOR } from "@/components/plan-extras";
 import { useT } from "@/components/ui-text-provider";
 import type { UiTextKey } from "@/lib/ui-text";
 
@@ -140,12 +141,17 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
               <h3 className="text-sm font-semibold text-zinc-100">{t("planExtras.settings.channel", { channel: channel.title })}</h3>
               <p className="mt-0.5 text-xs text-zinc-400">{t("planExtras.settings.channelHint")}</p>
             </div>
-            <FeatureErrorBoundary label={section("publishingSettings.collapsedTitle")}>
-              <PublishingSettingsPanel channelId={channel.id} visible={settingsSubTab === "channels"} />
-            </FeatureErrorBoundary>
-            <FeatureErrorBoundary label={section("cleanup.title")}>
-              <LocalVideoCleanupCard channelId={channel.id} visible={settingsSubTab === "channels"} />
-            </FeatureErrorBoundary>
+            {/* The «⋯» links on «План» land on these anchors. */}
+            <div id={PUBLISHING_SETTINGS_ANCHOR} className="scroll-mt-20">
+              <FeatureErrorBoundary label={section("publishingSettings.collapsedTitle")}>
+                <PublishingSettingsPanel channelId={channel.id} visible={settingsSubTab === "channels"} />
+              </FeatureErrorBoundary>
+            </div>
+            <div id={LOCAL_CLEANUP_ANCHOR} className="scroll-mt-20">
+              <FeatureErrorBoundary label={section("cleanup.title")}>
+                <LocalVideoCleanupCard channelId={channel.id} visible={settingsSubTab === "channels"} />
+              </FeatureErrorBoundary>
+            </div>
           </div>
         )}
       </div>

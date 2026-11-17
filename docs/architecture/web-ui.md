@@ -199,4 +199,10 @@ UI only: no route, MCP, schema or YouTube-write change; every write stays in the
   same conditions as the packages list. The layout keeps both row sets with their channel id, so another channel's rows never
   reach these cards.
 - **Settings → Channels** mounts `PublishingSettingsPanel` and `LocalVideoCleanupCard` for the active channel (`useAppChannel`),
-  keyed by channel id, under a «Канал: …» heading, each in its own boundary.
+  keyed by channel id, under a «Канал: …» heading, each in its own boundary, wrapped in the anchors `#publishing-settings` / `#local-video-cleanup` the «⋯» links use.
+- **Review fixes.** One `video-projects` read: `useContentTabBadges` returns its list (`projects`, the last good one) and
+  `acceptProjects`; the open board hands each list it reads up (`onList`) instead of triggering a read. A package holds its slot
+  unless it is `deleted_on_youtube` or marked `slot_taken` (`holdsSlot`; `slot_duplicate` packages still claim it). The scan's rows
+  are applied only when `status` is `ok`. «Без слота» marks numbers in dispute (the board filter includes them), an unavailable
+  workspace and unlinked generation costs. Opened parts stay mounted (hidden when closed). `PublishingUploads` and
+  `UploadBandwidthNote` (new `visible` prop) poll through `startVisibleInterval`.

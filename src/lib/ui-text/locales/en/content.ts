@@ -833,6 +833,12 @@ export const content = {
   "planExtras.more.publishingSettings": "Channel publishing settings (Settings → Channels)",
   "planExtras.more.cleanup": "Delete the local copy after upload (Settings → Channels)",
   "planExtras.packages.close": "Release packages and manual upload",
+  "planExtras.mark.dispute": "{count, plural, one {# video number is} other {# video numbers are}} taken on two computers -- open the board",
+  "planExtras.mark.disputeShort": "{count} in dispute",
+  "planExtras.mark.workspace": "The channel's workspace folder is not set or not available on this computer: the packages and folders cannot be read",
+  "planExtras.mark.workspaceShort": "folder?",
+  "planExtras.mark.unlinkedCost": "{count, plural, one {# generation run is} other {# generation runs are}} not linked to a video -- link them on the board",
+  "planExtras.mark.unlinkedCostShort": "costs?",
   "planExtras.settings.channel": "Channel: {channel}",
   "planExtras.settings.channelHint": "Publishing settings and the local copy cleanup of the active channel. Switch the channel at the top to change another one.",
 } as const;

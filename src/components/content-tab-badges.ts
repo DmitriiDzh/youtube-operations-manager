@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { pipelinePhase, type PipelineProject } from "./video-pipeline";
 import { startVisibleInterval } from "./visible-interval";
 
@@ -48,8 +48,25 @@ async function getJson<T>(url: string): Promise<T | null> {
   }
 }
 
-export function useContentTabBadges(channelId: string | null): ContentTabBadges {
-  const [badges, setBadges] = useState<ContentTabBadges & { channelId: string | null }>({ ...NONE, channelId: null });
+/** BL-266 review: the channel's video-projects list as the badges read it, shared with «План» (one read, not two). */
+export type ContentProjectsList = { videos: Array<PipelineProject & { video: string; conflict?: unknown }>; workspace?: "ok" | "not_configured" | "unavailable" };
+
+type Reads = {
+  channelId: string | null;
+  projects: ContentProjectsList | null;
+  calendar: { lastSyncedAt: string | null; coverage: { due: boolean } } | null;
+  live: { stream: { intent: string } | null; youtube: { lifeCycleStatus: string | null; healthStatus: string | null } | null } | null;
+  plans: { waiting: number } | null;
+  /** The last list that was read successfully (a failed read leaves «Без слота» as it was; the badge itself shows none). */
+  lastProjects: ContentProjectsList | null;
+};
+
+/**
+ * The badges, the video-projects list they come from (BL-266 review: «План»'s «Без слота» uses the same list instead of a second
+ * read every minute), and `acceptProjects` -- a list read elsewhere (the open videos board) replaces the shared one at once.
+ */
+export function useContentTabBadges(channelId: string | null): ContentTabBadges & { projects: ContentProjectsList | null; acceptProjects: (list: ContentProjectsList) => void } {
+  const [reads, setReads] = useState<Reads>({ channelId: null, projects: null, calendar: null, live: null, plans: null, lastProjects: null });
   useEffect(() => {
     if (!channelId) return;
     let cancelled = false;
@@ -58,12 +75,12 @@ export function useContentTabBadges(channelId: string | null): ContentTabBadges 
       // A hidden browser tab reads nothing (review): the badges catch up when it is shown again.
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       void Promise.all([
-        getJson<{ videos: PipelineProject[] }>(`${base}/video-projects`),
+        getJson<ContentProjectsList>(`${base}/video-projects`),
         getJson<{ lastSyncedAt: string | null; coverage: { due: boolean } }>(`${base}/publishing/calendar`),
         getJson<{ stream: { intent: string } | null; youtube: { lifeCycleStatus: string | null; healthStatus: string | null } | null }>(`${base}/live-stream`),
         getJson<{ waiting: number }>(`${base}/publishing-plans`),
       ]).then(([projects, calendar, live, plans]) => {
-        if (!cancelled) setBadges({ ...contentTabBadges({ projects, calendar, live, plans }), channelId });
+        if (!cancelled) setReads((current) => ({ channelId, projects, calendar, live, plans, lastProjects: projects ?? (current.channelId === channelId ? current.lastProjects : null) }));
       });
     };
     read();
@@ -74,5 +91,11 @@ export function useContentTabBadges(channelId: string | null): ContentTabBadges 
       stopPolling();
     };
   }, [channelId]);
-  return channelId && badges.channelId === channelId ? badges : NONE;
+  const acceptProjects = useCallback(
+    (list: ContentProjectsList) => setReads((current) => (current.channelId === channelId ? { ...current, projects: list, lastProjects: list } : { channelId, projects: list, calendar: null, live: null, plans: null, lastProjects: list })),
+    [channelId]
+  );
+  const mine = channelId && reads.channelId === channelId ? reads : null;
+  const badges = mine ? contentTabBadges(mine) : NONE;
+  return { ...badges, projects: mine?.lastProjects ?? null, acceptProjects };
 }
