@@ -269,6 +269,37 @@ export function createRestartWhenIdle(deps: RestartWhenIdleDependencies) {
       };
     },
 
+    /**
+     * BL-271 (WAIT_TOOLS_PLAN.md §2 `restart`): one request by id, any status, or null -- an `open` one past 24 h shows as `expired`
+     * (what the next check makes of it). A read: no busy reader runs.
+     */
+    async requestById(id: string): Promise<RestartRequestView | null> {
+      const row = (await deps.store.listRequests(["open", "restarting", "done", "cancelled", "expired"])).find((r) => r.id === id);
+      if (!row) return null;
+      const expired = row.status === "open" && deps.clock() - row.requestedAt >= RESTART_REQUEST_MAX_AGE_MS;
+      return requestView(expired ? { ...row, status: "expired" } : row);
+    },
+
+    /** BL-271: the request open or restarting now (the same one `status().request` names), or null. A read: no busy reader runs. */
+    async activeRequest(): Promise<RestartRequestView | null> {
+      const now = deps.clock();
+      const open = (await deps.store.listRequests(["open"])).filter((row) => now - row.requestedAt < RESTART_REQUEST_MAX_AGE_MS);
+      const current = open[0] ?? (await deps.store.listRequests(["restarting"]))[0] ?? null;
+      return current ? requestView(current) : null;
+    },
+
+    /** BL-271: whether this server is restarting now -- a request `restarting` whose stop was sent less than RESTART_STUCK_MS ago. */
+    async isRestarting(): Promise<boolean> {
+      const now = deps.clock();
+      return (await deps.store.listRequests(["restarting"])).some((row) => row.restartingAt !== null && now - row.restartingAt < RESTART_STUCK_MS);
+    },
+
+    /** BL-271: the latest finished restart, or null. */
+    async lastRestart(): Promise<RestartRequestView | null> {
+      const last = await deps.store.lastDone();
+      return last ? requestView(last) : null;
+    },
+
     /** Opens a request, or joins the open one. Refused outside the system service (AC-RI-07). */
     async request(by: RestartRequester): Promise<{ request: RestartRequestView; joined: boolean }> {
       return createRequest(by, deps.clock());

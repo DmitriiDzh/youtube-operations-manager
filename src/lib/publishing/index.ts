@@ -838,6 +838,17 @@ export async function listChannelUploads(channelId: string) {
 }
 
 /**
+ * BL-271 (WAIT_TOOLS_PLAN.md §2 `upload`): plain reads for the wait -- one upload row of this computer by id, or the newest row of a
+ * channel's video code. Read only; nothing here queues, sends or cancels.
+ */
+export async function getUploadRow(uploadId: string, database?: Parameters<typeof getPublishingUpload>[1]) {
+  return getPublishingUpload(uploadId, database);
+}
+export async function latestUploadOfVideo(channelId: string, video: string, database?: Parameters<typeof listPublishingUploads>[1]) {
+  return (await listPublishingUploads({ channelId, limit: 500 }, database)).find((row) => row.video === video) ?? null;
+}
+
+/**
  * BL-258 (owner msg 4385): this computer's open uploads of every channel, each queued row with its place in the shared queue -- the
  * header's «Выполняется в фоне».
  */

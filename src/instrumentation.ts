@@ -215,6 +215,11 @@ async function startServerSession() {
   const expireQuietly = () => void expireLiveWritesSessionLease().catch(() => undefined);
   process.once("SIGINT", expireQuietly);
   process.once("SIGTERM", expireQuietly);
+  // BL-271 (WAIT_TOOLS_PLAN.md AC-WT-07): every blocked wait (factory_wait / agent_wait / producer_wait) returns at once
+  // (server_stopping), so a wait never holds Next's request drain or the restart's forced exit.
+  const { signalShutdown } = await import("@/lib/operation-wait");
+  process.once("SIGINT", signalShutdown);
+  process.once("SIGTERM", signalShutdown);
 
   // Automatic device sync (docs/roadmap/plans/DEVICE_AUTO_SYNC_PLAN.md §3.5): the snapshot tick
   // (export when changed / import a fast-forward / otherwise notify) and the draft sync-gateway
