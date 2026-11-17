@@ -651,7 +651,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 
 - **Ответственность:** серверный планировщик поверх §2.16. Раз в 30 с:
   - экспорт при локальных изменениях (не чаще раза в 10 минут с BL-270; изменение внутри окна экспортируется после него);
-  - «есть ли локальные изменения» — по счётчикам изменений (триггеры на переносимых таблицах → `transferred_change_counters`, схема v123) и `schema_version`; полный отпечаток — только когда они сдвинулись или раз в 10 минут (BL-270); проверки внутри блокировки перед экспортом/импортом — всегда полные;
+  - «есть ли локальные изменения» — по счётчикам изменений (триггеры на переносимых таблицах → `transferred_change_counters`, локальная таблица; её и триггеры создаёт сама синхронизация при работе, без миграции схемы) и `schema_version`; полный отпечаток — только когда они сдвинулись или раз в 10 минут (BL-270); проверки внутри блокировки перед экспортом/импортом — всегда полные;
   - авто-импорт fast-forward снапшота другого устройства, если локально нечего публиковать;
   - ветка другого компьютера с теми же данными, что у собственной головы, записывается как предок, голова и данные не меняются; чистое устройство при нескольких одинаковых ветках импортирует одну (BL-139);
   - иначе расхождение: колокольчик в шапке ведёт во вкладку Merge, где карточка показывает, что есть только здесь и только там, а решение принимает человек («keep mine» / «take theirs»).
@@ -666,7 +666,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   - `src/components/device-sync-bell.tsx`, `device-sync-divergence-card.tsx`, `device-auto-sync-settings.tsx`;
   - `src/app/api/market-intelligence/collect-if-stale/sync-gate.ts`;
   - `src/lib/sync-gateway/run-all-families.ts`.
-- **Схема:** v36 (`snapshot_lineage.content_fingerprint`, `ancestors_json`); v123 (`transferred_change_counters`, локальная; индекс `batch_ledger_rows(status)`, BL-270).
+- **Схема:** v36 (`snapshot_lineage.content_fingerprint`, `ancestors_json`). `transferred_change_counters` (BL-270) — не миграция: создаётся при работе (`ensureTransferredChangeTriggers`), локальная, в снапшот не попадает.
 - **Настройки:** `app_settings` `device_auto_sync_enabled` (по умолчанию вкл) и `device_sync_status`.
 - **Ограничения:** RISK-89.
 

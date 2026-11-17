@@ -852,7 +852,10 @@ test("applySnapshotToDatabase: logical_paths and logical_path_values are device-
 // Architecture audit 2026-10-01 (M6): every table the schema creates is classified exactly once --
 // transferred with a handoff, or deliberately device-local with a reason.
 test("every schema table is classified as either transferred or device-local, never both, never neither", async () => {
-  const source = await readFile(path.resolve(process.cwd(), "src/lib/db.ts"), "utf8");
+  // BL-270 review: the device-local `transferred_change_counters` is created at run time by device sync, not by a migration.
+  const source = (
+    await Promise.all(["src/lib/db.ts", "src/lib/snapshot/adapters/change-counter.ts"].map((file) => readFile(path.resolve(process.cwd(), file), "utf8")))
+  ).join("\n");
   const created = new Set([...source.matchAll(/CREATE TABLE IF NOT EXISTS ([a-z_]+)/g)].map((m) => m[1]));
   created.add("schema_meta");
   const transferred = new Set<string>(SNAPSHOT_TRANSFERRED_TABLES);

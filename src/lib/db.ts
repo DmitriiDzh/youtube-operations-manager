@@ -6210,20 +6210,6 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       await client.execute("CREATE INDEX IF NOT EXISTS social_post_jobs_channel_idx ON social_post_jobs (channel_id, slot_id)");
     },
   },
-  {
-    version: 123,
-    description:
-      "transferred_change_counters + batch_ledger_rows(status) index -- BL-270 (owner TG 4662/4665): a per-table change counter that triggers on the transferred tables bump (device sync re-reads the full content fingerprint only when it moved), and an index for the many status lookups. Additive (one new table, one index), device-local",
-    apply: async (client) => {
-      // The triggers themselves are installed (and re-installed after a table rebuild) by the device-sync runner through
-      // `ensureTransferredChangeTriggers` (src/lib/snapshot), never here: a migration that rebuilds a table drops its triggers.
-      await client.execute(`CREATE TABLE IF NOT EXISTS transferred_change_counters (
-        table_name TEXT PRIMARY KEY NOT NULL,
-        version INTEGER NOT NULL DEFAULT 0
-      )`);
-      await client.execute("CREATE INDEX IF NOT EXISTS batch_ledger_rows_status_idx ON batch_ledger_rows (status)");
-    },
-  },
 ];
 
 /**

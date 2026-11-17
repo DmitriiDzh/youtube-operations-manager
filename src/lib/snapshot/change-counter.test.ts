@@ -191,16 +191,27 @@ test("BL-270 (negative): a write that lands DURING the full computation is not l
     client.close();
   }));
 
-test("BL-270 (negative): without the counter table (a database before v123) every call computes in full", () =>
+// Review of BL-270 (finding 4): no schema version is spent on the counters, so a fresh database, an imported one or a staged
+// snapshot copy has no counter table; device sync creates it at run time, and from then on writes are counted and cached.
+test("BL-270: a database without the counter table gets it at run time -- writes are counted from then on, the cache works", () =>
   withTempDir("change-counter-", async (dir) => {
     const client = await makeClient(dir);
-    await client.execute("DROP TABLE transferred_change_counters");
-    assert.equal(await ensureTransferredChangeTriggers(client), "unavailable");
+    await client.execute("DROP TABLE IF EXISTS transferred_change_counters");
+    const fresh = await client.execute("SELECT name FROM sqlite_master WHERE name = 'transferred_change_counters'");
+    assert.equal(fresh.rows.length, 0, "no migration creates it");
     const { calls, compute } = countingCompute();
     const cached = createCachedContentFingerprint(client, { compute });
+    const f1 = await cached.fingerprint();
+    const created = await client.execute("SELECT name FROM sqlite_master WHERE name = 'transferred_change_counters'");
+    assert.equal(created.rows.length, 1, "created by the first call");
+    assert.equal(await ensureTransferredChangeTriggers(client), "ready");
     await cached.fingerprint();
-    await cached.fingerprint();
+    assert.equal(calls.n, 1, "unchanged data: the cached value");
+    await addResearchChannel(client, "UC-after-create");
+    assert.equal((await readTransferredChangeCounters(client)).research_channels, 1, "the write is counted");
+    const f2 = await cached.fingerprint();
     assert.equal(calls.n, 2);
+    assert.notEqual(f2, f1);
     client.close();
   }));
 

@@ -2396,13 +2396,15 @@ single-writer, whole-copy semantics. Plan and acceptance criteria:
    `snapshot_lineage.content_fingerprint`.
    - **BL-270 (owner TG 4662/4665): the tick's dirty check is cached.** Each transferred table has
      insert/update/delete triggers (`ytom_transferred_change_<table>_<op>`) that bump its row in
-     the device-local `transferred_change_counters` (schema v123), so a write from any connection or
-     process counts. `createCachedContentFingerprint` (`snapshot/adapters/change-counter.ts`) reuses
+     the device-local `transferred_change_counters`, so a write from any connection or
+     process counts. The table and the triggers are created at run time, never by a migration (no
+     schema version, so the computers need not update together). `createCachedContentFingerprint` (`snapshot/adapters/change-counter.ts`) reuses
      the last full fingerprint while the key -- `PRAGMA schema_version` plus every counter, read
      BEFORE the computation -- is unchanged and younger than 10 minutes. Missing triggers (a
      migration rebuilt a table) are re-installed by `ensureTransferredChangeTriggers` on the next
-     tick and force a full computation; no counter table means a full computation every time. The
-     scrub drops the triggers from every snapshot copy. Only the tick's decision uses the cache;
+     tick and force a full computation; a missing counter table (a new, imported or staged database)
+     is created the same way. The scrub drops the counter table and the triggers from every
+     snapshot copy. Only the tick's decision uses the cache;
      the in-lock checks before an export or an import (step 5) still compute in full. Measured on a
      real 22 MB snapshot: full fingerprint ~960 ms wall / ~580 ms CPU, cached check ~0.7 ms.
      `PRAGMA data_version` alone was rejected: it moves with every commit by another connection

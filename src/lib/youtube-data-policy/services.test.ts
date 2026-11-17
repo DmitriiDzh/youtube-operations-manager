@@ -12,7 +12,10 @@ import { API_DATA_RETENTION_DAYS, YOUTUBE_DATA_CLASSIFICATION, purgeExpiredApiDa
 // Policies III.E.4.b/c/d (not from this implementation).
 
 test("13.1: every schema table is classified against the YouTube API data policies", async () => {
-  const source = await readFile(path.resolve(process.cwd(), "src/lib/db.ts"), "utf8");
+  // BL-270 review: the device-local `transferred_change_counters` is created at run time by device sync, not by a migration.
+  const source = (
+    await Promise.all(["src/lib/db.ts", "src/lib/snapshot/adapters/change-counter.ts"].map((file) => readFile(path.resolve(process.cwd(), file), "utf8")))
+  ).join("\n");
   const created = new Set([...source.matchAll(/CREATE TABLE IF NOT EXISTS ([a-z_]+)/g)].map((m) => m[1]));
   created.add("schema_meta");
   const classified = new Set(Object.keys(YOUTUBE_DATA_CLASSIFICATION));

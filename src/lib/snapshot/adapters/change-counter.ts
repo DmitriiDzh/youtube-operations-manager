@@ -7,11 +7,13 @@ type ExecuteResult = { rows: Array<Record<string, unknown>> };
 /**
  * BL-270 (owner TG 4662/4665): a cheap "did the transferred data move?" signal, so automatic device sync no longer reads and hashes
  * every transferred table (~22 MB) every 30 s. Each transferred table gets three triggers (insert / update / delete) that bump its
- * row in `transferred_change_counters` (schema v123, device-local). They are schema objects, so a write from ANY connection or
- * process (the web server, MCP, the CLI) counts.
+ * row in `transferred_change_counters` (device-local). They are schema objects, so a write from ANY connection or process (the web
+ * server, MCP, the CLI) counts.
  *
- * The triggers are installed here, never by a migration: a migration that rebuilds a table drops that table's triggers, and only a
- * check at run time can put them back. Whatever the counters say, the full content fingerprint stays the truth; the counters only
+ * The counter table and the triggers are created here at run time, never by a migration (review of BL-270): no schema version is
+ * spent on them, so the two computers need not update together; a migration that rebuilds a table drops that table's triggers, and
+ * only a check at run time can put them back. The table is device-local and never transferred (the scrub drops it and the triggers
+ * from every snapshot copy), so an imported or staged database simply has neither until this device's sync creates them. Whatever the counters say, the full content fingerprint stays the truth; the counters only
  * decide when it must be computed again (see `createCachedContentFingerprint`).
  */
 export const TRANSFERRED_CHANGE_COUNTER_TABLE = "transferred_change_counters";
@@ -31,14 +33,20 @@ async function existingTables(client: SqlExecutor, names: readonly string[]): Pr
 }
 
 /**
- * Makes sure every existing transferred table has its three triggers and a counter row. Returns `"ready"` when they were all
- * there already, `"installed"` when some had to be (re)created -- a write may have gone uncounted before that, so the caller
- * must not trust an older cached fingerprint -- and `"unavailable"` when the counter table does not exist (a database before
- * v123): then nothing is cached and the full fingerprint is computed every time, exactly as before BL-270.
+ * Makes sure the counter table exists and every existing transferred table has its three triggers and a counter row. Returns
+ * `"ready"` when they were all there already, and `"installed"` when something had to be (re)created -- the table itself included --
+ * a write may have gone uncounted before that, so the caller must not trust an older cached fingerprint.
  */
-export async function ensureTransferredChangeTriggers(client: SqlExecutor): Promise<"ready" | "installed" | "unavailable"> {
+export async function ensureTransferredChangeTriggers(client: SqlExecutor): Promise<"ready" | "installed"> {
   const tables = await existingTables(client, [...SNAPSHOT_REPLACE_ON_IMPORT_TABLES, TRANSFERRED_CHANGE_COUNTER_TABLE]);
-  if (!tables.has(TRANSFERRED_CHANGE_COUNTER_TABLE)) return "unavailable";
+  let installed = false;
+  if (!tables.has(TRANSFERRED_CHANGE_COUNTER_TABLE)) {
+    // Spelled out (not through the constant): the schema-classification tests find every table by this literal statement.
+    await client.execute(
+      "CREATE TABLE IF NOT EXISTS transferred_change_counters (table_name TEXT PRIMARY KEY NOT NULL, version INTEGER NOT NULL DEFAULT 0)"
+    );
+    installed = true;
+  }
   tables.delete(TRANSFERRED_CHANGE_COUNTER_TABLE);
   const triggers = (await client.execute(
     `SELECT name, tbl_name FROM sqlite_master WHERE type = 'trigger' AND name LIKE '${TRANSFERRED_CHANGE_TRIGGER_PREFIX}%'`
@@ -46,7 +54,6 @@ export async function ensureTransferredChangeTriggers(client: SqlExecutor): Prom
   const present = new Set(triggers.rows.map((row) => `${String(row.tbl_name)}\u0000${String(row.name)}`));
   const counters = (await client.execute(`SELECT table_name FROM "${TRANSFERRED_CHANGE_COUNTER_TABLE}"`)) as ExecuteResult;
   const counted = new Set(counters.rows.map((row) => String(row.table_name)));
-  let installed = false;
   for (const table of tables) {
     if (!counted.has(table)) {
       await client.execute({ sql: `INSERT OR IGNORE INTO "${TRANSFERRED_CHANGE_COUNTER_TABLE}" (table_name, version) VALUES (?, 0)`, args: [table] });
