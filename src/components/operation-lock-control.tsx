@@ -84,12 +84,14 @@ export function OperationLockControl({
   const status = data?.status ?? null;
   const needsAttention = status !== null || (data !== null && data.database !== "ready") || loadError !== null;
   useEffect(() => startVisibleInterval(() => void refresh(), needsAttention ? POLL_ACTIVE_MS : POLL_IDLE_MS), [refresh, needsAttention]);
-  // The elapsed-time clock ticks only while a lock is shown.
+  // The elapsed-time clock ticks only while a lock is shown. Keyed on whether a lock is held, not on the status object: each poll
+  // returns a new object, which would otherwise restart the 1 s timer every poll (BL-270 review).
+  const lockHeld = status !== null;
   useEffect(() => {
-    if (!status) return;
+    if (!lockHeld) return;
     const clock = setInterval(() => setNow(Date.now()), 1_000);
     return () => clearInterval(clock);
-  }, [status]);
+  }, [lockHeld]);
 
   // Tell the host when a lock it was showing has gone (finished or cleared), so it can refresh the
   // controls that were disabled while the lock was held.
