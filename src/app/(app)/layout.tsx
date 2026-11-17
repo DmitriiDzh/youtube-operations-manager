@@ -48,6 +48,7 @@ import {
   ResearchIcon,
   SettingsIcon,
 } from "@/components/icons";
+import { startVisibleInterval } from "@/components/visible-interval";
 
 // BL-149 (docs/roadmap/plans/APP_ROUTES_PLAN.md): everything of the former single dashboard page that is not a section --
 // the shell, the active channel, the connection-health dialog, the operation-lock control and every background poll. A
@@ -97,6 +98,8 @@ const RESEARCH_PENDING_POLL_MS = 60_000;
 // BL-143 phase 3 (AC-GP3-02): how often the sidebar re-reads the generation plan attempts waiting for the owner (a local read).
 const PLANS_REVIEW_POLL_MS = 60_000;
 const LANGUAGE_ALERTS_POLL_MS = 60_000;
+// BL-270 (owner TG 4662/4665): every badge poll below runs only while the tab is visible (`startVisibleInterval`); a hidden tab asks
+// the server nothing and reads once at once when shown again.
 
 type Tab = (typeof NAV_ITEMS)[number]["value"];
 
@@ -370,8 +373,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   const refreshConflictCenter = conflicts.refresh;
   useEffect(() => {
     if (!conflictsBlocking) return;
-    const id = setInterval(() => void refreshConflictCenter(), 5_000);
-    return () => clearInterval(id);
+    return startVisibleInterval(() => void refreshConflictCenter(), 5_000);
   }, [conflictsBlocking, refreshConflictCenter]);
 
   // Cheap, read-only conflict-count poll -- runs regardless of which tab is active, so the
@@ -379,8 +381,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!userId) return;
     queueMicrotask(() => void refreshConflictSummary());
-    const id = setInterval(() => void refreshConflictSummary(), CONFLICT_SUMMARY_POLL_MS);
-    return () => clearInterval(id);
+    return startVisibleInterval(() => void refreshConflictSummary(), CONFLICT_SUMMARY_POLL_MS);
   }, [userId, refreshConflictSummary]);
 
   // BL-203: the browser no longer runs the draft sync cycle itself. The server's own scheduler (`src/instrumentation.ts`) runs it
@@ -401,8 +402,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       }
     }
     void refreshResearchPending();
-    const id = setInterval(() => void refreshResearchPending(), RESEARCH_PENDING_POLL_MS);
-    return () => clearInterval(id);
+    return startVisibleInterval(() => void refreshResearchPending(), RESEARCH_PENDING_POLL_MS);
   }, [userId]);
 
   // BL-143 phase 3 (AC-GP3-02): Production shows how many generated tracks wait for the owner's verdict.
@@ -428,10 +428,10 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       }
     }
     void refreshPlansWaiting();
-    const id = setInterval(() => void refreshPlansWaiting(), PLANS_REVIEW_POLL_MS);
+    const stopPolling = startVisibleInterval(() => void refreshPlansWaiting(), PLANS_REVIEW_POLL_MS);
     return () => {
       cancelled = true;
-      clearInterval(id);
+      stopPolling();
       // The old channel's counts are not shown as the new one's while its answer is on the way (review round 3).
       setChannelWork([]);
       setSummaryActiveChannelId(null);
@@ -458,10 +458,10 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       }
     }
     void refreshLanguageAlerts();
-    const id = setInterval(() => void refreshLanguageAlerts(), LANGUAGE_ALERTS_POLL_MS);
+    const stopPolling = startVisibleInterval(() => void refreshLanguageAlerts(), LANGUAGE_ALERTS_POLL_MS);
     return () => {
       cancelled = true;
-      clearInterval(id);
+      stopPolling();
       setLanguageAlerts([]);
       setLanguageAlertsActiveId(null);
     };
@@ -493,10 +493,10 @@ export default function AppLayout({ children }: { children: ReactNode }) {
         .catch(() => undefined);
     }
     void refreshPublishingAlerts();
-    const id = setInterval(() => void refreshPublishingAlerts(), LANGUAGE_ALERTS_POLL_MS);
+    const stopPolling = startVisibleInterval(() => void refreshPublishingAlerts(), LANGUAGE_ALERTS_POLL_MS);
     return () => {
       cancelled = true;
-      clearInterval(id);
+      stopPolling();
       setPublishingAlerts([]);
       setPublishingAlertsActiveId(null);
     };
@@ -520,10 +520,10 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       }
     }
     void refreshStoryboardAlerts();
-    const id = setInterval(() => void refreshStoryboardAlerts(), PLANS_REVIEW_POLL_MS);
+    const stopPolling = startVisibleInterval(() => void refreshStoryboardAlerts(), PLANS_REVIEW_POLL_MS);
     return () => {
       cancelled = true;
-      clearInterval(id);
+      stopPolling();
       setStoryboardAlerts([]);
       setStoryboardAlertsActiveId(null);
     };

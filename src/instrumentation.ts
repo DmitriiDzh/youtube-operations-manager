@@ -236,6 +236,18 @@ async function startServerSession() {
     }
     return ticking;
   };
+  // BL-270: the forced export-only tick that publishes the last changes before this process goes away -- the idle shutdown and
+  // (review finding 1) restart-when-idle, just before its stop signal. Straight to the runner (it runs one action at a time), never
+  // through `tickQuietly`, which would hand back an unforced tick already in flight and skip the forced export.
+  const flushDeviceSync = async () => {
+    await deviceSync.tick({ force: true, exportOnly: true }).catch(() => undefined);
+  };
+  try {
+    const { setRestartPreStopFlush } = await import("@/lib/restart-when-idle");
+    setRestartPreStopFlush(flushDeviceSync);
+  } catch (error) {
+    console.warn(`[restart-when-idle] pre-stop flush not registered: ${error instanceof Error ? error.message : String(error)}`);
+  }
   // First tick shortly after boot: this is the "load the latest data at startup" moment.
   setTimeout(() => void tickQuietly(), DEVICE_SYNC_BOOT_DELAY_MS).unref();
   setInterval(() => void tickQuietly(), DEVICE_SYNC_TICK_MS).unref();
@@ -641,7 +653,9 @@ async function startServerSession() {
   // report never delays the media modules or the uploads). Stage 2: every ended RunPod session's charge split across its jobs
   // (old sessions too, as estimates). It writes job rows and files, so it waits while an import / migration holds the lock or in
   // recovery mode.
-  const VIDEO_COSTS_TICK_MS = 60_000;
+  // BL-270 (owner TG 4662/4665): every 5 minutes (was 60 s) -- each tick walked every channel's videos and read the storyboards and
+  // cost files even when nothing had changed; the report itself is republished at least every 10 minutes anyway.
+  const VIDEO_COSTS_TICK_MS = 5 * 60_000;
   const videoCostsLoop = async () => {
     const paused = (error: unknown) => error instanceof Error && (error.name === "OperationLockError" || error.name === "RecoveryModeError");
     try {
@@ -655,8 +669,8 @@ async function startServerSession() {
       // least every 10 minutes), then every Vn_cost.json whose total a later report changed is written again.
       await assertDeviceAvailableForMutation(rawSqlClient);
       const costs = (await import("@/lib/video-costs")).createVideoCostsServiceForProduction();
-      await costs.publishOwnReport();
-      await costs.refreshCostFiles();
+      // BL-270: one build of this computer's report for both; the per-channel refresh walk only when some computer's runs changed.
+      await costs.publishAndRefresh();
     } catch (error) {
       if (!paused(error)) console.warn(`[video-costs] the cost report was not published: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -880,10 +894,8 @@ async function startServerSession() {
   const onIdle = createIdleHandler(idleAction, {
     // A running generation pod is terminated BEFORE the process goes away (AC-P14-09; bounded inside).
     stopPods: () => media.stopForShutdown(),
-    flush: async () => {
-      await (ticking ?? undefined);
-      await tickQuietly({ force: true, exportOnly: true });
-    },
+    // BL-270: the shared forced export-only flush (see `flushDeviceSync`).
+    flush: flushDeviceSync,
     exit: () => process.exit(0),
     onSessionEnded: () => idleLogger.info({ event: "idle_shutdown.session_ended", context: {} }),
     onSessionEndFailed: (error) =>

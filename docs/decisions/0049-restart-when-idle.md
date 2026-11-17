@@ -61,3 +61,13 @@ A YouTube upload is resumable: the runner keeps the resumable session and, after
 YouTube is processing is only polled. The owner asked that uploads stop holding restarts. Since then a `publishing_uploads` row
 holds one only while `finishing` (the writes after processing) or `uploading` with `steps.finalChunkSentAt` set (the last chunk sent,
 its answer not yet recorded -- the "never twice" window; an unreadable `steps_json` counts, fail closed). Social uploads are unchanged.
+
+## Amendment 2 (2026-11-17, BL-270 review): device sync is flushed before the stop signal
+
+Automatic device-sync exports are debounced since BL-270 (DEVICE_AUTO_SYNC_PLAN.md §3.5), so the last changes may not be published
+yet when the restart fires. After recording `restarting` and before SIGTERM the restart awaits the server's registered pre-stop flush
+-- device sync's forced export-only tick, the same one the idle shutdown runs (`setRestartPreStopFlush`, injected from
+`src/instrumentation.ts`, so this module never imports device sync). The waiting reasons already require no held operation lock, so
+the export does not wait on another one. A failed flush is logged (`restart_when_idle.before_stop_failed`) and the stop still follows. Like the idle shutdown's
+flush, it is deliberately not raced against a timeout (an exit during the export would leave its operation lock stale); a flush that
+hangs leaves the request `restarting` until the owner cancels it (stuck after 5 minutes) or the process is stopped by hand.

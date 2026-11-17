@@ -126,8 +126,18 @@ root also holds `change-drafts/`, `editorial-profile/`, and similar folders, whi
 
 - It runs server-side, from `src/instrumentation.ts`, in the web server process only.
 - It ticks every 30 s.
-- Export happens at most once per 60 s, only when dirty.
-- It also runs just before the idle auto-shutdown exits, when nothing is in flight.
+- Export happens at most once per 60 s, only when dirty. **Amended 2026-11-17 (BL-270, owner TG 4662/4665; review finding 1):**
+  the export is debounced -- it runs once the content fingerprint has stayed unchanged for 90 s after the last change seen
+  (`DEVICE_SYNC_EXPORT_QUIET_MS`), or, during continuous churn, once the data has been dirty for 10 minutes
+  (`DEVICE_SYNC_EXPORT_MAX_DELAY_MS`); never two automatic exports within 60 s (`DEVICE_SYNC_MIN_EXPORT_INTERVAL_MS`, unchanged).
+  The first observation in a new process has no known age and is not held back (only the 60 s floor applies). The tick's dirty
+  check reuses the last full fingerprint while the transferred tables' change counters and `schema_version` are unchanged (at most
+  10 minutes); the in-lock checks (AC-AS-05/07) stay full. The residual window for a change made just before switching computers
+  is 60–90 s after a single edit (the 90 s are counted from the last tick that still saw the old content, so the change itself
+  is 60–90 s old at the export), up to 10 minutes under continuous editing (it fails toward
+  "ask", never toward overwrite).
+- It also runs just before the idle auto-shutdown exits, when nothing is in flight, and (BL-270) just before restart-when-idle
+  sends its stop signal (forced, export only).
 - There is no export in the SIGTERM handler. A process killed mid-export would leave a stale
   operation lock that is, by design, never auto-released. The residual loss window on a manual
   stop is at most about one minute; that data is exported on the next boot of the same device.

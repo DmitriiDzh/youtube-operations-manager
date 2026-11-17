@@ -1,1 +1,1 @@
-export { writeFileAtomic, writeJsonFileAtomic } from "./services";
+export { writeFileAtomic, writeFileAtomicIfChanged, writeJsonFileAtomic } from "./services";

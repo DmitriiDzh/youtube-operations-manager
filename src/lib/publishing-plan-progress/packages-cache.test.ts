@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createPackagesReader, invalidatePackagesEntry, PACKAGES_CACHE_MS, type PackagesEntry } from "./packages-cache";
+import { createPackagesReader, invalidatePackagesEntry, PACKAGES_CACHE_MAX_MS, PACKAGES_CACHE_MS, type PackagesEntry } from "./packages-cache";
 
 // BL-243 final triage: a progress answer built while the removed-list read failed ("none known") is not kept for the minute -- the
 // next call reads the list again; a good answer is kept.
@@ -57,4 +57,137 @@ test("BL-257 AC-PR-10: invalidating a channel makes the next read scan again ins
   await packagesOf("UC_wwe");
   await packagesOf("UC_other");
   assert.deepEqual(scans, ["UC_wwe", "UC_other", "UC_wwe"]);
+});
+
+// BL-270 (owner TG 4662/4665): the plan schedule reads every minute, so a one-minute answer was always a miss. Past the minute a kept
+// scan is reused while the scan's fingerprint is unchanged (up to 5 minutes); a changed manifest (a new fingerprint) is scanned at
+// the next read; an unknown fingerprint is never trusted.
+function reader(opts: { signature: () => string | null | Promise<string | null> }) {
+  const state = { now: 1_000_000, scans: 0, signatureReads: 0 };
+  const packagesOf = createPackagesReader({
+    removedVideos: async () => [],
+    scan: async () => {
+      state.scans++;
+      return { status: "ok", packages: [] };
+    },
+    synthetic: async () => false,
+    signature: async () => {
+      state.signatureReads++;
+      return opts.signature();
+    },
+    now: () => state.now,
+    cache: new Map<string, PackagesEntry>(),
+  });
+  return { state, packagesOf };
+}
+
+test("BL-270: a reader polled every minute reuses the scan while the fingerprint is unchanged, for at most 5 minutes", async () => {
+  const { state, packagesOf } = reader({ signature: () => "same" });
+  await packagesOf("UC1");
+  assert.equal(state.scans, 1);
+  for (let minute = 1; minute < 5; minute++) {
+    state.now += 60_000;
+    await packagesOf("UC1");
+  }
+  assert.equal(state.scans, 1, "minutes 1-4: same folder, same copy -- no scan");
+  state.now += 60_000; // 5 minutes after the scan
+  await packagesOf("UC1");
+  assert.equal(state.scans, 2, "never older than PACKAGES_CACHE_MAX_MS");
+  assert.equal(PACKAGES_CACHE_MAX_MS, 5 * 60_000);
+});
+
+test("BL-270 (negative): a manifest edited in place (a new fingerprint) is scanned at the very next read past the minute", async () => {
+  let signature = "v1";
+  const { state, packagesOf } = reader({ signature: () => signature });
+  await packagesOf("UC1");
+  state.now += 60_000;
+  await packagesOf("UC1");
+  assert.equal(state.scans, 1);
+  signature = "v2"; // e.g. V12_release.json rewritten: its mtime/size moved
+  state.now += 60_000;
+  await packagesOf("UC1");
+  assert.equal(state.scans, 2);
+  state.now += 60_000;
+  await packagesOf("UC1");
+  assert.equal(state.scans, 2, "and the new scan is kept under the new fingerprint");
+});
+
+test("BL-270 (negative): an unknown fingerprint (null, or a failed read) is never trusted past the minute", async () => {
+  const nul = reader({ signature: () => null });
+  await nul.packagesOf("UC1");
+  nul.state.now += 60_000;
+  await nul.packagesOf("UC1");
+  assert.equal(nul.state.scans, 2);
+  let fail = false;
+  const failing = reader({
+    signature: () => {
+      if (fail) throw new Error("drive gone");
+      return "same";
+    },
+  });
+  await failing.packagesOf("UC1");
+  fail = true;
+  failing.state.now += 60_000;
+  await failing.packagesOf("UC1");
+  assert.equal(failing.state.scans, 2);
+});
+
+test("BL-270: inside the first minute nothing extra is read (the fingerprint is not even computed)", async () => {
+  const { state, packagesOf } = reader({ signature: () => "same" });
+  await packagesOf("UC1");
+  const reads = state.signatureReads;
+  state.now += 30_000;
+  await packagesOf("UC1");
+  assert.equal(state.signatureReads, reads);
+  assert.equal(state.scans, 1);
+});
+
+// Review of BL-270 (finding 3): the folder fingerprint stops at the walk's depth, but a manifest may name a deeper file
+// (`renders/V12.mp4`) or a symlink. The files a kept scan resolved are fingerprinted too; a re-render of one is scanned at the next
+// read past the minute, and a result whose files changed while it was being made is never reused late.
+function filesReader(opts: { files: () => { key: string; newestMtimeMs: number } | null }) {
+  const state = { now: 1_000_000, scans: 0 };
+  const packagesOf = createPackagesReader({
+    removedVideos: async () => [],
+    scan: async () => {
+      state.scans++;
+      return { status: "ok", packages: [] };
+    },
+    synthetic: async () => false,
+    signature: async () => "same-folder",
+    filesSignature: async () => opts.files(),
+    now: () => state.now,
+    cache: new Map<string, PackagesEntry>(),
+  });
+  return { state, packagesOf };
+}
+
+test("BL-270 review (negative): a resolved file re-rendered below the walk's depth (same folder fingerprint) is scanned again", async () => {
+  let files = { key: "render-1", newestMtimeMs: 0 };
+  const { state, packagesOf } = filesReader({ files: () => files });
+  await packagesOf("UC1");
+  state.now += 60_000;
+  await packagesOf("UC1");
+  assert.equal(state.scans, 1, "unchanged files: reused");
+  files = { key: "render-2", newestMtimeMs: 0 };
+  state.now += 60_000;
+  await packagesOf("UC1");
+  assert.equal(state.scans, 2, "re-rendered: scanned again");
+  state.now += 60_000;
+  await packagesOf("UC1");
+  assert.equal(state.scans, 2, "and kept under the new files fingerprint");
+});
+
+test("BL-270 review (negative): a file changed while the scan ran, or an unreadable files fingerprint, is never reused late", async () => {
+  // Modified "now" (at the scan's start): the scan may have read the old bytes.
+  const racing = filesReader({ files: () => ({ key: "k", newestMtimeMs: 1_000_000 }) });
+  await racing.packagesOf("UC1");
+  racing.state.now += 60_000;
+  await racing.packagesOf("UC1");
+  assert.equal(racing.state.scans, 2);
+  const unreadable = filesReader({ files: () => null });
+  await unreadable.packagesOf("UC1");
+  unreadable.state.now += 60_000;
+  await unreadable.packagesOf("UC1");
+  assert.equal(unreadable.state.scans, 2);
 });

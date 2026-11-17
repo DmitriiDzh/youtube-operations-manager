@@ -236,3 +236,25 @@ test("BL-189: a storyboard made before BL-189 keeps first final files attached o
     assert.deepEqual(Object.keys(record.renderDecisions ?? {}).sort(), ["rd_m2", "rd_mac", "rd_w1"]);
   }
 });
+
+// BL-270 (owner TG 4662/4665): `read` is asked every minute by the badge, review-notify and the cost loop; the same document bytes
+// are not loaded again, but any change -- here or merged from the other computer -- is seen at the next read, and a caller that
+// edits its answer never changes the next caller's.
+test("BL-270: read reuses the parsed storyboards for the same bytes, sees every change at once, and hands out copies", async () => {
+  const mac = computer();
+  const win = computer();
+  await mac.create(CH, { id: "sb1", createdAt: "2026-10-13T12:00:00Z", createdBy: "operator", planId: null }, version("Bar loop"));
+  const first = await mac.read(CH);
+  assert.equal(first.length, 1);
+  first[0].versions["1"].title = "edited by a caller";
+  assert.equal((await mac.read(CH))[0].versions["1"].title, "Bar loop", "a copy, not the kept value");
+
+  await mac.addComment(CH, "sb1", comment("c1", "too dark"));
+  assert.ok((await mac.read(CH))[0].comments.c1, "a local change is seen at once");
+
+  await cycle(mac, win);
+  await win.addComment(CH, "sb1", comment("c2", "from the other computer"));
+  await cycle(mac, win);
+  const merged = await mac.read(CH);
+  assert.deepEqual(Object.keys(merged[0].comments).sort(), ["c1", "c2"], "a merged change is seen at once");
+});

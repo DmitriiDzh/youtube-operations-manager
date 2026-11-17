@@ -95,6 +95,15 @@ function productionReaders(): RestartBusyReaders {
 // One instance per process, on globalThis: Next builds the instrumentation and the routes as separate bundles, and they must share the
 // stop-once guard and the check's single-flight (the database state `restarting` is the guard across processes).
 const CORE_KEY = Symbol.for("youtube-operations-manager.restart-when-idle");
+const PRE_STOP_FLUSH_KEY = Symbol.for("youtube-operations-manager.restart-when-idle.pre-stop-flush");
+
+/**
+ * BL-270 review (finding 1): the server registers what must run just before the restart's stop signal -- device sync's forced
+ * export-only tick (src/instrumentation.ts). Injected, so this module never imports device sync (AGENTS.md §M).
+ */
+export function setRestartPreStopFlush(flush: (() => Promise<void>) | null): void {
+  (globalThis as unknown as Record<symbol, (() => Promise<void>) | undefined>)[PRE_STOP_FLUSH_KEY] = flush ?? undefined;
+}
 
 /** The process's restart-when-idle core (the routes, the MCP tools and the server's check). */
 export function createRestartWhenIdleCore(): RestartWhenIdle {
@@ -115,6 +124,11 @@ export function createRestartWhenIdleCore(): RestartWhenIdle {
     stop: () => {
       process.kill(process.pid, "SIGTERM");
       setTimeout(exitUnlessLocked, RESTART_FORCE_EXIT_MS).unref();
+    },
+    // BL-270 review: the flush the server registered (device sync's forced export-only tick), looked up at stop time.
+    beforeStop: async () => {
+      const flush = (globalThis as unknown as Record<symbol, (() => Promise<void>) | undefined>)[PRE_STOP_FLUSH_KEY];
+      if (flush) await flush();
     },
     takeRequestFile,
     log: (event, context) => logger.info({ event, context }),

@@ -1,4 +1,4 @@
-import { writeFileAtomic } from "@/lib/atomic-json-file";
+import { writeFileAtomicIfChanged } from "@/lib/atomic-json-file";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -39,7 +39,9 @@ export function createFilesystemDocumentStore(baseDir: string): DocumentByteStor
       // Same atomic temp-file+rename discipline as change-drafts' own store -- a crash mid-write
       // must never leave a truncated, unloadable document.
       const finalPath = documentPath(baseDir, key);
-      await writeFileAtomic(finalPath, bytes); // tmp + fsync + RISK-22 rename retry (audit M4)
+      // BL-270: a merge that brought nothing new saves the same bytes -- not rewritten (no fsync, the mtime stays, so readers that
+      // key on it, like review-notify's document memo, keep their cache). tmp + fsync + RISK-22 rename retry otherwise (audit M4).
+      await writeFileAtomicIfChanged(finalPath, bytes);
     },
   };
 }

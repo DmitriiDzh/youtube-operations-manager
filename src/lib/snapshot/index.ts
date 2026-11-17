@@ -41,4 +41,15 @@ export {
 export { sha256File } from "./adapters/checksum";
 export { scrubDatabaseCopy } from "./adapters/scrub";
 export { computeContentFingerprint, computeFileContentFingerprint } from "./adapters/fingerprint";
+export {
+  CONTENT_FINGERPRINT_SAFETY_INTERVAL_MS,
+  createCachedContentFingerprint,
+  ensureTransferredChangeTriggers,
+  readTransferredChangeCounters,
+  readTransferredChangeKey,
+  TRANSFERRED_CHANGE_COUNTER_TABLE,
+  TRANSFERRED_CHANGE_TRIGGER_PREFIX,
+  transferredChangeTriggerName,
+  type CachedContentFingerprint,
+} from "./adapters/change-counter";
 export { diffTransferredContent, type TransferredTableDiff } from "./adapters/content-diff";

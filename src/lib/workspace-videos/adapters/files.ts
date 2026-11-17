@@ -38,6 +38,12 @@ export function createWorkspaceVideoFiles() {
     async readHead(absolutePath: string, length: number): Promise<Uint8Array> {
       return new Uint8Array(await readUpTo(absolutePath, length));
     },
+    /** BL-270: the file's size and modification time (for `videosFolderSignature`); null when it cannot be read. */
+    async statFile(absolutePath: string): Promise<{ size: number; mtimeMs: number } | null> {
+      return stat(absolutePath)
+        .then((s) => ({ size: s.size, mtimeMs: s.mtimeMs }))
+        .catch(() => null);
+    },
     /** The file's last modification time in milliseconds; null when it cannot be read. */
     async modifiedMs(absolutePath: string): Promise<number | null> {
       return stat(absolutePath)

@@ -22,6 +22,7 @@ import {
 } from "./contracts";
 import { sha256File } from "./adapters/checksum";
 import { scrubDatabaseCopy } from "./adapters/scrub";
+import { dropTransferredChangeTriggers, restoreTransferredChangeTriggers } from "./adapters/change-counter";
 import {
   createStagingDir,
   discardStagingDir,
@@ -490,6 +491,9 @@ export async function applySnapshotToDatabase(
           "SELECT name FROM staged.sqlite_master WHERE type = 'table'"
         )) as { rows: Array<Record<string, unknown>> };
         const stagedTables = new Set(stagedTablesResult.rows.map((row) => String(row.name)));
+        // BL-270 review (finding 5): no per-row counter bumps during the whole-table replace; the triggers come back (and every
+        // counter moves once) before COMMIT, inside this transaction -- a rollback restores them as they were.
+        const hadChangeTriggers = await dropTransferredChangeTriggers(liveClient);
         for (const table of SNAPSHOT_REPLACE_ON_IMPORT_TABLES) {
           if (!stagedTables.has(table)) continue;
           const columns = await getColumnNames(liveClient, table);
@@ -499,6 +503,7 @@ export async function applySnapshotToDatabase(
             `INSERT INTO "${table}" (${columnList}) SELECT ${columnList} FROM staged."${table}"`
           );
         }
+        if (hadChangeTriggers) await restoreTransferredChangeTriggers(liveClient);
 
         if (hooks.afterMerge) await hooks.afterMerge();
         await liveClient.execute("COMMIT");

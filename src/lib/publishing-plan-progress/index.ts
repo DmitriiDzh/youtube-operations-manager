@@ -1,4 +1,4 @@
-import { createPackageScanCore, createPublishingSettingsCore, listChannelUploads, ownerReviewStateFor, removedVideosOf } from "@/lib/publishing";
+import { createPackageScanCore, createPublishingSettingsCore, listChannelUploads, ownerReviewStateFor, packageScanFilesSignature, packageScanSignature, removedVideosOf } from "@/lib/publishing";
 import { standingDecision } from "@/lib/package-reviews";
 import type { PlanProgressResult, PlanSlotProgress, PublishingPlansPorts } from "@/lib/publishing-plans";
 import { createPackagesReader, invalidatePackagesEntry, type PackagesEntry } from "./packages-cache";
@@ -40,6 +40,10 @@ const packagesOf = createPackagesReader({
   removedVideos: (channelId) => removedVideosOf(channelId),
   scan: (channelId, removedVideos) => createPackageScanCore().scan(channelId, { removedVideos }),
   synthetic: async (channelId) => (await createPublishingSettingsCore().read(channelId)).settings.containsSyntheticMedia,
+  // BL-270: a kept scan is reused for up to 5 minutes while the folder and the copy are unchanged (the plan schedule reads every minute).
+  signature: (channelId) => packageScanSignature(channelId),
+  // BL-270 review (finding 3): and only while the files the kept scan resolved are unchanged (a re-render below the walk's depth).
+  filesSignature: (channelId, packages) => packageScanFilesSignature(channelId, packages),
   now: () => Date.now(),
   cache: packagesCache,
 });

@@ -74,9 +74,10 @@ import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-
 import { createWriteContextCore } from "@/lib/write-context";
 import { createYoutubeClient, getVideoMetadataContext, getVideoUploadState, listPlaylistItemIdsByVideo, listUploadsPlaylistFirstPage } from "@/lib/youtube-read-gateway";
 import { createWorkspaceExchangeFsForPublishing, isRealVideoFolder, resolveWorkspaceFileForPublishing, writeVideoFolderFile } from "./adapters/files";
-import { createWorkspaceVideoFiles, videoNumberOfFolder, writeUploadRecordFile } from "@/lib/workspace-videos";
+import { createWorkspaceVideoFiles, videoNumberOfFolder, videosFolderSignature, writeUploadRecordFile } from "@/lib/workspace-videos";
 import { reportVersionFor } from "@/lib/shared-video-code";
-import { createPackageScan, isPackageThumbnailPath, VIDEOS_FOLDER, type PackageScanDeps } from "./package-scan";
+import { createPackageScan, isPackageThumbnailPath, VIDEOS_FOLDER, type PackageScanDeps, type ScannedPackage } from "./package-scan";
+import { createPackageScanSignature } from "./scan-signature";
 import { imageKindOf } from "./packages";
 import { createPackageComposer } from "./package-composer";
 import { authorizedOAuth, createPublishingFinishWrites, createPublishingYoutubeWrites, freshAccessToken } from "./adapters/youtube-writes";
@@ -786,6 +787,49 @@ export async function removedVideoIdsOf(channelId: string): Promise<Set<string>>
 /** BL-243: the channel's videos the sync found removed, with when (ISO) -- the package scan's own input, for a caller to pass in. */
 export async function removedVideosOf(channelId: string): Promise<Array<{ videoId: string; removedAt: string }>> {
   return (await createChannelVideoStoreAdapter().listRemovedVideosByChannel(channelId)).map((video) => ({ videoId: video.videoId, removedAt: video.removedAt.toISOString() }));
+}
+
+/**
+ * BL-270 (owner TG 4662/4665) and its review (findings 2, 3): the package-scan cache's fingerprints (`./scan-signature.ts`) over the
+ * real ports -- `04 Videos/` by the walk's rules, the removed list, the copy's sync times, the scan's fields of the channel's videos
+ * rows, and the files a kept scan resolved (followed through symlinks). Read-only; null when something cannot be read.
+ */
+function packageScanSignatures() {
+  const files = createWorkspaceVideoFiles();
+  const store = createChannelVideoStoreAdapter();
+  return createPackageScanSignature({
+    async workspace(channelId) {
+      const workspace = await createChannelWorkspacesCore().getWorkspace({ channelId });
+      return workspace.configured && workspace.path ? workspace.path : null;
+    },
+    folderSignature: (workspace) =>
+      videosFolderSignature({ listDir: (p) => files.listDir(p), statFile: (p) => files.statFile(p), join: (...parts) => path.join(...parts) }, workspace),
+    removedVideos: (channelId) => removedVideosOf(channelId),
+    async channelTimes(channelId) {
+      const channel = await store.getChannel(channelId);
+      return channel ? { lastSyncedAt: channel.lastSyncedAt?.getTime() ?? null, removedCheckAt: channel.removedCheckAt?.getTime() ?? null } : null;
+    },
+    videos: (channelId) => store.listVideoScanFields(channelId),
+    async stat(absolutePath) {
+      try {
+        const [info, real] = await Promise.all([stat(absolutePath), realpath(absolutePath)]);
+        return { size: info.size, mtimeMs: info.mtimeMs, realPath: real };
+      } catch {
+        return null;
+      }
+    },
+    join: (...parts) => path.join(...parts),
+  });
+}
+
+/** BL-270: the scan cache's fingerprint read before a scan (see `packageScanSignatures`). */
+export function packageScanSignature(channelId: string): Promise<string | null> {
+  return packageScanSignatures().signature(channelId);
+}
+
+/** BL-270 review (finding 3): the fingerprint of the files a kept scan resolved (see `packageScanSignatures`). */
+export function packageScanFilesSignature(channelId: string, packages: readonly ScannedPackage[]): Promise<{ key: string; newestMtimeMs: number } | null> {
+  return packageScanSignatures().filesSignature(channelId, packages);
 }
 
 /** The channel's uploads on this computer, newest first (the progress list in Content → «Публикация»). */

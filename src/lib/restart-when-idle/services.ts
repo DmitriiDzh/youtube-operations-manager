@@ -242,6 +242,12 @@ export function createRestartWhenIdle(deps: RestartWhenIdleDependencies) {
     if (!moved || stopSent) return;
     stopSent = true;
     deps.log("restart_when_idle.restarting", { requestId: request.id, requestedBy: request.requestedBy, version: build.version, schema: build.schema, waitedMinutes });
+    // BL-270 review: publish the last device-sync changes first (export only, forced); whatever happens there, the stop follows.
+    if (deps.beforeStop) {
+      await deps.beforeStop().catch((error: unknown) =>
+        deps.log("restart_when_idle.before_stop_failed", { message: error instanceof Error ? error.message : String(error) })
+      );
+    }
     deps.stop();
   }
 

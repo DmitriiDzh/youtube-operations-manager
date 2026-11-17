@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { pipelinePhase, type PipelineProject } from "./video-pipeline";
+import { startVisibleInterval } from "./visible-interval";
 
 // BL-221 (docs/roadmap/plans/CONTENT_UX_PLAN.md stage E): what each Content tab is waiting for, shown on the tab itself -- local
 // reads once a minute; a read that fails shows no badge (never a wrong one).
@@ -66,12 +67,11 @@ export function useContentTabBadges(channelId: string | null): ContentTabBadges 
       });
     };
     read();
-    const timer = setInterval(read, 60_000);
-    document.addEventListener("visibilitychange", read);
+    // BL-270: no read while the tab is hidden; one at once when it is shown again.
+    const stopPolling = startVisibleInterval(read, 60_000);
     return () => {
       cancelled = true;
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", read);
+      stopPolling();
     };
   }, [channelId]);
   return channelId && badges.channelId === channelId ? badges : NONE;

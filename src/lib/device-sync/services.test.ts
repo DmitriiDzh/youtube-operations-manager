@@ -5,7 +5,7 @@ import path from "node:path";
 import { type Client } from "@libsql/client";
 import { createLibsqlClient } from "@/lib/libsql-client";
 import { initializeDatabaseSchema, SCHEMA_CURRENT_VERSION } from "@/lib/db";
-import { readLineageState } from "@/lib/snapshot";
+import { computeContentFingerprint, createCachedContentFingerprint, readLineageState } from "@/lib/snapshot";
 import { withTempDir } from "@/test-support/temp-dir";
 import { EMPTY_DEVICE_SYNC_STATUS, type DeviceSyncStatus, type SnapshotEntry } from "./contracts";
 import { createDeviceSyncRunner, decideSyncAction, pruneAutoImportBackups, pruneOwnSnapshots } from "./services";
@@ -36,12 +36,14 @@ type Device = {
   status: () => DeviceSyncStatus;
   clock: { t: number };
   setEnabled: (v: boolean) => void;
+  /** BL-270 review: a new runner on the same database, status and clock (what a server restart gives). */
+  restart: () => ReturnType<typeof createDeviceSyncRunner>;
 };
 
 async function makeDevice(
   root: string,
   name: string,
-  opts: { folder?: string | null; activeOperation?: { value: boolean } } = {}
+  opts: { folder?: string | null; activeOperation?: { value: boolean }; fullFingerprints?: { n: number } } = {}
 ): Promise<Device> {
   const client = await makeClient(root, `${name}.db`);
   let status: DeviceSyncStatus = { ...EMPTY_DEVICE_SYNC_STATUS };
@@ -50,7 +52,7 @@ async function makeDevice(
   const folder = opts.folder === undefined ? path.join(root, "sync") : opts.folder;
   // The configured sync folder exists (Syncthing created it); automatic sync never creates it.
   if (opts.folder === undefined && folder) await mkdir(folder, { recursive: true });
-  const runner = createDeviceSyncRunner({
+  const createRunner = () => createDeviceSyncRunner({
     client,
     currentSchemaVersion: SCHEMA_CURRENT_VERSION,
     resolveConfig: async () => ({ deviceId: `device-${name}`, folder }),
@@ -63,13 +65,31 @@ async function makeDevice(
     },
     now: () => clock.t,
     hasActiveLocalOperation: opts.activeOperation ? () => opts.activeOperation!.value : undefined,
+    // BL-270: a test may count the tick's full fingerprint reads.
+    contentFingerprint: opts.fullFingerprints
+      ? createCachedContentFingerprint(client, {
+          now: () => clock.t,
+          compute: (c) => {
+            opts.fullFingerprints!.n++;
+            return computeContentFingerprint(c);
+          },
+        })
+      : undefined,
   });
-  return { client, runner, status: () => status, clock, setEnabled: (v) => (enabled = v) };
+  const device: Device = {
+    client,
+    runner: createRunner(),
+    status: () => status,
+    clock,
+    setEnabled: (v) => (enabled = v),
+    restart: () => (device.runner = createRunner()),
+  };
+  return device;
 }
 
-/** Advances past the minimum export interval. */
+/** Advances past every export wait (the 60 s floor, the 90 s quiet time and the 10-minute cap, BL-270). */
 function later(device: Device) {
-  device.clock.t += 5 * 60_000;
+  device.clock.t += 11 * 60_000;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1314,3 +1334,141 @@ test("AC-FD-07: boot wires the sync-preserving hooks around its migrations, on t
   assert.match(source, /beforeMigrations\(destPath\)/);
   assert.match(source, /afterMigrations\(\)/);
 });
+
+// ---------------------------------------------------------------------------------------------
+// BL-270 (owner TG 4662/4665): a cheap change check before the full fingerprint; the export debounce (review)
+// ---------------------------------------------------------------------------------------------
+
+test("BL-270: quiet ticks of an in-sync device do not read the whole transferred data again", () =>
+  withTempDir("device-sync-", async (root) => {
+    const calls = { n: 0 };
+    const a = await makeDevice(root, "a", { fullFingerprints: calls });
+    await addResearchChannel(a.client, "UC1");
+    assert.equal((await a.runner.tick()).state, "exported");
+    const afterExport = calls.n;
+    for (let i = 0; i < 5; i++) {
+      a.clock.t += 30_000;
+      assert.equal((await a.runner.tick()).state, "synced");
+    }
+    // At most one full read for the first tick after the export (the export moved the counters); none for the quiet ones.
+    assert.ok(calls.n - afterExport <= 1, `full reads on quiet ticks: ${calls.n - afterExport}`);
+    a.client.close();
+  }));
+
+test("BL-270 (negative): a write after a cached clean tick is seen at the very next tick and exported", () =>
+  withTempDir("device-sync-", async (root) => {
+    const a = await makeDevice(root, "a", { fullFingerprints: { n: 0 } });
+    await addResearchChannel(a.client, "UC1");
+    await a.runner.tick();
+    later(a);
+    assert.equal((await a.runner.tick()).state, "synced"); // the cache now holds the clean value
+    await addResearchChannel(a.client, "UC2");
+    later(a);
+    assert.equal((await a.runner.tick()).state, "exported");
+    a.client.close();
+  }));
+
+test("BL-270 (negative, AC-AS-01): a local write after a cached clean tick still refuses the other computer's fast-forward", () =>
+  withTempDir("device-sync-", async (root) => {
+    const a = await makeDevice(root, "a", { fullFingerprints: { n: 0 } });
+    const b = await makeDevice(root, "b");
+    await addResearchChannel(a.client, "UC1");
+    await a.runner.tick();
+    await b.runner.tick();
+    later(a);
+    assert.equal((await a.runner.tick()).state, "synced"); // cached clean
+    await addResearchChannel(b.client, "UC-b");
+    later(b);
+    assert.equal((await b.runner.tick()).state, "exported"); // a direct child of a's head
+    await addResearchChannel(a.client, "UC-a"); // a changes locally after its cached clean tick
+    const status = await a.runner.tick();
+    assert.equal(status.state, "attention");
+    assert.equal(status.notices[0]?.kind, "divergence");
+    assert.deepEqual(await researchIds(a.client), ["UC-a", "UC1"]);
+    a.client.close();
+    b.client.close();
+  }));
+
+// Review of BL-270 (finding 1): a fixed 10-minute export interval widened the window in which the other computer can diverge.
+// The requirement became a debounce (owner's review brief): export once the data has been quiet ~90 s after the last change; during
+// continuous churn export at least every 10 minutes; never two automatic exports closer than the old 60 s. The previous test of
+// "nothing before 10 minutes" encoded the dropped requirement and is replaced by the three below.
+
+test("BL-270 review: a single change is exported once the data has been quiet for 90 s, not 10 minutes after the last export", () =>
+  withTempDir("device-sync-", async (root) => {
+    const a = await makeDevice(root, "a");
+    const b = await makeDevice(root, "b");
+    await addResearchChannel(a.client, "UC1");
+    assert.equal((await a.runner.tick()).state, "exported");
+    const first = a.status().lastExportSnapshotId;
+    const exportedAt = a.clock.t;
+    // Quiet ticks for 2 minutes, then one change.
+    for (let i = 0; i < 4; i++) {
+      a.clock.t += 30_000;
+      assert.equal((await a.runner.tick()).state, "synced");
+    }
+    await addResearchChannel(a.client, "UC2"); // between the tick at +2:00 and the one at +2:30
+    const states: string[] = [];
+    while (a.status().lastExportSnapshotId === first && a.clock.t - exportedAt < 10 * 60_000) {
+      a.clock.t += 30_000;
+      states.push((await a.runner.tick()).state);
+    }
+    // +2:30 sees it (quiet 30 s since the +2:00 tick), +3:00 (60 s) waits, +3:30 (90 s quiet) exports.
+    assert.deepEqual(states, ["waiting", "waiting", "exported"]);
+    assert.equal(a.clock.t - exportedAt, 3.5 * 60_000);
+    assert.equal((await b.runner.tick()).state, "imported");
+    assert.deepEqual(await researchIds(b.client), ["UC1", "UC2"]);
+    a.client.close();
+    b.client.close();
+  }));
+
+test("BL-270 review (negative): continuous churn is not held back forever -- exported once dirty for 10 minutes, then again", () =>
+  withTempDir("device-sync-", async (root) => {
+    const a = await makeDevice(root, "a");
+    await addResearchChannel(a.client, "UC0");
+    assert.equal((await a.runner.tick()).state, "exported");
+    const start = a.clock.t;
+    const exportsAt: number[] = [];
+    for (let i = 1; i <= 50; i++) {
+      await addResearchChannel(a.client, `UC${i}`); // a change before every tick: never quiet
+      a.clock.t += 30_000;
+      const before = a.status().lastExportSnapshotId;
+      await a.runner.tick();
+      if (a.status().lastExportSnapshotId !== before) exportsAt.push((a.clock.t - start) / 1000);
+    }
+    // Dirty since just after the export at 0 (the first change was made after the export tick), so the cap fires at +600 s,
+    // and the next churn period (dirty again from the export tick at +600 s) at +1200 s.
+    assert.deepEqual(exportsAt, [600, 1200]);
+    a.client.close();
+  }));
+
+test("BL-270 review (negative): never two automatic exports within 60 s -- a change just before a restart waits for the floor", () =>
+  withTempDir("device-sync-", async (root) => {
+    const a = await makeDevice(root, "a");
+    await addResearchChannel(a.client, "UC1");
+    assert.equal((await a.runner.tick()).state, "exported"); // e.g. the restart-when-idle flush
+    await addResearchChannel(a.client, "UC2"); // a write after the flush, before the process ended
+    a.restart(); // the new process knows nothing about when the change happened
+    a.clock.t += 20_000;
+    assert.equal((await a.runner.tick()).state, "waiting", "20 s after the last export");
+    a.clock.t += 30_000;
+    assert.equal((await a.runner.tick()).state, "waiting", "50 s after the last export");
+    a.clock.t += 30_000;
+    assert.equal((await a.runner.tick()).state, "exported", "80 s: past the floor; the change's age is unknown, so not held back");
+    a.client.close();
+  }));
+
+test("BL-270 review: the forced export-only flush (idle shutdown, restart when idle) exports inside the debounce window", () =>
+  withTempDir("device-sync-", async (root) => {
+    const a = await makeDevice(root, "a");
+    await addResearchChannel(a.client, "UC1");
+    assert.equal((await a.runner.tick()).state, "exported");
+    const first = a.status().lastExportSnapshotId;
+    await addResearchChannel(a.client, "UC2");
+    a.clock.t += 30_000;
+    assert.equal((await a.runner.tick()).state, "waiting", "an automatic tick waits for the quiet time");
+    a.clock.t += 5_000;
+    assert.equal((await a.runner.tick({ force: true, exportOnly: true })).state, "exported");
+    assert.notEqual(a.status().lastExportSnapshotId, first);
+    a.client.close();
+  }));

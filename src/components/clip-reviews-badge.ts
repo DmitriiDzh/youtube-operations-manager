@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { startVisibleInterval } from "./visible-interval";
 
 // BL-241 (CLIP_REVIEWS_PLAN.md AC-CR-15; tab moved to Media, owner msg 4025): the «Клипы» tab's badge -- how many of the channel's
 // scenes have a clip waiting for the owner (BL-247, AC-CR-31). Its own read once a minute, so Media works without the clips module; a failed read shows no badge.
@@ -27,12 +28,11 @@ export function useClipsWaiting(channelId: string | null): number {
         });
     };
     read();
-    const timer = setInterval(read, 60_000);
-    document.addEventListener("visibilitychange", read);
+    // BL-270: no read while the tab is hidden; one at once when it is shown again.
+    const stopPolling = startVisibleInterval(read, 60_000);
     return () => {
       cancelled = true;
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", read);
+      stopPolling();
     };
   }, [channelId]);
   return state.channelId === channelId ? state.waiting : 0;

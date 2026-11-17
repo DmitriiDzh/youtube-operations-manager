@@ -2394,6 +2394,26 @@ single-writer, whole-copy semantics. Plan and acceptance criteria:
    after 10 minutes.
 3. `hasUnpublishedLocalChanges`: the current content fingerprint is compared with
    `snapshot_lineage.content_fingerprint`.
+   - **BL-270 (owner TG 4662/4665): the tick's dirty check is cached.** Each transferred table has
+     insert/update/delete triggers (`ytom_transferred_change_<table>_<op>`) that bump its row in
+     the device-local `transferred_change_counters`, so a write from any connection or
+     process counts. The table and the triggers are created at run time, never by a migration (no
+     schema version, so the computers need not update together). `createCachedContentFingerprint` (`snapshot/adapters/change-counter.ts`) reuses
+     the last full fingerprint while the key -- `PRAGMA schema_version` plus every counter, read
+     BEFORE the computation -- is unchanged and younger than 10 minutes. Missing triggers (a
+     migration rebuilt a table) are re-installed by `ensureTransferredChangeTriggers` on the next
+     tick and force a full computation; a missing counter table (a new, imported or staged database)
+     is created the same way. The scrub drops the counter table and the triggers from every
+     snapshot copy. The import (`applySnapshotToDatabase`) drops the triggers inside its
+     `BEGIN IMMEDIATE` and restores them before COMMIT, bumping every counter once: with them in
+     place the whole-table replace bumped a counter per row and lost the truncate optimisation
+     (review finding 5, real 22 MB snapshot: ~160 ms without triggers, ~300 ms with them, ~180 ms
+     with the drop/restore). The data-policy purges delete only expired rows (`WHERE`), so they keep
+     the triggers. Only the tick's decision uses the cache;
+     the in-lock checks before an export or an import (step 5) still compute in full. Measured on a
+     real 22 MB snapshot: full fingerprint ~960 ms wall / ~580 ms CPU, cached check ~0.7 ms.
+     `PRAGMA data_version` alone was rejected: it moves with every commit by another connection
+     (the lease renewal, the status save, the family results), and not with this connection's own.
    - The fingerprint is a SHA-256 over every table `SNAPSHOT_REPLACE_ON_IMPORT_TABLES` names. Rows
      are sorted by all columns, and each row is hashed as its non-NULL `column=value` pairs. A
      missing table hashes like an empty one. So rowids and physical column order do not matter, and
@@ -2407,7 +2427,14 @@ single-writer, whole-copy semantics. Plan and acceptance criteria:
    - "Known" is the local head plus its ancestry: recorded `ancestors_json`, `lineage.json`, and
      parent pointers through every manifest in the folder.
    - "Newer" means other devices' snapshots that are not known. Of those, only the tips count.
-   - No tips: export if dirty, otherwise idle.
+   - No tips: export if dirty, otherwise idle. An automatic export is debounced (BL-270 and its
+     review): it runs once the content fingerprint has been unchanged for 90 s, counted from the last
+     tick that still saw the old content, so 60–90 s after the change itself
+     (`DEVICE_SYNC_EXPORT_QUIET_MS`), or after 10 minutes of continuous churn
+     (`DEVICE_SYNC_EXPORT_MAX_DELAY_MS`), never within 60 s of the previous export
+     (`DEVICE_SYNC_MIN_EXPORT_INTERVAL_MS`). The debounce state is in memory; the first observation
+     in a process is not held back. "Sync now", the idle-shutdown flush and the restart-when-idle
+     pre-stop flush (both call the runner directly, never through the in-flight tick) are forced.
    - One tip that is a fast-forward, with local clean: import.
    - A newer schema: `update_app`.
    - Anything else: divergence.
@@ -2496,6 +2523,15 @@ NOT tied to the device-sync toggle (§M). Instrumentation and route bundles may 
 state, so these are held per process via `globalThis`:
 - the run-all single-flight guard;
 - the three production sync cores, which keeps the existing "adopt peer" vs cycle exclusion real.
+
+**BL-270: an unchanged document or report is not rewritten.** Every family's cycle saved each document and pushed it to the
+sync folder even when nothing had changed (tmp file, fsync, rename; a fresh mtime and a Syncthing rescan per file per minute).
+`writeFileAtomicIfChanged` (`atomic-json-file`) compares with the file ON DISK and skips identical bytes; automerge-core's
+`saveDocumentBytes` and `writeDeviceFile` and per-device-report's `writeLocal`/`writePeer` use it. `Automerge.save` is deterministic,
+so a merge that brings nothing new saves byte-identical bytes (tested). Reports that carry `updatedAt` = now (generation plans,
+live streams, uploads, media sessions) still change at each publish and are still written. The storyboards core keeps `read`'s
+plain storyboards per channel under the sha256 of the document's bytes (badge, review-notify, cost loop). The load and merge of each
+document each minute remain (~0.6 s CPU per cycle over the live Mac's 17 documents).
 
 **BL-203: browser tabs no longer start draft cycles; unchanged documents are not reworked.**
 - Since BL-203 (`docs/roadmap/plans/FAST_NAVIGATION_PLAN.md`) the `(app)` layout no longer POSTs the route, either on mount or
@@ -4646,7 +4682,10 @@ Plan: `docs/roadmap/plans/VIDEO_COST_PLAN.md` §2 stages 2-4 (criteria 3-9). Sch
   `overhead = share − seconds × costPerHr / 3600` (capped at the share). `splitEndedSessionCosts` runs over
   `db.listMediaSessionsNeedingCostSplit` (ended sessions with a job whose `allocation_session_usd` is null or differs from the
   charge) and stores each share (`setMediaJobCostShare`); a session with a running job waits. `media.splitEndedSessionCosts()` is
-  called by the `videoCostsLoop` (60 s, behind the device-mutation gate) in `instrumentation.ts`.
+  called by the `videoCostsLoop` (5 min since BL-270, was 60 s; behind the device-mutation gate) in `instrumentation.ts`, which then
+  calls `publishAndRefresh`: this computer's report is built once for the publish and the refresh, and the refresh walks the channels'
+  videos, storyboards and cost files only when some computer's runs changed (reports compared without `updatedAt`) or 30 minutes
+  passed; a pass with a failed channel is not remembered.
 - **Cost lines.** `video-costs/services.ts` `buildOwnRuns` maps `db.listVideoCostRunpodJobs` (template name joined; media kind from
   the output kinds), `listVideoCostSessionsWithoutJobs` (ended, charged, no job; the plan's video) and `listVideoCostGeminiJobs`
   (`cost_usd` with its basis, else the estimate as `estimate`) field by field. `selectReportRuns` applies the retention (states from

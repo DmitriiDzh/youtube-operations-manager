@@ -9,6 +9,7 @@ import { getOperationLock, OperationLockError, releaseStaleExportLock } from "@/
 import {
   addLineageAncestorsIfHeadUnchanged,
   computeFileContentFingerprint,
+  createCachedContentFingerprint,
   diffTransferredContent,
   hasUnfinishedBatch,
   hasUnpublishedLocalChanges,
@@ -20,6 +21,7 @@ import {
   readManifestFromDir,
   SnapshotError,
   verifySnapshotForImport,
+  type CachedContentFingerprint,
   type SqlExecutor,
 } from "@/lib/snapshot";
 import { SchemaVersionError } from "@/lib/schema-versioning";
@@ -27,6 +29,8 @@ import {
   AUTO_IMPORT_BACKUP_PREFIX,
   DEVICE_SYNC_KEEP_AUTO_IMPORT_BACKUPS,
   DEVICE_SYNC_KEEP_OWN_SNAPSHOTS,
+  DEVICE_SYNC_EXPORT_MAX_DELAY_MS,
+  DEVICE_SYNC_EXPORT_QUIET_MS,
   DEVICE_SYNC_MIN_EXPORT_INTERVAL_MS,
   DEVICE_SYNC_TRANSFER_GRACE_MS,
   DeviceSyncError,
@@ -241,6 +245,10 @@ export type DeviceSyncDeps = {
    * device-availability gate before every video, and an automatic export holds the operation lock, so
    * an export started mid-run would abort it. Optional: omitted = never blocks. */
   hasActiveLocalOperation?: () => boolean;
+  /** BL-270: the content fingerprint the tick's dirty check uses, recomputed only when the transferred tables' change counters
+   * moved (or every 10 minutes). Optional: omitted = one over `client` with the runner's clock. The in-lock checks before an export
+   * or an import always compute it in full. */
+  contentFingerprint?: CachedContentFingerprint;
 };
 
 async function isExistingDirectory(dir: string): Promise<boolean> {
@@ -301,6 +309,51 @@ function divergenceNotice(snapshot: SnapshotEntry, localDirty: boolean, multiple
 
 export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
   const now = deps.now ?? (() => Date.now());
+  const contentFingerprint = deps.contentFingerprint ?? createCachedContentFingerprint(deps.client, { now });
+
+  /**
+   * BL-270: the tick's "has this computer unpublished changes?" -- the same rule as `hasUnpublishedLocalChanges`, with the current
+   * fingerprint taken from the change-counter cache instead of a full read of every transferred table every 30 s. The lineage is
+   * read fresh each time (an export, an absorb or a re-baseline moves it). Only the decision uses this: the export's and the
+   * import's in-lock checks (AC-AS-05/07) still compute the fingerprint in full.
+   */
+  async function localChangesUnpublished(current: string): Promise<boolean> {
+    const lineage = await readLineageState(deps.client);
+    if (lineage.lastSnapshotId === null || !lineage.contentFingerprint) return hasUnpublishedLocalChanges(deps.client);
+    return hasUnpublishedLocalChanges(deps.client, current);
+  }
+
+  /**
+   * BL-270 review (finding 1): the export debounce, in memory (a restart starts it again). Each tick that reaches the decision
+   * observes the content fingerprint. When it differs from the last one observed, the change happened after the last tick that
+   * still saw the old value (`changedAfter`); the first observation in a process has no known age (-Infinity: not held back).
+   * The fingerprint, not the raw counters, is the key: a write that leaves the content as it was (a background loop rewriting
+   * the same row) is not churn. `dirtySince` is when the unpublished changes began (cleared when clean or exported).
+   */
+  let observed: { key: string; at: number } | null = null;
+  let changedAfter = Number.NEGATIVE_INFINITY;
+  let dirtySince: number | null = null;
+
+  function observeContent(key: string, dirty: boolean) {
+    const at = now();
+    if (!observed || observed.key !== key) changedAfter = observed ? observed.at : Number.NEGATIVE_INFINITY;
+    observed = { key, at };
+    if (!dirty) dirtySince = null;
+    else if (dirtySince === null) dirtySince = changedAfter;
+  }
+
+  /** Whether an automatic (or forced) export may run now: forced; or past the 60 s floor and either quiet or dirty too long. */
+  function exportDue(status: DeviceSyncStatus, force: boolean | undefined): boolean {
+    if (force) return true;
+    const t = now();
+    const lastExportMs = status.lastExportAt ? Date.parse(status.lastExportAt) : 0;
+    if (t - lastExportMs < DEVICE_SYNC_MIN_EXPORT_INTERVAL_MS) return false;
+    return t - changedAfter >= DEVICE_SYNC_EXPORT_QUIET_MS || (dirtySince !== null && t - dirtySince >= DEVICE_SYNC_EXPORT_MAX_DELAY_MS);
+  }
+
+  function exported() {
+    dirtySince = null;
+  }
 
   async function loadStatusSafe(): Promise<DeviceSyncStatus> {
     try {
@@ -535,8 +588,8 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
 
   /**
    * One scheduler tick (§3.2-§3.4). Never throws: every outcome is recorded in the status.
-   * `force` skips only the minimum export interval ("Sync now"); `exportOnly` (the flush before an
-   * idle shutdown) acts only if the decision is an export.
+   * `force` skips only the export debounce ("Sync now"); `exportOnly` (the flush before an idle
+   * shutdown or a restart when idle) acts only if the decision is an export.
    */
   async function tick(options: { force?: boolean; exportOnly?: boolean } = {}): Promise<DeviceSyncStatus> {
     let status = await loadStatusSafe();
@@ -600,7 +653,11 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
         olderThan: apiDataExpiryCutoff(now()),
       }).catch(() => [] as string[]);
       const snapshots = scanned.snapshots.filter((s) => !aged.includes(s.snapshotId));
-      const localDirty = await hasUnpublishedLocalChanges(deps.client);
+      // BL-270: one cached fingerprint read per tick (it also creates the counter table and the triggers when missing) feeds both
+      // the dirty check and the export debounce.
+      const currentFingerprint = await contentFingerprint.fingerprint();
+      const localDirty = await localChangesUnpublished(currentFingerprint);
+      observeContent(currentFingerprint, localDirty);
       const unsupported = new Set(
         status.unsupportedForSchemaVersion === deps.currentSchemaVersion ? (status.unsupportedSnapshotIds ?? []) : []
       );
@@ -664,20 +721,20 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
           // Still publish this computer's own unpublished changes (on its own branch; nothing is
           // overwritten anywhere), so the OTHER computer sees the conflict and can resolve it too,
           // instead of only the computer that happened to look second.
-          const lastExportMs = status.lastExportAt ? Date.parse(status.lastExportAt) : 0;
-          if (decision.localDirty && (options.force || now() - lastExportMs >= DEVICE_SYNC_MIN_EXPORT_INTERVAL_MS)) {
+          if (decision.localDirty && exportDue(status, options.force)) {
             const manifest = await exportNow({ deviceId: config.deviceId, folder });
+            exported();
             next = { ...next, lastExportAt: new Date(now()).toISOString(), lastExportSnapshotId: manifest.snapshotId };
           }
           return finish(next);
         }
 
         case "export": {
-          const lastExportMs = status.lastExportAt ? Date.parse(status.lastExportAt) : 0;
-          if (!options.force && now() - lastExportMs < DEVICE_SYNC_MIN_EXPORT_INTERVAL_MS) {
+          if (!exportDue(status, options.force)) {
             return finish({ ...status, state: "waiting", notices: stuckNotice(status) });
           }
           const manifest = await exportNow({ deviceId: config.deviceId, folder });
+          exported();
           return finish({
             ...status,
             state: "exported",

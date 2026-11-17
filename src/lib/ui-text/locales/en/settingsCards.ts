@@ -37,7 +37,7 @@ export const settingsCards = {
   "settingsCards.traffic.attempts": "Attempts (24h):",
   "settingsCards.traffic.succeeded": "Succeeded:",
   "settingsCards.requestFailed": "Request to {url} failed ({status})",
-  "settingsCards.autoSync.info": "While the app is running, it publishes this computer's changes to the sync folder about once a minute and loads the other computer's newer data by itself, as long as this computer has no unpublished changes of its own. Covered: Batches history and audit, Research, Decisions, and market-record assignments. Drafts (Change Sets, profiles, AI connections) sync separately and are not affected by this switch. If both computers changed data, nothing is overwritten: the bell in the header asks you which computer's data to keep. The manual export/import in the Merge tab still works.",
+  "settingsCards.autoSync.info": "While the app is running, it publishes this computer's changes to the sync folder a minute or two after you stop editing (at least every 10 minutes while edits keep coming) and loads the other computer's newer data by itself, as long as this computer has no unpublished changes of its own. Covered: Batches history and audit, Research, Decisions, and market-record assignments. Drafts (Change Sets, profiles, AI connections) sync separately and are not affected by this switch. If both computers changed data, nothing is overwritten: the bell in the header asks you which computer's data to keep. The manual export/import in the Merge tab still works.",
   "settingsCards.autoSync.toggle": "Sync automatically between computers",
   "settingsCards.syncFolder.saveFailed": "Failed to save folder",
   "settingsCards.syncFolder.title": "Syncthing folder",

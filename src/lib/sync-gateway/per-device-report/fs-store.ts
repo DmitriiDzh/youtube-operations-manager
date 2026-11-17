@@ -1,6 +1,6 @@
 import { mkdir, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { writeFileAtomic } from "@/lib/atomic-json-file";
+import { writeFileAtomicIfChanged } from "@/lib/atomic-json-file";
 import type { PerDeviceReportStore } from "./index";
 
 /** `<dir>/local.json` (this device's report) and `<dir>/peers/<deviceId>.json` (each peer's latest), written atomically. */
@@ -22,7 +22,8 @@ export function createFsPerDeviceReportStore(dir: string): PerDeviceReportStore 
     readLocal: () => readOrNull(path.join(dir, "local.json")),
     async writeLocal(json) {
       await mkdir(dir, { recursive: true });
-      await writeFileAtomic(path.join(dir, "local.json"), new TextEncoder().encode(json));
+      // BL-270: the same report is not written again (no fsync, the mtime stays).
+      await writeFileAtomicIfChanged(path.join(dir, "local.json"), new TextEncoder().encode(json));
     },
     async readPeers() {
       let names: string[];
@@ -50,9 +51,12 @@ export function createFsPerDeviceReportStore(dir: string): PerDeviceReportStore 
       return out;
     },
     async writePeer(deviceId, json) {
-      peerCache.delete(`${safe(deviceId)}.json`);
       await mkdir(peersDir, { recursive: true });
-      await writeFileAtomic(path.join(peersDir, `${safe(deviceId)}.json`), new TextEncoder().encode(json));
+      // BL-270: a peer's report that did not change since the last cycle (same text) is not written again -- its mtime stays, so
+      // the read cache above keeps it. Dropped from the cache only when it was really rewritten.
+      if (await writeFileAtomicIfChanged(path.join(peersDir, `${safe(deviceId)}.json`), new TextEncoder().encode(json))) {
+        peerCache.delete(`${safe(deviceId)}.json`);
+      }
     },
   };
 }
