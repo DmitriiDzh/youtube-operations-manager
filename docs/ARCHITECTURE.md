@@ -4071,7 +4071,7 @@ Plan: `docs/roadmap/plans/LIVE_STREAMS_PLAN.md` (FO-REQ-0019). Schema v86, Facto
 
 ## 46. The channel's language is the truth for localization (BL-178, FO-REQ-0022)
 
-Owner exception 2026-10-12 (msg 2665), recorded in `docs/PROJECT_SPEC.md` §14 and AGENTS.md §F. Plan:
+Owner exception 2026-10-12 (msg 2665), recorded in `docs/PROJECT_SPEC.md` §14 and `docs/WRITE_AUTHORIZATIONS.md` (AGENTS.md §F). Plan:
 `docs/roadmap/plans/LOCALIZATION_BASELINE_PLAN.md`.
 
 - **The rule** lives in `src/lib/shared-language-baseline/` (pure, shared by `batches`, `changesets`, `localization`,
@@ -4818,7 +4818,7 @@ Plan: `docs/roadmap/plans/VIDEO_COST_PLAN.md` §2 stages 2-4 (criteria 3-9). Sch
 ## BL-207 — live stream translations at publish (ADR 0045)
 
 Owner msgs 3254/3257; plan `docs/roadmap/plans/LIVE_LOCALIZATIONS_PLAN.md`. A second, narrowly scoped writer of per-language
-title/description (AGENTS.md §F, PROJECT_SPEC §21), reversing `LIVE_STREAMS_FIELDS_PLAN.md` §2.3.
+title/description (`docs/WRITE_AUTHORIZATIONS.md`, PROJECT_SPEC §21), reversing `LIVE_STREAMS_FIELDS_PLAN.md` §2.3.
 
 - **Shared merge** (`src/lib/shared-localization-merge/`, pure): `buildSafeLocalizationsPayload`, `checkDefaultLanguage`,
   `localeKeyFor` and the fresh-video types, moved unchanged from `batches/merge.ts` (which re-exports them; Batches-only types
@@ -4872,7 +4872,7 @@ title/description (AGENTS.md §F, PROJECT_SPEC §21), reversing `LIVE_STREAMS_FI
 
 Owner msgs 3343/3345/3347/3350; plan `docs/roadmap/plans/CHANNEL_LOCALIZATIONS_PLAN.md` (its "API facts" section quotes the
 `channels` / `channels.update` / `channels.list` reference). The third, narrowly scoped writer of per-language title/description
-(AGENTS.md §F, PROJECT_SPEC §21), for the channel resource itself. It writes only `localizations`, never `brandingSettings`.
+(`docs/WRITE_AUTHORIZATIONS.md`, PROJECT_SPEC §21), for the channel resource itself. It writes only `localizations`, never `brandingSettings`.
 
 - **Shared validator** (`src/lib/shared-localization-set/`, pure): `validateLocalizationSet(input, { baselineLanguage, limits,
   ownText })` -- moved from `live-streams/localizations.ts`, whose `validateLiveLocalizations` is now a wrapper with the video
@@ -4917,7 +4917,7 @@ Owner msgs 3343/3345/3347/3350; plan `docs/roadmap/plans/CHANNEL_LOCALIZATIONS_P
 
 Owner msgs 3482/3488 (FO-REQ-0039); plan `docs/roadmap/plans/CHANNEL_BRANDING_PLAN.md` (its "API facts" section quotes the
 `channels`, `channels.update`, `channelBanners.insert` and `channels.list` reference, with the deviations the docs forced). The
-only writer of a channel's `brandingSettings` (AGENTS.md §F, PROJECT_SPEC §21): description, keywords and banner; nothing else.
+only writer of a channel's `brandingSettings` (`docs/WRITE_AUTHORIZATIONS.md`, PROJECT_SPEC §21): description, keywords and banner; nothing else.
 
 - **The draft** (`channel-branding/draft.ts`, pure, imported by the card): `{ description?, keywords?: string[], banner?: { sha256,
   bytes, width, height, mimeType } }`; absent = leave as on YouTube, `""` / `[]` = clear. Checks: description ≤ 1000 characters and
@@ -5026,7 +5026,7 @@ FO-REQ-0040; owner msgs 3511/3534; plan `docs/roadmap/plans/WEEKLY_PUBLISHING_PL
   The plan's `progress` port is filled by `src/lib/publishing-plan-progress/` (a composition module: the package scan, cached a
   minute, and this computer's upload rows -> `built` / `packaged` / `uploading` / `failed (code)` / `scheduled` / `published`,
   `videoId`, the package's facts), passed by `factory-channel-deps.ts` and the owner's routes. The agents' list takes `limit`.
-- **Stage 3 -- uploads of approved slots** (ADR 0051 §7/§8/§10, AGENTS.md §F «Upload localizations»):
+- **Stage 3 -- uploads of approved slots** (ADR 0051 §7/§8/§10, `docs/WRITE_AUTHORIZATIONS.md` «Upload localizations»):
   - `auto-upload.ts` gets `slotDecisions` (from `src/composition/publishing-plan-slots.ts` -> the plan's `createPublishingPlansUploadCore`):
     vetoed -> skipped (`slot_vetoed`, not hashed); approved and > 15 min ahead -> `queueAutomatic({ slotPublishAt })`; else dateless.
   - `upload-runner.ts`: the insert's AI flag is `syntheticMediaOf(pkg, settings)`; finishing starts with `localizations` (the shared
