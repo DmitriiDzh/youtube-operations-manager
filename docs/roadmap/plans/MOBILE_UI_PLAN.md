@@ -69,6 +69,59 @@ how it should look on a phone, as a professional UI/UX designer, **without chang
 - AC-M-6 New texts have keys in every locale (AGENTS.md §H).
 - AC-M-7 Added to the home screen, YTM opens standalone with its icon and the dark theme colour.
 
+## Audit 2 — «Контент» and «Медиа» at iPhone 12 mini (375 × 812), 2026-11-16 (owner TG 4656)
+Code audit at 343 px of content (Chrome extension not connected; owner screenshots requested). Stage 1's shell holds; the
+panels inside are still desktop layouts. Findings by severity:
+
+**Blocks use**
+- *Media → plan review screen* (`plan-review-screen.tsx:1811`): `grid-cols-[minmax(0,1fr)_19rem_16rem]` in `overflow-hidden`
+  — the player + verdict column gets 0 px on a phone. The main Media approval job is impossible on a phone today.
+- *Plan card waves table* (`generation-plans-panel.tsx:646`): fixed columns ≈ 500 px in `overflow-hidden` — «Проверить N» clipped.
+- *Клипы* (`clip-reviews-panel.tsx:204–247`): non-wrapping row header, long `sceneId` / `clipPath` without `break-all` — page
+  scrolls sideways.
+- *Activity panel* (`activity-indicator.tsx:188`): `w-96` without a max width — runs off the left edge.
+- *Header in home-screen mode* (`app-shell.tsx:118`): fixed `h-14` plus the safe-area top inset — the row spills.
+
+**Hard to read**
+- Wide tables shown through a 343 px window: videos (10 columns, `min-w-[1180px]`), «Конвейер роликов» (5 phase columns,
+  `min-w-[1000px]`), «Задания» (`min-w-[760px]`), music library, live-stream analytics.
+- Month calendar: 44 px cells with `text-[11px]` truncated titles.
+- Touch targets 26–32 px (section tabs, plan actions, week arrows, clip approve/return, dialog close); ~60 places use
+  10–11 px text; meanings hidden in `title=` (no hover on a phone).
+- Tab rows scroll with no cue and do not bring the active tab into view (Media's last tabs «Клипы», «Видео на проверку»
+  are off-screen).
+- `<main>` is `overflow-y-auto` without a height: sticky bars inside panels never stick (the «Видео на проверку» decision
+  bar), and sideways overflow hides inside `<main>` — AC-M-1 must measure `main.scrollWidth` too.
+- Video card dialog: `h-[92vh]` (iOS `vh` includes the toolbar) — bottom can sit under Safari's bar; use `dvh`.
+
+## Redesign for stages 2–4 (phone only, `max-md:`; desktop untouched)
+- **Shell fixes first (stage 2a, small):** header `min-h` with the safe area; activity panel `max-w-[calc(100vw-2rem)]`;
+  `<main>` stops being a scroll container on phones so sticky bars work; tab rows get an edge fade and scroll the active tab
+  into view; tabs/badges ≥ 44 px / ≥ 12 px; `title=` meanings become a tap-to-open hint.
+- **Review on a phone = one column, one decision bar (stage 2b, highest value):**
+  - Plan review screen → a single column: player full width (`playsinline`), the verdict bar sticky at the bottom
+    (Одобрить / Вернуть / Пропустить, ≥ 44 px), auto-check as a fold under the player, the wave queue as a bottom sheet
+    («Очередь · 12») with swipe/next to move between items.
+  - Waves table → wave cards (name, done / waiting, a full-width «Проверить N»).
+  - Клипы → cards that wrap: status + scene title on line 1, chips on line 2, ids/paths `break-all` in the details;
+    the same sticky decision bar as «Видео на проверку».
+  - «Видео на проверку»: already a phone layout; gets the working sticky bar.
+- **Content lists → cards (stage 3):**
+  - Видео: a card per video — thumbnail, title (2 lines), status dot + date, one number (views 7 d); sort and filters in a
+    sheet («Сортировка и фильтры»); tap opens the video card as a full-height sheet (`dvh`) with a sticky close.
+  - Ролики и релизы: «Конвейер» becomes a phase picker (chips with counts) above a list of that phase's cards; packages and
+    uploads as cards with a full-width primary action.
+  - План: week view keeps its phone grid; slot actions move into a «⋯» sheet per slot (Перенести / Дата / Вето) with
+    ≥ 44 px rows; Месяц becomes the agenda list from stage 3 of the original plan.
+  - Трансляции: status first; analytics tables become metric cards with the chart scrolling inside its card.
+- **Media lists → cards (stage 4):** «Задания» as job cards (status, what, progress full width, cancel in the card's ⋯);
+  music library as genre cards with an expandable track list; storyboard header actions wrap into a sticky bottom bar.
+- **Type scale on phones:** nothing below 12 px; chips 12 px; body 15–16 px.
+
+Acceptance adds: AC-M-8 every review job (plan items, clips, release packages, storyboards) can be finished on a 375 px
+screen with one thumb; AC-M-9 `main.scrollWidth <= main.clientWidth` and `document.scrollingElement.scrollWidth <=
+innerWidth` at 375 × 812 on every Content and Media route, with long fixture ids and paths.
+
 ## Not in scope
 A separate mobile app; offline mode; push notifications (possible later through the Telegram bot the owner already uses);
 redesigning desktop screens.
