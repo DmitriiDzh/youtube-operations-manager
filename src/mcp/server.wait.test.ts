@@ -151,8 +151,7 @@ test("agent_wait input: until on a target that takes none is invalid_request; a 
     const bad = await tools.agent_wait.handler({ target: "media_job", id: "j_missing", until: "ready", timeoutSeconds: 1 });
     assert.equal((payload(bad).error as { code: string }).code, "invalid_request");
     const unknownJob = await tools.agent_wait.handler({ target: "storyboard_review", id: "sb_x", timeoutSeconds: 1 });
-    // The worker's channel is put in; a storyboard that does not exist there is not_found (or the module is not ready on this
-    // database: target_unavailable) -- never another channel's data.
-    assert.ok(["not_found", "target_unavailable"].includes((payload(unknownJob).error as { code: string }).code), JSON.stringify(payload(unknownJob)));
+    // The worker's channel is put in; a storyboard that does not exist there is not_found -- never another channel's data.
+    assert.deepEqual(payload(unknownJob).error, { code: "not_found", message: "No storyboard_review with this id on this computer.", details: { target: "storyboard_review", id: "sb_x" } });
   });
 });

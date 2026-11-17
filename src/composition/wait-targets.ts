@@ -68,12 +68,18 @@ function record(value: unknown): Row {
 
 const iso = (value: Date | null | undefined) => (value instanceof Date ? value.toISOString() : null);
 
-/** A module's own "not found" answer becomes the wait's (the same for a missing id and another channel's). */
+/**
+ * A module's own "not found" answer becomes the wait's (the same for a missing id and another channel's); its input refusal (an id the
+ * module's schema rejects, e.g. too long) is the wait's `invalid_request` at once -- never three "failed reads".
+ */
 async function orNotFound<T>(read: () => Promise<T>): Promise<T> {
   try {
     return await read();
   } catch (error) {
     if (isDomainError(error) && (error.code === "not_found" || error.code.endsWith("_not_found"))) throw new WaitNotFoundError();
+    if (isDomainError(error) && (error.code === "validation_failed" || error.code.endsWith("_invalid_params"))) {
+      throw new DomainError({ code: "invalid_request", message: `The id or channel was refused by the target's module: ${error.message}`.slice(0, 300) });
+    }
     throw error;
   }
 }
