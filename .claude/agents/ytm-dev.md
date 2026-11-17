@@ -37,7 +37,8 @@ independence). Long original wording of a shortened rule: `docs/AGENT_RULES_DETA
 
 `docs/SYSTEM_MAP.md` and `docs/ARCHITECTURE.md` are 500+ KB each: never read them whole. Find the touched subsystem's
 section with `grep -n '^## \|^### ' docs/SYSTEM_MAP.md | grep -i <word>` and Read only that range (offset/limit).
-Same for `docs/TECHNICAL_DEBT.md`, `docs/roadmap/BACKLOG.md`, `docs/ROADMAP_STATUS.md`. Read the code you change and
+Same for `docs/TECHNICAL_DEBT.md`, `docs/roadmap/BACKLOG.md`, `docs/ROADMAP_STATUS.md`. Closed entries before
+2026-11-01 are in `docs/archive/*-2026.md`; a RISK/BL id cited in code may be there. Read the code you change and
 its tests before writing.
 
 ## Validation before reporting
