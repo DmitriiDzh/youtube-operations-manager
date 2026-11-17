@@ -299,3 +299,45 @@ test("review: the Operator waits only on factory sessions / jobs (an owner-appro
   assert.equal((await waitOnce(agentSession, { target: "media_session", id: "s_agent", channelId: "UC_A" }, WORKER_A)).outcome, "succeeded");
   assert.equal((await waitOnce(agentSession, { target: "media_job", id: "j_agent", channelId: "UC_A" }, WORKER_A)).outcome, "succeeded");
 });
+
+// Review finding (BL-271): the resolved id is pinned after the first read -- `restart current` follows that request to cancelled /
+// expired (exit 1) instead of ending in no_restart_request, and an upload waited by video code keeps watching its row when a newer
+// row of the same video appears.
+async function waitPolling(reads: WaitTargetReads, input: WaitInput) {
+  let now = 0;
+  const wait = createOperationWait({ ports: createWaitPorts(reads), now: () => now, sleep: async (ms) => void (now += ms), shutdownSignal: () => new AbortController().signal, restarting: async () => false });
+  return wait.waitFor({ ...input, timeoutSeconds: 240 }, OPERATOR);
+}
+
+test("review: restart current is pinned -- a request cancelled or expired while waited on ends cancelled / expired", async () => {
+  for (const end of ["cancelled", "expired"]) {
+    let reads = 0;
+    const request = () => ({ id: "rq_5", status: reads > 2 ? end : "open" });
+    const r: WaitTargetReads = {
+      restart: {
+        // Once cancelled or expired, the request is no longer "current" -- only reachable by its id.
+        active: async () => (reads++, request().status === "open" ? request() : null),
+        byId: async (id) => (reads++, id === "rq_5" ? request() : null),
+        last: async () => null,
+        serverStartedAt: () => "2026-11-17T10:00:00.000Z",
+      },
+    };
+    const result = await waitPolling(r, { target: "restart", id: "current" });
+    assert.deepEqual([result.id, result.final, result.outcome], ["rq_5", true, end], end);
+  }
+});
+
+test("review: an upload waited by video code keeps watching its own row when a newer row of the same video appears", async () => {
+  let polls = 0;
+  let resolved = false;
+  const first = uploadRow({ id: "up_first", status: "uploading" });
+  const reads: WaitTargetReads = {
+    upload: {
+      byId: async (id) => (polls++, id === "up_first" ? (polls > 3 ? { ...first, status: "failed", errorCode: "upload_failed" } : first) : null),
+      // After the first read a newer queued row of V12 exists; it must not take over.
+      latest: async () => (resolved ? uploadRow({ id: "up_newer", status: "queued" }) : ((resolved = true), first)),
+    },
+  };
+  const result = await waitPolling(reads, { target: "upload", id: "V12", channelId: "UC_A" });
+  assert.deepEqual([result.id, result.final, result.outcome], ["up_first", true, "failed"]);
+});

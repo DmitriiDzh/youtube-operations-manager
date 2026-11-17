@@ -336,3 +336,16 @@ test("AC-WT-02/13 end to end: `node --import tsx src/cli/wait.ts` over real HTTP
     server.close();
   }
 });
+
+test("review: restart current pinned from the first answer -- a cancellation during the wait ends final cancelled, exit 1", async () => {
+  const h = harness(({ n, args }) =>
+    n === 1
+      ? { result: { target: "restart", id: "rq_9", final: false, outcome: "still_running", status: "open", snapshot: {} }, blockMs: Number(args.timeoutSeconds) * 1000 }
+      : args.id === "rq_9"
+        ? { result: { target: "restart", id: "rq_9", final: true, outcome: "cancelled", status: "cancelled", snapshot: {} } }
+        : { toolError: { code: "no_restart_request", message: "none", details: { serverStartedAt: "2026-11-17T08:00:00.000Z", lastRestart: null } } }
+  );
+  assert.equal(await runWaitCli(["restart", "current"], h.io), 1);
+  const line = only(h.lines);
+  assert.deepEqual([line.id, line.final, line.outcome], ["rq_9", true, "cancelled"]);
+});

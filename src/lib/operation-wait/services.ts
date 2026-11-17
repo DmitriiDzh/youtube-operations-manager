@@ -119,10 +119,14 @@ export function createOperationWait(deps: OperationWaitDependencies) {
         };
       };
 
+      // Pinned after the first observation: `restart current` and an upload's video code resolve once, so the wait follows THAT
+      // request / upload row to its end (a cancelled current request ends cancelled, a newer upload of the same video does not take
+      // over); a pinned id that later reads as missing is a failed read.
+      let target = input;
       for (;;) {
         let observation: WaitObservation | null = null;
         try {
-          observation = await port(input, scope);
+          observation = await port(target, scope);
           failures = 0;
         } catch (error) {
           if (isDomainError(error) && PASS_THROUGH.has(error.code)) throw error;
@@ -136,6 +140,7 @@ export function createOperationWait(deps: OperationWaitDependencies) {
         }
         if (observation) {
           last = observation;
+          if (target.id !== observation.id) target = { ...input, id: observation.id };
           if (observation.final) return result(observation);
           // Answers that end the call at once although the operation is not finished (plan §3.2).
           if (observation.outcome === "blocked" || observation.outcome === "not_in_review") return result(observation);
