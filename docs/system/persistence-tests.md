@@ -1,0 +1,25 @@
+> Moved verbatim from SYSTEM_MAP.md §2 on 2026-11-17; index: ../SYSTEM_MAP.md
+
+### 2.5 Persistence / database — **IMPLEMENTED**
+
+- **Ответственность:** локальное хранилище на SQLite (libSQL), файл `data/playlist-manager.db`.
+- **Файлы:** `src/lib/db.ts` — вся схема (`users`, `rules`, `channels`, `videos`) и CRUD-функции.
+- **Открытие и закрытие соединений (BL-156):** только через `createLibsqlClient` из `src/lib/libsql-client/` (не `createClient` из `@libsql/client` — проверяет `libsql-client-inventory.test.ts`). Нативный драйвер дважды закрывает соединение, если в момент закрытия у него не осталось живых statement-объектов или если соединение не закрыли вовсе (SIGSEGV); модуль закрывает соединения безопасным путём, ведёт транзакции на собственном, всегда закрываемом соединении и закрывает оставшиеся при выходе процесса (`docs/TECHNICAL_DEBT.md` RISK-113).
+- **Точки входа:** прямой импорт функций из `db.ts` внутри адаптеров каждого модуля (`channel-sync/adapters/store.ts`, `write-context`'s `channelSelectionStore` и т.д.).
+- **Зависимости:** нет (нижний уровень).
+- **Read/Write:** и то, и другое (это и есть хранилище).
+- **Важные ограничения безопасности:** OAuth-токены хранятся в открытом виде — приемлемо только для локального однопользовательского инструмента (известный, осознанно принятый риск с самого начала проекта). Схема создаётся идемпотентно при старте (`CREATE TABLE IF NOT EXISTS` + `ALTER TABLE` в try/catch) — **это осознанное решение, не миграционный инструмент**; решение и условие его пересмотра задокументированы в `docs/ARCHITECTURE.md` §6.2.
+
+### 2.14 Tests — **IMPLEMENTED**
+
+- **Ответственность:** unit/integration-тесты на моках (без реальных сетевых вызовов к YouTube).
+- **Файлы:** `*.test.ts` рядом с тестируемым модулем; раннер — `npm test` → `scripts/run-tests.mjs` → `node --import tsx --test "src/**/*.test.ts"` (встроенный `node:test`, без Jest/Vitest). С BL-237 все временные папки прогона живут в одной `<temp>/ytm-test-run-<pid>-<время>`, удаляемой в конце прогона (см. §2.9be).
+- **Новые файлы Phase 2:** `src/lib/youtube.test.ts` (батчинг/пагинация против моков реальной формы `googleapis`-клиента), `src/lib/channel-sync/services.test.ts` (sync/list на фейковом store).
+- **Новые файлы Phase 3:** `src/lib/localization/services.test.ts` (overview/detail/export на фейковом store), `src/lib/localization/adapters/xlsx.test.ts` (реальная сборка workbook через `exceljs` + чтение обратно, без моков библиотеки).
+- **Новые файлы Phase 4:** `src/lib/changesets/diff.test.ts` (чистая классификация/статусы/инвалидация approval), `src/lib/changesets/import.test.ts` (парсинг/валидация реальных XLSX-книг через `exceljs`: blank=no-change, дубликаты, невалидный язык, конфликт, channel mismatch, лимиты размера), `src/lib/changesets/services.test.ts` (сквозные сценарии: создание change set, approve/reject, ре-синхронизация инвалидирует approval, bulk approve не трогает невалидные/конфликтующие строки, изоляция между каналами).
+- **Новые файлы Phase 6 (Slice 1):** `src/lib/ai-localization/{services,provider-registry,integration.acceptance,write-path-inventory}.test.ts` — генерация/валидация/классификация (add/modify/unchanged), изоляция провайдерских сбоев, дедупликация целей, невалидные языки/videoId, интеграция AI → Change Set → approve → Batch dry-run с сохранением непонятых локалей (AC-PRESERVE-01), инвентарный тест на отсутствие сетевых AI-SDK/live-write ссылок.
+- **Новые файлы Phase 6 (Channel Editorial Profiles, 2026-09-19):** `src/lib/ai-localization/profiles.test.ts` — channel isolation, missing/empty profile, версия/reproducibility после правки профиля, per-field merge с per-request editorialBrief, malformed data, отсутствие персистентных побочных эффектов.
+- **Новые файлы Phase 6 (AI Connections, 2026-09-19):** `src/lib/ai-connections/{crypto,endpoint-security,services,integration.acceptance,write-path-inventory}.test.ts`, `adapters/openai-compatible.test.ts` — 37 тестов: CRUD, шифрование/расшифровка credential, fail-closed без ключа шифрования, SSRF-блокировка (приватные/loopback/metadata адреса, DNS rebinding, IPv6), unsupported-capability до сетевого вызова, malformed JSON/timeout от провайдера изолированы, usage репортится как `null`, а не 0, когда неизвестен, полный pipeline connection → generate → Change Set → approve → Batch dry-run с сохранением непонятых локалей.
+- **Текущее состояние:** 396 тестов, все проходят (`npm test`).
+- **Важное ограничение:** ни один тест не пишет в реальный YouTube-канал (`docs/PROJECT_SPEC.md` §42); Phase 4 тесты дополнительно доказывают, что import/approve не может вызвать ни одного YouTube write-метода (нет такого метода в зависимостях сервисов вообще); Phase 6 тесты аналогично доказывают отсутствие любого реального AI-provider вызова и реального DNS/сетевого запроса (инжектируемый `fetchImpl`/`dnsLookup` в каждом тесте).
+
