@@ -67,7 +67,7 @@ Constraints found in the code and the clients:
 ## Stage 0 measurements (2026-11-17)
 
 A standalone sleep-only MCP server (same transport: stateless Streamable HTTP, `enableJsonResponse: true`; no app, no DB) was called
-by a real **Claude Code 2.1.322** (`claude -p`, `--strict-mcp-config`, one `sleep` tool):
+by a real **Claude Code 2.1.322** (`claude -p`, `--strict-mcp-config`, one `sleep` tool) -- the probe, not a real `factory_wait`:
 
 | block | client config | result |
 |---|---|---|
@@ -80,14 +80,15 @@ by a real **Claude Code 2.1.322** (`claude -p`, `--strict-mcp-config`, one `slee
 - So Claude Code's **default** limit for an HTTP MCP call is about **60 s**, not the 300 s idle limit the plan inferred. The binary sets
   the call limit to the server entry's `timeout` (or `MCP_TOOL_TIMEOUT`) and the idle limit to max(300 s, that timeout).
 - A bare `tools/call` POST without `initialize` works on a stateless server.
-- Interactive sessions may move an MCP call that runs over 120 s into the background (feature flag `tengu_mcp_auto_background`); `-p`
-  does not. Correctness is the same either way.
+- All probes ran in `-p` (non-interactive) mode. The binary shows that interactive sessions may move an MCP call running over 120 s
+  into the background (feature flag `tengu_mcp_auto_background`); that path, and the `timeout` advice in an interactive session, were
+  not measured.
 - **Decision:** default **50 s** (works unconfigured) and cap **240 s** stay as planned. A block over ~55 s needs `"timeout": 300000`
   in the agent's server entry (`docs/AGENT_ISOLATION_SETUP.md` §3). The CLI is our own HTTP client and always uses 240 s rounds.
 - **Codex** was not probed: every role runs Claude Code (Q7).
 - **AC-WT-18:** a CLI wait (`npm run --silent wait -- media_job …`) run as a background shell command from a Claude Code session
   against a fake `factory_wait` endpoint that became final after 600 s: three calls (240 / 240 / the rest), exit 0 after 593 s, one
-  JSON line, empty stderr; the session got one notification when the process exited and spent no turn before.
+  JSON line, empty stderr; nothing was printed before the exit, and the session got one notification when the process exited.
 
 ## Questions resolved (coordinator, 2026-11-17)
 
