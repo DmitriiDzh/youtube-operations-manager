@@ -62,6 +62,22 @@ ARCH_MAP = {
  'disk-hygiene': 'BL-237',
 }
 
+# Review fix: ids that were duplicated between SYSTEM_MAP §2 and §4 (status entries) become unique. verify_split.py imports this.
+RENAMES = [
+    ('### 2.9bm Мелкие', '### 2.9bm2 Мелкие'),
+    ('### 2.9bn Ожидание', '### 2.9bn2 Ожидание'),
+    ('### 2.9bm Английские', '### 2.9bm3 Английские'),
+    ('### 2.9bl Замена', '### 2.9bl2 Замена'),
+    ('субтитры — BL-269 `video-captions`, §2.9bm)', 'субтитры — BL-269 `video-captions`, §2.9bm3)'),
+]
+
+def apply_renames(lines):
+    for a, b in RENAMES:
+        hit = [i for i, l in enumerate(lines) if a in l]
+        assert len(hit) == 1, (a, hit)
+        lines[hit[0]] = lines[hit[0]].replace(a, b, 1)
+    return lines
+
 def git_show(repo, rev, path):
     return subprocess.run(['git', '-C', repo, 'show', f'{rev}:{path}'], check=True, capture_output=True).stdout.decode('utf-8')
 
@@ -100,6 +116,8 @@ def main():
     lines = text.split('\n')
     assert lines[-1] == ''
     lines = lines[:-1]  # drop empty tail from final newline; re-add on write
+    if kind == 'system':
+        lines = apply_renames(lines)
     inv = inverse(mp)
     outdir = os.path.join(repo, 'docs', 'system' if kind == 'system' else 'architecture')
     os.makedirs(outdir, exist_ok=True)
@@ -134,6 +152,16 @@ def main():
             rows.append((sid, name, status, f))
         assert set(inv) == {r[0] for r in rows}, set(inv) ^ {r[0] for r in rows}
         files['component-status'] = [s4]
+        for i in headings(s4, r'###? '):
+            h = s4[i]
+            m = re.match(r'### (\S+)\s+(.*)', h)
+            if not m:
+                continue
+            sid, rest = m.group(1), m.group(2)
+            name = re.split(r' — |\s\(', rest)[0]
+            mm = re.search(r'—\s*\*\*(.+?)\*\*', h) or re.search(r'\*\*(.+?)\*\*', h)
+            rows.append((sid, name, mm.group(1) if mm else '—', 'component-status'))
+        rows.append(('4', 'Статус компонентов (весь §4, подразделы выше — его записи)', '—', 'component-status'))
         mp = dict(mp); mp['component-status'] = ''
         origin = 'SYSTEM_MAP.md §2'
         idxname = '../SYSTEM_MAP.md'
@@ -202,4 +230,5 @@ def write_raw(path, out):
     with open(path, 'w', encoding='utf-8') as fh:
         fh.write('\n'.join(out) + '\n')
 
-main()
+if __name__ == '__main__':
+    main()

@@ -126,6 +126,15 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 | 2.9bn | Шаблон недели вместо одобрения слотов | IMPLEMENTED на ветке | `docs/system/publishing.md` |
 | 2.9bm | Ворота только по медиа и правка упаковки после загрузки | IMPLEMENTED на ветке | `docs/system/publishing.md` |
 | 2.9bh | Решения владельца будят Продюсера | IMPLEMENTED, влито в `dev` (`b598da19`) | `docs/system/agent-operations.md` |
+| 2.9bm2 | Мелкие изменения 15.11 | — | `docs/system/component-status.md` |
+| 2.9bn2 | Ожидание долгих операций без токенов агента | IMPLEMENTED на ветке | `docs/system/component-status.md` |
+| 2.9bm3 | Английские субтитры длинных видео WWE | IMPLEMENTED на ветке | `docs/system/component-status.md` |
+| 2.9bl2 | Замена обложки загруженного видео | IMPLEMENTED | `docs/system/component-status.md` |
+| 2.9bk | Кросс-постинг в другие сети | этапы 1–2 IMPLEMENTED | `docs/system/component-status.md` |
+| 2.9bj | YT Manager на телефоне | этап 1 IMPLEMENTED | `docs/system/component-status.md` |
+| 2.9bi | Доступ с других устройств владельца через Tailscale | IMPLEMENTED, влито в `dev` (df9c1189),… | `docs/system/component-status.md` |
+| 4.0 | Ключевые ограничения | — | `docs/system/component-status.md` |
+| 4 | Статус компонентов (весь §4, подразделы выше — его записи) | — | `docs/system/component-status.md` |
 
 ## 3. Где вносить изменения
 

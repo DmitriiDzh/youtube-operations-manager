@@ -2,7 +2,7 @@
 
 ## 4. Статус компонентов
 
-### 2.9bm Мелкие изменения 15.11 (без отдельного BL)
+### 2.9bm2 Мелкие изменения 15.11 (без отдельного BL)
 - Автозагрузка (private): список каналов, которые она пропускает (`auto_private_upload_paused_channels`, app_settings, этот компьютер;
   переключатели «По каналам» в карточке «Запись на YouTube»; owner TG 2298, WWE). Загрузки держат restart-when-idle только в окнах
   «последний кусок отправлен» и `finishing` (ADR 0049 поправка 1, owner msg 4420).
@@ -13,7 +13,7 @@
   короткие Reels (~≤20 с, 15.11) — Shorts в Instagram владелец пока выкладывает вручную.
 - Автоочистка mp4 не удаляет Shorts (≤ 180 с на YouTube, ADR 0058 поправка).
 
-### 2.9bn Ожидание долгих операций без токенов агента (BL-271, ADR 0075) — **IMPLEMENTED на ветке** `feature/bl-271-wait` (не в dev)
+### 2.9bn2 Ожидание долгих операций без токенов агента (BL-271, ADR 0075) — **IMPLEMENTED на ветке** `feature/bl-271-wait` (не в dev)
 - Ядро `src/lib/operation-wait/` (чистое: `waitFor`, таймаут 50 с по умолчанию, зажим 1–240, ранний выход `restarting` /
   `server_stopping` / `blocked` / `not_in_review`, сигнал остановки процесса на globalThis — его взводит SIGTERM в `instrumentation.ts`).
   Порты целей — `src/composition/wait-targets.ts` поверх чтений модулей (загрузки, медиа-сессии/задачи, Gemini/speech/sound, запросы
@@ -24,7 +24,7 @@
   одна JSON-строка, коды 0/1/2, переживает перезапуск сервера. Не цели: недельная сборка (отложено), recode/rename (синхронные).
 - Claude Code по умолчанию обрывает HTTP-вызов MCP через ~60 с (замер этапа 0): длиннее 50 с — только с `"timeout": 300000` в записи сервера.
 
-### 2.9bm Английские субтитры длинных видео WWE (BL-269, ADR 0074) — **IMPLEMENTED на ветке** `feature/bl-269-video-captions` (не в dev)
+### 2.9bm3 Английские субтитры длинных видео WWE (BL-269, ADR 0074) — **IMPLEMENTED на ветке** `feature/bl-269-video-captions` (не в dev)
 - `src/lib/video-captions/` — единственный писатель дорожек субтитров (§M: ничего не импортирует из `publishing`): `captions.insert`
   одной английской дорожки и, только по явной перезаписи владельца/Продюсера (TG 4660), `captions.update` единственной английской
   стандартной дорожки (чужой или нашей). `captions.delete` нет нигде (инвентаризация шлюза), ASR не трогаются. Шлюз записи
@@ -41,7 +41,7 @@
   «Добавить» / «Перезаписать субтитры» в «Ролики и релизы») и `producer_video_captions_add` (Producer API 1.26.0, CAPTIONS_WRITE);
   сервис `publishing/package-captions.ts`. Agent API 4.24.0, Factory API 1.53.0 (поля `captions`, коды проблем; `docs/interfaces.md`).
 
-### 2.9bl Замена обложки загруженного видео (BL-255, ADR 0069) — **IMPLEMENTED** (dev 04bf5e08, a6ea8d43)
+### 2.9bl2 Замена обложки загруженного видео (BL-255, ADR 0069) — **IMPLEMENTED** (dev 04bf5e08, a6ea8d43)
 - `src/lib/video-thumbnails/` — единственный писатель обложки уже загруженного видео (`thumbnails.set` через шлюз записи): владелец
   (кнопка «Заменить обложку» в карточке видео «Контент» и под слотом «Плана недели» с видео) и Продюсер
   (`producer_video_thumbnail_replace`, Producer API 1.20.0), любое видео канала. Картинка — только из `04 Videos/` (JPEG/PNG ≤ 2 МБ,

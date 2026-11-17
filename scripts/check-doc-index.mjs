@@ -1,6 +1,6 @@
 // Index guard for the split docs (docs/roadmap/plans/DOCS_SPLIT_PLAN.md §5): every `##`/`###` heading of a
 // docs/system/*.md (except component-status.md) and docs/architecture/*.md must have a row in its index
-// (docs/SYSTEM_MAP.md, docs/ARCHITECTURE.md), and every index row's file must exist and contain that section.
+// (docs/SYSTEM_MAP.md, docs/ARCHITECTURE.md), and every index row's file must exist and contain that section; ids must be unique across headings and across rows.
 // Usage: node scripts/check-doc-index.mjs   (exit 1 with a list of problems)
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import path from "node:path";
@@ -27,7 +27,7 @@ export function checkDocIndex(repoRoot) {
   const problems = [];
   const docs = path.join(repoRoot, "docs");
   const specs = [
-    { index: "SYSTEM_MAP.md", folder: "system", idOf: (h) => /^### (\S+)/.exec(h)?.[1], levels: /^### /, skip: ["component-status"] },
+    { index: "SYSTEM_MAP.md", folder: "system", idOf: (h) => /^### (\S+)/.exec(h)?.[1] ?? /^## (\d+)\./.exec(h)?.[1], levels: /^(### |## \d+\.)/, skip: [] },
     { index: "ARCHITECTURE.md", folder: "architecture", idOf: (h) => { const m = /^## (\d+)\./.exec(h) ?? /^## (BL-\d+(?: \/ BL-\d+)?) —/.exec(h); return m?.[1].replace(" / ", "/"); }, levels: /^## / , skip: [] },
   ];
   for (const s of specs) {
@@ -50,7 +50,11 @@ export function checkDocIndex(repoRoot) {
         seen.set(id, f);
       }
     }
-    const byId = new Map(tableRows.map((r) => [r.id, r.file + ".md"]));
+    const byId = new Map();
+    for (const r of tableRows) {
+      if (byId.has(r.id)) problems.push(`${s.index}: duplicate index row id ${r.id}`);
+      byId.set(r.id, r.file + ".md");
+    }
     for (const r of tableRows) {
       if (!existsSync(path.join(folderPath, r.file + ".md"))) problems.push(`${s.index}: row ${r.id} points to missing file ${r.file}.md`);
     }

@@ -18,7 +18,7 @@ Read `docs/SYSTEM_MAP.md` first — it is the authoritative, current map of ever
 - **Tests:** co-located `*.test.ts` next to the module they test, run by Node's built-in `node:test` via `tsx` (`npm test`), no Jest/Vitest.
 - **Dependencies (supply-chain guards, owner TG 4166, 2026-11-12):** the project `.npmrc` sets `strict-allow-scripts=true` and `min-release-age=7` (npm ≥ 11.19). Only the packages listed in `package.json` `allowScripts` run install scripts (esbuild, unrs-resolver; fsevents denied, it ships a prebuilt binary); any other dependency with an install script fails the install. When a dependency change trips it, review the script, then `npm install-scripts approve|deny <pkg>` in the same commit as the lockfile change. The start/update scripts install with `npm ci` (exactly the committed lockfile), never `npm install`.
 
-Before touching any of these, run `git status`, check recent commits, and read `docs/SYSTEM_MAP.md`'s §4 "Статус компонентов" to know what is actually implemented vs. planned vs. deferred right now — that section is updated every phase and is more current than this playbook's prose could ever guarantee to be.
+Before touching any of these, run `git status`, check recent commits, and read `docs/system/component-status.md` (SYSTEM_MAP's former §4 "Статус компонентов") to know what is actually implemented vs. planned vs. deferred right now — that section is updated every phase and is more current than this playbook's prose could ever guarantee to be.
 
 ---
 

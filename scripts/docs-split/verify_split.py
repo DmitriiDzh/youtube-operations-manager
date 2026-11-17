@@ -8,14 +8,22 @@ and that no relative markdown link needed a `../` fix."""
 import sys, re, glob, os, subprocess, collections
 
 repo, rev = sys.argv[1], sys.argv[2]
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from split_docs import RENAMES  # the review-fix id renames in component-status.md and one reference
 def show(p): return subprocess.run(['git','-C',repo,'show',f'{rev}:{p}'],check=True,capture_output=True).stdout.decode()
-def lines_of(t): return [l for l in t.split('\n') if l.strip()]
+def lines_of(t):
+    out = []
+    for l in t.split('\n'):
+        for a, b in RENAMES:  # expected renamed form of the original line
+            if a in l: l = l.replace(a, b, 1)
+        if l.strip(): out.append(l)
+    return out
 ok = True
 ALLOWED = [r'^> Moved verbatim from (SYSTEM_MAP|ARCHITECTURE)\.md( §\d)? on 2026-11-17; index: \.\./(SYSTEM_MAP|ARCHITECTURE)\.md$',
            r'^Read this index whole; open only the subsystem file you touch\.$',
            r'^\| .* \|$', r'^Каждая строка — один подраздел', r'^Every section below was moved verbatim',
            r'^## Sections 4 and later$', r'^## 4\. Статус компонентов$', r'^Перенесён дословно в `docs/system/component-status\.md`',
-           r'^\|[-|]+\|$', r'^---$', r'^## 2\. Подсистемы$']
+           r'^\|[-|]+\|$', r'^---$', r'^## 2\. Подсистемы$']  # table rows (| ... |) cover the component-status rows too
 for doc, sub in (('SYSTEM_MAP','system'), ('ARCHITECTURE','architecture')):
     orig = lines_of(show(f'docs/{doc}.md'))
     index = lines_of(open(f'{repo}/docs/{doc}.md',encoding='utf-8').read())
