@@ -9227,6 +9227,29 @@ export async function listStoredVideosByChannel(channelId: string): Promise<Stor
 }
 
 /**
+ * BL-270 review (finding 2): only the fields of the channel's not-removed videos that the package scan reads from the local copy
+ * (`createPackageScanReads().videos`), by id -- the package-scan cache keys on them, so a local-copy write by any module (a channel
+ * sync, `video-details`' veto / plan date / Producer move / package metadata, an import) is seen at the next read. Read-only.
+ */
+export async function listVideoScanFieldsByChannel(
+  channelId: string
+): Promise<Array<{ videoId: string; title: string; description: string; privacyStatus: string; publishAt: string | null; publishedAt: string }>> {
+  const rows = await db
+    .select({
+      videoId: videos.id,
+      title: videos.title,
+      description: videos.description,
+      privacyStatus: videos.privacyStatus,
+      publishAt: videos.publishAt,
+      publishedAt: videos.publishedAt,
+    })
+    .from(videos)
+    .where(and(eq(videos.channelId, channelId), isNull(videos.removedOnYoutubeAt)))
+    .orderBy(videos.id);
+  return rows.map((row) => ({ ...row, publishAt: row.publishAt ?? null }));
+}
+
+/**
  * BL-243: the channel's videos a complete sync found removed on YouTube (the rows `listStoredVideosByChannel` hides), with when.
  * Read-only; the package scan, the plan schedule and `channel_video_list` tell a deleted video from one never synced.
  */

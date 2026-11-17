@@ -74,6 +74,7 @@ import { createWorkspaceExchangeFsForPublishing, isRealVideoFolder, resolveWorks
 import { createWorkspaceVideoFiles, videoNumberOfFolder, videosFolderSignature, writeUploadRecordFile } from "@/lib/workspace-videos";
 import { reportVersionFor } from "@/lib/shared-video-code";
 import { createPackageScan, isPackageThumbnailPath, VIDEOS_FOLDER, type PackageScanDeps } from "./package-scan";
+import { createPackageScanSignature } from "./scan-signature";
 import { imageKindOf } from "./packages";
 import { createPackageComposer } from "./package-composer";
 import { authorizedOAuth, createPublishingFinishWrites, createPublishingYoutubeWrites, freshAccessToken } from "./adapters/youtube-writes";
@@ -746,26 +747,32 @@ export async function removedVideosOf(channelId: string): Promise<Array<{ videoI
 }
 
 /**
- * BL-270 (owner TG 4662/4665): a cheap fingerprint of what the package scan reads that changes on its own -- every file under the
- * channel's `04 Videos/` (path, size, modification time), the removed-on-YouTube list and when the channel's copy was last synced or
- * checked. The same value means a scan now would read the same folder and the same copy, so a kept scan may be reused (the plan
- * progress's cache); null when there is no workspace or something cannot be read (then nothing is reused). Read-only.
+ * BL-270 (owner TG 4662/4665) and its review (finding 2): the package-scan cache's fingerprint (`./scan-signature.ts`) over the
+ * real ports -- `04 Videos/` by the walk's rules, the removed list, the copy's sync times and the scan's fields of the channel's
+ * videos rows. Read-only; null when something cannot be read.
  */
-export async function packageScanSignature(channelId: string): Promise<string | null> {
-  try {
-    const workspace = await createChannelWorkspacesCore().getWorkspace({ channelId });
-    if (!workspace.configured || !workspace.path) return null;
-    const files = createWorkspaceVideoFiles();
-    const store = createChannelVideoStoreAdapter();
-    const [folder, removed, channel] = await Promise.all([
-      videosFolderSignature({ listDir: (p) => files.listDir(p), statFile: (p) => files.statFile(p), join: (...parts) => path.join(...parts) }, workspace.path),
-      removedVideosOf(channelId),
-      store.getChannel(channelId),
-    ]);
-    return JSON.stringify([workspace.path, folder, removed, channel?.lastSyncedAt?.getTime() ?? null, channel?.removedCheckAt?.getTime() ?? null]);
-  } catch {
-    return null;
-  }
+function packageScanSignatures() {
+  const files = createWorkspaceVideoFiles();
+  const store = createChannelVideoStoreAdapter();
+  return createPackageScanSignature({
+    async workspace(channelId) {
+      const workspace = await createChannelWorkspacesCore().getWorkspace({ channelId });
+      return workspace.configured && workspace.path ? workspace.path : null;
+    },
+    folderSignature: (workspace) =>
+      videosFolderSignature({ listDir: (p) => files.listDir(p), statFile: (p) => files.statFile(p), join: (...parts) => path.join(...parts) }, workspace),
+    removedVideos: (channelId) => removedVideosOf(channelId),
+    async channelTimes(channelId) {
+      const channel = await store.getChannel(channelId);
+      return channel ? { lastSyncedAt: channel.lastSyncedAt?.getTime() ?? null, removedCheckAt: channel.removedCheckAt?.getTime() ?? null } : null;
+    },
+    videos: (channelId) => store.listVideoScanFields(channelId),
+  });
+}
+
+/** BL-270: the scan cache's fingerprint read before a scan (see `packageScanSignatures`). */
+export function packageScanSignature(channelId: string): Promise<string | null> {
+  return packageScanSignatures().signature(channelId);
 }
 
 /** The channel's uploads on this computer, newest first (the progress list in Content → «Публикация»). */
