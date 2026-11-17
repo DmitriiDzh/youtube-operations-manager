@@ -38,7 +38,7 @@
   `videoSha256`, `videoSizeBytes`, `captions` (шаг record сохраняет записи другого компьютера; добавление отказывает
   `captions_upload_unfinished`, пока запись ещё первая).
 - Уже загруженное видео: маршрут владельца `POST /api/channels/[channelId]/publishing/package-captions` (кнопки «Субтитры» →
-  «Добавить» / «Перезаписать субтитры» в «Ролики и релизы») и `producer_video_captions_add` (Producer API 1.26.0, CAPTIONS_WRITE);
+  «Добавить» / «Перезаписать субтитры» на карточке слота «Плана» и в «⋯» → пакеты релизов; до BL-266 — «Ролики и релизы») и `producer_video_captions_add` (Producer API 1.26.0, CAPTIONS_WRITE);
   сервис `publishing/package-captions.ts`. Agent API 4.24.0, Factory API 1.53.0 (поля `captions`, коды проблем; `docs/interfaces.md`).
 
 ### 2.9bl2 Замена обложки загруженного видео (BL-255, ADR 0069) — **IMPLEMENTED** (dev 04bf5e08, a6ea8d43)
