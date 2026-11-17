@@ -7,12 +7,16 @@ export const PACKAGES_CACHE_MS = 60_000;
 /**
  * BL-270 (owner TG 4662/4665): the plan schedule reads every minute too, so a one-minute answer was always just too old and every
  * tick scanned again. Past the first minute a kept answer is reused for up to 5 minutes, but only while the scan's own cheap
- * fingerprint (`signature`: the `04 Videos/` files with their sizes and modification times, the removed list, the copy's sync time)
- * is unchanged -- an edited or new manifest is seen at the next read. What the fingerprint does not cover (a setting, the language
+ * fingerprints are unchanged (`signature`: the `04 Videos/` files with their sizes and modification times, the removed list, the
+ * copy's sync times and -- review finding 2 -- the scan's fields of the channel's videos rows, so a `video-details` local-copy write
+ * counts; `filesSignature`, review finding 3: the files the kept scan resolved, through symlinks and below the walk's depth) -- an
+ * edited or new manifest, a re-render or a veto is seen at the next read. What the fingerprint does not cover (a setting, the language
  * baseline, a review decision made on another computer) is at most 5 minutes old; this computer's review decisions still drop the
  * answer at once (`invalidatePackagesEntry`).
  */
 export const PACKAGES_CACHE_MAX_MS = 5 * 60_000;
+/** BL-270 review: how much earlier than the scan's start a resolved file must have last changed for the result to be reused late. */
+const FILE_CLOCK_SLACK_MS = 2_000;
 
 export type PackagesEntry = {
   at: number;
@@ -21,6 +25,8 @@ export type PackagesEntry = {
   removedVideoIds: Set<string>;
   /** BL-270: the scan's fingerprint read just BEFORE it (a change during the scan then reads as a change); null = never reused late. */
   signature?: string | null;
+  /** BL-270 review (finding 3): the fingerprint of the files this scan resolved, taken after it; null = never reused late. */
+  filesSignature?: string | null;
 };
 
 export type PackagesCacheDeps = {
@@ -29,6 +35,12 @@ export type PackagesCacheDeps = {
   synthetic(channelId: string): Promise<boolean>;
   /** BL-270: the scan's cheap fingerprint (null: unknown -- nothing reused past the first minute). Optional: omitted = as before. */
   signature?(channelId: string): Promise<string | null>;
+  /**
+   * BL-270 review (finding 3): the fingerprint of the files a scan resolved (the manifest, video, thumbnails and upload record it
+   * names, through symlinks and below the folder walk's depth) and their newest modification time. Optional: omitted = only
+   * `signature` decides.
+   */
+  filesSignature?(channelId: string, packages: readonly ScannedPackage[]): Promise<{ key: string; newestMtimeMs: number } | null>;
   now(): number;
   cache: Map<string, PackagesEntry>;
 };
@@ -44,9 +56,17 @@ export function createPackagesReader(deps: PackagesCacheDeps) {
     if (hit && deps.now() - hit.at < PACKAGES_CACHE_MS) return hit;
     const signatureOf = async () => (deps.signature ? await deps.signature(channelId).catch(() => null) : null);
     const signature = hit?.signature != null && deps.now() - hit.at < PACKAGES_CACHE_MAX_MS ? await signatureOf() : undefined;
-    // BL-270: the same folder and copy as at the kept scan -- reused (its `at` stays, so it is never older than the 5 minutes).
-    if (hit && signature != null && signature === hit.signature) return hit;
+    // BL-270: the same folder and copy as at the kept scan -- reused (its `at` stays, so it is never older than the 5 minutes) when
+    // the files it resolved are unchanged too.
+    if (hit && signature != null && signature === hit.signature) {
+      if (!deps.filesSignature) return hit;
+      if (hit.filesSignature != null && hit.packages) {
+        const files = await deps.filesSignature(channelId, hit.packages).catch(() => null);
+        if (files && files.key === hit.filesSignature) return hit;
+      }
+    }
     const before = signature !== undefined ? signature : await signatureOf();
+    const startedAt = deps.now();
     const read = await deps.removedVideos(channelId).then(
       (list) => ({ list, ok: true }),
       () => ({ list: [] as Array<{ videoId: string; removedAt: string }>, ok: false })
@@ -55,7 +75,21 @@ export function createPackagesReader(deps: PackagesCacheDeps) {
     try {
       const [scan, synthetic] = await Promise.all([deps.scan(channelId, read.list), deps.synthetic(channelId)]);
       if (scan.status !== "ok" || !("packages" in scan)) return { at: deps.now(), packages: null, synthetic: false, removedVideoIds };
-      const entry: PackagesEntry = { at: deps.now(), packages: scan.packages, synthetic, removedVideoIds, signature: before };
+      // BL-270 review (finding 3): a resolved file modified at or after the scan began (2 s for coarse file-system clocks) may have
+      // been read before the change -- such a result is never reused past the first minute.
+      let filesSignature: string | null | undefined;
+      if (deps.filesSignature && before != null) {
+        const files = await deps.filesSignature(channelId, scan.packages).catch(() => null);
+        filesSignature = files && files.newestMtimeMs < startedAt - FILE_CLOCK_SLACK_MS ? files.key : null;
+      }
+      const entry: PackagesEntry = {
+        at: deps.now(),
+        packages: scan.packages,
+        synthetic,
+        removedVideoIds,
+        signature: filesSignature === null ? null : before,
+        ...(filesSignature !== undefined ? { filesSignature } : {}),
+      };
       if (read.ok) deps.cache.set(channelId, entry);
       return entry;
     } catch {

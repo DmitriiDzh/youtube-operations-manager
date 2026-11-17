@@ -141,3 +141,53 @@ test("BL-270: inside the first minute nothing extra is read (the fingerprint is 
   assert.equal(state.signatureReads, reads);
   assert.equal(state.scans, 1);
 });
+
+// Review of BL-270 (finding 3): the folder fingerprint stops at the walk's depth, but a manifest may name a deeper file
+// (`renders/V12.mp4`) or a symlink. The files a kept scan resolved are fingerprinted too; a re-render of one is scanned at the next
+// read past the minute, and a result whose files changed while it was being made is never reused late.
+function filesReader(opts: { files: () => { key: string; newestMtimeMs: number } | null }) {
+  const state = { now: 1_000_000, scans: 0 };
+  const packagesOf = createPackagesReader({
+    removedVideos: async () => [],
+    scan: async () => {
+      state.scans++;
+      return { status: "ok", packages: [] };
+    },
+    synthetic: async () => false,
+    signature: async () => "same-folder",
+    filesSignature: async () => opts.files(),
+    now: () => state.now,
+    cache: new Map<string, PackagesEntry>(),
+  });
+  return { state, packagesOf };
+}
+
+test("BL-270 review (negative): a resolved file re-rendered below the walk's depth (same folder fingerprint) is scanned again", async () => {
+  let files = { key: "render-1", newestMtimeMs: 0 };
+  const { state, packagesOf } = filesReader({ files: () => files });
+  await packagesOf("UC1");
+  state.now += 60_000;
+  await packagesOf("UC1");
+  assert.equal(state.scans, 1, "unchanged files: reused");
+  files = { key: "render-2", newestMtimeMs: 0 };
+  state.now += 60_000;
+  await packagesOf("UC1");
+  assert.equal(state.scans, 2, "re-rendered: scanned again");
+  state.now += 60_000;
+  await packagesOf("UC1");
+  assert.equal(state.scans, 2, "and kept under the new files fingerprint");
+});
+
+test("BL-270 review (negative): a file changed while the scan ran, or an unreadable files fingerprint, is never reused late", async () => {
+  // Modified "now" (at the scan's start): the scan may have read the old bytes.
+  const racing = filesReader({ files: () => ({ key: "k", newestMtimeMs: 1_000_000 }) });
+  await racing.packagesOf("UC1");
+  racing.state.now += 60_000;
+  await racing.packagesOf("UC1");
+  assert.equal(racing.state.scans, 2);
+  const unreadable = filesReader({ files: () => null });
+  await unreadable.packagesOf("UC1");
+  unreadable.state.now += 60_000;
+  await unreadable.packagesOf("UC1");
+  assert.equal(unreadable.state.scans, 2);
+});

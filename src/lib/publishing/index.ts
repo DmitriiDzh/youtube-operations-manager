@@ -73,7 +73,7 @@ import { createYoutubeClient, getVideoMetadataContext, getVideoUploadState, list
 import { createWorkspaceExchangeFsForPublishing, isRealVideoFolder, resolveWorkspaceFileForPublishing, writeVideoFolderFile } from "./adapters/files";
 import { createWorkspaceVideoFiles, videoNumberOfFolder, videosFolderSignature, writeUploadRecordFile } from "@/lib/workspace-videos";
 import { reportVersionFor } from "@/lib/shared-video-code";
-import { createPackageScan, isPackageThumbnailPath, VIDEOS_FOLDER, type PackageScanDeps } from "./package-scan";
+import { createPackageScan, isPackageThumbnailPath, VIDEOS_FOLDER, type PackageScanDeps, type ScannedPackage } from "./package-scan";
 import { createPackageScanSignature } from "./scan-signature";
 import { imageKindOf } from "./packages";
 import { createPackageComposer } from "./package-composer";
@@ -747,9 +747,9 @@ export async function removedVideosOf(channelId: string): Promise<Array<{ videoI
 }
 
 /**
- * BL-270 (owner TG 4662/4665) and its review (finding 2): the package-scan cache's fingerprint (`./scan-signature.ts`) over the
- * real ports -- `04 Videos/` by the walk's rules, the removed list, the copy's sync times and the scan's fields of the channel's
- * videos rows. Read-only; null when something cannot be read.
+ * BL-270 (owner TG 4662/4665) and its review (findings 2, 3): the package-scan cache's fingerprints (`./scan-signature.ts`) over the
+ * real ports -- `04 Videos/` by the walk's rules, the removed list, the copy's sync times, the scan's fields of the channel's videos
+ * rows, and the files a kept scan resolved (followed through symlinks). Read-only; null when something cannot be read.
  */
 function packageScanSignatures() {
   const files = createWorkspaceVideoFiles();
@@ -767,12 +767,26 @@ function packageScanSignatures() {
       return channel ? { lastSyncedAt: channel.lastSyncedAt?.getTime() ?? null, removedCheckAt: channel.removedCheckAt?.getTime() ?? null } : null;
     },
     videos: (channelId) => store.listVideoScanFields(channelId),
+    async stat(absolutePath) {
+      try {
+        const [info, real] = await Promise.all([stat(absolutePath), realpath(absolutePath)]);
+        return { size: info.size, mtimeMs: info.mtimeMs, realPath: real };
+      } catch {
+        return null;
+      }
+    },
+    join: (...parts) => path.join(...parts),
   });
 }
 
 /** BL-270: the scan cache's fingerprint read before a scan (see `packageScanSignatures`). */
 export function packageScanSignature(channelId: string): Promise<string | null> {
   return packageScanSignatures().signature(channelId);
+}
+
+/** BL-270 review (finding 3): the fingerprint of the files a kept scan resolved (see `packageScanSignatures`). */
+export function packageScanFilesSignature(channelId: string, packages: readonly ScannedPackage[]): Promise<{ key: string; newestMtimeMs: number } | null> {
+  return packageScanSignatures().filesSignature(channelId, packages);
 }
 
 /** The channel's uploads on this computer, newest first (the progress list in Content → «Публикация»). */
