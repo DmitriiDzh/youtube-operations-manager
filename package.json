@@ -15,6 +15,7 @@
     "cli:publishing-g1": "node --import tsx src/cli/publishing-g1.ts",
     "operation-lock": "node --import tsx src/cli/operation-lock.ts",
     "media": "node --import tsx src/cli/media.ts",
+    "wait": "node --no-deprecation --import tsx src/cli/wait.ts",
     "publish:snapshot": "node scripts/publish-snapshot.mjs"
   },
   "dependencies": {
