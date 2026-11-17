@@ -1465,7 +1465,11 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 
 - **Affected components:** `src/lib/device-sync/`, `src/instrumentation.ts` (ADR 0012).
 - **Residual risks:**
-  - **Changes made just before a manual stop.** Changes from the last ~minute before a manual stop
+  - **Wider unpublished window (BL-270, 2026-11-17, owner TG 4662/4665).** Automatic exports run at most once per 10 minutes
+    (was 60 s), so a change made on one computer can stay unpublished for up to ~10 minutes; editing on the other computer in that
+    window gives a divergence prompt (fails toward "ask", never toward overwrite). "Sync now" and the idle-shutdown flush are forced.
+    Re-evaluate if the owner sees divergence prompts after switching computers.
+  - **Changes made just before a manual stop.** Changes from the last ~10 minutes (BL-270; was ~1 minute) before a manual stop
     (`stop.sh` / SIGTERM) are not published until this device's server runs again. There is
     deliberately no export in signal handlers: a killed export leaves an operation lock that is
     never auto-released. The idle shutdown does flush.

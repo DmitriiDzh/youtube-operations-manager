@@ -36,7 +36,8 @@ human out of the safe cases only:
    generations behind can fast-forward in one import. The manifest schema is unchanged, so older
    builds still read new snapshots.
 3. **Decision table:**
-   - dirty with nothing newer: export, at most once a minute;
+   - dirty with nothing newer: export, at most once a minute (amended 2026-11-17, BL-270, owner TG 4662/4665: at most once per
+     10 minutes; the dirty check is cached behind per-table change counters -- see DEVICE_AUTO_SYNC_PLAN.md §3.5);
    - clean with a fast-forward available: import;
    - anything else is a divergence, shown on both computers via the header bell.
 

@@ -46,7 +46,7 @@ export function OperationLockControl({
 }: {
   onChanged?: () => void;
   /** Render nothing unless something needs attention: no lock, or a live export (which takes about
-   * a second and runs about once a minute under automatic sync) stays invisible. */
+   * a second and runs at most every 10 minutes under automatic sync, BL-270) stays invisible. */
   quiet?: boolean;
 }) {
   const t = useT();
