@@ -107,7 +107,7 @@ into, treat it as `proposed` and say so, rather than guessing upward.
 
 1. Read the phase's section in `docs/roadmap/FUTURE_PHASES.md` — objective, planned
    capabilities, constraints, deliverable.
-2. Look at what already exists (`docs/SYSTEM_MAP.md`, the actual `src/**` tree) so proposed
+2. Look at what already exists (`docs/SYSTEM_MAP.md` index and the `docs/system/<domain>.md` it points to, the actual `src/**` tree) so proposed
    items describe real next steps, not something already built or something that skips a
    missing dependency.
 3. Break the deliverable into a handful of vertically-sliceable items — each one should be

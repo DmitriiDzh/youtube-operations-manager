@@ -229,19 +229,19 @@ gateway module, with a toggle, a traffic counter and an inventory test (`AGENTS.
 
 | When this changes... | ...update these |
 |---|---|
-| Architecture (new domain module, new data flow, new security boundary) | `docs/ARCHITECTURE.md` (detailed "why"), `docs/SYSTEM_MAP.md` (concise "where") |
-| A new feature is implemented | `docs/SYSTEM_MAP.md` §4 status table, `docs/interfaces.md` if it adds a user-facing entry point, `docs/ARCHITECTURE.md` if it changes a data flow |
-| Database schema changes | `docs/ARCHITECTURE.md` (schema section), and — only if the change is non-additive — a new ADR under `docs/decisions/` per §10 of `AGENTS.md`/this playbook's §6.3 |
-| API or MCP contracts change | `docs/interfaces.md`, and `docs/ARCHITECTURE.md`'s API-routes/MCP section if the change affects the security model, not just the route list |
+| Architecture (new domain module, new data flow, new security boundary) | the domain file in `docs/architecture/` (detailed "why") and in `docs/system/` (concise "where"), **plus one row in each index** (`docs/ARCHITECTURE.md`, `docs/SYSTEM_MAP.md`); a new domain gets a new file in both folders (`scripts/check-doc-index.mjs` checks the rows) |
+| A new feature is implemented | its `docs/system/<domain>.md` section, its row in `docs/SYSTEM_MAP.md`'s §2 index, `docs/system/component-status.md`, `docs/interfaces.md` if it adds a user-facing entry point, `docs/architecture/<domain>.md` if it changes a data flow |
+| Database schema changes | `docs/architecture/persistence-tests.md` (schema section), and — only if the change is non-additive — a new ADR under `docs/decisions/` per §10 of `AGENTS.md`/this playbook's §6.3 |
+| API or MCP contracts change | `docs/interfaces.md`, and the API-routes/MCP section in `docs/architecture/channel-video-sync.md` if the change affects the security model, not just the route list |
 | A new authorized YouTube writer or write exception (owner-approved) | `docs/WRITE_AUTHORIZATIONS.md` (the binding list `AGENTS.md` §F points to; add the entry there, never back into `AGENTS.md`), `docs/PROJECT_SPEC.md` §21, the governing ADR |
 | A rule in `AGENTS.md` gets a long explanation or history | Keep the rule short in `AGENTS.md`; put the long wording in `docs/AGENT_RULES_DETAIL.md` under the same section letter |
-| Security boundaries change | `docs/ARCHITECTURE.md` (the specific limitation section), `docs/TECHNICAL_DEBT.md` (add/update/resolve the relevant RISK entry — do not silently drop a risk without recording it as `RESOLVED` with evidence) |
-| A development phase is completed | `docs/ROADMAP_STATUS.md` (status, completion date, commit hash, next assignment, open blockers — the canonical execution log), `docs/SYSTEM_MAP.md`'s header ("Current as of Phase N") and §4, `docs/ARCHITECTURE.md`'s header, `docs/PROJECT_SPEC.md` is **not** rewritten (it is the requirements source of truth, not a changelog) |
+| Security boundaries change | the limitation section in `docs/architecture/<domain>.md`, `docs/TECHNICAL_DEBT.md` (add/update/resolve the relevant RISK entry — do not silently drop a risk without recording it as `RESOLVED` with evidence) |
+| A development phase is completed | `docs/ROADMAP_STATUS.md` (status, completion date, commit hash, next assignment, open blockers — the canonical execution log), the index headers of `docs/SYSTEM_MAP.md` ("Current as of Phase N") and `docs/ARCHITECTURE.md`, `docs/system/component-status.md`, `docs/PROJECT_SPEC.md` is **not** rewritten (it is the requirements source of truth, not a changelog) |
 | The project owner records or updates strategic future-phase planning (not yet assigned/implemented) | `docs/roadmap/FUTURE_PHASES.md` — extend it, never create a competing document; never mark anything there as implemented; `docs/ROADMAP_STATUS.md` is untouched by this (it records only what actually happened) |
 | Any text the Web UI shows (new, changed or removed) | `src/lib/ui-text/locales/<every language>/<area>.ts` in the same change (§6.9 item 11) |
 | A backlog item derived from `FUTURE_PHASES.md` is proposed, assigned, started, finished, or dropped | `docs/roadmap/BACKLOG.md` (via the `roadmap-backlog` skill, `.claude/skills/roadmap-backlog/SKILL.md`) — a `done` row must be accompanied by the matching `docs/ROADMAP_STATUS.md` update in the same pass, never a separately-forgotten follow-up |
 
-Never describe a deferred or planned capability as implemented in any of these documents — mark it explicitly `PLANNED`/`DEFERRED`/`NOT YET IMPLEMENTED` (§7 of the Phase 4.5 assignment; also `docs/SYSTEM_MAP.md`'s existing §4 convention).
+Never describe a deferred or planned capability as implemented in any of these documents — mark it explicitly `PLANNED`/`DEFERRED`/`NOT YET IMPLEMENTED` (§7 of the Phase 4.5 assignment; also the existing convention in `docs/system/component-status.md`).
 
 ---
 
@@ -256,9 +256,9 @@ Reusable checklist for any change, regardless of size:
 - [ ] `npm run build` passes.
 - [ ] Security impact reviewed: does this touch authentication, channel-context validation, request-size handling, or a YouTube write path? If yes, was a specific test added for the failure case (wrong channel, oversized input, missing auth)?
 - [ ] Compatibility reviewed: does this break an existing API/MCP contract, or change a database column's meaning? If yes, was an ADR written first (§10)?
-- [ ] Documentation updated per the table in §6.12.
+- [ ] Documentation updated per the table in §6.12: the touched domain file(s) in `docs/system/` / `docs/architecture/` and their index rows.
 - [ ] `git status` and `git diff --check` inspected — no secrets, no `data/*.db`, no scratch/temp files staged.
-- [ ] Known limitations documented (in `docs/TECHNICAL_DEBT.md` if new, or in the relevant `docs/ARCHITECTURE.md` section if it's a narrower implementation note).
+- [ ] Known limitations documented (in `docs/TECHNICAL_DEBT.md` if new, or in the relevant `docs/architecture/<domain>.md` section if it's a narrower implementation note).
 
 This checklist does not replace human review or authorization — it is what should be true **before** presenting work for that review, per `AGENTS.md`'s Git/release authorization boundaries.
 

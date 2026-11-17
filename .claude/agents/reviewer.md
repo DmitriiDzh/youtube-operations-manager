@@ -21,7 +21,7 @@ never switch branches in a main folder. Judge the code yourself; do not trust th
 | PSD2Live `/Volumes/Samsung T9/YouTube/00 Tools/PSD2Live-YTM` | `ytm` | `AGENTS.md` in that folder |
 
 Read the diff with `git -C <repo> diff <base>...<branch>` and `git -C <repo> log <base>..<branch>`. Read surrounding code
-as needed; for YTM docs grep the subsystem's section of `docs/SYSTEM_MAP.md` / `ARCHITECTURE.md`, never whole files.
+as needed; for YTM docs read the index `docs/SYSTEM_MAP.md` / `ARCHITECTURE.md` and then only the one file of the touched subsystem in `docs/system/` / `docs/architecture/`.
 
 ## Running tests (only in the branch's own worktree, never in a main folder)
 

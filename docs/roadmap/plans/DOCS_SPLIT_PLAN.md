@@ -1,7 +1,7 @@
 # DOCS_SPLIT_PLAN — split SYSTEM_MAP.md and ARCHITECTURE.md into an index + one file per subsystem
 
-Status: **plan only, not implemented** (2026-11-17, token plan item 3, stage B). Nothing here is done until the owner
-assigns it. Stage A (slim `AGENTS.md`, `docs/WRITE_AUTHORIZATIONS.md`, `docs/AGENT_RULES_DETAIL.md`, `docs/archive/`)
+Status: **implemented on `feature/docs-split-b`, not merged** (2026-11-17, token plan item 3, stage B; owner assigned it, TG 4715).
+Scripts: `scripts/docs-split/` (`split_docs.py`, `verify_split.py`), guard `scripts/check-doc-index.mjs`. Stage A (slim `AGENTS.md`, `docs/WRITE_AUTHORIZATIONS.md`, `docs/AGENT_RULES_DETAIL.md`, `docs/archive/`)
 is on `feature/docs-slim`.
 
 ## 1. Why
