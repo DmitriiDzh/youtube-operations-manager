@@ -48,13 +48,13 @@ which BL-270 made cheaper, so it is polled at most every 15 s.
 | target | module (state) | id the agent already has | still running | final: success (exit 0) | final: failure (exit 1) | read, poll |
 |---|---|---|---|---|---|---|
 | `upload` | `src/lib/publishing/` (`publishing_uploads`, this computer) | Producer: `uploadId` (`producer_upload_queue_list` / `_add`). Factory / worker: none, only `channelId` + video code. So `id` = `uploadId` **or** the video code with `channelId`, which picks the newest row of that channel and video here. | `queued`, `uploading`, `processing`, `finishing`, `paused` (reason `quota_exceeded` / `upload_limit`, resumes by itself at `pausedUntil`) | `done` (after the translations, captions, thumbnail, read-back and date steps) | `failed`, `cancelled` | SQLite row, 10 s |
-| `media_session` | `src/lib/media-generation/` (`media_sessions`) | `sessionId` from `factory_media_start_session` / `agent_factory_start_session` | `pending` (waiting for the owner), `approved`, `waiting_capacity`, `starting`; with `until: ended` also `running`, `stopping` | `until: ready` (default): `running`. `until: ended`: `done` | `failed`, `rejected`, `interrupted`, and with `until: ready` also `stopping` / `done` before it was ready | SQLite row, 5 s |
+| `media_session` | `src/lib/media-generation/` (`media_sessions`, each session bound to one `channelId`) | `sessionId` from `factory_media_start_session` / `agent_factory_start_session` | `pending` (waiting for the owner), `approved`, `waiting_capacity`, `starting`; with `until: ended` also `running`, `stopping` | `until: ready` (default): `running` (`readyAt` set; stage 1 confirms that `running` means ready). `until: ended`: `done` | `failed`, `rejected`, `interrupted`, and with `until: ready` also `stopping` / `done` before it was ready | SQLite row, 5 s |
 | `media_job` | `src/lib/media-generation/` (`media_jobs`) | `jobId` from `factory_media_create_job` | `queued`, `submitted`, `generating`, `transferring` | `done` | `failed`, `cancelled` | SQLite row, 5 s |
 | `gemini_job` | `src/lib/gemini-media/` (`gemini_media_jobs`, kinds image / video / speech / voice_design) | `jobId` (`gm_…`) from `factory_gemini_create_job` / `factory_speech_create_job` (provider gemini) | `queued`, `submitting`, `running` | `done` | `failed` | SQLite row, 5 s |
 | `speech_job` | `src/composition/speech.ts`, dispatched by prefix: `gm_` goes to gemini-media, `el_` to elevenlabs-speech | `jobId` from `factory_speech_create_job` | as the provider's job | `done` | `failed` | SQLite row, 5 s |
 | `sound_job` (sfx, music) | `src/lib/elevenlabs-speech/` (`elevenlabs_speech_jobs`, kinds sfx / music). The speech surface answers "not found" for other kinds, so the port reads the provider's `getJob` | `jobId` (`el_…`) from `factory_sfx_create_job` / `factory_music_create_job` | `queued`, `submitting`, `running` | `done` | `failed` | SQLite row, 5 s |
 | `translation_request` | `src/lib/localization-review/requests.ts` over `sync-gateway/change-drafts` (Automerge) | `requestId` (with `channelId`) from `*_localization_requests_list` | `requested`, `in_progress`; with `until: claimed` only `requested` | `done`; with `until: claimed`: `in_progress` or later | `failed`, `cancelled`, `partly_done` (Q3) | Automerge, 15 s |
-| `storyboard_review` | `src/lib/storyboards/` (Automerge) | `storyboardId` (with `channelId`) after `factory_storyboard_submit` | `in_review` | `approved` | `changes_requested` (outcome `changes_requested`; the owner's note is in the result) | Automerge, 15 s |
+| `storyboard_review` | `src/lib/storyboards/` (Automerge) | `storyboardId` (with `channelId`) after `factory_storyboard_submit` | `in_review` (a `draft` that was never submitted returns at once with `final: false`, outcome `not_in_review`, exit 2) | `approved` | `changes_requested` (outcome `changes_requested`; the owner's note is in the result) | Automerge, 15 s |
 | `storyboard_render` | `src/lib/storyboards/` (render verdicts, `renderStateOf`) | `renderId` (with `channelId` + `storyboardId`) from `factory_storyboard_attach_render` | `in_review` (no verdict yet) | `approved` | `changes_requested` | Automerge, 15 s |
 | `restart` | `src/lib/restart-when-idle/` (`restart_requests`) | the request `id` from `*_restart_status`, or `current` (the request open or restarting when the wait starts; none = `no_restart_request`) | `open`, `restarting` | `done`, with `toVersion` / `toSchema` | `expired` (24 h), `cancelled` (the owner) | SQLite row, 5 s |
 | weekly build | `src/lib/weekly-build/`. **No durable state in YT Manager.** The job lives in the factory launcher; every status read runs `factory_launch.py … status --json` (Python, up to 60 s). AC 11 (`no-agent.test.ts`) keeps every MCP path away from the module, and agents never get the `jobId` (only the owner starts the build). | none | — | — | — | **deferred (Q4)** |
@@ -72,7 +72,17 @@ ports are composed at the app layer in `src/composition/wait-targets.ts`, so no 
 and disabling one module removes only its target (`target_unavailable`).
 
 Every port uses an existing **read** function of its module. A new read is added only where none exists, for example a plain
-`getUploadRow(id)` in publishing. It never reaches an upload writer: `no-agent-upload-tool.test.ts` stays unchanged.
+`getUploadRow(id)` in publishing. It never reaches an upload writer: `no-agent-upload-tool.test.ts` stays unchanged, because no
+`*_wait` name matches its upload, schedule or publish pattern and no writer name is used. The sleep is `shared-async`'s `sleep`.
+`operation-progress` is an in-memory registry of the Web UI's operations, not a poll helper, so nothing existing is duplicated
+(§D).
+
+**How the wiring fits the pinned tests.**
+- `factory-server.ts` may import only the SDK, zod, `shared-domain` and `shared-video-code` (`factory-server.test.ts` §2.5(3)).
+  So `factory_wait` calls a new injected dep `deps.wait.waitFor(input, scope)` and imports nothing new.
+- The factory route's module allowlist gains `@/composition/wait-targets`. The read-name pattern in the same test gains `wait`.
+- These are **justified test changes** (§L): the requirement changed (a new read tool, owner TG 3617/3618), as every earlier BL
+  that added a factory module did. No expected value is weakened.
 
 ### 3.2 MCP tools: `factory_wait`, `agent_wait`, `producer_wait`
 
@@ -84,7 +94,7 @@ Every port uses an existing **read** function of its module. A new read is added
 { target, id, final, outcome, status, snapshot, waitedSeconds, nextCallHint? }
 ```
 - `outcome` is one of: `succeeded`, `failed`, `partly_failed`, `cancelled`, `rejected`, `changes_requested`, `expired`, `still_running`,
-  `blocked`, `restarting`, `server_stopping`.
+  `blocked`, `not_in_review`, `restarting`, `server_stopping`.
 - `snapshot` is what the matching get tool shows, minus anything large.
 - When `final` is false, `nextCallHint` names the CLI for long waits.
 
@@ -108,8 +118,12 @@ Every port uses an existing **read** function of its module. A new read is added
   - `channelId` is put in when left out. Any other channel → `CHANNEL_NOT_ACTIVE`.
   - Each port checks that the resource's own `channelId` is the token's channel. A resource of another channel answers
     exactly like a missing one (`not_found`), so a worker learns nothing about another channel's ids.
-  - Media sessions follow the rule `agent_factory_get_session` already applies. `restart` is allowed: the worker already has
-    `agent_restart_status`.
+  - `pinFactoryDepsToChannel` gets a pinned `wait` wrapper that passes `scope = { channelId }` to every port. For media
+    sessions and jobs it is the same check as `requireOwnSession` / `requireOwnJob` (`session.channelId` / `job.channelId`; any
+    mismatch is `media_session_not_found` / `media_job_not_found`). Gemini and speech follow the pinned `getJobs` rule
+    (another channel's job is "not found").
+  - `restart` is allowed: the worker already has `agent_restart_status`. Restart status is wired in the factory route outside
+    `createFactoryChannelDeps()`, so the channel route injects the restart reader into the wait composition itself.
   - Class `bound`. It is not in `WORKER_FACTORY_WRITE_TOOL_NAMES`, so it writes no worker-log row.
 - **`producer_wait`** (`producer-only`): `upload` for any channel, which is what `producer_upload_queue_list` already shows.
   `restart` too, if Q6 says yes. Nothing else: the Producer's tools do not see media, speech, storyboards or requests. Each call
@@ -140,6 +154,13 @@ one at once. Nothing is printed between rounds.
 **Connection loss** (refused, reset, 502/503, abort): retry every 5 s.
 - `restart` target: retry until the deadline. Losing the server is the expected path. When it is back, the request is `done`
   with the new version: exit 0.
+  - `restart current` first allows **30 s** for a request to appear. `restart-when-idle.sh` only writes a file, and the server
+    takes it up within 15 s. Only after that is the answer `no_restart_request`.
+  - The CLI **pins the request id** from the first answer that names one. After the restart, `current` would resolve to
+    nothing.
+  - `finalizeBoot` can satisfy a request file that never became a row. To cover that, the restart port's result carries
+    `serverStartedAt` (this process's start time; a new field). With no row pinned, a loss followed by a later `serverStartedAt`
+    also counts as done: exit 0, with the new version from the status.
 - Any other target: retry for up to 10 minutes of continuous loss. An upload resumes after a restart, so the wait does too.
   Past 10 minutes: `server_unreachable`.
 - Server unreachable at the first round: 60 s grace, then exit 2.
@@ -157,16 +178,29 @@ one at once. Nothing is printed between rounds.
 
 Usage errors also give one JSON line (`error: { code }`) and exit 2. stderr stays empty except for Node's own crashes.
 
-**How agents use it:**
-- Claude Code: `run_in_background`. It notifies on exit, with zero tokens while it waits.
-- Codex and others: a background shell job.
-- The MCP tool is for short waits or for clients without background shells.
+**How agents use it.** An agent in a channel folder runs `npm --prefix <app folder> run --silent wait -- …`, where the app
+folder is the folder the server runs from. The agent never needs this repository's path.
+- **Claude Code:** `run_in_background`. The harness notifies the session when the process exits, so nothing is spent while it
+  waits.
+- **Codex:** unverified. Nothing shows that Codex wakes a session when a background job exits. The working assumption is a
+  **foreground** shell call that blocks: one tool call, one result. Its limit is Codex's own command timeout. Stage 0 measures
+  both, and Q7 asks which client each role runs.
+- **MCP-only clients:** the tool. With the 50 s default and no client configuration, such an agent re-calls about as often as
+  it polls today. The gain comes only with a raised client timeout: Codex `tool_timeout_sec`, or Claude Code's per-server
+  `timeout` (ms), which also raises its idle limit (idle = max(300 s, timeout)). Both config lines go into
+  `AGENT_ISOLATION_SETUP.md`.
+
+**Shell scripts.** `scripts/media/job-run.sh` and `pod-watch.sh` already wait inside the tokenless operator CLI
+(`npm run media`) without any LLM. They stay as they are. A script that needs a channel-scoped wait uses this CLI with a token
+variable. A tokenless operator mode for `wait` is out of scope (Q8).
 
 ### 3.4 The cap per MCP call: 240 s (default 50 s), and why
 
-- **Claude Code's idle limit is 300 s.** With JSON responses nothing is sent while the call blocks, so 240 s leaves 60 s of margin
+- **Claude Code's idle limit is 300 s** (read from the 2.1.322 binary: `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT` default 300000 for
+  non-stdio servers; the meaning is inferred from the code, and stage 0 confirms it). With JSON responses nothing is sent while the call blocks, so 240 s leaves 60 s of margin
   for the last poll, the response and clock skew.
-- **Codex's default `tool_timeout_sec` is 60 s.** The default block is therefore **50 s**, which works with every client
+- **Codex's default `tool_timeout_sec` is 60 s** (OpenAI docs, https://developers.openai.com/codex/mcp; some third-party
+  reports mention 120 s or 300 s in newer builds, so stage 0 measures it). The default block is therefore **50 s**, which works with every client
   unconfigured. A Codex agent that sets `tool_timeout_sec = 300` in its server table may pass up to 240.
   `docs/AGENT_ISOLATION_SETUP.md` gets that config line.
 - **9–10 minutes is not safe** on either client without per-server configuration. A killed call also leaves the agent with nothing
@@ -196,7 +230,9 @@ Derived from the owner rule and §F, §G, §M and ADR 0049. Expected values are 
 - **AC-WT-07** A blocked call returns within 1 s of the process's SIGTERM (`server_stopping`), and within one poll after a restart
   request turns `restarting` (`restarting`). It never holds the graceful stop.
 - **AC-WT-08** `npm run --silent wait -- restart current` across a real restart-when-idle cycle exits 0. Its JSON carries the
-  request's `toVersion` / `toSchema`. The connection loss in between prints nothing.
+  request's `toVersion` / `toSchema`. The connection loss in between prints nothing. This holds also when the wait starts
+  immediately after `restart-when-idle.sh`, before the server took up the file (the 30 s grace), and when boot satisfied the file
+  with no row (`serverStartedAt`).
 - **AC-WT-09** For any other target, a connection loss shorter than 10 minutes is retried silently and the wait goes on. A longer
   one exits 2 (`server_unreachable`).
 - **AC-WT-10** Channel worker: `agent_wait` refuses another `channelId` (`CHANNEL_NOT_ACTIVE`). A resource that exists but
@@ -216,11 +252,17 @@ Derived from the owner rule and §F, §G, §M and ADR 0049. Expected values are 
 - **AC-WT-17 (stage 0 probe)** A real `factory_wait` that blocks 240 s returns normally in Claude Code. With Codex the probe uses
   the default config (expected: 60 s kills a 240 s block, 50 s passes) and `tool_timeout_sec = 300` (expected: 240 s passes). The
   measured values are recorded in the ADR. If they differ, the cap and default change before stage 2.
+- **AC-WT-18 (stage 0 probe, CLI)** For each client a role actually runs (Q7), a 10-minute CLI wait started the way §3.3
+  describes returns its one result into the session, and the session spends no turn while it waits. Where this fails, the plan
+  says so in that client's line of `AGENT_ISOLATION_SETUP.md` instead of claiming it.
 
 ## 5. Stages (one branch `feature/bl-271-wait`, one merge)
 
-0. **Probe.** On a throwaway endpoint build in the worktree, never the live server: confirm AC-WT-17 and that a bare `tools/call`
-   POST (no `initialize`) works on the stateless endpoint. Fix the cap and default in ADR 0075.
+0. **Probe.** A standalone sleep-only MCP server script in the scratch folder: the same SDK transport options (stateless,
+   `enableJsonResponse: true`), one tool that sleeps N seconds, **no app and no DB**. Never the live server, never `@/lib/*`.
+   - Confirm AC-WT-17 and AC-WT-18.
+   - Confirm that a bare `tools/call` POST (no `initialize`) works on a stateless server.
+   - Fix the cap and the default in ADR 0075.
 1. **Core and ports.** `src/lib/operation-wait/` with its pure tests, the shutdown `AbortSignal`, and
    `src/composition/wait-targets.ts` with one port per target and its own read. Any missing plain reads are added (upload row by
    id or by channel and video, render verdict by id).
@@ -256,7 +298,7 @@ Expected values come from §2 and §4, written by hand.
   - A service test: requests plus back-to-back waits → `waitingFor` holds no `mcp_quiet` coming from them.
   - A SIGTERM test on the abort signal.
 - **Inventories.** The read-only scan (AC-WT-12). The existing gateway, upload and weekly-build inventories pass **unchanged**
-  (no justified test change is needed, as weekly-build stays out).
+  (apart from the justified factory-server allowlist change in §3.1; weekly-build stays out).
 - **CLI.** A fake endpoint gives:
   - JSON-only stdout;
   - each exit code;
@@ -305,5 +347,12 @@ Expected values come from §2 and §4, written by hand.
 - **Q5. "Recode/rename jobs".** `factory_release_recode` and `factory_release_folder_rename` answer in one call.
   **Recommended:** ask the Operator whether it meant something else (for example a factory-side ffmpeg render). If not, waiting
   for their busy reasons is the `upload` / job targets.
+- **Q7. Which client runs each role** (Operator, Producer, each channel worker: Claude Code or Codex)? The answer decides
+  whether the CLI's background mode or its foreground mode is the documented path, and which timeout line each role's config
+  needs.
+  **Recommended:** the Operator answers per role. Stage 0 probes exactly those clients.
+- **Q8. A tokenless operator mode for the CLI** (for shell scripts with no token, gated like `npm run media` by "Operator CLI
+  access")?
+  **Recommended:** no for now. The media scripts already wait without an LLM, and one transport keeps the scoping in one place.
 - **Q6. Producer and `restart`.** The Producer has no restart tool today.
   **Recommended:** yes. It is a harmless global read, and the Producer is affected by restarts too.

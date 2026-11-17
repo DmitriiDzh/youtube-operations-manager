@@ -3,7 +3,7 @@
 Status: Proposed (2026-11-17).
 
 **Date:** 2026-11-17.
-- **Plan:** `docs/roadmap/plans/WAIT_TOOLS_PLAN.md`, acceptance AC-WT-01..17. Backlog BL-271.
+- **Plan:** `docs/roadmap/plans/WAIT_TOOLS_PLAN.md`, acceptance AC-WT-01..18. Backlog BL-271.
 - **Source:** owner Telegram msgs 3617/3618, relayed by the Operator.
 - **Builds on:** ADR 0049 (restart when idle), 0048 / BL-217 (worker tools over pinned factory deps), 0059 (the Producer's upload
   queue view).
@@ -59,6 +59,10 @@ Constraints found in the code and the clients:
    - **Output.** It prints **one JSON line** and exits 0 (succeeded), 1 (failed / cancelled / rejected / changes requested /
      expired) or 2 (timeout, blocked, unknown, unreachable, usage).
    - **Preferred path.** The CLI, run as a background shell command, is the way for any wait longer than a few minutes.
+   - **Restart.** `restart current` allows 30 s for the developer's request file to be taken up, pins the request id, and also
+     treats a later `serverStartedAt` as done (a request file satisfied at boot, with no row).
+   - **Codex.** Whether a Codex session gets the CLI's exit without polling is unverified. Stage 0 probes it, and the owner
+     says which client each role runs.
 5. **Versions.** Factory API 1.54.0, Agent API 4.25.0, Producer API 1.27.0. All texts are English. No Web UI change.
 
 ## Consequences
