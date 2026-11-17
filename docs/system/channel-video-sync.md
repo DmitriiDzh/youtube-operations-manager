@@ -1,0 +1,19 @@
+> Moved verbatim from SYSTEM_MAP.md §2 on 2026-11-17; index: ../SYSTEM_MAP.md
+
+### 2.6 Channel synchronization (Phase 2) — **IMPLEMENTED**
+
+- **Ответственность:** получение и локальное сохранение сведений о канале (`title`, `thumbnailUrl`, `uploadsPlaylistId`) при синхронизации.
+- **Файлы:** `src/lib/channel-sync/{contracts,schemas,services,index}.ts`, `adapters/{youtube-api,store,logger}.ts`.
+- **Точки входа:** `core.syncChannel({ credentialRef, channelId? })`, `core.listChannels(...)` — через `createChannelSyncCore()`.
+- **Зависимости:** credential resolution (`resolveGoogleCredentials`), YouTube API layer (`getChannelForSync`), persistence (`upsertChannel`, `markChannelSynced`, `listStoredChannels`, `getStoredChannel`).
+- **Read/Write:** **только чтение** YouTube (`channels.list`); запись — только в локальную БД.
+- **Важные ограничения безопасности:** read-only scope (`YOUTUBE_READ_SCOPE`); guardrail write-context не применяется (не нужен для read-операции). **С 2026-09-20:** `listChannels`/`listSyncedVideos` фильтруют результат по активному каналу вызывающего (`src/lib/channel-access`, `docs/decisions/0004-active-channel-read-scoping.md`) — закрывает RISK-02. `syncChannel` без явного `channelId` ("sync my own channel") — единственное место, где активный канал автоматически проставляется; с явным `channelId` синк по-прежнему не проверяет принадлежность аккаунту (RISK-39, отдельный открытый пункт).
+
+### 2.7 Video synchronization (Phase 2) — **IMPLEMENTED**
+
+- **Ответственность:** перечисление всех видео канала через uploads playlist и батч-получение полных метаданных (`title`, `description`, `publishedAt`, `privacyStatus`, `defaultLanguage`, `defaultAudioLanguage`, `thumbnails`, `existingLocalizations`, `etag`) без one-request-per-video. **С 2026-09-20** (`docs/roadmap/plans/STUDIO_PARITY_PLAN.md` Slice S1): также `viewCount`/`commentCount`/`likeCount` из `statistics`-части `videos.list` — `NULL`, если YouTube не вернул значение (комментарии/лайки скрыты), никогда не подменяется на `0`. Аддитивная миграция схемы (`schema_meta` версия 4, `src/lib/db.ts`'s `SCHEMA_MIGRATIONS`).
+- **Файлы:** та же директория `src/lib/channel-sync/` (единый модуль с channel sync); низкоуровневая логика — `src/lib/youtube-read-gateway/data-api.ts` (`listUploadsPlaylistVideoIds`, `getVideosMetadataContextBatch`), доступная только через барьер `@/lib/youtube-read-gateway`.
+- **Точки входа:** `core.syncChannel(...)` (та же функция, что и для канала — один вызов синхронизирует и канал, и все его видео), `core.listSyncedVideos({ credentialRef, channelId })`.
+- **Зависимости:** channel synchronization (нужен `uploadsPlaylistId`), YouTube API layer, persistence (`upsertVideos`, `listStoredVideosByChannel`).
+- **Read/Write:** только чтение YouTube; upsert в таблицу `videos`. **С 2026-10-14** (schema v91): видео, которого полный синк владельца больше не находит в uploads, получает `videos.removed_on_youtube_at` и скрывается из `listStoredVideosByChannel` (строка не удаляется; пометка снимается, когда видео возвращается) — `docs/PROJECT_SPEC.md` §9. Ручная кнопка синхронизации (Контент, Языки, Календарь) спрашивает подтверждение, если с прошлой синхронизации прошло меньше 10 минут (`src/components/recent-sync-confirm.tsx`). **С 2026-10-16:** ещё не начавшаяся трансляция (`live_broadcast_content = upcoming`, слот «Прямая трансляция пользователя …») не показывается на странице «Языки», в её предупреждении о переводах, версии и экспорте (`src/lib/localization/services.ts`, `isUpcomingBroadcast`); прошедшая трансляция остаётся. Колонка языка канала (baseline) всегда первая, остальные по алфавиту (`baselineFirst`, 2026-10-16).
+- **Важные ограничения безопасности:** батчинг ≤50 id за вызов `videos.list` — обязательное требование (проверено тестами на реальной форме клиента `googleapis`, не только на моках уровня сервиса).
