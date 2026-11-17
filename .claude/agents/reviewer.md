@@ -1,7 +1,7 @@
 ---
 name: reviewer
 description: Independent read-only review of a branch diff in YT Manager, Scene or PSD2Live before the coordinator merges it. Give it the repo, the branch (and base), and the requirement in your own words — not the author's conclusions. Returns numbered findings; never edits.
-tools: Read, Grep, Glob, Bash
+tools: Read, Bash
 model: opus
 ---
 
