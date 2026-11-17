@@ -226,10 +226,28 @@ test("AC-WT-09: a job wait survives a 9-minute drop silently; an 11-minute drop 
   assert.equal(only(never.lines).error?.code, "server_unreachable");
   assert.ok(never.now() - START >= 60_000 && never.now() - START < 70_000);
 
-  // A restart wait keeps retrying a lost server until its own deadline.
-  const restart = harness(() => ({ loss: true, ms: 1000 }));
+  // A restart wait that was answered once keeps retrying a lost server until its own deadline.
+  const restart = harness(({ n }) => (n === 1 ? { result: { target: "restart", id: "rq_1", final: false, outcome: "server_stopping", status: "restarting", snapshot: {} } } : { loss: true, ms: 1000 }));
   assert.equal(await runWaitCli(["restart", "rq_1", "--timeout", "1800"], restart.io), 2);
   assert.ok(restart.now() - START >= 1_800_000);
+  assert.equal(only(restart.lines).outcome, "still_running");
+
+  // Review: a restart wait against a wrong --url / a server down from the start gives up after the same 60 s, not at the deadline.
+  const down = harness(() => ({ loss: true, ms: 100 }));
+  assert.equal(await runWaitCli(["restart", "current", "--timeout", "14400"], down.io), 2);
+  assert.equal(only(down.lines).error?.code, "server_unreachable");
+  assert.ok(down.now() - START >= 60_000 && down.now() - START < 70_000);
+});
+
+test("review: 401 / 403 / 404 end the wait at once with exit 2 whatever the body (HTML included) -- never retried as a lost connection", async () => {
+  for (const status of [401, 403, 404]) {
+    for (const target of ["restart", "media_job"]) {
+      const h = harness(() => ({ http: status, body: "<html>Not Found</html>" }));
+      assert.equal(await runWaitCli([target, "x1"], h.io), 2, `${status} ${target}`);
+      assert.equal(only(h.lines).error?.code, `http_${status}`);
+      assert.equal(h.calls.length, 1);
+    }
+  }
 });
 
 // -- against the real Factory endpoint (the SDK's transport, the token check, the session wrapper) --------------------------------

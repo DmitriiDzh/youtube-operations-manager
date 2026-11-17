@@ -357,9 +357,10 @@ MCP endpoint, so it waits with exactly that token's rights. Run it from the app 
   `http://127.0.0.1:3000`).
 - **Loop.** `*_wait` calls of `min(240, remaining)` seconds, nothing printed in between, until final or `--timeout` (default 14400,
   at most 259200). After `restarting` / `server_stopping` it waits 5 s before the next call.
-- **Lost connection** (refused, reset, 502/503/504, a call 30 s past its block): retried every 5 s -- for `restart` until the
-  deadline; for any other target up to 10 minutes of continuous loss (60 s if the app never answered), then `server_unreachable`.
-  An endpoint refusal (401 / 403, e.g. a revoked token or the MCP switch off) and a tool error end the wait at once.
+- **Lost connection** (refused, reset, 502/503/504, a non-JSON page, a call 30 s past its block): retried every 5 s. An app that never
+  answered ends any wait after 60 s (`server_unreachable`); once answered, `restart` retries until the deadline and other targets up
+  to 10 minutes of continuous loss. HTTP 401 / 403 / 404 (a revoked token, the MCP switch off, a wrong `--url`) and a tool error end
+  the wait at once, whatever the body.
 - **`restart current`.** Allows 30 s for a request to appear (the developer script's file is taken up within 15 s), pins the request id
   from the first answer, and also counts a server started after the wait began (`no_restart_request` with a later
   `details.serverStartedAt`) as done.

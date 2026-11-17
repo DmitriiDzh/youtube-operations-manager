@@ -55,7 +55,8 @@ Constraints found in the code and the clients:
      a named environment variable, never from an argument. It does not read SQLite, so channel scoping stays in one place and no
      migration can race the server.
    - **Loop.** It repeats 240 s tool calls without printing.
-   - **Connection loss.** It retries: until the deadline for `restart`, up to 10 minutes for any other target.
+   - **Connection loss.** It retries: until the deadline for `restart`, up to 10 minutes for any other target -- once the app has
+     answered; an app that never answered ends the wait after 60 s. 401 / 403 / 404 end it at once.
    - **Output.** It prints **one JSON line** and exits 0 (succeeded), 1 (failed / cancelled / rejected / changes requested /
      expired) or 2 (timeout, blocked, unknown, unreachable, usage).
    - **Preferred path.** The CLI, run as a background shell command, is the way for any wait longer than a few minutes.

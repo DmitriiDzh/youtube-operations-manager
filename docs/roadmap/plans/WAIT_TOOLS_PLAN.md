@@ -342,8 +342,8 @@ Expected values come from §2 and §4, written by hand.
 Operator later is a follow-up). Q6 the Producer may wait on `restart`. Q7 every role runs Claude Code; stage 0 measured Claude Code only.
 Q8 no tokenless shell mode beyond the CLI.
 
-**Built deviations.** A `restart` CLI wait retries a lost server until its deadline also on the first round (a restart may already be
-under way when it starts); other targets keep the 60 s first-round grace. The CLI backs off 5 s after `restarting` / `server_stopping`.
+**Built deviations.** A server that never gave a real answer ends any CLI wait (`restart` included) after the 60 s first-round grace;
+once answered, a `restart` wait retries a lost server until its deadline. 401 / 403 / 404 end the wait at once whatever the body. The CLI backs off 5 s after `restarting` / `server_stopping`.
 An endpoint refusal (401 / 403) exits 2 at once. A resource seen once and then missing counts as a failed read (an Automerge document
 that cannot be read looks empty), not as `not_found`.
 

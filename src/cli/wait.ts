@@ -21,7 +21,7 @@ export const WAIT_CLI_MAX_TIMEOUT_SECONDS = 259_200;
 export const WAIT_CLI_RETRY_MS = 5_000;
 /** A target other than `restart`: continuous connection loss allowed before `server_unreachable`. */
 export const WAIT_CLI_MAX_LOSS_MS = 10 * 60_000;
-/** The server unreachable from the very first round (a target other than `restart`): `server_unreachable` after this. */
+/** The server unreachable from the very first round (any target, `restart` included): `server_unreachable` after this. */
 export const WAIT_CLI_FIRST_ROUND_GRACE_MS = 60_000;
 /** `restart current` with no request yet: the developer's request file is taken up within 15 s, so allow this long. */
 export const WAIT_CLI_RESTART_GRACE_MS = 30_000;
@@ -160,6 +160,20 @@ async function callOnce(io: WaitCliIo, endpointUrl: string, token: string, tool:
     clearTimeout(timer);
   }
   if (response.status === 502 || response.status === 503 || response.status === 504) return { kind: "loss" };
+  // A refusal (bad or revoked token, MCP switched off, not loopback, no such route: a wrong --url) ends the wait at once, whatever the
+  // body -- it is never a page of a server that is coming back.
+  if (response.status === 401 || response.status === 403 || response.status === 404) {
+    let error: Record<string, unknown> = {};
+    try {
+      error = record(record(JSON.parse(text)).error);
+    } catch {
+      // not JSON: the status alone
+    }
+    return {
+      kind: "refused",
+      error: { code: typeof error.code === "string" ? error.code : `http_${response.status}`, message: typeof error.message === "string" ? error.message : `The endpoint answered HTTP ${response.status}.` },
+    };
+  }
   let body: Record<string, unknown>;
   try {
     body = record(JSON.parse(text));
@@ -270,10 +284,11 @@ export async function runWaitCli(argv: readonly string[], io: WaitCliIo): Promis
 
     if (answer.kind === "loss") {
       const now = io.now();
+      // A server that never gave a real answer is most likely not running here, or the URL is wrong: 60 s, for every target.
+      if (!connected && now - started >= WAIT_CLI_FIRST_ROUND_GRACE_MS) return fail({ code: "server_unreachable", message: `The app did not answer at ${options.url}.` });
       if (options.target !== "restart") {
-        // A restart is the expected loss of a restart wait (retried until the deadline); for any other target the server should be
-        // back within 10 minutes, and one that never answered at all is most likely not running here (or the URL is wrong).
-        if (!connected && now - started >= WAIT_CLI_FIRST_ROUND_GRACE_MS) return fail({ code: "server_unreachable", message: `The app did not answer at ${options.url}.` });
+        // Once connected, a restart is the expected loss of a restart wait (retried until the deadline); for any other target the
+        // server should be back within 10 minutes.
         lossSince ??= now;
         if (connected && now - lossSince >= WAIT_CLI_MAX_LOSS_MS) return fail({ code: "server_unreachable", message: "The app stopped answering for more than 10 minutes." });
       }
