@@ -790,6 +790,17 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 
 ---
 
+## RISK-45 — `languages-manager.tsx`'s bulk-generation review list: reselecting a deselected video intentionally resurfaces its proposal (decision record) — RESOLVED, 2026-09-21 (independent review, rounds 6-7)
+
+- **Context:** not an open risk -- a decision record, kept here so it isn't silently re-litigated by a future review round or contributor. During the independent-review cycle over the Languages tab E1-E4b redesign (`docs/roadmap/BACKLOG.md` BL-037), round 6 changed deselecting a video in an open bulk AI-generation session to permanently delete its proposal from `targets` (not just hide it), specifically to stop a reselected video from silently showing its old, unreviewed content. Round 7 found this created two real regressions: (1) an accidental double-click (uncheck, immediately recheck) is indistinguishable from a deliberate removal, so it destroyed operator edits -- and, for a real AI connection, already-billed generation work -- with no way to recover it short of regenerating; (2) an unrelated later selection change could prune the very entries the round-5 "results discarded" notice was about, making that notice silently disappear.
+- **Decision:** reverted round 6's pruning the same day. Deselecting a video only hides its proposal from the current view (via `visibleTargets`/`visibleRowErrors`); the underlying `targets`/`rowErrors` state is left untouched, so reselecting the same video in the same session shows its existing proposal again rather than requiring a fresh generate.
+- **Why this is safe despite "resurrecting" old content:** a resurfaced proposal is still just a local, editable Change Set draft -- it goes through exactly the same review -> approve -> conflict-revalidation -> Gate-B-blocked-write pipeline as a freshly-generated one before anything real could happen (`docs/PROJECT_SPEC.md` §16/§30, `src/lib/batches/`). The selection checkbox is a filter over what's currently displayed, not an approval or deletion action; nothing about reselecting a video bypasses or weakens the actual approval gate.
+- **Gate(s):** none -- this is closed, not blocking anything.
+- **Approval required from:** none further -- recorded so a future contributor (human or agent) who notices "deselecting doesn't destroy the proposal" and is tempted to "fix" it again reads this first.
+- **Status:** RESOLVED, 2026-09-21.
+
+---
+
 ## RISK-46 — A channel whose Automerge document diverged across two devices has no in-app resolution path — PARTIALLY FIXED, 2026-09-22
 
 - **Context:** `AUTOMERGE_MIGRATION_PLAN.md` §6 CD2/CD5's own documented operational constraint: two Automerge documents must share real history to merge correctly. `src/lib/change-drafts/services.ts`'s `mergeIncoming` detects this case (`genesisChangeHash` comparison) and fails closed with `divergent_document_lineage` instead of silently corrupting local state. This condition arises if two devices ever independently run `migrateFromSql`, or otherwise independently bootstrap, the same channel's draft document before ever syncing with each other once.
