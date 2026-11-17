@@ -168,3 +168,19 @@ test("BL-244 AC-STOP-10/11: a stopped row gives no lease to a runner, holds no l
     assert.equal(await claimPublishingUpload("u", "runner-1", new Date(t0.getTime() + 120_000), t0, db), false, "not even the holder renews a stopped row");
     assert.equal(await insertPublishingUploads([row("u2", "V65")], db), true, "the stopped row does not hold V65");
   }));
+
+// BL-271 (WAIT_TOOLS_PLAN.md §2 `upload`): the wait finds an upload by id, or by channel + video code -- the newest row of that
+// channel and video on this computer wins; another channel's row of the same code is not it.
+test("BL-271: getUploadRow by id; latestUploadOfVideo picks the newest row of the channel's video code", () =>
+  withDb(async (db) => {
+    const { getUploadRow, latestUploadOfVideo } = await import("@/lib/publishing");
+    assert.equal(await insertPublishingUploads([row("old", "V70", { createdAt: new Date("2026-10-13T12:00:00Z") })], db), true);
+    assert.equal(await updatePublishingUpload("old", "queued", { status: "failed" }, db), true);
+    assert.equal(await insertPublishingUploads([row("new", "V70", { createdAt: new Date("2026-10-14T12:00:00Z") })], db), true);
+    assert.equal(await insertPublishingUploads([row("other", "V70", { channelId: "UC_j", createdAt: new Date("2026-10-15T12:00:00Z") })], db), true);
+    assert.equal((await getUploadRow("old", db))?.status, "failed");
+    assert.equal(await getUploadRow("missing", db), null);
+    assert.equal((await latestUploadOfVideo("UC_t", "V70", db))?.id, "new");
+    assert.equal((await latestUploadOfVideo("UC_j", "V70", db))?.id, "other");
+    assert.equal(await latestUploadOfVideo("UC_t", "V71", db), null);
+  }));

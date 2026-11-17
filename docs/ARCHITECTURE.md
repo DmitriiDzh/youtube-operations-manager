@@ -5293,6 +5293,29 @@ adapter: client, `assertLiveWritesAuthorized()`, gateway `setVideoThumbnail` →
 Security: a new YouTube writer reachable by an agent (the Producer), as the owner decided; it can change only the thumbnail, only
 from the channel's own workspace images, behind the same identity check and Live writes switch as every other write.
 
+## BL-271 — waiting for a long operation without agent tokens (ADR 0075; on its branch, not in dev yet)
+
+- **Core** `src/lib/operation-wait/` (pure, no DB): `createOperationWait({ ports, now, sleep, shutdownSignal, restarting })` →
+  `waitFor(input, scope)`. Reads at once, then every 5 s (uploads 10 s, Automerge targets 15 s) until final, the clamped timeout
+  (default 50 s, 1-240), the process's stop signal (`server_stopping`; `instrumentation.ts` calls `signalShutdown` on SIGTERM/SIGINT, so
+  a blocked call never holds Next's drain or the restart's forced exit) or a restart under way (`restarting`, from
+  `restart-when-idle.isRestarting`, cheap). A never-seen id is `not_found` (only target and id in the details); three failed reads in a
+  row are `target_unavailable`; a resource seen once and gone counts as a failed read.
+- **Ports** `src/composition/wait-targets.ts` (§M): one per target over existing reads (`publishing.getUploadRow` /
+  `latestUploadOfVideo`, the media core's `getSession` / `getJob`, the Gemini / speech / ElevenLabs job reads, `listTranslationRequests`,
+  the storyboards `get`, restart `requestById` / `activeRequest` / `lastRestart`), each loaded on use. Every port checks the
+  resource's channel against the scope; a worker's scope is its token's channel, so another channel's id answers exactly like a missing
+  one. Nothing writes, calls YouTube or a paid provider, or passes the device mutation gate (`wait-targets.inventory.test.ts`).
+- **MCP.** `factory_wait` (the factory server gets `deps.wait`, wired through `FactoryChannelDeps`); `agent_wait` is that tool over
+  `pinFactoryDepsToChannel` (channelId put in / `CHANNEL_NOT_ACTIVE`); `producer_wait` (`producer-only`, upload / restart). All three are
+  outside `mcp_tool_calls` (`UNCOUNTED_TOOLS`, `UNCOUNTED_CHANNEL_TOOLS`, `UNCOUNTED_PRODUCER_TOOLS` -- the Producer's call log still
+  records each call), so waits never keep restart-when-idle's quiet window open.
+- **CLI** `src/cli/wait.ts`: a thin HTTP client of the caller's own endpoint (token prefix → endpoint; token only from an environment
+  variable), so scoping stays in the endpoint and no migration can race the server. 240 s rounds, one JSON line, retries a lost
+  connection (restart: until the deadline; others: 10 minutes), pins `restart current`'s id and treats a later `serverStartedAt` as done.
+- **Client limits (stage 0):** Claude Code 2.1.322 kills an HTTP MCP call after ~60 s by default; the server entry's `timeout`
+  (ms) raises it. Hence the 50 s default; the CLI is the path for long waits.
+
 ## BL-269 — English captions for WWE long videos (ADR 0074; on its branch, not in dev yet)
 
 `src/lib/video-captions/` is the one writer of caption tracks (`VIDEO_CAPTIONS_PLAN.md`): `caption-file.ts` (pure, browser-safe:

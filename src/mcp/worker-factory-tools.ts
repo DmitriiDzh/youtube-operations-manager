@@ -88,6 +88,9 @@ export const WORKER_FACTORY_TOOLS: Readonly<Record<string, { agentName: string; 
   factory_speech_create_job: { agentName: "agent_speech_create_job", writes: true },
   factory_speech_get_job: { agentName: "agent_speech_get_job", writes: false },
   factory_voice_list: { agentName: "agent_voice_list", writes: false },
+  // BL-271 (WAIT_TOOLS_PLAN.md §3.2, ADR 0075): wait until one of this channel's operations (or a restart) is final -- a read, not counted
+  // as MCP activity (UNCOUNTED_CHANNEL_TOOLS in ./server.ts).
+  factory_wait: { agentName: "agent_wait", writes: false },
 });
 
 /** BL-218: the Operator's media wiring a channel route injects (sessions and jobs); without it those tools refuse. */
@@ -388,6 +391,11 @@ export function pinFactoryDepsToChannel(
     },
     // BL-220: a worker's restart tools are its own (src/mcp/server.ts, holds as worker:<channel>); none is re-exposed from here.
     restart: { status: refused, hold: refused, release: refused },
+    // BL-271 (WAIT_TOOLS_PLAN.md §3.2): a wait on this channel only -- channelId must be the token's (put in when left out), and every
+    // target's port checks the resource's own channel against this scope (another channel's id answers not_found, like a missing one).
+    wait: {
+      waitFor: async (input) => deps().wait.waitFor(pinChannel(input, channelId, true), { channelId }),
+    },
     assertMutationAllowed: () => assertMutationAllowed(),
   };
 }

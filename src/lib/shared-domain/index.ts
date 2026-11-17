@@ -574,7 +574,10 @@ export type DomainErrorCode =
   | "AGENT_PROPOSAL_NOT_PENDING"
   | "AGENT_PROPOSAL_DUPLICATE"
   | "AGENT_PROPOSAL_NOT_APPLICABLE"
-  | "AGENT_PROPOSAL_CHANNEL_NOT_ACTIVE";
+  | "AGENT_PROPOSAL_CHANNEL_NOT_ACTIVE"
+  // BL-271 (WAIT_TOOLS_PLAN.md §3.2): a wait target whose module cannot be read, and `restart current` with no request.
+  | "target_unavailable"
+  | "no_restart_request";
 
 export type DomainErrorShape = {
   code: DomainErrorCode;

@@ -199,6 +199,10 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
     },
     // BL-220: the restart tools' deps (not exercised here).
     restart: { status: async () => ({}), hold: async () => ({}), release: async () => ({}) },
+    // BL-271: the wait core is a fake that records what reached it (scope included).
+    wait: {
+      waitFor: async (input, scope) => (mediaCalls.push(`wait:${JSON.stringify(input)}:${JSON.stringify(scope)}`), { target: "media_job", id: "j1", final: true, outcome: "succeeded", status: "done", snapshot: {}, waitedSeconds: 0 }),
+    },
     async assertMutationAllowed() {
       mediaCalls.push("gate");
       if (gateClosed.value) throw new DomainError({ code: "OPERATION_LOCKED" as never, message: "an import is running" });
@@ -433,6 +437,8 @@ test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exact
     "factory_voice_list",
     "factory_voice_pick",
     "factory_voice_update",
+    // BL-271 (1.54.0): the wait.
+    "factory_wait",
   ]).sort()); // BL-220: the three restart tools (1.30.0)
   assert.equal(names.some((n) => /approve|reject/.test(n)), false, "no tool approves or rejects a session for anyone");
   assert.deepEqual([...FACTORY_TOOL_NAMES].sort(), names);
@@ -480,7 +486,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.53.0", // BL-269 (new requirement ADR 0074): package captions and the record fields; BL-267 (new requirement PRD-REQ-0195 A, ADR 0073): factory_publishing_template_get; BL-265 (new requirement PRD-REQ-0195 B, ADR 0072): warnings, media-keyed review gate (1.51.0); BL-263 fix (owner TG 4584): factory_release_recode carries the package review, result review (1.50.0); BL-263 (new requirement PRD-REQ-0194, ADR 0071): S codes, factory_release_recode (1.49.0); BL-261 (new requirement): factory_release_folder_rename (1.48.0); BL-256 (new requirement): plan updatedBy may be owner (1.47.0); BL-257 (new requirement ADR 0070): plan package review codes and reviewComment; BL-253: factory_sfx_create_job / factory_music_create_job; BL-250: elevenlabs accountLimit / monthlyLimit; BL-243: statusCode video_deleted_on_youtube; BL-242: plan approvalStage / planned / awaiting_package; 1.41.0 = BL-240: plan slots replacesSlotId; 1.40.0 = BL-236: factory_speech_* and factory_voice_*; 1.39.0 = BL-235: factory_publishing_coverage; 1.38.0 = BL-234: factory_live_get_status gains sources; BL-233: factory_live_get_status gains encoders / upload; 1.36.0 = BL-230: runtime creation checks github.com sources; 1.35.0 = BL-229 part B: plan review forms, wave genre, verdict answers; 1.34.0 (BL-227): factory_localization_report_checks; 1.33.0 (BL-225): factory_publishing_plan_save / _get / _list; 1.32.0 (BL-223): factory_channel_get_branding / factory_channel_save_branding; 1.31.0 (BL-221: factory_video_list gains youtubeVideoId / hasVideoFile (additive); 1.30.0 (BL-220): the three restart tools
+    factoryApiVersion: "1.54.0", // BL-271 (new requirement owner TG 3617/3618, ADR 0075): factory_wait; BL-269 (new requirement ADR 0074): package captions and the record fields; BL-267 (new requirement PRD-REQ-0195 A, ADR 0073): factory_publishing_template_get; BL-265 (new requirement PRD-REQ-0195 B, ADR 0072): warnings, media-keyed review gate (1.51.0); BL-263 fix (owner TG 4584): factory_release_recode carries the package review, result review (1.50.0); BL-263 (new requirement PRD-REQ-0194, ADR 0071): S codes, factory_release_recode (1.49.0); BL-261 (new requirement): factory_release_folder_rename (1.48.0); BL-256 (new requirement): plan updatedBy may be owner (1.47.0); BL-257 (new requirement ADR 0070): plan package review codes and reviewComment; BL-253: factory_sfx_create_job / factory_music_create_job; BL-250: elevenlabs accountLimit / monthlyLimit; BL-243: statusCode video_deleted_on_youtube; BL-242: plan approvalStage / planned / awaiting_package; 1.41.0 = BL-240: plan slots replacesSlotId; 1.40.0 = BL-236: factory_speech_* and factory_voice_*; 1.39.0 = BL-235: factory_publishing_coverage; 1.38.0 = BL-234: factory_live_get_status gains sources; BL-233: factory_live_get_status gains encoders / upload; 1.36.0 = BL-230: runtime creation checks github.com sources; 1.35.0 = BL-229 part B: plan review forms, wave genre, verdict answers; 1.34.0 (BL-227): factory_localization_report_checks; 1.33.0 (BL-225): factory_publishing_plan_save / _get / _list; 1.32.0 (BL-223): factory_channel_get_branding / factory_channel_save_branding; 1.31.0 (BL-221: factory_video_list gains youtubeVideoId / hasVideoFile (additive); 1.30.0 (BL-220): the three restart tools
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",
@@ -572,6 +578,7 @@ test("factory_get_capabilities reports the factory API version 1.23.0 (BL-200), 
       "factory_restart_status",
       "factory_hold_restart",
       "factory_release_hold",
+      "factory_wait",
     ],
     permissions: ["READ", "WRITE"],
     writeTools: [
@@ -1746,4 +1753,41 @@ test("BL-263: factory_release_folder_rename keeps the old V acceptance (V07) and
   assert.equal(Boolean(body.result?.isError ?? body.error), true);
   assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_release_recode", { channelId: "UC_A", video: "V14", newCode: "S12", dryRun: true }), withToken(token))))).isError, false);
   assert.deepEqual(toolDeps.mediaCalls, ["folders.recode:V14:S12:true"]);
+});
+
+// BL-271 (WAIT_TOOLS_PLAN.md AC-WT-06/12, §3.2): factory_wait through the real endpoint and session wrapper -- not counted as an MCP call
+// (the restart's quiet window never sees it), no device mutation gate, the Operator's scope is null; the core's refusal comes back as is.
+test("BL-271: factory_wait is not counted as an MCP call, passes no gate, and reaches the wait core with scope null", async () => {
+  const toolDeps = fakeToolDeps();
+  const tokenServices = createFactoryTokenServices({ store: createMemoryTokenStore(), generateSecret: () => "s1" });
+  const endpoint = createFactoryMcpEndpoint({
+    isConnectionEnabled: async () => true,
+    verifyToken: (token) => tokenServices.verifyToken(token),
+    createServer: ({ session }) => createFactoryMcpServer(toolDeps.deps, { connectionEnabled: true, session }),
+  });
+  const { token } = await tokenServices.issueToken({});
+  const run = async (args: Record<string, unknown>) => toolResult(await endpoint.handle(rpc(call("factory_wait", args), withToken(token))));
+  for (let i = 0; i < 3; i++) {
+    const answer = await run({ target: "media_job", id: "j1", timeoutSeconds: 600 });
+    assert.equal(answer.isError, false);
+    assert.equal(answer.payload.outcome, "succeeded");
+  }
+  assert.deepEqual(toolDeps.outcomes, [], "back-to-back waits are never counted");
+  assert.deepEqual(toolDeps.mediaCalls, Array(3).fill('wait:{"target":"media_job","id":"j1","timeoutSeconds":600}:{"channelId":null}'), "no gate; timeoutSeconds reaches the core unclamped (the core clamps)");
+  const refusing = fakeToolDeps({
+    wait: {
+      waitFor: async () => {
+        throw new DomainError({ code: "not_found", message: "No media_job with this id on this computer.", details: { target: "media_job", id: "nope" } });
+      },
+    },
+  });
+  const endpoint2 = createFactoryMcpEndpoint({
+    isConnectionEnabled: async () => true,
+    verifyToken: (t) => tokenServices.verifyToken(t),
+    createServer: ({ session }) => createFactoryMcpServer(refusing.deps, { connectionEnabled: true, session }),
+  });
+  const missing = await toolResult(await endpoint2.handle(rpc(call("factory_wait", { target: "media_job", id: "nope" }), withToken(token))));
+  assert.equal(missing.isError, true);
+  assert.deepEqual(missing.payload, { ok: false, error: { code: "not_found", message: "No media_job with this id on this computer.", details: { target: "media_job", id: "nope" } } });
+  assert.deepEqual(refusing.outcomes, []);
 });

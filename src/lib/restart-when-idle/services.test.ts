@@ -455,3 +455,31 @@ test("BL-270 review: the server registers device sync's forced export-only tick 
   const core = await readFile(path.join(process.cwd(), "src/lib/restart-when-idle/index.ts"), "utf8");
   assert.match(core, /beforeStop: async \(\) =>/);
 });
+
+// BL-271 (WAIT_TOOLS_PLAN.md §2 `restart`): the wait's cheap reads -- by id in any status, the active request, "restarting now".
+test("BL-271: requestById sees every status (an open one past 24 h as expired); activeRequest and isRestarting run no busy reader", async () => {
+  const f = fixture();
+  f.busy.failing = new Set(["mediaSessions", "mediaJobs", "geminiJobs", "elevenlabsJobs", "uploads", "liveStreams", "operations", "batches", "operationLock", "lastMcpCallAt"]);
+  assert.equal(await f.service.requestById("id-1"), null);
+  assert.equal(await f.service.activeRequest(), null);
+  assert.equal(await f.service.isRestarting(), false);
+  const { request } = await f.service.request("developer");
+  assert.equal((await f.service.activeRequest())?.id, request.id);
+  assert.equal((await f.service.requestById(request.id))?.status, "open");
+  // 24 h later, before any check marked it: expired by id, no longer active.
+  f.state.now = T0 + 24 * 60 * MIN;
+  assert.equal((await f.service.requestById(request.id))?.status, "expired");
+  assert.equal(await f.service.activeRequest(), null);
+  // A request restarting for 4 minutes is "restarting now"; past 5 minutes (stuck) it is not.
+  f.state.requests[0].status = "restarting";
+  f.state.requests[0].restartingAt = f.state.now - 4 * MIN;
+  assert.equal(await f.service.isRestarting(), true);
+  assert.equal((await f.service.activeRequest())?.status, "restarting");
+  f.state.requests[0].restartingAt = f.state.now - 5 * MIN;
+  assert.equal(await f.service.isRestarting(), false);
+  // Done on boot: found by id with the new version, and as the last restart.
+  await f.service.finalizeBoot();
+  const done = await f.service.requestById(request.id);
+  assert.deepEqual([done?.status, done?.toVersion, done?.toSchema], ["done", "0.9.0 (abc123def456)", 108]);
+  assert.equal((await f.service.lastRestart())?.id, request.id);
+});

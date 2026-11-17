@@ -408,6 +408,9 @@ const DOMAIN_ERROR_STATUS = {
   AGENT_PROPOSAL_DUPLICATE: 409,
   AGENT_PROPOSAL_NOT_APPLICABLE: 409,
   AGENT_PROPOSAL_CHANNEL_NOT_ACTIVE: 409,
+  // BL-271: MCP-only codes (the wait tools); never answered by an HTTP route, mapped for completeness.
+  target_unavailable: 503,
+  no_restart_request: 404,
 } as const satisfies Partial<Record<DomainErrorCode, number>>;
 
 export function getVideoMetadataErrorStatus(code: DomainErrorCode) {

@@ -15,6 +15,7 @@ import { createStoryboardsServiceForProduction } from "@/lib/storyboards";
 import { createVideoProjectsServiceForProduction } from "@/lib/video-projects";
 import { listStoryboardTakes } from "@/lib/storyboard-takes";
 import { listMediaJobsForAgent } from "@/lib/media-jobs-pool";
+import { createProductionOperationWait } from "@/composition/wait-targets";
 import type { FactoryToolDeps } from "./factory-server";
 
 /**
@@ -24,7 +25,7 @@ import type { FactoryToolDeps } from "./factory-server";
  * approval, start or stop (`session-approval-inventory.test.ts`). The factory route adds the media, logical-path and channel-list
  * parts.
  */
-export type FactoryChannelDeps = Pick<FactoryToolDeps, "plans" | "gemini" | "speech" | "voices" | "live" | "channelLocalizations" | "channelBranding" | "publishingPlans" | "publishingCoverage" | "releaseFolders" | "localizationChecks" | "storyboards" | "videos" | "jobs">;
+export type FactoryChannelDeps = Pick<FactoryToolDeps, "plans" | "gemini" | "speech" | "voices" | "live" | "channelLocalizations" | "channelBranding" | "publishingPlans" | "publishingCoverage" | "releaseFolders" | "localizationChecks" | "storyboards" | "videos" | "jobs" | "wait">;
 
 export function createFactoryChannelDeps(): FactoryChannelDeps {
   return {
@@ -188,6 +189,11 @@ export function createFactoryChannelDeps(): FactoryChannelDeps {
     // BL-188 (SHARED_MEDIA_JOBS_PLAN.md §2.7): every computer's media jobs, read-only, in the shared shape (codes only).
     jobs: {
       list: async (input) => ({ ...(await listMediaJobsForAgent(input)) }),
+    },
+    // BL-271 (WAIT_TOOLS_PLAN.md §3.2, ADR 0075): the wait over every target's read (composition); read-only. The workers' pinned
+    // version passes their channel as the scope.
+    wait: {
+      waitFor: async (input, scope) => ({ ...(await createProductionOperationWait().waitFor(input, scope)) }),
     },
   };
 }

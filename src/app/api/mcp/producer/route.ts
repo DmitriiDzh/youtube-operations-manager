@@ -6,6 +6,7 @@ import { PRODUCER_TOOL_NAMES } from "@/mcp/producer-tools";
 import { createMcpServer } from "@/mcp/server";
 import { planSlotDecisions } from "@/composition/publishing-plan-slots";
 import { producerPublishingPlans } from "@/composition/publishing-plan-moves";
+import { createProductionOperationWait } from "@/composition/wait-targets";
 
 // Never cached or prerendered: every call is an authenticated, per-request Producer session.
 export const dynamic = "force-dynamic";
@@ -19,7 +20,7 @@ const endpoint = createProducerMcpEndpoint({
   isConnectionEnabled: getMcpConnectionEnabled,
   verifyToken: (token) => createProducerTokenCore().verifyToken(token),
   // BL-239: the weekly plan's slot decisions reach the Producer's upload queue only through the composition layer (ADR 0051 §7).
-  createServer: ({ session }) => createMcpServer(undefined, { connectionEnabled: true, producerSession: createProducerSessionDeps(session, { slotDecisions: planSlotDecisions, publishingPlans: producerPublishingPlans }) }),
+  createServer: ({ session }) => createMcpServer(undefined, { connectionEnabled: true, producerSession: createProducerSessionDeps(session, { slotDecisions: planSlotDecisions, publishingPlans: producerPublishingPlans, wait: createProductionOperationWait }) }),
   isProducerTool: (name) => PRODUCER_TOOL_NAMES.includes(name),
   async recordRefusedCall(call) {
     await recordGatewayCallOutcome("mcp_tool_calls", "blocked");

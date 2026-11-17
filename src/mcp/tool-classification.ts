@@ -173,6 +173,8 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   agent_speech_create_job: "bound",
   agent_speech_get_job: "bound",
   agent_voice_list: "bound",
+  // BL-271 (ADR 0075): wait until one of the bound channel's operations (or a restart) is final -- a read over pinned deps.
+  agent_wait: "bound",
   // BL-161: the Producer role's own tools.
   producer_get_capabilities: "producer-only",
   producer_list_channels: "producer-only",
@@ -201,4 +203,6 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   producer_clip_review_list: "producer-only",
   producer_clip_review_get: "producer-only",
   producer_clip_review_withdraw: "producer-only",
+  // BL-271 (ADR 0075): the Producer's wait -- uploads and restarts only, on its endpoint only.
+  producer_wait: "producer-only",
 });

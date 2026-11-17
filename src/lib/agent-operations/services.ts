@@ -629,6 +629,15 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     description:
       "Restart when idle (`agent_restart_status`): the open restart request, every reason it waits for (media, uploads, live streams starting/stopping/switching, locks, holds, recent MCP calls), the holds, the last restart and the quiet minutes. This read is not counted as an MCP call for the quiet window.",
   },
+  // BL-271 (WAIT_TOOLS_PLAN.md, ADR 0075): wait until one operation is final, without polling.
+  {
+    id: "system.wait",
+    mcpTools: ["agent_wait"],
+    domain: "system",
+    permission: "READ",
+    description:
+      "Wait until one of this channel's operations on this computer is final, without polling (`agent_wait`, as factory_wait): an upload, a factory session (until ready or ended), a media / Gemini / speech / sound job, a translation request (until finished or claimed), a storyboard review or render, or a restart. One call blocks at most timeoutSeconds (default 50, up to 240) and answers once; for longer waits the CLI `npm run --silent wait -- <target> <id>` runs in the background and prints one JSON line. Another channel's id is not_found. Not counted as an MCP call for the restart's quiet window.",
+  },
   {
     id: "system.restart_hold",
     mcpTools: ["agent_hold_restart", "agent_release_hold"],

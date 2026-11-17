@@ -177,6 +177,7 @@ function setup(initial: { enabled?: boolean } = {}) {
           list: async (input) => (planCalls.push(["list", input]), { plans: [] }),
           move: async (input) => (planCalls.push(["move", input]), { moved: input.dryRun !== true, dryRun: input.dryRun === true }),
         },
+        wait: { waitFor: async () => ({ target: "upload", id: "up1", final: true, outcome: "succeeded", status: "done", snapshot: {}, waitedSeconds: 0 }) },
       };
       return createMcpServer(undefined, { connectionEnabled: true, producerSession });
     },
@@ -780,7 +781,7 @@ test("AC-PR-07 / AC-PR-10: the Producer's own tools -- its channels with their f
   // template and moves slots itself): 1.25.0 adds the five plan tools, PLAN_MOVE, planTools / planMoveTools; the propose is DRAFT.
   // BL-269 (owner TG 4590/4592/4660, ADR 0074 -- the requirement changed: the Producer adds or overwrites an uploaded video's English
   // captions from its package): 1.26.0 adds producer_video_captions_add, CAPTIONS_WRITE and captionsTools.
-  assert.equal(PRODUCER_API_VERSION, "1.26.0"); // 1.24.0 (BL-265, new requirement PRD-REQ-0195 B, ADR 0072): producer_video_metadata_update, METADATA_WRITE / metadataTools, calendar warnings, the media-keyed review gate; 1.23.0 (BL-263, new requirement PRD-REQ-0194, ADR 0071): S codes in the calendar, the queue tools and wake file names; 1.22.0 = PRD-REQ-0195 C (queue add after an approved, cancelled-before-approval version); 1.21.0 (BL-257, new requirement ADR 0070): calendar problem codes owner_review_pending / _returned; 1.20.0 (BL-255): producer_video_thumbnail_replace; 1.19.0 (BL-246): clip review answers carry the owner's attachments; 1.18.0 (BL-244): producer_upload_queue_cancel also stops a row being sent before its last chunk; 1.17.0 (BL-243): the calendar read's deleted_on_youtube / missingOnChannel, channel_video_list videoIds; 1.16.0 (BL-242): the add dates only the approved manifest in the packaged stage; 1.14.0 (BL-239): the upload queue tools; 1.13.0 (BL-235): the calendar read's due / gapDates from the daily coverage, published_pending; 1.12.0 (BL-221): a live sample without a count is 0 viewers; 1.10.0 (BL-209): the calendar read's uploads gain automatic / progressPercent / finishedAt; 1.8.0 (BL-182 stage 2): the calendar read lists packages and uploads
+  assert.equal(PRODUCER_API_VERSION, "1.27.0"); // 1.27.0 (BL-271, new requirement owner TG 3617/3618, ADR 0075): producer_wait; 1.26.0 (BL-269): producer_video_captions_add; 1.24.0 (BL-265, new requirement PRD-REQ-0195 B, ADR 0072): producer_video_metadata_update, METADATA_WRITE / metadataTools, calendar warnings, the media-keyed review gate; 1.23.0 (BL-263, new requirement PRD-REQ-0194, ADR 0071): S codes in the calendar, the queue tools and wake file names; 1.22.0 = PRD-REQ-0195 C (queue add after an approved, cancelled-before-approval version); 1.21.0 (BL-257, new requirement ADR 0070): calendar problem codes owner_review_pending / _returned; 1.20.0 (BL-255): producer_video_thumbnail_replace; 1.19.0 (BL-246): clip review answers carry the owner's attachments; 1.18.0 (BL-244): producer_upload_queue_cancel also stops a row being sent before its last chunk; 1.17.0 (BL-243): the calendar read's deleted_on_youtube / missingOnChannel, channel_video_list videoIds; 1.16.0 (BL-242): the add dates only the approved manifest in the packaged stage; 1.14.0 (BL-239): the upload queue tools; 1.13.0 (BL-235): the calendar read's due / gapDates from the daily coverage, published_pending; 1.12.0 (BL-221): a live sample without a count is 0 viewers; 1.10.0 (BL-209): the calendar read's uploads gain automatic / progressPercent / finishedAt; 1.8.0 (BL-182 stage 2): the calendar read lists packages and uploads
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_stored_suggested_sources"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_publishing_calendar"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_video_comments"));
@@ -840,6 +841,7 @@ test("a token revoked mid-session is refused on its next call, before any channe
       packageMetadata: { update: async () => ({}) },
       captions: { add: async () => ({}) },
       plans: { templateGet: async () => ({}), templatePropose: async () => ({}), get: async () => ({}), list: async () => ({}), move: async () => ({}) },
+      wait: { waitFor: async () => ({}) },
     },
   });
   const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<{ isError?: boolean }> }> })._registeredTools;
@@ -1031,6 +1033,7 @@ test("BL-163 AC-PR-05: no approve, reject or apply tool exists on any endpoint",
       packageMetadata: { update: async () => ({}) },
       captions: { add: async () => ({}) },
       plans: { templateGet: async () => ({}), templatePropose: async () => ({}), get: async () => ({}), list: async () => ({}), move: async () => ({}) },
+      wait: { waitFor: async () => ({}) },
     },
   });
   const agent = createMcpServer(undefined, { connectionEnabled: true, agentSession: { tokenId: "t", channelId: "UC_PR_X", async reverify() {} } });

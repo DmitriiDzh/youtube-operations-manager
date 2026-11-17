@@ -1514,6 +1514,17 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   короткие Reels (~≤20 с, 15.11) — Shorts в Instagram владелец пока выкладывает вручную.
 - Автоочистка mp4 не удаляет Shorts (≤ 180 с на YouTube, ADR 0058 поправка).
 
+### 2.9bn Ожидание долгих операций без токенов агента (BL-271, ADR 0075) — **IMPLEMENTED на ветке** `feature/bl-271-wait` (не в dev)
+- Ядро `src/lib/operation-wait/` (чистое: `waitFor`, таймаут 50 с по умолчанию, зажим 1–240, ранний выход `restarting` /
+  `server_stopping` / `blocked` / `not_in_review`, сигнал остановки процесса на globalThis — его взводит SIGTERM в `instrumentation.ts`).
+  Порты целей — `src/composition/wait-targets.ts` поверх чтений модулей (загрузки, медиа-сессии/задачи, Gemini/speech/sound, запросы
+  переводов, раскадровки и рендеры, перезапуск); чужой канал отвечает `not_found`, как отсутствующий id.
+- MCP: `factory_wait` (Factory API 1.54.0), `agent_wait` (Agent API 4.25.0, через `WORKER_FACTORY_TOOLS` поверх закреплённых deps),
+  `producer_wait` (Producer API 1.27.0, только `upload` и `restart`). Только чтение; не считаются MCP-активностью для restart-when-idle.
+- CLI `npm run --silent wait -- <target> <id>` (`src/cli/wait.ts`): HTTP-клиент собственного эндпоинта по токену из `YTOM_TOKEN`, без БД;
+  одна JSON-строка, коды 0/1/2, переживает перезапуск сервера. Не цели: недельная сборка (отложено), recode/rename (синхронные).
+- Claude Code по умолчанию обрывает HTTP-вызов MCP через ~60 с (замер этапа 0): длиннее 50 с — только с `"timeout": 300000` в записи сервера.
+
 ### 2.9bm Английские субтитры длинных видео WWE (BL-269, ADR 0074) — **IMPLEMENTED на ветке** `feature/bl-269-video-captions` (не в dev)
 - `src/lib/video-captions/` — единственный писатель дорожек субтитров (§M: ничего не импортирует из `publishing`): `captions.insert`
   одной английской дорожки и, только по явной перезаписи владельца/Продюсера (TG 4660), `captions.update` единственной английской
