@@ -948,7 +948,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
     `live-streams/localizations.ts` — общий чистый валидатор (точный код YouTube с подсказкой регистра, заголовок 1–100,
     описание обязательно, 1–5000 байт, без `<`/`>`, не базовый язык канала, ≤ 50 языков, весь набор или ничего) и хранилище (замена,
     пустой набор очищает).
-  - Второй разрешённый писатель `localizations` (AGENTS.md §F) — модуль `src/lib/live-localizations/`, подключается портом
+  - Второй разрешённый писатель `localizations` (`docs/WRITE_AUTHORIZATIONS.md`) — модуль `src/lib/live-localizations/`, подключается портом
     `LocalizationsPort` через `src/composition/live-stream-localizations.ts` (маршруты и раннер сегментов).
   - Шаг `localizations` в `applyVideoSettings` сразу после полей и только при их успехе (иначе `skipped: fields_failed`); нет
     набора — нет шага и вызовов. Конвейер: `assertWriteChannel` → свежее `videos.list snippet,localizations` (должно уже
@@ -966,7 +966,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
     убрать / сохранить, отказы сервера по строкам, предупреждение и результат последнего шага; шаг `localizations` в списках шагов.
 - **BL-210 переводы самого канала (`docs/roadmap/plans/CHANNEL_LOCALIZATIONS_PLAN.md`, ADR 0047, ветка
   `feature/channel-localizations`):**
-  - Третий разрешённый писатель `localizations` (AGENTS.md §F) — модуль `src/lib/channel-localizations/`: название и описание
+  - Третий разрешённый писатель `localizations` (`docs/WRITE_AUTHORIZATIONS.md`) — модуль `src/lib/channel-localizations/`: название и описание
     канала на других языках (`channels.localizations`).
   - Схема **v104** (только этот компьютер): `channel_localizations` (набор на канал, кто сохранил, последний результат) и
     `channel_localization_events` (журнал аудита).
@@ -987,7 +987,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   - Карточка «Переводы канала» (`src/components/channel-localizations-panel.tsx`) во вкладке «Языки» под настройками языка канала
     и (BL-223) на «Главной» под карточкой «Канал».
 - **BL-223 оформление канала (`docs/roadmap/plans/CHANNEL_BRANDING_PLAN.md`, ADR 0050, ветка `feature/bl-223-channel-branding`):**
-  - Разрешённый писатель `brandingSettings` (AGENTS.md §F, владелец msgs 3482/3488) — модуль `src/lib/channel-branding/`:
+  - Разрешённый писатель `brandingSettings` (`docs/WRITE_AUTHORIZATIONS.md`, владелец msgs 3482/3488) — модуль `src/lib/channel-branding/`:
     описание, ключевые слова и баннер канала; название и аватар только показываются (API их не меняет).
   - Схема **v109** (только этот компьютер): `channel_branding` (черновик на канал, кто сохранил, последний результат) и
     `channel_branding_events` (аудит). Баннер копируется в `<данные приложения>/channel-branding/<channelId>/banner.<jpg|png>`.

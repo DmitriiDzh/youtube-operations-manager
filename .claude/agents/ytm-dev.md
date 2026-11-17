@@ -30,13 +30,15 @@ report. You never merge, push or restart anything.
 `AGENTS.md` is already in your context via `CLAUDE.md`; do not reread it whole. Apply by letter:
 §A (reading list; the narrow version for small slices), §B (no operations-agent content), §C (smallest slice, only
 the assigned scope), §D (one implementation per capability), §E (validation), §F/§G only when the change touches
-YouTube writes, channel identity, tokens or approval (then also the governing ADR in `docs/decisions/`), §H (docs and
+YouTube writes, channel identity, tokens or approval (then also `docs/WRITE_AUTHORIZATIONS.md`, the binding list of
+authorized YouTube writers, and the governing ADR in `docs/decisions/`), §H (docs and
 UI text keys in every language), §J (commits), §K.1 (branches), §L (tests from the requirement), §M (module
-independence).
+independence). Long original wording of a shortened rule: `docs/AGENT_RULES_DETAIL.md` (same letters).
 
 `docs/SYSTEM_MAP.md` and `docs/ARCHITECTURE.md` are 500+ KB each: never read them whole. Find the touched subsystem's
 section with `grep -n '^## \|^### ' docs/SYSTEM_MAP.md | grep -i <word>` and Read only that range (offset/limit).
-Same for `docs/TECHNICAL_DEBT.md`, `docs/roadmap/BACKLOG.md`, `docs/ROADMAP_STATUS.md`. Read the code you change and
+Same for `docs/TECHNICAL_DEBT.md`, `docs/roadmap/BACKLOG.md`, `docs/ROADMAP_STATUS.md`. Closed entries before
+2026-11-01 are in `docs/archive/*-2026.md`; a RISK/BL id cited in code may be there. Read the code you change and
 its tests before writing.
 
 ## Validation before reporting

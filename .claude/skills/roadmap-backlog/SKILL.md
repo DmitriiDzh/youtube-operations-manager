@@ -31,6 +31,12 @@ get created that way? Only the former counts.
 
 ## docs/roadmap/BACKLOG.md format
 
+**Archive.** `done`/`dropped` rows closed before 2026-11-01 were moved verbatim to
+`docs/archive/BACKLOG-2026.md` (same table); completed `docs/ROADMAP_STATUS.md` rows of that period are in
+`docs/archive/ROADMAP_STATUS-2026.md`. New rows and status changes go only into the active files; look in the
+archives when an item's history or an old ID is needed. Periodically, closed rows may be moved to the archive the
+same way (whole lines, unchanged).
+
 If the file doesn't exist yet, create it with this header (adjust the intro paragraph's wording,
 but keep the substance — future readers, human or agent, need the same warnings the other two
 roadmap docs already carry):
@@ -60,6 +66,7 @@ Each row:
 - **ID** — `BL-NNN`, zero-padded, monotonically increasing, never reused (mirrors the `RISK-NN`
   convention in `docs/TECHNICAL_DEBT.md` — consistent numbering styles make cross-referencing
   between these documents easier for whoever reads them next).
+  The next ID is the highest one in `docs/roadmap/BACKLOG.md` **and** `docs/archive/BACKLOG-2026.md`, plus one.
 - **Title** — short, specific, describes a *slice*, not a whole phase. "Phase 7: stable
   MCP/API contract for Codex" is too big for one item; "Phase 7: draft the API error-shape
   convention for Codex-facing endpoints" is a reasonable item. If a phase needs breaking down,

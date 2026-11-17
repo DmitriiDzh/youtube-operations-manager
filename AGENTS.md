@@ -1,43 +1,22 @@
 # Coding Agent Instructions
 
-This is the **primary persistent instruction file** for any coding agent (Claude Code or otherwise) working in this repository. `CLAUDE.md` exists only to import this file (`@AGENTS.md`) — do not duplicate rules there instead of here.
+This is the **primary persistent instruction file** for any coding agent in this repository. `CLAUDE.md` only imports it (`@AGENTS.md`); never put rules there instead of here.
 
-This file intentionally does **not** duplicate `docs/PROJECT_SPEC.md` (product requirements/roadmap) or `docs/DEVELOPMENT_PLAYBOOK.md` (how-to procedures). It states the persistent rules; those other documents state the "what" and the "how."
+It does not duplicate `docs/PROJECT_SPEC.md` (requirements/roadmap) or `docs/DEVELOPMENT_PLAYBOOK.md` (how-to). Many rules here are short forms; their original full wording is in `docs/AGENT_RULES_DETAIL.md`, which is binding and wins wherever the two differ. Authorized YouTube writers: `docs/WRITE_AUTHORIZATIONS.md`.
 
 ## A. Mandatory documentation reading
 
 Before making architectural, product, or safety-critical changes, read (in this order, skip only what is genuinely irrelevant to the task at hand):
 
-1. `docs/PROJECT_SPEC.md` — product roadmap, YouTube write-safety rules, phases, acceptance criteria.
-2. `docs/ROADMAP_STATUS.md` — which phase is actually complete, as of which commit, and what is assigned next; check this before assuming a phase's status from `docs/PROJECT_SPEC.md`'s numbering alone.
-3. `docs/SYSTEM_MAP.md` — current, concise map of every subsystem (what exists, where, IMPLEMENTED/PLANNED/DEFERRED).
-4. `docs/ARCHITECTURE.md` — detailed internal architecture, data flows, and documented limitations.
-5. `docs/DEVELOPMENT_PLAYBOOK.md` — how to extend the actual codebase following established patterns.
-6. `docs/TECHNICAL_DEBT.md` — known risks and the release gates they block; check before touching anything a risk entry references.
-7. `docs/decisions/` — architectural decision records; check before replacing/altering anything an ADR governs.
+`docs/PROJECT_SPEC.md` (requirements, write-safety, phases, acceptance) → `docs/ROADMAP_STATUS.md` (what is actually complete, at which commit, what is assigned next) → `docs/SYSTEM_MAP.md` (where every subsystem is, its status) → `docs/ARCHITECTURE.md` (internals, data flows, limitations) → `docs/DEVELOPMENT_PLAYBOOK.md` (how to extend) → `docs/TECHNICAL_DEBT.md` (risks and gates; check before touching anything a risk references) → `docs/decisions/` (ADRs; check before altering anything one governs).
 
-**What counts as "architectural, product, or safety-critical" (added 2026-09-21, at the project owner's request to reduce unnecessary token spend on small slices).** This full seven-document pass is required when the change does at least one of the following: introduces a new subsystem, module boundary, or reusable pattern that other work will build on; touches write-safety, channel identity, conflict detection, approval integrity, or data preservation (the same category `docs/PROJECT_SPEC.md` §21/§27/§30 and `docs/TECHNICAL_DEBT.md`'s Gate B already single out for §L's own stricter testing rules); changes a persisted schema or a public API/MCP contract; or it is genuinely unclear whether the change is architectural. A small, additive slice within an already-assigned phase that extends an established pattern along lines the codebase already follows (a UI tweak, a narrow bug fix, one more field/route/test following an existing module's own conventions) does not require rereading the full list — read only the specific section(s) of `docs/SYSTEM_MAP.md`/`docs/ARCHITECTURE.md` that describe the subsystem being touched, plus whichever other entries in this list actually bear on the change. When genuinely unsure which category a change falls into, read more, not less — this note narrows the reading list for clearly small changes, it never creates a loophole to skip reading something safety-relevant.
+**Narrow reading for small slices.** The full list is required when a change adds a subsystem, module boundary or reusable pattern; touches write-safety, channel identity, conflict detection, approval integrity or data preservation; changes a persisted schema or a public API/MCP contract; or when unsure. A small additive slice within an already-assigned phase that follows an established pattern reads only the touched subsystem's `docs/SYSTEM_MAP.md`/`docs/ARCHITECTURE.md` sections plus what else bears on it. When unsure, read more, not less; this is never a loophole to skip anything safety-relevant (`docs/AGENT_RULES_DETAIL.md` §A).
 
-The current implementation in `src/**` is the source of truth for **what actually exists**. `docs/PROJECT_SPEC.md` is the source of truth for **what is required**. If documentation and implementation disagree, identify and report the discrepancy — do not silently rewrite requirements to match an incomplete implementation, and do not silently rewrite documentation to claim something is implemented when it is not.
+`src/**` is the source of truth for **what exists**; `docs/PROJECT_SPEC.md` for **what is required**. If they disagree, report the discrepancy — never silently rewrite requirements to match an incomplete implementation, nor docs to claim something is implemented when it is not.
 
 ## B. Development / operations separation
 
 This repository is the **development side only**.
-
-```text
-DEVELOPMENT SIDE                          OPERATIONS SIDE
-
-Claude Code                               Independent operations agent (Codex)
-    |                                          |
-    v                                          v
-Source repository                         Released product
-    |                                          |
-    v                                          v
-Build / Test / Release preparation        MCP / API
-                                               |
-                                               v
-                                          YouTube operations
-```
 
 Claude Code develops and maintains the software. Codex (or any future operations agent) operates **released** versions of the product through MCP/API only — it does not access this development repository, and this development repository does not access it. These two agents' private instructions and knowledge bases must never be shared.
 
@@ -59,14 +38,14 @@ Do not create `OPERATIONS_AGENT_GUIDE.md` or any equivalently-scoped document. O
 - Do not implement an entire roadmap phase (or the whole roadmap) in one unverified pass.
 - Do not begin a phase that has not been explicitly assigned, even if the roadmap implies it is next.
 - For large tasks: inspect the repository → inspect `docs/PROJECT_SPEC.md` and `docs/SYSTEM_MAP.md` → identify the smallest safe implementation slice → avoid broad rewrites → run tests before proceeding → document architectural deviations.
-- **After a phase is completed and accepted, update `docs/ROADMAP_STATUS.md`** (status, completion date, commit hash, next assignment, open blockers) — this is a log of what happened, not a rewrite of `docs/PROJECT_SPEC.md`'s requirements. **Recording a phase as complete never authorizes starting the next one** — the next phase still requires an explicit assignment from the project owner, exactly as the point above already requires.
+- **After a phase is completed and accepted, update `docs/ROADMAP_STATUS.md`** (status, completion date, commit hash, next assignment, open blockers) — a log, not a rewrite of `docs/PROJECT_SPEC.md`. **Recording a phase as complete never authorizes starting the next one.**
 
 ## D. Preservation of working functionality
 
 - Read the relevant existing code before replacing or duplicating a subsystem.
 - Preserve working OAuth, YouTube integration, Web UI, CLI, MCP, API, and safety behavior where practical.
 - Do not create parallel implementations of existing functionality without a documented reason (see `docs/DEVELOPMENT_PLAYBOOK.md` §6.2/§6.4 — one YouTube client, one guardrail, one contracts/schemas/services/adapters pattern per domain).
-- This repository has no upstream relationship to any other codebase — `origin` is its only git remote, and it is developed as a fully independent project. Never add another remote (in particular none pointing at the TubeMaster repository this project was originally bootstrapped from) and never fetch from, merge from, or cherry-pick from one; the owner wants no changes from that repository (2026-10-05).
+- `origin` is this repository's only remote; it has no upstream. Never add another remote (in particular none pointing at TubeMaster, which it was bootstrapped from) and never fetch, merge or cherry-pick from one (owner, 2026-10-05).
 
 ## E. Mandatory test/lint/build validation
 
@@ -78,7 +57,7 @@ npm run lint
 npm run build
 ```
 
-Also inspect `git status` and `git diff --check` before presenting work. Do not suppress failing tests, do not weaken a test to make it pass, and do not modify unrelated application code merely to make an unrelated task (e.g. a documentation pass) appear to have a clean validation run. If validation fails, diagnose and report the actual root cause; fix only what the current task requires, and request approval before broader corrections.
+Also inspect `git status` and `git diff --check` before presenting work. Never suppress a failing test, weaken a test to make it pass, or change unrelated application code to make a task's validation look clean. If validation fails, report the real root cause; fix only what the task requires and ask before broader corrections.
 
 ## F. Authentication and data-security requirements
 
@@ -86,19 +65,8 @@ Also inspect `git status` and `git diff --check` before presenting work. Do not 
 - Never identify YouTube videos by title when a canonical video ID is available.
 - Never allow blank spreadsheet cells to imply deletion unless explicitly designed and confirmed.
 - Never overwrite unrelated existing YouTube localizations.
-- The Change Set / localization mechanism (import, AI generation, tracked-language management, deletion) has authority over exactly `title` and `description`, per language, and nothing else — never `defaultLanguage`/`defaultAudioLanguage`, tags, category, privacy, scheduling, or captions/subtitles (`docs/PROJECT_SPEC.md` §21).  **One authorized exception (2026-10-02, owner, Telegram):** Batches may write the channel baseline as `snippet.defaultLanguage` for a video that has none, in the same `videos.update` as its localizations (`docs/PROJECT_SPEC.md` §14) — nothing more.
-  **Extension (2026-10-04, owner, Telegram):** Batches also send the channel baseline `snippet.defaultAudioLanguage` (when one is set) on every write, because `videos.update` resets a snippet field that is left out — `docs/PROJECT_SPEC.md` §14.
-  **Extension (2026-10-12, owner, Telegram msg 2665, FO-REQ-0022):** Batches also align a video whose `snippet.defaultLanguage` differs from the channel baseline to that baseline in the same `videos.update` (the title/description stay byte-for-byte; the translation goes into `localizations`) — `docs/PROJECT_SPEC.md` §14.
-  **Separate authorized exception (2026-10-02, owner):** `src/lib/video-details/` (not the Change Set mechanism) may write `snippet.defaultAudioLanguage` — experimental, read-back verified; batches send only the channel baseline value (extension above), never a per-video value.
-  **Second localization writer (2026-10-21, owner, Telegram msg 3257, BL-207, ADR 0045):** `src/lib/live-localizations/` may write per-language `title`/`description` (`localizations`) besides the Change Set mechanism (since BL-225 its writer is the shared `src/lib/shared-video-localizations/`, whose only callers are this module and the upload localizations below) — only to a live broadcast's video, only the stream's stored set (`live_streams.localizations_json`), through the shared merge (`src/lib/shared-localization-merge/`: other languages kept, nothing deleted, the snippet text untouched, never the video's own language) with identity check, backup, Live writes, read-back and audit — `docs/PROJECT_SPEC.md` §21.
-  **Third localization writer (2026-10-22, owner, Telegram msgs 3343/3347, BL-210, ADR 0047):** `src/lib/channel-localizations/` may write a channel's OWN per-language `title`/`description` (`channels.localizations`) -- only the channel's stored set (`channel_localizations`, saved by the owner or the Factory Operator), only through the owner's «Применить» in the Web UI (no MCP or agent path reaches it), through the shared merge (other languages kept, nothing deleted, the channel's own language never written) with identity check, backup, Live writes before each write, read-back and audit. It writes nothing else of the channel: a channel without `brandingSettings.channel.defaultLanguage` is refused (the owner sets it in YouTube Studio, msg 3350) (`docs/PROJECT_SPEC.md` §21).
-  **Channel branding writer (2026-10-25, owner, Telegram msgs 3482/3488, BL-223, ADR 0050):** `src/lib/channel-branding/` may write a channel's `brandingSettings.channel.description`, `brandingSettings.channel.keywords` and banner (`channelBanners.insert`, then `brandingSettings.image.bannerExternalUrl`) -- lifting msg 3350 for these fields only. Only the channel's stored draft (`channel_branding`, saved by the owner, the Factory Operator or the channel's own worker), only through the owner's «Применить» in the Web UI (no MCP or agent path reaches it), as a full read-merge-write of `brandingSettings` (every other settable field and the title sent back exactly as read), with identity check, backup, Live writes before each write, read-back and audit. Never the name, avatar, country, default language, trailer or tracking id (`docs/PROJECT_SPEC.md` §21).
-  **Upload localizations (2026-10-25, owner, Telegram msgs 3511/3534/3537, BL-225, ADR 0051):** `src/lib/publishing/` may write per-language `title`/`description` (`localizations`) of a video only on the upload it makes itself of a `yt-release-package/2` -- only the package's own set (checked by the shared rules when the upload is queued), as the first step after processing (before the thumbnail), through the shared video translations writer `src/lib/shared-video-localizations/` (the shared merge: nothing deleted, the snippet text untouched, never the video's own language), with identity check, backup, Live writes immediately before its one `videos.update`, read-back and audit (`source: upload_localizations`); the upload also sends the package's `status.containsSyntheticMedia` (absent: the channel's setting). The video gets its `publishAt` only after the translations, thumbnail, playlist and read-back passed (BL-224). A weekly-plan slot's date reaches a video only (a) when the slot matches the channel's **week template that the owner approved or edited himself in the Web UI** (`week-template/1`, 2026-11-16, owner msgs 4569/4575/4620/4630–4636, BL-267, ADR 0073) and, on a channel whose owner reviews its packages, the owner approved that video's media in Media → «Видео на проверку»; or (b) through the owner's explicit one-slot «Дать дату вне шаблона» in the Web UI; or (c) by an explicit **move** of a slot whose video already has a date, by the owner (Web UI) or the Producer (`producer_publishing_plan_move_slot`, its own endpoint only), to any day, time or week -- written at once through `src/lib/video-details/` (identity check, backup, Live writes immediately before, read-back, audit), never for a public video, never within 15 minutes, and never as a first date. Always only on the computer whose automatic-upload switch is on (a move: the computer that uploaded the video). A template match gives only a first date of an undated private video, never moves one; the plan-schedule pass otherwise changes or removes only a date that computer itself set (the owner's explicit date, a veto); a date set elsewhere (YouTube Studio, «Видео», the other computer) is changed only by an explicit move, and a template change never moves or removes a date. A veto removes a date the app set (still private) through `src/lib/video-details/`. A slot dated by (a) or (b) also authorizes its release package's social posts (`crossPost`, ADR 0068), as does a slot whose video carries that computer's own date at the slot's time (owner msg 4640: the social networks duplicate YouTube); never a foreign date. Agents never approve or withdraw a template, give a first date or veto: the Producer may propose a template and move slots as above; the Operator and channel workers cannot move a slot or re-time a slot whose video has a date. (`docs/PROJECT_SPEC.md` §21).
-  **Producer upload queue (2026-11-01, owner, Telegram msgs 3928/3930, BL-239, ADR 0059):** the Producer (only it, only on its own endpoint) may order this computer's upload queue, cancel a queued upload (since BL-244, ADR 0064, owner msgs 4046/4050: also stop one being sent before its last chunk) and add a ready package through `src/lib/publishing/` on the computer whose automatic-upload switch is on -- the same checks and runner as the automatic upload, private, a date only by the weekly-plan rule above. Channel worker agents and the factory get no upload tool.
-  **Thumbnail writer (2026-11-15, owner, Telegram msgs 4380/4383, BL-255, ADR 0069):** `src/lib/video-thumbnails/` may write the custom thumbnail (`thumbnails.set`) of a video already on YouTube, any video of the channel -- for the owner (Web UI) and the Producer (`producer_video_thumbnail_replace`, its own endpoint only), only an image under `04 Videos/` of the channel's workspace (JPEG/PNG, at most 2 MB), refused while this computer's upload of the video has not yet run its own thumbnail step, with identity check, backup of the current thumbnail, Live writes immediately before the call, read-back and audit; nothing else of the video, the plan or the package changes. Channel worker agents and the factory get no thumbnail tool (`docs/PROJECT_SPEC.md` §21).
-  **Owner package review (2026-11-15, owner, TG 2298 via the Producer, msgs 4514/4516, BL-257, ADR 0070; amended 2026-11-16, BL-265, ADR 0072):** not a YouTube writer -- a gate. For a channel whose owner turned it on (WWE), a release package counts as ready (weekly plan, automatic upload, Producer queue add, owner upload approval) only after the owner approved its **media** in Media → «Видео на проверку» -- the mp4 (`sha256` + `sizeBytes`, per channel and video code, or its BL-263 recode alias); packaging changes (texts, thumbnail, translations) neither need nor reset it, and packaging gets the owner's comments, which block nothing. A decision made before BL-265 still covers its own manifest. The upload runner re-checks it before the first byte. Only the owner's Web UI decides or switches it (`src/lib/package-reviews/`).
-  **Package metadata after upload (2026-11-16, owner, Telegram msgs 4566–4569, BL-265, ADR 0072):** `src/lib/publishing/` may write a video's default-language `snippet.title`, `snippet.description` and `snippet.tags` -- only of a video that a release package of the channel already put on YouTube (its upload record names the video id), only the values that package's current manifest states (never free text), only through `src/lib/video-details/` as a full read-merge-write of `snippet` (`categoryId`, `defaultLanguage` and `defaultAudioLanguage` sent back exactly as read just before the write; `zxx` left out as today), with a three-way conflict check (YouTube now / what the upload sent / the manifest), identity check, backup of the current snippet, Live writes immediately before the call, read-back (the written fields, and the untouched snippet fields, privacy, `publishAt` and the localization languages unchanged), audit (`source: package_metadata`, actor owner/producer) and a dry run. Only for the owner («Применить упаковку» in the Web UI) and the Producer (`producer_video_metadata_update`, its own endpoint only, refusing any conflict); refused while this computer's upload of that video has not finished its read-back. Never `localizations`, `status`, `publishAt`, category or languages; never automatically from a new manifest. Channel worker agents and the factory get no such tool.
-  **Captions writer (2026-11-16, owner, Telegram msgs 4590/4592, amended 2026-11-17 msg 4660, FO-REQ-0055, BL-269, ADR 0074):** `src/lib/video-captions/` may insert one English caption track (`captions.insert`) and, only on an explicit overwrite by the owner («Перезаписать субтитры» in the Web UI, after a dry-run preview and an in-app confirm) or the Producer (`producer_video_captions_add` with `overwrite: true`), replace the content of the video's one English standard track, foreign or the app's own (`captions.update` of that track id); never `captions.delete`, never an ASR track. Only on a channel whose captions switch the owner turned on (WWE) and only on a horizontal long video, only the file a release package of that channel states (`captions`, checked by `packageProblems`: SRT/WebVTT, SHA-256, size, `en`). Two paths: the upload step of `src/lib/publishing/` (after the translations, before the thumbnail; it never overwrites -- an existing English track refuses the step; the video gets its `publishAt` only after the captions step and the read-back passed) and, for a video already uploaded by a package, the owner's Web UI and the Producer (its own endpoint only), from that package's current manifest. Identity check, backup (the track list; for an overwrite also the replaced track's content, `captions.download` -- no backup, no write), Live writes immediately before the call, read-back (`captions.list`), audit, dry run and the quota guard. Channel worker agents and the factory get no caption tool (`docs/PROJECT_SPEC.md` §21).
+- The Change Set / localization mechanism (import, AI generation, tracked-language management, deletion) has authority over exactly `title` and `description`, per language, and nothing else — never `defaultLanguage`/`defaultAudioLanguage`, tags, category, privacy, scheduling, or captions/subtitles (`docs/PROJECT_SPEC.md` §21).
+- **Every other authorized YouTube writer, and every exception to the line above, is listed in `docs/WRITE_AUTHORIZATIONS.md`, which is binding exactly as if it were written in this file; any new writer must be added there.** Read it before touching any YouTube write or anything it governs: Batches' language fields, video details, live and channel translations, channel branding, uploads and their translations, the upload queue, publish dates, the weekly plan and week template, social cross-posts, thumbnails, the owner package-review gate, package metadata after upload, captions, and which agent roles get which of these tools.
 - Channel-context validation is not automatic — a route or service taking a `channelId` must itself verify the requested resource belongs to that channel (see `docs/DEVELOPMENT_PLAYBOOK.md` §6.6). *An operation is not automatically secure merely because it only touches local SQLite data.*
 - Known, currently-accepted security tradeoffs (plaintext local token storage, no per-user ownership boundary, best-effort upload-size enforcement) are tracked in `docs/TECHNICAL_DEBT.md` with explicit re-evaluation triggers — do not silently carry a *new* security-relevant gap forward without adding it there.
 
@@ -119,26 +87,26 @@ verification
 
 The active/authorized channel identity must be validated before write operations, reusing `write-context.assertWriteChannel` (do not write a parallel guardrail). A wrong-channel condition must fail closed. AI-generated metadata must remain a draft until it passes the project's approval workflow. See `docs/DEVELOPMENT_PLAYBOOK.md` §6.5 for the current implementation status of each step of this pipeline — do not describe an unimplemented step as implemented.
 
-**Single write gateway (established 2026-09-21, `docs/decisions/0005-youtube-write-gateway.md`, at the project owner's explicit request — "единственный путь как информация может попасть в 'релиз'").** `src/lib/youtube-write-gateway/` is the only module any code in this repository may use to call a mutating YouTube Data API v3 method (`videos.update`, `playlists.insert/update/delete`, `playlistItems.insert/delete`, or any future mutating method on any resource) — never `src/lib/youtube-read-gateway/` directly, and never a new parallel call site in a domain module's own adapter. This is enforced mechanically, not by convention: `src/lib/youtube-write-gateway/gateway-inventory.test.ts` fails the test suite if any file outside that module calls a mutating method directly. The gateway's `assertLiveWritesAuthorized` is the single, shared implementation of the "Live writes" Gate B policy check (`docs/TECHNICAL_DEBT.md` RISK-09) — every write surface (Batches, single-item `apply`, `playlist_*`) calls it, immediately before its own gateway write call, so the same toggle governs every write path regardless of whether a human (Web UI) or an agent (MCP) initiated it. Adding a new write operation means adding a function to the gateway (§6.4/§6.5 of `docs/DEVELOPMENT_PLAYBOOK.md`), never bypassing it "just this once."
+**Single write gateway (ADR 0005).** Only `src/lib/youtube-write-gateway/` may call a mutating YouTube Data API method (`videos.update`, `playlists.*`, `playlistItems.*`, any future one); never through `youtube-read-gateway` or a parallel call site (`gateway-inventory.test.ts` enforces it). Every write surface calls its `assertLiveWritesAuthorized` (the Live writes check, RISK-09) immediately before its gateway write call. A new write operation is a new gateway function, never a bypass.
 
-**Single read gateway (established 2026-09-22, `docs/decisions/0007-youtube-read-gateway.md`, at the project owner's explicit request — "Все запросы на получения данных должны идти через него и никак иначе", applying the same single-funnel principle to reads project-wide, not only to this branch).** `src/lib/youtube-read-gateway/` is the only module any code in this repository may use to reach a real YouTube-family read client — never a new parallel `googleapis` import in a domain module's own adapter. It is a thin umbrella (`index.ts`, a pure re-export barrel) over category-specific children, one per distinct Google API product (`data-api.ts` for the YouTube Data API v3, `analytics-api.ts` for the YouTube Analytics API, folded in from Phase 8 the same day) — every caller imports only from the barrel (`@/lib/youtube-read-gateway`), never a child module directly. This is enforced mechanically: `src/lib/youtube-read-gateway/read-gateway-inventory.test.ts` fails the test suite if any production file outside both gateways or `auth.ts` imports `googleapis` at runtime, and separately if any file outside this gateway imports a child module directly instead of the barrel. Adding a new read category means adding a child file and re-exporting it from the barrel (§6.4 of `docs/DEVELOPMENT_PLAYBOOK.md`), never a parallel read path.
+**Single read gateway (ADR 0007).** Only `src/lib/youtube-read-gateway/` reaches a real YouTube-family read client: callers import only the barrel `@/lib/youtube-read-gateway`, never a child (`data-api.ts`, `analytics-api.ts`) or `googleapis` (`read-gateway-inventory.test.ts` enforces it). A new read category is a new child re-exported from the barrel.
 
-**Per-category "reads enabled" toggles (same instruction, same day, Settings tab).** Each read-gateway child has its own toggle (`getDataApiReadsEnabled`/`getAnalyticsReadsEnabled`, `src/lib/db.ts`), checked inside that child's own client constructor (`createYoutubeClient`/`createYoutubeAnalyticsClient`) — the single choke point every caller in that category already goes through, so the check cannot be forgotten by a new caller the way a per-caller pattern could be. Like Live Writes since ADR 0044 (2026-10-19, owner msg 3157: on by default, never reset, only the owner switches it off), both default to **enabled** and persist across restarts (disabling reads is an occasional pause, not a safety-by-default posture). Disabling a category's reads also fails any write path that depends on that category's reads first (e.g. Batches' write-client construction, `write-context`'s pre-write identity check) — intentional: a write here cannot safely proceed without a read, so failing closed is consistent with this codebase's existing philosophy, not a bug. Live Writes remains the sole authorization for whether a write is otherwise allowed.
+**Reads toggles.** `getDataApiReadsEnabled`/`getAnalyticsReadsEnabled` (`src/lib/db.ts`) are checked in each child's client constructor; default on, persistent. Live Writes is likewise on by default, never reset, and only the owner switches it off (ADR 0044). Disabled reads also fail writes that need those reads (fail closed, intended). Read toggles never authorize a write; of the toggles, only Live Writes gates writes, and every other write gate still applies (`docs/AGENT_RULES_DETAIL.md` §G).
 
 ## H. Documentation maintenance
 
 Keep project documentation current when architecture, features, schema, or contracts change — see the table in `docs/DEVELOPMENT_PLAYBOOK.md` §6.12 for exactly which document to update for which kind of change. Do not let `docs/SYSTEM_MAP.md`/`docs/ARCHITECTURE.md` drift from the actual `src/**` state; a discrepancy discovered during any task should be corrected as part of that task, not left for later.
 
-**Keep new `docs/ROADMAP_STATUS.md` and `docs/roadmap/BACKLOG.md` entries short (added 2026-09-21, at the project owner's request — both files are read in full at the start of most future sessions, so their per-entry length is a recurring, compounding token cost, not a one-time one).** A new row's summary should be a few sentences: what shipped, which requirement or instruction it satisfies, and any explicit scope boundary (what was deliberately not done and why) — not a full paragraph re-narrating implementation detail, a file-by-file change list, or verification steps that the commit message (referenced by the row's own commit-hash column) already records. Point to the commit for that detail instead of duplicating it in prose. This applies to entries written from this point on; an existing long entry is not retroactively rewritten purely to shorten it — that would spend tokens for a stylistic change with no informational gain, the opposite of this rule's own purpose.
+**Keep new `docs/ROADMAP_STATUS.md` and `docs/roadmap/BACKLOG.md` entries short:** a few sentences (what shipped, which requirement, scope boundary) plus the commit hash; no implementation narrative. Old long entries are not rewritten just to shorten them (`docs/AGENT_RULES_DETAIL.md` §H).
 
-**Interface text in every language (added 2026-10-08, BL-152, owner instruction, Telegram msg 2027 — "при добавлении чего-либо в инструмент — заводить ключи и переводы на все языки").** The Web UI has no text of its own in components: every text is a key in `src/lib/ui-text/locales/<language>/<area>.ts`, added in English **and** every other supported language in the same change (`docs/DEVELOPMENT_PLAYBOOK.md` §6.9 item 11). The build and `src/lib/ui-text/*.test.ts` enforce it. MCP, API and CLI texts stay English.
+**Interface text in every language (BL-152).** The Web UI has no text of its own in components: every text is a key in `src/lib/ui-text/locales/<language>/<area>.ts`, added in English **and** every other supported language in the same change (`docs/DEVELOPMENT_PLAYBOOK.md` §6.9 item 11; the build and `src/lib/ui-text/*.test.ts` enforce it). MCP, API and CLI texts stay English.
 
 ## I. Communication preferences
 
 - Communicate with the user in Russian by default.
 - Keep technical identifiers, file names, API names, code symbols, MCP tool names, protocol names, and standard framework terminology in their original (English) form — do not translate them.
 - Technical documentation (`docs/**`) may be written in English when this improves precision and readability for future coding agents; conversational replies to the user are in Russian regardless.
-- **Standing rule (established 2026-09-19):** notify the project owner over Telegram whenever a feature is integrated into `dev` (§K.1's `feature/* → dev` merge), and whenever a build is actually produced/run (e.g. a production build/runtime smoke test, or a `published/<version>/` snapshot, `docs/decisions/0003-published-release-snapshots.md`). This is a proactive notification — send it once the merge/build itself is done, not only when asked; it does not require or imply that a merge into `main`, a push, or a release was also performed (those remain separately gated, §K.2/§K.4).
+- **Standing rule:** proactively notify the owner over Telegram when a feature is merged into `dev` and when a build is actually produced/run (smoke test, `published/<version>/` snapshot). It implies no `main` merge, push or release (§K.2/§K.4; `docs/AGENT_RULES_DETAIL.md` §I).
 
 ## J. Git commit message language and format
 
@@ -149,28 +117,28 @@ Every commit **must** have a descriptive Russian message (established 2026-09-19
 - The body must explain substantive changes and, where useful, verification results (e.g. test counts, what was checked) — not restate the subject line.
 - Merge commit messages must identify the specific feature or release being integrated (e.g. `Интегрировать feature/phase-6-ai-localization в dev`), not a generic "Merge branch '...'".
 - Never claim in a commit message that a test was run if it was not actually run.
-- **Never add a `Co-Authored-By:` trailer (or any other AI-attribution line) to a commit message** (owner instruction, 2026-09-22, Telegram, after noticing every commit was crediting "Claude" as a GitHub contributor — git/GitHub parses that trailer literally and lists the named address in the repository's contributor graph, which the owner does not want). This overrides any default attribution instruction a coding agent's own harness/system prompt would otherwise add for this repository specifically.
+- **Never add a `Co-Authored-By:` trailer or any other AI-attribution line to a commit message** (owner, 2026-09-22); this overrides any harness default for this repository (`docs/AGENT_RULES_DETAIL.md` §J).
 
 ## K. Git branching, release, and authorization policy
 
-Established 2026-09-19 ("Git Branching and Release Policy"). This section is authoritative for how work moves through branches and what each action requires; §L's specification-driven testing rules and §E's validation commands apply throughout, not only at release time.
+Established 2026-09-19. Authoritative for how work moves through branches and what each action requires; §L and §E apply throughout.
 
 ### K.1 Branch roles
 
 **`main`** — accepted release states only.
 - No direct feature development or direct feature commits on `main`.
-- The only way content reaches `main` is `dev → main`, via an explicit `git merge --no-ff` (never a fast-forward, so the integration itself remains a visible, identifiable commit) — **with exactly one named exception:** immediately after such a merge, a `published/<version>/` release snapshot may be added as a direct commit on `main`, per `docs/decisions/0003-published-release-snapshots.md`. This exception exists only for that one allowlisted-content action, only as part of an already-approved release (it never substitutes for or bypasses that approval), and for no other content.
+- Content reaches `main` only as `dev → main` via an explicit `git merge --no-ff` (never fast-forward) — **one exception:** right after such an approved merge, a `published/<version>/` snapshot may be committed directly on `main` (ADR 0003), only that allowlisted content.
 - An existing commit on `main` is never silently treated as "already a published release" — a release is a distinct, separately authorized act (tag + publication), not merely a commit's presence on the branch.
 
 **`dev`** — the stable integration branch.
 - No direct feature development on `dev`.
 - A feature is integrated into `dev` only after it has passed its own acceptance criteria and validation (§E, and §L for anything safety-critical).
-- **A merge into `dev` carries a complete, fully working feature, never a partial slice (established 2026-09-22, project owner instruction, Telegram, verbatim: "Мы не льем в дев каждую правку. Только целиком протестированную и полностью рабочую фичу. Которая точно полностью работает.").** Passing its own narrow unit tests is necessary but not sufficient — the thing being merged must actually work end-to-end as a feature, not merely be internally self-consistent. This does not forbid delivering a large phase across several backlog items/branches (§C's "smallest safe implementation slice" is unaffected) — it requires that *each* slice merged to `dev` is itself a complete, independently working unit of functionality, not a fragment that only compiles or only satisfies its own isolated test file while leaving the feature it belongs to non-functional as a whole.
+- **A merge into `dev` carries a complete, end-to-end working and tested feature, never a partial slice** (owner, 2026-09-22); its own unit tests passing is not enough. A phase may ship across several items, each a complete working unit (`docs/AGENT_RULES_DETAIL.md` §K.1).
 - Integration is `feature/* → dev` via explicit `git merge --no-ff` — never squashed by default (a feature branch's real commit history is preserved so its development steps remain inspectable).
 - After every integration, verify the resulting `dev` state (§K.3). A failed or unverified integration is never left in place as if it were stable, and is never pushed.
 
 **`feature/<descriptive-name>`** — one branch per approved development task, created from the tip of `dev` at the time the task starts.
-- **When an approved task is itself split into multiple slices of the same phase, all of that phase's slices share ONE branch, merged into `dev` together once (established 2026-09-26, project owner instruction, Telegram, verbatim: "Мы делаем все слайсы одной фазы в одной ветке и потом мерджим их вместе").** Do not open a separate `feature/*` branch per slice and merge each one individually — accumulate slices as separate commits on the one phase branch (per-slice commits, review rounds, and fixes stay separately inspectable in that branch's own history) and present the whole branch for one merge-approval decision once the owner says it is ready to combine. This does not change §K.2's substantive-feature merge-approval gate itself — it changes what unit that gate is applied to (a phase's accumulated slices, not each slice alone).
+- **All slices of one phase share ONE branch, merged into `dev` together once** when the owner says it is ready (owner, 2026-09-26); slices are separate commits; the §K.2 gate applies to the whole branch (`docs/AGENT_RULES_DETAIL.md` §K.1).
 - Work and commit incrementally on the feature branch; intermediate/WIP commits are fine there (they are not `dev` or `main`).
 - Never commit user secrets, credentials, local databases (`data/*.db`), generated build artifacts (`.next/`, `node_modules/`), or files unrelated to the task at hand — stage explicit paths, never `git add -A`/`git add .` without inspecting the result first.
 - Before integrating into `dev`, merge/rebase in the latest `dev` changes, resolve any conflicts on the feature branch itself (never on `dev`), and re-verify the result.
@@ -191,83 +159,54 @@ Established 2026-09-19 ("Git Branching and Release Policy"). This section is aut
 | Force push, destructive `reset`/`clean`, or any history rewrite of a shared branch | Never without explicit, action-specific authorization |
 | Real (non-dry-run) YouTube write; real paid AI API call; production deployment | Never inferred from any Git permission above — these each have their own, separate authorization requirement (§K.4, `docs/PROJECT_SPEC.md`) |
 
-A prior approval never carries forward to a new, unrelated action of the same kind (unchanged from prior policy), **except** `git push` of `dev`, which the project owner has explicitly pre-authorized as a standing, durable approval (2026-09-19) — the general "never carries forward" rule still governs every other action in this matrix, including `main`, tags, and releases, none of which are affected by this one standing exception. A more restrictive instruction given for an individual task always takes precedence over this general policy.
+A prior approval never carries forward to a new, unrelated action, **except** `git push` of `dev` (standing owner approval, 2026-09-19). A more restrictive task-specific instruction always wins.
 
-**Substantive-feature merge confirmation (established 2026-09-22, project owner instruction, Telegram).** For anything above the small/low-risk bar, do the work freely on its own `feature/*` branch (branch creation and every commit stay authorized by default, no different from before) — but once the agent itself considers that feature complete and verified, it must present it as finished and explicitly ask whether the owner agrees, then wait for an explicit yes before running the `--no-ff` merge into `dev`. This replaces the previous blanket default-authorization for feature merges; small/low-risk changes (defined in the table above) are explicitly carved out and keep merging immediately, exactly as before — the owner's own words: *"Пока мелкие правки может оставить на мердж сразу."* The pre-existing standing authorization for `git push` of `dev` is unaffected and still covers the push that follows an approved merge — the owner did not withdraw it, only added the merge-approval step ahead of it.
+**Substantive-feature merge (owner, 2026-09-22):** once the feature is complete and verified on its branch, present it as finished, ask, and wait for the owner's explicit yes before the `--no-ff` merge into `dev`. Small/low-risk changes keep merging immediately; the standing `dev` push covers the push after an approved merge.
 
-**Interaction with the `autonomous-dev-loop` skill's independent-work model.** That skill's own 15-minute wait-then-move-on rule (its §2, "when this loop needs the owner's input") now applies to a merge-approval question exactly like any other question the loop asks: if 15 minutes pass with no reply, the loop does not sit idle waiting on that one feature — it leaves that feature's branch committed and parked (never merged without the approval it's still waiting for) and looks for another actionable item in the backlog/tech debt to work on in parallel. **Any such next branch is created from `dev`'s current tip, never from the tip of the just-finished, still-unmerged feature branch** (project owner's own explicit clarification, Telegram, 2026-09-22 — "имеется ввиду из последнего доступного дева, а не прямо из той ветке фичи где только что закончил работу") — stacking a new feature on top of one still awaiting approval would tangle two unrelated pieces of work together and make either one harder to review or revert independently. To keep the number of simultaneously-parked, awaiting-approval branches manageable, group commits within a branch by logical scope/module rather than fragmenting work into many single-purpose branches each needing its own separate approval round.
+**With `autonomous-dev-loop`:** a merge question unanswered for 15 minutes parks that branch (committed, never merged unapproved) while the loop works another item; **the next branch is cut from `dev`'s current tip, never from the parked branch**. Group commits by scope rather than many small branches (`docs/AGENT_RULES_DETAIL.md` §K.2).
 
 ### K.3 Verification discipline
 
-- **During feature development:** run focused tests for the affected functionality as needed; do not rerun the entire suite after every micro-edit without a reason to suspect broader breakage.
-- **Before merging a feature into `dev`:** run every acceptance test the feature's own task defined, then `npm test`, `npm run lint`, `npm run build`, and `git diff --check`; re-verify the specific safety/data invariants the change touches (e.g. the Phase 5 live-write barrier, channel-scoping, credential non-exposure); obtain independent review where the task calls for it.
-- **After merging into `dev`:** verify the resulting merge commit itself (the merge can introduce a break even when both sides passed independently) — but do not redundantly re-run a check that already ran against the exact resulting commit (e.g. via CI) with nothing since. Merging is never, by itself, evidence of stability; only an actual passing verification of the merged state is.
-- **Before any release:** verify the actual release candidate and its distributable artifacts specifically — a passing `dev` test suite proves the code paths tested, not cross-platform (e.g. Windows/macOS) packaging or runtime behavior; check platform compatibility and any database-migration requirement explicitly, not by inference from `npm test`.
+- **During development:** focused tests as needed; no full-suite rerun after every micro-edit without reason.
+- **Before merging into `dev`:** the task's acceptance tests, then `npm test`, `npm run lint`, `npm run build`, `git diff --check`; re-verify the safety/data invariants the change touches (e.g. live-write barrier, channel scoping, credential non-exposure); independent review where the task calls for it.
+- **After merging into `dev`:** verify the merge commit itself (unless that exact commit was already checked); a merge alone is never evidence of stability.
+- **Before any release:** verify the actual release candidate and its artifacts, including cross-platform packaging/runtime and database migrations, explicitly, not by inference from `npm test`.
 - Never state that a test ran, or what it found, unless it was actually executed in this session.
 
 ### K.4 Release policy
 
 - Only an accepted `dev` state is integrated into `main`, only via `git merge --no-ff`, only with prior project-owner approval for that specific merge.
-- Immediately after that approved merge, `scripts/publish-snapshot.mjs` may be run to add a `published/<version>/` snapshot as the one named direct-commit exception to `main` in §K.1 — never before the merge, never for a version whose folder already exists (immutable once published, `--force` required and itself a separate explicit decision), and never with content outside its allowlist (`docs/decisions/0003-published-release-snapshots.md`).
+- Right after that approved merge, `scripts/publish-snapshot.mjs` may add the `published/<version>/` snapshot (§K.1's exception) — never before the merge, never over an existing version folder (`--force` is its own explicit decision), never with content outside its allowlist (ADR 0003).
 - A version tag is assigned only after separate project-owner approval, never automatically alongside a merge.
 - A release preserves its manifest, compatibility information, and any platform-specific artifacts — a release is not just "the current `main` tip."
 - A user-data migration bundled with a release follows the project's approved upgrade-safety process (schema/data compatibility checked, not assumed).
 - Do not build automatic-update mechanisms or cut a release as an incidental side effect of an unrelated task.
 - None of the above authorizes a real (non-dry-run) YouTube write, a real paid AI API call, or a production deployment — each remains separately gated (§G, `docs/PROJECT_SPEC.md`, and any provider-integration plan under `docs/ai-localization/` or equivalent).
 
-The project owner retains authority over product priorities, significant architectural decisions, security tradeoffs, scope expansion, production operations, releases, and every Git action this section marks as requiring separate authorization. Claude Code (or any coding agent working from this file) handles ordinary implementation decisions — including creating feature branches and integrating verified work into `dev` — independently within approved requirements and this policy; it does not ask for approval on every minor implementation detail, but does escalate decisions involving substantial architecture, security, compatibility, data-loss risk, or scope changes, and always stops at the boundaries in §K.2's authorization matrix.
+The owner decides product priorities, significant architecture, security tradeoffs, scope, production operations, releases and every Git action this section gates. Agents make ordinary implementation decisions independently, escalate architecture/security/compatibility/data-loss/scope questions, and always stop at §K.2's boundaries (`docs/AGENT_RULES_DETAIL.md` §K).
 
 ## L. Specification-driven and independent testing
 
-**Tests must derive expected behavior from product requirements and external contracts — `docs/PROJECT_SPEC.md`, documented API/MCP contracts, ADRs, official YouTube API documentation — never from reading the implementation under test and writing down what it happens to do.** A test that merely confirms "the code does what the code does" provides no evidence of correctness; it only proves the code is self-consistent. See `docs/DEVELOPMENT_PLAYBOOK.md` §6.14 for the full workflow this rule requires.
+**Tests derive expected behavior from requirements and external contracts** (`docs/PROJECT_SPEC.md`, API/MCP contracts, ADRs, official YouTube API docs), **never from reading the implementation under test** and recording what it does (`docs/DEVELOPMENT_PLAYBOOK.md` §6.14).
 
 For substantial or safety-critical changes (anything touching write-safety, channel identity, conflict detection, approval integrity, or data preservation — see `docs/PROJECT_SPEC.md` §21/§27/§30 and `docs/TECHNICAL_DEBT.md`'s Gate B list):
 
 - Define acceptance criteria **before** implementation, from the requirement, not from a draft implementation.
-- Define expected outputs independently of the code that will produce them (compute or state the expected value by hand from the spec, not by running the implementation and copying its output into the test).
+- State expected outputs by hand from the spec, never by copying the implementation's output.
 - Include negative and boundary scenarios, not only the happy path.
 - **Never weaken a test merely to make the implementation pass.** A failing test is evidence requiring investigation of the implementation — it is not, by itself, an instruction to change the test.
-- **Never replace a fixed expected value with a dynamically generated value derived from the implementation** (e.g. asserting `result === computeResult(input)` using the same function under test, or a snapshot taken from a first run without independent verification that the snapshot itself is correct).
-- Changing a previously-approved acceptance test requires explicit justification: state which requirement the old test was wrong about (or which requirement changed), not "the implementation doesn't do this" alone. See `docs/DEVELOPMENT_PLAYBOOK.md` §6.14's "Test changes during implementation" for the required procedure — do not silently rewrite an acceptance test.
+- **Never replace a fixed expected value with one derived from the implementation** (the same function under test, or an unverified first-run snapshot).
+- Changing an approved acceptance test needs explicit justification (which requirement the old test got wrong, or which changed — never "the implementation doesn't do this"), per `docs/DEVELOPMENT_PLAYBOOK.md` §6.14.
 
 ## M. Feature module independence and shared-logic extraction
 
-Established 2026-09-22, project owner instruction (Telegram) — a foundational architecture
-principle for this project, alongside (not a replacement for) the domain-module layering pattern
-in `docs/DEVELOPMENT_PLAYBOOK.md` §6.2.
-
-- **Every large feature vertical must be built so the rest of the application keeps working if
-  that feature is disabled or removed.** The owner's own examples of what counts as this scale of
-  module: a translations/localization module, an analytics module — larger, product-level
-  verticals, as distinct from the smaller `contracts/schemas/services/adapters` domain modules
-  already used under `src/lib/`. Verbatim: "Каждая фича должна делаться как отдельный модуль...
-  Если один модуль отключается — вся система должна быть способна работать без проблем." A feature
-  module going down, being toggled off, or failing must never take down or break functionality
-  that does not actually depend on it.
-- **Shared logic needed by more than one such feature module is extracted into its own separate
-  module, never left inside one feature module for another to reach into.** Verbatim: "Если для
-  работы этих больших модулей нужны какие-то общие логические точки — они выносятся в отдельные
-  модули и к ним обращаются те кому нужны эти функции." The `youtube-read-gateway`/
-  `youtube-write-gateway` pair (§G) is an existing example of exactly this shape — a shared
-  capability multiple higher-level modules depend on, factored out on its own rather than owned by
-  whichever feature happened to need it first.
-- This principle governs how new feature-module work is designed and built going forward. It does
-  not, by itself, authorize or require retroactively refactoring an already-shipped module (e.g.
-  the existing localization/Change Set pipeline, or Phase 8's analytics work) to comply — bringing
-  an existing module into line with this principle is its own separately-scoped task requiring its
-  own assignment, per §C, not something to start on the strength of this section alone.
+- **Every large feature vertical (e.g. translations, analytics) is built so the rest of the app keeps working if it is disabled, removed or failing** (owner, 2026-09-22).
+- **Logic needed by more than one such module goes into its own module** (like the gateways, §G), never left inside one for another to reach into.
+- This governs new work, never by itself a retroactive refactor of a shipped module (§C; `docs/AGENT_RULES_DETAIL.md` §M).
 
 ## N. Restarting the owner's live server (hard rule)
 
-Established 2026-10-24 (owner, Telegram msg 3420: «перезапуск сервера только если (когда) ни оператор, ни агенты каналов не
-работают сейчас с ним»), and since BL-220 (FO-REQ-0038, ADR 0049, live 2026-10-24) enforced by the app itself.
-
-**Restart only through restart-when-idle; ask nobody first.** Use the owner's button (Settings → О программе) or
-`scripts/macos/restart-when-idle.sh`. The server then waits by itself until nothing works with it: media sessions and jobs,
-Gemini jobs, uploads only in their last-chunk or finishing window (owner msg 4420, 2026-11-15: an upload is resumable and goes on after
-a restart, so sending and YouTube's processing no longer hold one), a live stream starting/stopping/switching, the operation lock, active holds, and the owner's quiet minutes
-without MCP calls (default 3). Only then does it restart itself. Agents keep it from restarting with holds (`factory_hold_restart` /
-`agent_hold_restart`).
+**Restart only through restart-when-idle; ask nobody first** (owner msg 3420; BL-220, ADR 0049): the owner's button (Settings → О программе) or `scripts/macos/restart-when-idle.sh`. The server waits by itself until nothing works with it (media sessions and jobs, Gemini jobs, an upload in its last-chunk or finishing window, a live stream starting/stopping/switching, the operation lock, holds, the owner's quiet minutes without MCP calls), then restarts. Agents hold it with `factory_hold_restart` / `agent_hold_restart` (`docs/AGENT_RULES_DETAIL.md` §N).
 
 - Never use `stop.sh`, `start.sh`, `update.sh` or a process kill on the live server instead, unless the owner, in their own words,
   asks for that one restart (for example «перезапускай»).
@@ -278,20 +217,7 @@ without MCP calls (default 3). Only then does it restart itself. Agents keep it 
 
 ## Standard development workflow
 
-1. Read project instructions (this file, plus §A's reading list as relevant to the task).
-2. Inspect Git state (`git status`, recent commits, whether the current branch is pushed).
-3. Understand the requested feature/task.
-4. Identify affected subsystems (`docs/SYSTEM_MAP.md`).
-5. Inspect the relevant existing code.
-6. For a substantial change, produce a plan before implementing.
-7. Identify security and compatibility risks.
-8. Implement the smallest coherent scope for the approved task.
-9. Add tests (`docs/DEVELOPMENT_PLAYBOOK.md` §6.11).
-10. Run validation (§E above).
-11. Update documentation (§H above).
-12. Inspect the Git diff.
-13. Present the implementation report.
-14. Wait for required authorization (§K above) before any publication action.
+Read instructions (this file, §A as relevant) → inspect Git state → understand the task → find affected subsystems (`docs/SYSTEM_MAP.md`) → read the code → plan a substantial change → identify security/compatibility risks → implement the smallest coherent scope → add tests (`docs/DEVELOPMENT_PLAYBOOK.md` §6.11) → validate (§E) → update docs (§H) → inspect the diff → report → wait for authorization (§K) before any publication action.
 
 <!-- BEGIN:nextjs-agent-rules -->
 

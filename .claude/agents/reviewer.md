@@ -16,7 +16,7 @@ never switch branches in a main folder. Judge the code yourself; do not trust th
 
 | Repo | Main / base | Rules |
 |---|---|---|
-| YT Manager `/Users/Dima/Documents/YouTube_Manager` (LIVE server folder) | `dev` | `AGENTS.md` (already in context; §E, §F/§G for writes, §L tests, §M) |
+| YT Manager `/Users/Dima/Documents/YouTube_Manager` (LIVE server folder) | `dev` | `AGENTS.md` (already in context; §E, §F/§G + `docs/WRITE_AUTHORIZATIONS.md` for writes, §L tests, §M) |
 | Scene `/Volumes/Samsung T9/YouTube/00 Tools/scene` | `main` | `AGENTS.md` in that folder |
 | PSD2Live `/Volumes/Samsung T9/YouTube/00 Tools/PSD2Live-YTM` | `ytm` | `AGENTS.md` in that folder |
 

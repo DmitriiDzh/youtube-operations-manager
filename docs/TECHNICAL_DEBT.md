@@ -1,5 +1,7 @@
 # TECHNICAL_DEBT.md
 
+> **Archive:** FIXED/CLOSED/RESOLVED risk entries dated before 2026-11-01 that nothing open, no gate and no code comment references are in `docs/archive/TECHNICAL_DEBT-2026.md`. RISK ids there stay taken: never reuse a number from either file; search both when a comment cites a RISK id.
+
 Engineering risk register for YouTube Operations Manager. Created in Phase 4.5 (`docs/PROJECT_SPEC.md`-driven governance consolidation), covering issues identified during the Phase 0/1 baseline and Phases 2–4.
 
 **Purpose:** make known limitations visible, classified, and gated — not to fix them all now. See `docs/PROJECT_SPEC.md` for product requirements and `docs/ARCHITECTURE.md` §12 for the corresponding architecture-level limitations checkpoint; the release-readiness checkpoints (Gates A–D) enforcing these gates are defined below in this document.
@@ -1071,17 +1073,6 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Approval required from:** none technically required; the `url` fix is a same-slice correction, not a new capability.
 - **Status:** `url` half RESOLVED, 2026-09-24 (Phase 7 slice G2's own follow-up, this same branch). `external_artifact_id` half intentionally left OPEN/opaque by design -- revisit only if a future capability starts resolving it.
 
-## RISK-59 — MCP `tools/list`'s rendering of a ZodEffects (`.refine()`-based) `inputSchema` has not been verified end-to-end (Phase 7 slices G2/K/L) — RESOLVED, 2026-09-25 (slice J)
-
-- **Affected components:** `src/mcp/server.ts`'s `agent_register_external_artifact` (`registerExternalArtifactInputSchema`, a ZodEffects via `.superRefine`, registered as-is -- not a relaxed base-object variant, unlike `agent_find_comparable_videos`/`agent_list_asset_performance`).
-- **What was confirmed working before this investigation:** the runtime call path -- `McpServer.validateToolInput` calls `safeParseAsync` directly against a ZodEffects instance without error, and `agent_register_external_artifact`'s own MCP tests exercise real schema rejection (e.g. `referenceKind: "local_path"`) successfully.
-- **What this investigation confirmed (slice J, empirical, not just reading SDK source):** built a real `createMcpServer({ connectionEnabled: true })` instance in this environment and called the SDK's OWN `tools/list`-rendering code path directly (`normalizeObjectSchema(tool.inputSchema)` + `toJsonSchemaCompat(...)`, the exact functions `@modelcontextprotocol/sdk`'s own `ListToolsRequestSchema` handler calls) against `agent_register_external_artifact`'s real, registered, full `.superRefine`-based schema. The result is a complete, correct, non-degenerate JSON Schema: every property (`channelId`, `assetType` with its full 11-value enum, `referenceValue`, `title`, `description`, `linkedVideoId`, `provenance`, `proposalId`, `referenceKind` with its restricted 2-value enum) and the correct `required` array render exactly as expected. The cross-field `.superRefine` constraint (the "url must actually be an http(s) URL when referenceKind is url" rule) is, as expected, not represented in the JSON Schema output -- JSON Schema has no native way to express a cross-field conditional like this -- but this was never in question; the concern was whether the schema rendering was degenerate/empty, and it is not. Also spot-checked `agent_find_comparable_videos`'s already-relaxed `findComparableVideosSdkInputSchema` the same way -- also renders a complete, correct JSON Schema (enums, bounds, `credentialRef`'s union type all present).
-- **Conclusion:** no fix needed. `agent_register_external_artifact` may keep registering its own full, refined schema as-is -- there is no `tools/list` rendering defect to match K/L's relaxed-schema pattern for. The relaxed-schema pattern K/L use exists for a DIFFERENT reason entirely (letting the SDK's own pre-handler `validateToolInput` call accept a value the handler will resolve server-side, e.g. `credentialRef`), not because a ZodEffects renders badly in `tools/list` -- these are two independent concerns that happened to involve the same schema shape, and conflating them was the source of this risk entry's own uncertainty.
-- **Actual risk today:** none. A real MCP client (Codex) sees a complete, accurate parameter description for every tool in this interface, including `agent_register_external_artifact`.
-- **Gate(s):** none. Resolved before slice J's own review cycle began, per this risk entry's own stated intent.
-- **Approval required from:** none.
-- **Status:** RESOLVED, 2026-09-25.
-
 ## RISK-60 — `write_channel_select`/`auth_user_select` mutate global, not per-connection, state — a race once multiple agent connections operate concurrently (BL-091) — OPEN, 2026-09-25
 
 - **Affected components:** `src/mcp/server.ts`'s `write_channel_select`/`auth_user_select` MCP tools; `getActiveChannelId(userId)` (defined in `src/lib/channel-access/services.ts`, called from `src/lib/channel-sync/services.ts` via `deps.channelAccess`); `src/lib/write-context/`.
@@ -1241,17 +1232,6 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Remediation applied:** two new atomic `db.ts` functions, each a single `database.transaction()`: `insertTrendCandidateWithInitialEvidence` and `updateTrendCandidateStatusWithEvidence`. Both are proven to actually roll back against the real libsql driver (`db.test.ts`, a forced PRIMARY KEY collision on the transaction's second statement, asserting the first statement's effect is also gone afterward) -- not merely assumed from `database.transaction`'s own documented behavior.
 - **Gate(s):** none.
 - **Status:** RESOLVED, 2026-09-27.
-
-## RISK-74 — `getProductionAppPaths()`'s test-runner singleton path was keyed only by PID, with no cleanup — RESOLVED, 2026-09-27
-
-- **Affected components:** `src/lib/platform-paths/runtime.ts`'s `getProductionAppPaths()` -- under the test runner, resolves to `<tmpdir>/youtube-ops-manager-test-singleton-<process.pid>`, cached for the life of the process, never wiped.
-- **Found during:** investigating a CLI test failure (`AGENT_ZONE_VIOLATION` where `validation_failed` was expected) that had been dismissed as "pre-existing flakiness" without evidence -- advisor review flagged that dismissal as unverified and named a concrete, checkable cause.
-- **Actual risk:** the OS reuses PIDs. This repository's own test/build invocations across a single long session left **36,947 stale singleton directories** in the system temp dir at the time this was checked (`ls "$TMPDIR" | grep -c youtube-ops-manager-test-singleton`) -- this part is directly confirmed, not inferred. A new process that happens to reuse a PID an earlier, unrelated process once held would silently inherit that earlier process's leftover database at the exact same path -- including real rows (e.g. an enabled agent-connection, an operation-lock row) that could make an entirely different test file fail with a confusing, seemingly-unrelated error. **Honesty note (advisor review):** this mechanism is real and confirmed to exist, and is a plausible explanation for the specific `AGENT_ZONE_VIOLATION` failure that prompted this investigation -- but that specific failure was never actually reproduced under a controlled repro (e.g. by deliberately seeding a stale directory with an enabled agent-connection row and confirming the exact same test then fails the exact same way). The cause of that ONE historical failure is therefore **inferred, not demonstrated** -- what is demonstrated is that the underlying mechanism is real, was actively causing this exact class of cross-run pollution, and is now fixed regardless of whether it was the specific cause of that one observed failure.
-- **Fix applied:** `getProductionAppPaths()` now calls `fs.rmSync(testHomedir, { recursive: true, force: true })` before resolving paths, on every first call within a process, so a reused PID can never inherit a previous process's state -- "this PID's test database" now actually means "a pristine database," unconditionally. Safe because this branch runs only under the test runner and the directory holds nothing but this kind of disposable, single-run temp state.
-- **Test:** `src/lib/platform-paths/runtime.test.ts` -- seeds a stale marker file at the exact computed path before the module's first real call in a fresh process (relying on `node --test`'s own per-file process isolation), then asserts the file is gone afterward.
-- **Not itself a data-integrity risk** for any real user -- this only ever affected the test/build-time singleton path, never the real production app-data directory (a completely different, unconditional branch in the same function).
-- **Gate(s):** none.
-- **Status:** RESOLVED, 2026-09-27. The 36,947 pre-existing stale directories from before this fix were manually cleaned up as part of the same investigation; the fix itself prevents future accumulation from ever causing a repeat.
 
 ## RISK-75 — a `market_research_requests` row can become permanently stuck in `"approved"` with no recovery path — OPEN, 2026-09-27
 
@@ -1833,16 +1813,6 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Possible fix:** (1) keep the session alive across a graceful restart instead of sweeping it; (3) the live spike, then pin the shapes; (4) count only job submits as activity if the owner prefers.
 - **Gate(s):** the live spike before any real use. **Status:** open.
 - **Slice 6 addition (2026-10-05):** (5) the Production balance reads RunPod's *legacy* GraphQL API (REST v2 has no balance endpoint); if RunPod retires it, the panel degrades to the v2 billing spend (no balance figure) -- re-check when RunPod announces a v2 balance endpoint. (6) With concurrent sessions the daily-cap check at approve is not atomic between two simultaneous approves (only the concurrency count is); the watcher stops every session once the day's total reaches the cap, so the overshoot is bounded by one watch interval of the sessions that slipped through.
-
-## RISK-108 — Agent tokens: one token may be valid on several devices, revocation is per device — RESOLVED, 2026-10-09 (BL-160, ADR 0033)
-
-- **Resolved:** the owner chose synced tokens (msg 2200). A revocation now reaches every device through the `agent-tokens` family; the trust this places in the shared folder is RISK-117.
-
-- **What:** Since BL-130 (ADR 0024) the operator can register the same channel or Factory Operator token on several devices by pasting it. Each device keeps its own hash row (still device-local, nothing synced), so revoking or rotating on one device leaves the token valid on every other device where it was entered.
-- **Effect:** a leaked token must be revoked on each such device; until then it works there. Exposure boundary unchanged: loopback-only endpoints, same-OS-user readers (RISK-105, `docs/AGENT_ISOLATION_SETUP.md` §5).
-- **Possible fix:** synced revocation (variant B in `docs/roadmap/plans/AGENT_TOKEN_IMPORT_PLAN.md`), not chosen by the owner.
-- **Re-evaluate:** if the MCP endpoints ever become reachable off-loopback, or if variant B is assigned.
-- **Gate(s):** none. **Status:** open, accepted tradeoff (owner choice, msg 1577).
 
 ## RISK-109 — Factory Operator token can spend and delete without a click — OPEN, 2026-10-06
 

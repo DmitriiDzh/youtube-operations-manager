@@ -115,7 +115,9 @@ first list, and it never merges the parked feature itself.
    iteration, and treat their answer as standing for the rest of this run (not re-asked every
    iteration).
 1. Read `docs/ROADMAP_STATUS.md` (what is actually done) and `docs/roadmap/BACKLOG.md` (via the
-   `roadmap-backlog` skill) to find the current phase's open items.
+   `roadmap-backlog` skill) to find the current phase's open items. Closed history before 2026-11-01 is in
+   `docs/archive/` (`BACKLOG-2026.md`, `ROADMAP_STATUS-2026.md`, `TECHNICAL_DEBT-2026.md`); open items stay in
+   the active files.
 2. If an `assigned` or `in_progress` backlog item exists: work it, following `AGENTS.md`'s
    Standard development workflow exactly as in any other task -- smallest safe slice, tests before
    merge, docs updated per §H. For a small/low-risk change, `--no-ff` merge to `dev`, push, and
