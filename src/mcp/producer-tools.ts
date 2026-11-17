@@ -63,7 +63,9 @@
 // the video its upload record names (dryRun first; `overwrite: true` replaces the video's one English standard track); permission
 // CAPTIONS_WRITE and captionsTools in producer_get_capabilities. agent_get_publishing_calendar's packages gain `captions` and the
 // problem codes captions_missing / captions_invalid (details.reason); uploads gain steps.captions. Additive.
-export const PRODUCER_API_VERSION = "1.26.0";
+// 1.27.0 (BL-271, owner TG 3617/3618, ADR 0075): producer_wait (READ) -- wait until one upload of this computer or a restart is final
+// (timeoutSeconds default 50, clamped 1-240); not counted as MCP activity; any other target is invalid_request. Additive.
+export const PRODUCER_API_VERSION = "1.27.0";
 
 /** The channel agent's READ tools the Producer gets; each call names its channel and runs in that channel's agent scope. */
 export const PRODUCER_CHANNEL_TOOLS: Readonly<Record<string, { capability: string }>> = Object.freeze({
@@ -148,6 +150,8 @@ export const PRODUCER_ONLY_TOOLS = [
   "producer_publishing_plan_get",
   "producer_publishing_plan_list",
   "producer_publishing_plan_move_slot",
+  // BL-271 (ADR 0075): wait until an upload of this computer or a restart is final (a read; not counted as MCP activity).
+  "producer_wait",
 ] as const;
 
 /** BL-267 (ADR 0073 §5): the Producer's weekly-plan tools -- exactly these five, the test pins the list. */

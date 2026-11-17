@@ -133,7 +133,9 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // 4.24.0 (BL-269, ADR 0074): agent_get_publishing_calendar's packages gain `captions` ({ language, file, name, sha256, problemReasons }
 // or null) and the problem codes captions_missing / captions_invalid; uploads gain `captions` (the step's outcome) once it ran; the
 // plan's packages gain `captions`. No caption tool for channel agents. Additive.
-export const AGENT_API_VERSION = "4.24.0";
+// 4.25.0 (BL-271, owner TG 3617/3618, ADR 0075): agent_wait (READ, as factory_wait 1.54.0, this channel only -- another channel's id is
+// not_found) -- wait until one operation is final without polling; not counted as MCP activity. Additive.
+export const AGENT_API_VERSION = "4.25.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry

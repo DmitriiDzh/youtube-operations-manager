@@ -42,7 +42,12 @@ const resolveChannelUser = resolveConnectedChannelUser;
  */
 export function createProducerSessionDeps(
   session: ProducerMcpSession,
-  options: { slotDecisions?: (channelId: string) => Promise<Map<string, SlotDecision>>; publishingPlans?: () => PublishingPlansProducerSurface } = {}
+  options: {
+    slotDecisions?: (channelId: string) => Promise<Map<string, SlotDecision>>;
+    publishingPlans?: () => PublishingPlansProducerSurface;
+    /** BL-271: the wait core (the route passes `@/composition/wait-targets`' production wait). */
+    wait?: () => ProducerSession["wait"];
+  } = {}
 ): ProducerSession {
   const portfolio = createPortfolioOverviewServices({
     listChannels,
@@ -192,6 +197,13 @@ export function createProducerSessionDeps(
         if (input.dryRun !== true) await mutationGate();
         const { channelId, ...rest } = input;
         return { ...(await plansOf().move(channelId, rest)) };
+      },
+    },
+    // BL-271 (WAIT_TOOLS_PLAN.md §3.2, ADR 0075): the wait, read-only; the tool itself lets through only upload and restart.
+    wait: {
+      waitFor: async (input, scope) => {
+        if (!options.wait) throw new Error("The wait is not wired to this Producer session.");
+        return { ...(await options.wait().waitFor(input, scope)) };
       },
     },
     // BL-241 (ADR 0061): the clips for review -- the module's Producer surface only (submit, withdraw, list, get); the owner's

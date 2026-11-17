@@ -564,6 +564,14 @@ export type ProducerSession = {
     list(input: { channelId: string; limit?: number }): Promise<Record<string, unknown>>;
     move(input: { channelId: string; slotId: string; contentHash: string; toWeekStart: string; date: string; publishAt: string; dryRun?: boolean }): Promise<Record<string, unknown>>;
   };
+  /**
+   * BL-271 (WAIT_TOOLS_PLAN.md §3.2, ADR 0075): the wait core (`session-deps.ts` gets it from the route, composed in
+   * `@/composition/wait-targets`). The Producer's tool lets through only `upload` and `restart`; its scope is null (every channel's
+   * uploads, as producer_upload_queue_list shows them).
+   */
+  wait: {
+    waitFor(input: unknown, scope: { channelId: string | null }): Promise<Record<string, unknown>>;
+  };
 };
 
 /** A real calendar date as YYYY-MM-DD (`calendarDateSchema`, shared with the analytics module's tool inputs). */
@@ -778,7 +786,10 @@ const agentListWorkerActionsInputSchema = z.object({ limit: z.number().int().min
 const agentHoldRestartInputSchema = z.object({ minutes: z.number(), reason: z.string() }).strict();
 const agentReleaseHoldInputSchema = z.object({ holdId: z.string() }).strict();
 /** BL-220: a status poll is not counted as an MCP call, so polling it never keeps the restart's quiet window open. */
-const UNCOUNTED_CHANNEL_TOOLS: ReadonlySet<string> = new Set(["agent_restart_status"]);
+// BL-271 (ADR 0075): agent_wait neither (and producer_wait in the Producer's wrapper) -- a long or repeated wait never keeps it open.
+const UNCOUNTED_CHANNEL_TOOLS: ReadonlySet<string> = new Set(["agent_restart_status", "agent_wait"]);
+/** BL-271: the Producer's only call that is not counted as MCP activity (its call log still records it). */
+const UNCOUNTED_PRODUCER_TOOLS: ReadonlySet<string> = new Set(["producer_wait"]);
 
 export const applyInputSchema = z
   .object({
@@ -3097,7 +3108,7 @@ export function createMcpServer(
           await record({ channelId, result });
           return finish(result);
         }
-        await recordGatewayCallOutcome("mcp_tool_calls", "allowed");
+        if (!UNCOUNTED_PRODUCER_TOOLS.has(name)) await recordGatewayCallOutcome("mcp_tool_calls", "allowed");
         try {
           result = await handler(args);
         } catch (error) {
@@ -3445,6 +3456,31 @@ export function createMcpServer(
       inputSchema: producerClipReviewOneInputSchema,
     },
     async (args: z.infer<typeof producerClipReviewOneInputSchema>) => toolSuccessResult(await producerSession!.clipReviews.withdraw(args))
+  );
+
+  // BL-271 (WAIT_TOOLS_PLAN.md §3.2, ADR 0075; Q6): the Producer waits on an upload of this computer (any channel, as the queue list
+  // shows them) or on a restart -- nothing else (invalid_request, refused here so the call log records it). A read: not counted as MCP
+  // activity (UNCOUNTED_PRODUCER_TOOLS), no mutation gate.
+  registerTool(
+    "producer_wait",
+    {
+      description:
+        "Wait until ONE upload of this computer, or a restart, is final -- without polling (Producer API 1.27.0): { target: upload | restart, id, channelId?, timeoutSeconds? (default 50, clamped to 1-240) } -> { target, id (the resolved id), final, outcome, status, snapshot, waitedSeconds, nextCallHint? } (and forChannelId when channelId is given). upload: id = uploadId (producer_upload_queue_list), or the video code (V61, S14) with channelId -- the newest upload row of that video here; still running while queued / uploading / processing / finishing, or paused for quota_exceeded / upload_limit (it resumes by itself); final: done (succeeded: every step after the upload -- translations, captions, thumbnail, read-back, date -- passed), failed, cancelled; it answers at once with final: false, outcome blocked, when the upload is paused for auth or live_writes_off (only the owner can fix that). restart: id = a restart request id, or current (the request open or restarting now); final: done (succeeded; snapshot.toVersion / toSchema), expired, cancelled; no_restart_request when nothing is open (details.serverStartedAt, details.lastRestart). It reads at once (already final: immediate answer), then every 10 s (restart 5 s), and answers ONCE: final, or timeoutSeconds passed (final: false, outcome still_running -- never an error), or early with final: false and outcome restarting / server_stopping. Act only on final: true. MCP clients kill a call after their own tool timeout (Claude Code: about 60 s unless the server entry sets a higher timeout), so keep timeoutSeconds under it; for a longer wait run the CLI as a background shell command: npm --prefix <app folder> run --silent wait -- upload <uploadId> (or restart current) with your Producer token in YTOM_TOKEN (or --token-env <VAR>) -- one JSON line when final; exit 0 succeeded, 1 failed / cancelled / expired, 2 otherwise. Any other target is invalid_request. Errors: not_found (no such upload or request here), invalid_request, target_unavailable, no_restart_request. Read-only and local: no YouTube call, no write; not counted as MCP activity for the restart's quiet window.",
+      inputSchema: z
+        .object({
+          target: z.string().min(1).max(32),
+          id: z.string().min(1).max(128),
+          channelId: z.string().min(1).max(64).optional(),
+          timeoutSeconds: z.number().optional(),
+        })
+        .strict(),
+    },
+    async (args: { target: string; id: string; channelId?: string; timeoutSeconds?: number }) => {
+      if (args.target !== "upload" && args.target !== "restart") {
+        throw new DomainError({ code: "invalid_request", message: "The Producer waits only on target upload or restart.", details: { field: "target" } });
+      }
+      return toolSuccessResult(await producerSession!.wait.waitFor(args, { channelId: null }));
+    }
   );
 
   registerTool(

@@ -105,6 +105,13 @@ function fakeDeps() {
     },
     videos: { create: note("videos.create"), list: note("videos.list"), cost: note("videos.cost") },
     jobs: { list: note("jobs.list") },
+    // BL-271: the wait records the input and the scope it was given.
+    wait: {
+      waitFor: async (input: unknown, scope: unknown) => {
+        calls.push(`wait:${JSON.stringify(input)}:${JSON.stringify(scope)}`);
+        return { final: true };
+      },
+    },
     media: new Proxy({}, { get: (_t, name) => note(`media.${String(name)}`) }),
     readLogicalPath: note("readLogicalPath"),
     listLogicalPaths: note("listLogicalPaths"),
@@ -192,7 +199,8 @@ test("AC-WF-05/06: the worker gets exactly the listed tools, renamed, and none o
   // agent_publishing_coverage (46 -> 47). BL-236 (ADR 0057): + agent_speech_get_status / _create_job / _get_job and agent_voice_list
   // (47 -> 51); no voice design or approval tool (owner and Operator only).
   // BL-267 (ADR 0073 §1): + agent_publishing_template_get (51 -> 52); no move or propose tool for a worker.
-  assert.equal(names.length, 52);
+  // BL-271 (WAIT_TOOLS_PLAN.md §3.2, a new requirement -- owner TG 3617/3618): + agent_wait (52 -> 53), a read.
+  assert.equal(names.length, 53);
   for (const forbidden of ["agent_publishing_plan_move_slot", "agent_week_template_propose", "agent_publishing_template_propose"]) assert.ok(!names.includes(forbidden), forbidden);
   for (const forbidden of ["agent_plan_move", "agent_media_pull_model", "agent_media_list_models", "agent_media_create_runtime", "agent_media_get_gpu_stats", "agent_channel_get_localizations", "agent_channel_save_localizations", "agent_voice_design", "agent_voice_pick", "agent_voice_update"]) {
     assert.ok(!names.includes(forbidden), forbidden);
@@ -370,4 +378,20 @@ test("BL-236: agent speech tools are pinned to the worker's channel; voice desig
   }
   assert.ok(calls.includes(`speech.getJobs:${JSON.stringify({ channelId: TROPICO })}`), "a list without a channel is this channel's");
   assert.ok(!calls.some((c) => c.startsWith("voices.design") || c.startsWith("voices.approve") || c.startsWith("voices.update")));
+});
+
+// BL-271 (WAIT_TOOLS_PLAN.md §3.2, AC-WT-10): agent_wait is pinned like every worker tool -- channelId put in when left out, another
+// channel refused before the core (CHANNEL_NOT_ACTIVE), and the core always gets the worker's channel as its scope.
+test("BL-271 AC-WT-10: the pinned wait puts the worker's channel in, refuses another, and passes the channel as the scope", async () => {
+  const { deps, calls } = fakeDeps();
+  const pinned = pinFactoryDepsToChannel(() => deps as never, TROPICO, async () => undefined);
+  await pinned.wait.waitFor({ target: "media_job", id: "j1" }, { channelId: null });
+  await pinned.wait.waitFor({ target: "upload", id: "V12", channelId: TROPICO }, { channelId: null });
+  await assert.rejects(async () => pinned.wait.waitFor({ target: "upload", id: "V12", channelId: JAPAN }, { channelId: null }), code("CHANNEL_NOT_ACTIVE"));
+  assert.deepEqual(calls, [
+    `wait:{"target":"media_job","id":"j1","channelId":"${TROPICO}"}:{"channelId":"${TROPICO}"}`,
+    `wait:{"target":"upload","id":"V12","channelId":"${TROPICO}"}:{"channelId":"${TROPICO}"}`,
+  ]);
+  const tool = workerFactoryTools(() => deps as never, TROPICO, async () => undefined).find((entry) => entry.name === "agent_wait");
+  assert.ok(tool, "agent_wait is a worker tool");
 });

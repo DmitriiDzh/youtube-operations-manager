@@ -225,7 +225,12 @@ import { isReportVCode, isStrictSCode, VIDEO_CODE_PATTERN } from "@/lib/shared-v
 // and the blocking problem codes captions_missing / captions_invalid (reason: channel_disabled, not_horizontal, orientation_unknown,
 // count, language, name, size, sha256, format); the upload record yt-release-upload/1 gains videoSha256 (or null), videoSizeBytes and
 // captions [{ trackId, language, name, sha256, at, by }]. The factory gets no caption-writing tool. Additive.
-export const FACTORY_API_VERSION = "1.53.0";
+// BL-271 (WAIT_TOOLS_PLAN.md, ADR 0075; owner TG 3617/3618): 1.54.0 -- factory_wait (READ): block until one operation on this computer
+// is final -- upload, media_session (until ready | ended), media_job, gemini_job, speech_job, sound_job, translation_request (until
+// finished | claimed), storyboard_review, storyboard_render, restart (id or current) -- or timeoutSeconds passes (default 50, clamped
+// 1-240), then answer { target, id, final, outcome, status, snapshot, waitedSeconds, nextCallHint? }; not counted as MCP activity for
+// the restart's quiet window; returns at once on a restart or the server stopping. Additive.
+export const FACTORY_API_VERSION = "1.54.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -345,6 +350,8 @@ export const FACTORY_TOOL_NAMES = [
   "factory_restart_status",
   "factory_hold_restart",
   "factory_release_hold",
+  // BL-271: wait until one operation on this computer is final (a read; not counted as MCP activity).
+  "factory_wait",
 ] as const;
 
 /**
@@ -427,7 +434,8 @@ export const FACTORY_WRITE_TOOL_NAMES = [
 ] as const;
 
 /** BL-220: a status poll must not keep the quiet window open forever, so it is not counted as an MCP call (`mcp_tool_calls`). */
-const UNCOUNTED_TOOLS: ReadonlySet<string> = new Set(["factory_restart_status"]);
+// BL-271 (ADR 0075): factory_wait neither -- a long or repeated wait must never keep the quiet window open.
+const UNCOUNTED_TOOLS: ReadonlySet<string> = new Set(["factory_restart_status", "factory_wait"]);
 
 export type FactoryChannelEntry = {
   channelId: string;
@@ -607,6 +615,13 @@ export type FactoryToolDeps = {
     hold(input: { minutes: unknown; reason: unknown }): Promise<Record<string, unknown>>;
     release(input: { holdId: unknown }): Promise<Record<string, unknown>>;
   };
+  /**
+   * BL-271 (WAIT_TOOLS_PLAN.md §3.2, ADR 0075): the wait core over every target's read (`@/composition/wait-targets`). `scope`: null for
+   * the Operator; a channel worker's pinned deps confine every call to its channel (another channel's id answers not_found).
+   */
+  wait: {
+    waitFor(input: unknown, scope: { channelId: string | null }): Promise<Record<string, unknown>>;
+  };
   /** The same local gate every mutating channel tool passes (operation lock, recovery mode); throws when not allowed. */
   assertMutationAllowed(): Promise<void>;
 };
@@ -631,6 +646,12 @@ type ToolResponse = {
   structuredContent?: Record<string, unknown>;
   isError?: boolean;
 };
+
+/** BL-271: the wait tool's contract text (factory_wait; the workers' agent_wait is the same tool). */
+const WAIT_TOOL_TEXT =
+  "Wait until ONE operation on this computer is final, without polling (1.54.0): { target, id, channelId?, storyboardId?, until?, timeoutSeconds? (default 50, clamped to 1-240) } -> { target, id (the resolved id), final, outcome, status, snapshot (what the matching get tool shows, minus large fields), waitedSeconds, nextCallHint? }. It reads the target at once (one already final answers immediately), then every 5 s (uploads 10 s; translation requests and storyboards 15 s), and answers ONCE: when the operation is final, or when timeoutSeconds passed (final: false, outcome still_running, the last status -- never an error). Act only on final: true. It also answers early, with final: false: outcome restarting (a restart of this server started), server_stopping (the server is stopping), blocked (an upload paused for auth or live_writes_off: only the owner can fix it), not_in_review (a storyboard draft never submitted). MCP clients kill a call after their own tool timeout (Claude Code: about 60 s unless the server entry sets a higher timeout; Codex: tool_timeout_sec), so keep timeoutSeconds under it; for anything longer use the CLI, run as a background shell command: npm --prefix <app folder> run --silent wait -- <target> <id> [--channel <channelId>] [--storyboard <storyboardId>] [--until <until>] [--timeout <seconds, default 14400>] with this endpoint's token in the environment variable YTOM_TOKEN (or --token-env <VAR>) -- it prints one JSON line when final and exits 0 succeeded, 1 failed, 2 otherwise. Read-only and local: no YouTube call, no write, no paid call; this call does not count as MCP activity for the restart's quiet window. This computer only (another computer's job or upload is not_found).";
+const WAIT_TOOL_OUTCOMES =
+  "Outcomes: succeeded; failed; partly_failed (a translation request partly_done); cancelled; rejected (a media session the owner rejected); changes_requested (a storyboard or render); expired (a restart request after 24 h); still_running; blocked; not_in_review; restarting; server_stopping. Errors: not_found (no such id here -- or not yours: the same answer), invalid_request (e.g. until on a target that takes none, a missing channelId / storyboardId), target_unavailable (the target's module cannot be read now), no_restart_request (restart current with nothing open; details.serverStartedAt and details.lastRestart).";
 
 function successResult(payload: Record<string, unknown>): ToolResponse {
   return { content: [{ type: "text", text: JSON.stringify(payload) }], structuredContent: payload };
@@ -2096,6 +2117,28 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       await deps.assertMutationAllowed();
       return successResult(await deps.restart.release(input));
     }
+  );
+
+  // -- BL-271 (WAIT_TOOLS_PLAN.md §3.2, ADR 0075): wait until one operation is final, without polling. A read: no YouTube call, no
+  // write, no mutation gate; not counted as MCP activity (UNCOUNTED_TOOLS). The core checks the input again (invalid_request) and clamps
+  // timeoutSeconds, so it is not bounded here.
+  const waitInput = z
+    .object({
+      target: z.enum(["upload", "media_session", "media_job", "gemini_job", "speech_job", "sound_job", "translation_request", "storyboard_review", "storyboard_render", "restart"]),
+      id: z.string().min(1).max(128),
+      channelId: z.string().min(1).max(64).optional(),
+      storyboardId: z.string().min(1).max(64).optional(),
+      until: z.enum(["ready", "ended", "finished", "claimed"]).optional(),
+      timeoutSeconds: z.number().optional(),
+    })
+    .strict();
+  registerTool(
+    "factory_wait",
+    {
+      description: `${WAIT_TOOL_TEXT} Targets and ids: upload (uploadId from the upload lists, or the video code with channelId -- the newest upload row of that video here); media_session (sessionId; until ready = running and ready, the default, or ended = done); media_job, gemini_job (gm_...), speech_job (gm_... / el_...), sound_job (el_..., sfx / music) (jobId); translation_request (requestId, channelId required; until finished, the default, or claimed); storyboard_review (storyboardId, channelId required); storyboard_render (renderId, channelId and storyboardId required); restart (a restart request id, or current: the request open or restarting now). ${WAIT_TOOL_OUTCOMES}`,
+      inputSchema: waitInput,
+    },
+    async (args) => successResult(await deps.wait.waitFor(parseInput(waitInput, args), { channelId: null }))
   );
 
   return server;
