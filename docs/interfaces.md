@@ -354,7 +354,8 @@ MCP endpoint, so it waits with exactly that token's rights. Run it from the app 
 - **Token.** Read from the environment variable `YTOM_TOKEN` (or the one `--token-env` names); never accepted as an argument
   (`token_in_argument`), never printed. Its prefix picks the endpoint and tool: `ytom_ch_` → `/api/mcp` `agent_wait`, `ytom_fo_` →
   `/api/mcp/factory` `factory_wait`, `ytom_pr_` → `/api/mcp/producer` `producer_wait`. `--url` / `YTOM_URL` (default
-  `http://127.0.0.1:3000`).
+  `http://127.0.0.1:3000`): the token is sent only to a loopback host (127.x, `localhost`, `[::1]`); another host is refused
+  (`remote_url_refused`) unless it is `https` and `--allow-remote` is given.
 - **Loop.** `*_wait` calls of `min(240, remaining)` seconds, nothing printed in between, until final or `--timeout` (default 14400,
   at most 259200). After `restarting` / `server_stopping` it waits 5 s before the next call.
 - **Lost connection** (refused, reset, 502/503/504, a non-JSON page, a call 30 s past its block): retried every 5 s. An app that never

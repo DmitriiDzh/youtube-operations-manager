@@ -367,3 +367,25 @@ test("review: restart current pinned from the first answer -- a cancellation dur
   const line = only(h.lines);
   assert.deepEqual([line.id, line.final, line.outcome], ["rq_9", true, "cancelled"]);
 });
+
+test("review: the token goes only to a loopback address by default; another host needs https AND --allow-remote", async () => {
+  for (const [argv, env] of [
+    [["media_job", "j1", "--url", "http://evil.example:3000"], {}],
+    [["media_job", "j1", "--url", "https://evil.example"], {}],
+    [["media_job", "j1", "--url", "http://evil.example", "--allow-remote"], {}],
+    [["media_job", "j1"], { YTOM_URL: "http://192.168.1.5:3000" }],
+    [["media_job", "j1", "--url", "http://127.0.0.1.evil.example"], {}],
+  ] as Array<[string[], Record<string, string>]>) {
+    const h = harness(() => assert.fail("no call"), { YTOM_TOKEN: FO_TOKEN, ...env });
+    assert.equal(await runWaitCli(argv, h.io), 2, argv.join(" "));
+    assert.equal(only(h.lines).error?.code, "remote_url_refused", argv.join(" "));
+    assert.equal(h.calls.length, 0, "the token was not sent");
+  }
+  for (const url of ["http://127.0.0.1:3000", "http://localhost:3000", "http://[::1]:3000", "http://127.0.0.2:4000"]) {
+    const h = harness(() => ({ result: wr({ final: true, outcome: "succeeded" }) }));
+    assert.equal(await runWaitCli(["media_job", "j1", "--url", url], h.io), 0, url);
+  }
+  const remote = harness(() => ({ result: wr({ final: true, outcome: "succeeded" }) }));
+  assert.equal(await runWaitCli(["media_job", "j1", "--url", "https://mac.tailnet.example", "--allow-remote"], remote.io), 0);
+  assert.equal(remote.calls[0].url, "https://mac.tailnet.example/api/mcp/factory");
+});

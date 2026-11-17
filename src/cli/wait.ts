@@ -78,10 +78,22 @@ const VALUE_OPTIONS: Record<string, keyof Pick<Options, "channelId" | "storyboar
 
 const looksLikeToken = (value: string) => /^ytom_/i.test(value.trim());
 
+/** http(s)://127.x.x.x | localhost | [::1], with an optional port. */
+export function isLoopbackUrl(url: string): boolean {
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return host === "localhost" || host === "[::1]" || host === "::1" || /^127(\.\d{1,3}){3}$/.test(host);
+}
+
 /** Parses the arguments. A message never repeats an argument's value (one could be a token pasted by mistake). */
 export function parseWaitArgs(argv: readonly string[], env: Readonly<Record<string, string | undefined>>): Options {
   const positional: string[] = [];
   const values: Record<string, string> = {};
+  let allowRemote = false;
   // Checked first, whatever else is wrong: a token pasted into the command line is refused as that, never echoed.
   if (argv.some((arg) => looksLikeToken(arg) || (arg.startsWith("--") && arg.includes("=") && looksLikeToken(arg.slice(arg.indexOf("=") + 1))))) {
     throw new UsageError("token_in_argument", "A token is never passed as an argument: put it in an environment variable (YTOM_TOKEN, or --token-env <VAR>).");
@@ -93,13 +105,17 @@ export function parseWaitArgs(argv: readonly string[], env: Readonly<Record<stri
       continue;
     }
     const [name, inline] = arg.includes("=") ? [arg.slice(0, arg.indexOf("=")), arg.slice(arg.indexOf("=") + 1)] : [arg, undefined];
+    if (name === "--allow-remote" && inline === undefined) {
+      allowRemote = true;
+      continue;
+    }
     const key = VALUE_OPTIONS[name];
     if (!key) throw new UsageError("usage", `Unknown option ${name.replace(/[^A-Za-z0-9-]/g, "").slice(0, 32)}.`);
     const value = inline ?? argv[++i];
     if (value === undefined || value.length === 0) throw new UsageError("usage", `${name} needs a value.`);
     values[key] = value;
   }
-  if (positional.length !== 2) throw new UsageError("usage", "Usage: npm run --silent wait -- <target> <id> [--channel <channelId>] [--storyboard <storyboardId>] [--until <until>] [--timeout <seconds>] [--url <url>] [--token-env <VAR>]");
+  if (positional.length !== 2) throw new UsageError("usage", "Usage: npm run --silent wait -- <target> <id> [--channel <channelId>] [--storyboard <storyboardId>] [--until <until>] [--timeout <seconds>] [--url <url>] [--allow-remote] [--token-env <VAR>]");
   const [target, id] = positional;
   if (!(WAIT_TARGETS as readonly string[]).includes(target)) throw new UsageError("usage", `target must be one of ${WAIT_TARGETS.join(", ")}.`);
   if (id.length > 128) throw new UsageError("usage", "id is at most 128 characters.");
@@ -118,6 +134,10 @@ export function parseWaitArgs(argv: readonly string[], env: Readonly<Record<stri
   if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(tokenEnv)) throw new UsageError("usage", "--token-env names an environment variable (letters, digits, _).");
   const url = (values.url ?? env.YTOM_URL ?? "http://127.0.0.1:3000").replace(/\/+$/, "");
   if (!/^https?:\/\/[^\s/]+$/.test(url)) throw new UsageError("usage", "--url is the app's address, e.g. http://127.0.0.1:3000.");
+  // The token is sent to this address: this computer only, unless the caller explicitly allows an https address elsewhere.
+  if (!isLoopbackUrl(url) && !(allowRemote && url.startsWith("https://"))) {
+    throw new UsageError("remote_url_refused", "The token is sent only to this computer (127.0.0.1, localhost, [::1]); another host needs https and --allow-remote.");
+  }
   return {
     target: target as WaitTarget,
     id,

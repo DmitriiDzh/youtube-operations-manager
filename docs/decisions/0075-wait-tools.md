@@ -52,7 +52,8 @@ Constraints found in the code and the clients:
    - A call **returns at once** on SIGTERM (`server_stopping`) and when a restart request turns `restarting`.
 4. **CLI.** `npm run --silent wait -- <target> <id> [--timeout <sec>]` (`src/cli/wait.ts`).
    - **Transport.** It is a thin HTTP client of the **caller's own endpoint**, chosen by the token prefix. The token is read from
-     a named environment variable, never from an argument. It does not read SQLite, so channel scoping stays in one place and no
+     a named environment variable, never from an argument, and sent only to a loopback host (another host: https and
+     `--allow-remote`). It does not read SQLite, so channel scoping stays in one place and no
      migration can race the server.
    - **Loop.** It repeats 240 s tool calls without printing.
    - **Connection loss.** It retries: until the deadline for `restart`, up to 10 minutes for any other target -- once the app has
