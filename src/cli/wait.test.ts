@@ -41,7 +41,7 @@ function harness(script: (call: { n: number; args: Record<string, unknown>; url:
         now += step.ms ?? 1000;
         throw new TypeError("fetch failed");
       }
-      if ("http" in step) return new Response(JSON.stringify(step.body), { status: step.http, headers: { "content-type": "application/json" } });
+      if ("http" in step) return new Response(typeof step.body === "string" ? step.body : JSON.stringify(step.body), { status: step.http, headers: { "content-type": typeof step.body === "string" ? "text/html" : "application/json" } });
       if ("toolError" in step) {
         return Response.json({ result: { content: [{ type: "text", text: JSON.stringify({ ok: false, error: step.toolError }) }], isError: true }, jsonrpc: "2.0", id: body.id });
       }
@@ -165,6 +165,7 @@ test("AC-WT-08: restart current -- pins the request id, prints nothing across th
     if (n === 1) return { result: { target: "restart", id: "rq_7", final: false, outcome: "still_running", status: "open", snapshot: {} }, blockMs: 30_000 };
     if (n === 2) return { result: { target: "restart", id: "rq_7", final: false, outcome: "server_stopping", status: "restarting", snapshot: {} } };
     if (n <= 30) return { loss: true, ms: 1000 }; // refused connections while it rebuilds and starts
+    if (n === 31) return { http: 500, body: "<html>starting</html>" }; // a page while the server comes back (not the endpoint's JSON)
     return { result: { target: "restart", id: "rq_7", final: true, outcome: "succeeded", status: "done", snapshot: { id: "rq_7", toVersion: "0.1.2 (abc123)", toSchema: 131 } } };
   });
   assert.equal(await runWaitCli(["restart", "current"], h.io), 0);

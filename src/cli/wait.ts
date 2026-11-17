@@ -164,8 +164,9 @@ async function callOnce(io: WaitCliIo, endpointUrl: string, token: string, tool:
   try {
     body = record(JSON.parse(text));
   } catch {
-    // A 200 that is not JSON (an SSE stream or a page): not this app's endpoint answer.
-    return response.ok ? { kind: "loss" } : { kind: "refused", error: { code: `http_${response.status}`, message: `The endpoint answered HTTP ${response.status}.` } };
+    // Not JSON (an error page while the server starts, a proxy's page): not this app's endpoint answer -- treated like a lost connection,
+    // so a restart wait is not ended by a page the server shows while it comes back.
+    return { kind: "loss" };
   }
   if (!response.ok) {
     const error = record(body.error);
