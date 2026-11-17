@@ -103,9 +103,13 @@ const truncate = (text: unknown, max = 300) => (typeof text === "string" ? (text
 
 // -- status tables (plan §2; the table is the expected value of the ports' tests) ---------------------------------------------
 
-/** Upload: queued / uploading / processing / finishing / paused run; paused for auth or live_writes_off is blocked (Q2). */
-export function uploadOutcome(status: string, pausedReason: string | null): WaitOutcome {
-  if (status === "done") return "succeeded";
+/**
+ * Upload: queued / uploading / processing / finishing / paused run; paused for auth or live_writes_off is blocked (Q2). `done` with an
+ * errorCode (verify_mismatch, step_failed, publish_at_too_soon: the video is on YouTube but a step after the upload did not pass) is
+ * partly_failed -- only a clean `done` succeeded.
+ */
+export function uploadOutcome(status: string, pausedReason: string | null, errorCode: string | null = null): WaitOutcome {
+  if (status === "done") return errorCode ? "partly_failed" : "succeeded";
   if (status === "failed") return "failed";
   if (status === "cancelled") return "cancelled";
   if (status === "paused" && (pausedReason === "auth" || pausedReason === "live_writes_off")) return "blocked";
@@ -187,7 +191,7 @@ export function createWaitPorts(reads: WaitTargetReads): Partial<Record<WaitTarg
       const channel = input.channelId ?? scope.channelId;
       if (!row && channel) row = await upload.latest(channel, input.id);
       if (!row || !visible(row.channelId, input, scope)) throw notFound();
-      const outcome = uploadOutcome(row.status, row.pausedReason);
+      const outcome = uploadOutcome(row.status, row.pausedReason, row.errorCode);
       return observation(row.id, row.status, outcome, {
         uploadId: row.id,
         channelId: row.channelId,

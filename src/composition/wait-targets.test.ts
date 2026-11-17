@@ -67,6 +67,11 @@ test("AC-WT-03 upload: queued/uploading/processing/finishing and quota/limit pau
     [{ status: "paused", pausedReason: "auth" }, false, "blocked"],
     [{ status: "paused", pausedReason: "live_writes_off" }, false, "blocked"],
     [{ status: "done", videoId: "abcdefghijk" }, true, "succeeded"],
+    // The runner keeps `done` with an errorCode when a step after the upload did not pass (upload-runner: verify_mismatch, step_failed,
+    // publish_at_too_soon): the video exists but the work is not complete -> partly_failed (exit 1), never succeeded.
+    [{ status: "done", videoId: "abcdefghijk", errorCode: "verify_mismatch" }, true, "partly_failed"],
+    [{ status: "done", videoId: "abcdefghijk", errorCode: "step_failed" }, true, "partly_failed"],
+    [{ status: "done", videoId: "abcdefghijk", errorCode: "publish_at_too_soon" }, true, "partly_failed"],
     [{ status: "failed", errorCode: "upload_failed" }, true, "failed"],
     [{ status: "cancelled" }, true, "cancelled"],
   ];
@@ -77,6 +82,8 @@ test("AC-WT-03 upload: queued/uploading/processing/finishing and quota/limit pau
   }
   const result = await waitOnce({ upload: { byId: async () => uploadRow(), latest: async () => null } }, { target: "upload", id: "up_1" });
   assert.equal(result.snapshot.progressPercent, 25);
+  const partly = await waitOnce({ upload: { byId: async () => uploadRow({ status: "done", errorCode: "step_failed" }), latest: async () => null } }, { target: "upload", id: "up_1" });
+  assert.equal(partly.snapshot.errorCode, "step_failed", "the errorCode is in the result");
 });
 
 test("upload by video code: the newest row of that channel and code; without a channel a code is not found", async () => {

@@ -92,6 +92,7 @@ by a real **Claude Code 2.1.322** (`claude -p`, `--strict-mcp-config`, one `slee
 
 ## Questions resolved (coordinator, 2026-11-17)
 
+Review (2026-11-17): an upload `done` with an `errorCode` (a step after the upload did not pass) is `partly_failed`, exit 1.
 Q1 `npm run --silent wait -- …` (no `bin`); Q2 an upload paused for `auth` / `live_writes_off` answers `blocked`, exit 2; Q3
 `partly_done` is `partly_failed`, exit 1; Q4 the weekly build is deferred; Q5 recode / rename have no target (synchronous); Q6 the
 Producer may wait on `restart`; Q7 every role runs Claude Code; Q8 no tokenless shell mode beyond the CLI.

@@ -365,7 +365,7 @@ MCP endpoint, so it waits with exactly that token's rights. Run it from the app 
   `details.serverStartedAt`) as done.
 - **Output.** Exactly one line on stdout: `{ target, id, final, outcome, status, snapshot, waitedSeconds, error? }` (`error: { code,
   message }` for usage and endpoint errors). Example: `{"target":"upload","id":"up_8f2","final":true,"outcome":"succeeded","status":"done","snapshot":{"uploadId":"up_8f2","channelId":"UC…","video":"V61","videoId":"abcdefghijk",…},"waitedSeconds":1834}`.
-- **Exit codes.** 0 `succeeded`; 1 `failed`, `partly_failed`, `cancelled`, `rejected`, `changes_requested`, `expired`; 2 everything
+- **Exit codes.** 0 `succeeded`; 1 `failed`, `partly_failed` (incl. an upload `done` with an `errorCode`), `cancelled`, `rejected`, `changes_requested`, `expired`; 2 everything
   else (timeout `still_running`, `blocked`, `not_in_review`, `not_found`, `invalid_request`, `server_unreachable`, `token_missing`,
   `target_unavailable`, usage).
 
@@ -1471,7 +1471,8 @@ A second agent role, separate from the channel agents. Technical contract only (
     (default 50, clamped to 1-240) with `final: false, outcome: still_running` (never an error). Early, with `final: false`:
     `restarting`, `server_stopping`, `blocked` (an upload paused for `auth` / `live_writes_off`), `not_in_review` (a storyboard draft).
     - Targets (this computer only; plan §2): `upload` (`uploadId`, or the video code with `channelId` -- the newest row; running while
-      queued / uploading / processing / finishing / paused for quota or the upload limit; `done` / `failed` / `cancelled`);
+      queued / uploading / processing / finishing / paused for quota or the upload limit; `done` / `failed` / `cancelled`; `done` with
+      `errorCode` `verify_mismatch` / `step_failed` / `publish_at_too_soon` is `partly_failed`);
       `media_session` (`until: ready` default -- `running` succeeds, `stopping` / `done` before it fail; `until: ended` -- `done`);
       `media_job` (the Operator sees only factory sessions and their jobs, as its get tools; a worker any of its channel); `gemini_job`,
       `speech_job`, `sound_job` (sfx / music); `translation_request` (`channelId` required; `until:
