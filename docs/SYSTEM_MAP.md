@@ -216,7 +216,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Read/Write:** `previewFieldsUpdate` — только чтение (`YOUTUBE_READ_SCOPE`), ноль вызовов `videos.update`. `applyFieldsUpdate` — единственный настоящий write-путь этого модуля, `YOUTUBE_WRITE_SCOPE`, ровно один вызов `videos.update` на патч, всегда только с реально затронутыми `part`.
 - **UI:** `src/components/video-details-panel.tsx`, открывается в общем модальном окне `src/components/video-detail-modal.tsx` (§2.9e) при клике по видео в `content-manager.tsx` (было — разворачивающаяся строка таблицы, заменено 2026-09-21). Основные поля (title/description/privacy/category/tags) видны всегда, остальные — за «Show more». «Preview changes» → diff → «Save to YouTube» становится активной, только если текущий патч байт-в-байт совпадает с тем, что был в последнем preview; любая правка формы после preview снова блокирует кнопку с подсказкой «Preview again before saving».
 - **Live-верификация (2026-09-20):** и `preview`/`GET details`-роуты, и вся UI-логика блокировки кнопки «Save to YouTube» проверены вживую в браузере против реального видео канала «Tropico Jazz» — корректный diff, корректные ошибки валидации, корректное блокирование/разблокирование кнопки при правке поля до/после preview. **`apply` ни разу не был вызван ни агентом, ни через UI-клик по «Save to YouTube»** — по явной договорённости с владельцем проекта, первую настоящую запись инициирует только он сам.
-- **Чего нет:** CLI/MCP-инструментов (модуль спроектирован для переиспользования, но провода пока нет — тот же RISK-04, что и у остальных доменов); batch-режима (владелец просил «включая запись батчем» — сервисная функция уже per-video и композируема в цикле, но интеграция с Batches' ledger/UI для множественного выбора видео не сделана в этом проходе); поддержки кастомных thumbnail/captions (отдельные YouTube API endpoint'ы, не `videos.update` — не в скоупе этой задачи); `paidProductPlacementDetails.hasPaidProductPlacement` (документация API неоднозначна насчёт возможности записи — не реализовано, требует эмпирической проверки перед добавлением).
+- **Чего нет:** CLI/MCP-инструментов (модуль спроектирован для переиспользования, но провода пока нет — тот же RISK-04, что и у остальных доменов); batch-режима (владелец просил «включая запись батчем» — сервисная функция уже per-video и композируема в цикле, но интеграция с Batches' ledger/UI для множественного выбора видео не сделана в этом проходе); поддержки кастомных thumbnail/captions (отдельные YouTube API endpoint'ы, не `videos.update` — не в скоупе этой задачи; позже: обложка — BL-255 `video-thumbnails`, субтитры — BL-269 `video-captions`, §2.9bm); `paidProductPlacementDetails.hasPaidProductPlacement` (документация API неоднозначна насчёт возможности записи — не реализовано, требует эмпирической проверки перед добавлением).
 
 ### 2.9e Video detail popup (общий UI-модуль) — **IMPLEMENTED**
 
@@ -1513,6 +1513,23 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   Instagram при подключении из ответа страницы, «Повторить» доступно удалённо. Instagram этого аккаунта принимает через API только
   короткие Reels (~≤20 с, 15.11) — Shorts в Instagram владелец пока выкладывает вручную.
 - Автоочистка mp4 не удаляет Shorts (≤ 180 с на YouTube, ADR 0058 поправка).
+
+### 2.9bm Английские субтитры длинных видео WWE (BL-269, ADR 0074) — **IMPLEMENTED на ветке** `feature/bl-269-video-captions` (не в dev)
+- `src/lib/video-captions/` — единственный писатель дорожек субтитров (§M: ничего не импортирует из `publishing`): `captions.insert`
+  одной английской дорожки и, только по явной перезаписи владельца/Продюсера (TG 4660), `captions.update` единственной английской
+  стандартной дорожки (чужой или нашей). `captions.delete` нет нигде (инвентаризация шлюза), ASR не трогаются. Шлюз записи
+  `captions.ts` (insert/update), чтения `listVideoCaptions` / `downloadVideoCaption` (бэкап перезаписи, 200 ед.) / `getVideoCaptionContext`
+  (`fileDetails`: кадр). Учётные данные с `youtube.force-ssl` (нет — `captions_scope_missing`). Квота: вставка 550, перезапись 800.
+- Пакет `yt-release-package/2` `captions: [{ language, file, name, sha256 }]`; `captionsProblems` (блокирующие `captions_missing` /
+  `captions_invalid` + reason), переключатель канала `captionsEnabled` (настройки публикации, по умолчанию выкл.), только
+  горизонтальное длинное видео (V-код).
+- Шаг загрузки `captions` (`publishing/caption-step.ts`; после переводов, до обложки; никогда не перезаписывает; дата только после
+  none/verified/already_present — проходит только дорожка `serving`), `checksPassed` плана учитывает его. Запись `Vn_youtube.json`:
+  `videoSha256`, `videoSizeBytes`, `captions` (шаг record сохраняет записи другого компьютера; добавление отказывает
+  `captions_upload_unfinished`, пока запись ещё первая).
+- Уже загруженное видео: маршрут владельца `POST /api/channels/[channelId]/publishing/package-captions` (кнопки «Субтитры» →
+  «Добавить» / «Перезаписать субтитры» в «Ролики и релизы») и `producer_video_captions_add` (Producer API 1.26.0, CAPTIONS_WRITE);
+  сервис `publishing/package-captions.ts`. Agent API 4.24.0, Factory API 1.53.0 (поля `captions`, коды проблем; `docs/interfaces.md`).
 
 ### 2.9bl Замена обложки загруженного видео (BL-255, ADR 0069) — **IMPLEMENTED** (dev 04bf5e08, a6ea8d43)
 - `src/lib/video-thumbnails/` — единственный писатель обложки уже загруженного видео (`thumbnails.set` через шлюз записи): владелец

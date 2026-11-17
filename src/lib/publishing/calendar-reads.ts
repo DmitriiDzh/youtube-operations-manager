@@ -71,6 +71,11 @@ export type AgentPackages =
         checkedAt: string | null;
         /** BL-243: when the sync found the video removed (ISO), else null. */
         removedAt: string | null;
+        /**
+         * BL-269 (Agent API 4.24.0, Producer 1.26.0, Factory 1.53.0): the package's English captions as its manifest states them, with
+         * the reasons of its `captions_invalid` problems (`problems` carries the codes); null when it states none.
+         */
+        captions?: { language: string; file: string; name: string; sha256: string; problemReasons: string[] } | null;
       }>;
     };
 export type AgentUpload = {
@@ -86,6 +91,8 @@ export type AgentUpload = {
   progressPercent: number | null;
   /** When the upload ended (done, failed or cancelled), ISO 8601; null while it is under way. */
   finishedAt: string | null;
+  /** BL-269 (Agent API 4.24.0): the upload's captions step (none | verified | already_present | mismatch | failed | refused); absent until it ran. */
+  captions?: string;
 };
 
 /** BL-209: an upload's progress as the agents see it -- floor(stored / total * 100), at most 100; null when the total is unknown. */
@@ -96,8 +103,15 @@ export function uploadProgressPercent(storedBytes: number, totalBytes: number): 
 
 /** The agents' view of one upload row of this computer (`agent_get_publishing_calendar`'s `uploads`). */
 export function agentUploadOf(
-  row: Pick<StoredPublishingUpload, "video" | "status" | "publishAt" | "videoId" | "pausedReason" | "errorCode" | "automatic" | "storedBytes" | "totalBytes" | "finishedAt">
+  row: Pick<StoredPublishingUpload, "video" | "status" | "publishAt" | "videoId" | "pausedReason" | "errorCode" | "automatic" | "storedBytes" | "totalBytes" | "finishedAt"> & { stepsJson?: string }
 ): AgentUpload {
+  let captions: string | null = null; // the steps' `captions`, when the row has run that step
+  try {
+    const value = row.stepsJson ? (JSON.parse(row.stepsJson) as { captions?: unknown }).captions : undefined;
+    captions = typeof value === "string" ? value : null;
+  } catch {
+    captions = null;
+  }
   return {
     video: row.video,
     status: row.status,
@@ -108,6 +122,8 @@ export function agentUploadOf(
     automatic: row.automatic,
     progressPercent: uploadProgressPercent(row.storedBytes, row.totalBytes),
     finishedAt: row.finishedAt ? row.finishedAt.toISOString() : null,
+    // Only once the step ran (a row without it reads exactly as before).
+    ...(captions !== null ? { captions } : {}),
   };
 }
 

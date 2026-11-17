@@ -220,7 +220,12 @@ import { isReportVCode, isStrictSCode, VIDEO_CODE_PATTERN } from "@/lib/shared-v
 // movedFrom; updatedBy / movedFrom.by may be producer; factory_publishing_plan_save refuses slot_dated (the slot's video has a date on
 // YouTube: only the owner or the Producer moves it); approvalStage is always packaged (retired); the owner approves one slot at a
 // time; replacesSlotId holds nothing (no implied veto). Bundle 2.5.48 pins with it. Additive.
-export const FACTORY_API_VERSION = "1.52.0";
+// BL-269 (FO-REQ-0055, owner TG 4590/4592/4660, ADR 0074): 1.53.0 -- yt-release-package/2 `captions: [{ language, file, name, sha256 }]`
+// (one English .vtt/.srt, name "" allowed) is read and checked: factory_publishing_plan_get / the calendar's packages gain `captions`
+// and the blocking problem codes captions_missing / captions_invalid (reason: channel_disabled, not_horizontal, orientation_unknown,
+// count, language, name, size, sha256, format); the upload record yt-release-upload/1 gains videoSha256 (or null), videoSizeBytes and
+// captions [{ trackId, language, name, sha256, at, by }]. The factory gets no caption-writing tool. Additive.
+export const FACTORY_API_VERSION = "1.53.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [

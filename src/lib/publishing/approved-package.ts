@@ -12,8 +12,13 @@ import type { ApprovedPackage } from "./upload-runner";
  * channel's common tags (a package with no tags of its own sends them, owner msg 2817). `videoSha256`: frozen whenever the manifest
  * states one (BL-265: owner rows too, AC-MG-21).
  */
-export function approvedPackageOf(pkg: ReleasePackage, place: { manifestPath: string; folder: string }, settings: Pick<PublishingSettings, "channelTags">): ApprovedPackage {
+export function approvedPackageOf(
+  pkg: ReleasePackage,
+  place: { manifestPath: string; folder: string; orientation?: "vertical" | "horizontal" | null },
+  settings: Pick<PublishingSettings, "channelTags">
+): ApprovedPackage {
   const localizations = packageLocalizationSet(pkg);
+  const caption = pkg.captions?.[0];
   return {
     video: pkg.video,
     // Lines end in LF on YouTube; the factory's Windows text may carry CRLF (review question).
@@ -32,11 +37,15 @@ export function approvedPackageOf(pkg: ReleasePackage, place: { manifestPath: st
     ...(localizations ? { localizations } : {}),
     ...(typeof pkg.containsSyntheticMedia === "boolean" ? { containsSyntheticMedia: pkg.containsSyntheticMedia } : {}),
     ...(pkg.slotId ? { slotId: pkg.slotId } : {}),
+    // BL-269 (ADR 0074 §7): the package's one caption file (the checks allow exactly one) and the frame the scan knew.
+    ...(caption ? { captions: { language: caption.language, file: `${place.folder}/${caption.file}`, name: caption.name, sha256: caption.sha256 } } : {}),
+    ...(place.orientation !== undefined ? { orientation: place.orientation } : {}),
   };
 }
 
 /** Which packaging fields of two frozen packages differ (the refresh's audit): texts, translations, thumbnail file, AI flag, languages. */
 export function changedPackageFields(before: ApprovedPackage, after: ApprovedPackage): string[] {
-  const keys: Array<keyof ApprovedPackage> = ["title", "description", "tags", "localizations", "thumbnailFile", "containsSyntheticMedia", "defaultLanguage", "defaultAudioLanguage", "manifestPath", "videoFile"];
+  // BL-269: captions are packaging too (ADR 0074 §3, ADR 0072 §1): a re-package that adds or fixes them is taken by a queued row.
+  const keys: Array<keyof ApprovedPackage> = ["title", "description", "tags", "localizations", "thumbnailFile", "containsSyntheticMedia", "defaultLanguage", "defaultAudioLanguage", "manifestPath", "videoFile", "captions"];
   return keys.filter((key) => JSON.stringify(before[key] ?? null) !== JSON.stringify(after[key] ?? null));
 }

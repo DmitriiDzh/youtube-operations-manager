@@ -240,3 +240,12 @@ test("BL-243: the calendar reads the channel once and hands its checkedAt to the
   assert.deepEqual(given, [{ checkedAt: "2026-11-04T08:00:00.000Z" }]);
   assert.equal(calendar.checkedAt, "2026-11-04T08:00:00.000Z");
 });
+
+// BL-269 (Agent API 4.24.0): an upload's captions step appears in the agent read once it ran; a row without it reads as before.
+test("BL-269: agentUploadOf shows steps.captions once the step ran", async () => {
+  const { agentUploadOf } = await import("./calendar-reads");
+  const base = { video: "V27", status: "done" as const, publishAt: null, videoId: "vid", pausedReason: null, errorCode: "step_failed", automatic: false, storedBytes: 1, totalBytes: 1, finishedAt: null };
+  assert.equal(agentUploadOf({ ...base, stepsJson: JSON.stringify({ captions: "refused" }) }).captions, "refused");
+  assert.equal("captions" in agentUploadOf({ ...base, stepsJson: "{}" }), false);
+  assert.equal("captions" in agentUploadOf({ ...base, stepsJson: "{broken" }), false);
+});

@@ -568,3 +568,39 @@ test("AC-MG-36/38: the uploaded package's 'packaging differs from YouTube' field
   const notUploaded = await scanV65({});
   assert.equal(notUploaded.youtubeTextsDiffer, null);
 });
+
+// BL-269 (VIDEO_CAPTIONS_PLAN.md §3.1, AC-CAP-01/05/09): the scan reads the caption file a v2 package names (workspace rule), its
+// SHA-256 and the format of its bytes, with the channel's captions switch and the frame; a valid one keeps the package ready.
+test("BL-269 captions: a valid VTT on a switched-on channel with a horizontal frame is ready; a wrong hash or bad content is not", async () => {
+  const { createHash } = await import("node:crypto");
+  const folder = "04 Videos/11 November/1120 V27";
+  const scanWith = async (bytes: Uint8Array, stated: string, extra: Partial<PackageScanDeps> = {}) => {
+    const files: Record<string, FakeFile> = {
+      ...packageFiles(folder, "V27", { schema: "yt-release-package/2", captions: [{ language: "en", file: "V27_captions.en.vtt", name: "", sha256: stated }] }),
+      [`${folder}/V27_captions.en.vtt`]: { bytes: bytes.length, head: bytes },
+    };
+    const base = deps(files);
+    const result = await createPackageScan({
+      ...base,
+      channel: async () => ({ channelId: "UC_t", defaultLanguage: "en", defaultAudioLanguage: "en", captionsEnabled: true }),
+      probeFrame: async () => ({ width: 1920, height: 1080 }),
+      sha256: async (abs) => (abs.endsWith(".vtt") ? createHash("sha256").update(files[abs.slice(WS.length + 1)].head!).digest("hex") : base.sha256(abs)),
+      ...extra,
+    }).scan("UC_t");
+    assert.equal(result.status, "ok");
+    return result.status === "ok" ? result.packages[0] : null;
+  };
+  const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+  const vtt = new TextEncoder().encode("WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nHello\n");
+  const ready = await scanWith(vtt, hash(vtt));
+  assert.deepEqual([ready?.state, ready?.problems], ["ready", []]);
+  const wrongHash = await scanWith(vtt, "0".repeat(64));
+  assert.deepEqual([wrongHash?.state, wrongHash?.problems.map((p) => p.params?.reason)], ["not_ready", ["sha256"]]);
+  const srtInVtt = new TextEncoder().encode("1\n00:00:01,000 --> 00:00:03,000\nHello\n");
+  const badFormat = await scanWith(srtInVtt, hash(srtInVtt));
+  assert.deepEqual(badFormat?.problems.map((p) => p.params?.reason), ["format"]);
+  const off = await scanWith(vtt, hash(vtt), { channel: async () => ({ channelId: "UC_t", defaultLanguage: "en", defaultAudioLanguage: "en" }) });
+  assert.deepEqual(off?.problems.map((p) => p.params?.reason), ["channel_disabled"]);
+  const vertical = await scanWith(vtt, hash(vtt), { probeFrame: async () => ({ width: 1080, height: 1920 }) });
+  assert.deepEqual(vertical?.problems.map((p) => p.params?.reason), ["not_horizontal"]);
+});

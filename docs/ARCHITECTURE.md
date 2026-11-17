@@ -5292,6 +5292,33 @@ adapter: client, `assertLiveWritesAuthorized()`, gateway `setVideoThumbnail` →
 Security: a new YouTube writer reachable by an agent (the Producer), as the owner decided; it can change only the thumbnail, only
 from the channel's own workspace images, behind the same identity check and Live writes switch as every other write.
 
+## BL-269 — English captions for WWE long videos (ADR 0074; on its branch, not in dev yet)
+
+`src/lib/video-captions/` is the one writer of caption tracks (`VIDEO_CAPTIONS_PLAN.md`): `caption-file.ts` (pure, browser-safe:
+SRT/WebVTT check, name rule, `isEnglishLanguage`), `hash.ts`, `services.ts` (`write(input, actor)`, deps injected, AC-CAP-11..22,
+38..46), `adapters/youtube-writes.ts` (client → `assertLiveWritesAuthorized()` → gateway insert/update), `index.ts` (production
+wiring; the caller passes the channel switch and the runner's attempt mark). It imports nothing from `publishing`.
+
+Flow: the very bytes re-hashed and re-parsed, `en`, name, V code, the switch read now → device gate (owner/Producer) → credentials
+with `youtube.force-ssl` → `getVideoCaptionContext` (channel, `fileDetails` frame; else the frame memo) → `listVideoCaptions` and the
+decision by language (ASR ignored; ours = the record's / the upload rows' track ids with the sha256 sent; without `overwrite` an
+English track refuses -- foreign or own-differs; with `overwrite` exactly one standard non-draft track is replaced, none = insert) →
+`checkUnits` (550 / 800) → dry run returns (51 units) → backup `video_captions` (track list, bytes to send; an overwrite also the
+replaced track's content from `captions.download` -- a failed download stops the write) → `assertWriteChannel` → attempt mark
+(runner) → one `captions.insert` / `captions.update` (`part=id`, `{ id }`, no snippet) → read-back (`captions.list`: id, language and
+name, standard, not draft, serving / one re-read on syncing, an overwrite's `lastUpdated` advanced, other tracks unchanged) → audit
+`source: video_captions`. Quota context `video_captions`.
+
+Callers (publishing): the upload runner's `captions` step through `caption-step.ts` (DB-free; after `localizations`, before
+`thumbnail`; refusals → `steps.captions: refused`, pauses/unknown answers → the runner; only a `serving` track passes -- `syncing` is
+`pending` and read again up to READ_BACK_RETRIES, anything else `mismatch`; lost answer adopted via `steps.captionsAttempt` -- a
+same-name track not listed before and updated at or after the mark -- or a 409 `captionExists`; the mark is taken back when the adapter
+flags the error as not sent; the mark keeps the retry count, so a failing insert gives up after MAX_RETRIES) and `package-captions.ts`
+(owner route, Producer tool; package + upload record, current manifest, `captions_step_pending` while a row of the video is active,
+`captions_upload_unfinished` while the record is still the runner's first, then the record's `captions` -- a pending track recorded
+`verified: false, pending: true` -- and `markUploadCaptionsSetLater`). The runner's record step merges the record's existing `captions`
+(the other computer's add). The date waits for `captionsPassed`; `plan-schedule.checksPassed` too.
+
 ## BL-257 — the owner's review of final release packages (ADR 0070)
 
 - **Module:** `src/lib/package-reviews/` -- `contracts.ts` (views, problem codes), `schemas.ts` (strict decision / switch inputs),

@@ -8,6 +8,7 @@ export { DESCRIPTION_MAX_BYTES, imageKindOf, TAGS_MAX_CHARACTERS, tagsLength, TH
 import { DESCRIPTION_MAX_BYTES, hasAngleBrackets, TAGS_MAX_CHARACTERS, tagsLength, THUMBNAIL_MAX_BYTES, TITLE_MAX_CHARACTERS } from "@/lib/youtube-video-fields";
 import { validateLocalizationSet, type LocalizationSetLimits } from "@/lib/shared-localization-set";
 import { isReadableVideoCode, READABLE_VIDEO_CODE_SOURCE } from "@/lib/shared-video-code";
+import { CAPTIONS_LANGUAGE, CAPTIONS_MAX_BYTES, captionFormatOfName, captionNameProblem, type CaptionFileCheck } from "@/lib/video-captions/caption-file";
 
 export const RELEASE_PACKAGE_SCHEMA = "yt-release-package/1";
 /**
@@ -27,6 +28,11 @@ const PACKAGE_LOCALIZATION_LIMITS: LocalizationSetLimits = {
 };
 
 export type PackageThumbnail = { file: string; role: "default" | "test" };
+/**
+ * BL-269 (VIDEO_CAPTIONS_PLAN.md §3.1, ADR 0074 §3): one caption file of a v2 package, as the factory writes it (`12 --captions`):
+ * the language, the file inside the package folder (.srt / .vtt), the track name ("" allowed) and the file's SHA-256.
+ */
+export type PackageCaption = { language: string; file: string; name: string; sha256: string };
 /** `V49_release.json` (today's lenient `V\d+`) or `S14_release.json` (a strict S code, BL-263). */
 export const RELEASE_PACKAGE_FILE_PATTERN = new RegExp(`^${READABLE_VIDEO_CODE_SOURCE}_release\\.json$`);
 /** Written next to the package after an upload (FO-REQ-0023 §4 A2). */
@@ -69,6 +75,8 @@ export type ReleasePackage = {
   containsSyntheticMedia?: boolean | null;
   /** Every thumbnail: v1 -- its one file as the default; v2 -- `thumbnails` (exactly one default, which is `files.thumbnail`). */
   thumbnails?: PackageThumbnail[];
+  /** BL-269: v2 `captions` as written (null: none; the rules are `captionsProblems`'). */
+  captions?: PackageCaption[] | null;
 };
 
 /** Why a package cannot be uploaded; `params` fill the interface text (`publishingPackages.problem.<code>`). */
@@ -84,13 +92,22 @@ export type PackageFacts = {
   youtubeRecordExists: boolean;
   /** A video of the channel with exactly this title (the synced list), when no record says it is this package. */
   sameTitleVideoId: string | null;
+  /** BL-269: each caption file of the package, by its file (absent: none read). `check`: the format check of its bytes. */
+  captions?: CaptionFacts[];
+  /** BL-269 / BL-259: the video's frame (ffprobe here, else as last read here); null when never known. */
+  orientation?: "vertical" | "horizontal" | null;
 };
+
+/** BL-269: what the scan (or the add path) found about one caption file. */
+export type CaptionFacts = { file: string; exists: boolean; sizeBytes: number | null; sha256: string | null; check: CaptionFileCheck | null };
 
 export type ChannelExpectations = {
   channelId: string;
   /** The channel's language baseline (Languages → Language defaults); null when not set. */
   defaultLanguage: string | null;
   defaultAudioLanguage: string | null;
+  /** BL-269 (ADR 0074 §2): the channel's synced publishing default `captionsEnabled` (absent: off). */
+  captionsEnabled?: boolean;
 };
 
 const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -151,6 +168,10 @@ export function parseReleasePackage(raw: unknown): { pkg: ReleasePackage | null;
   let slotId: string | null = null;
   let localizations: Record<string, { title: string; description: string }> | null = null;
   let containsSyntheticMedia: boolean | null = null;
+  let captions: PackageCaption[] | null = null;
+  // BL-269 (ADR 0074 §3): `captions` exists only in v2; a v1 manifest carrying it is refused, never silently read without it.
+  if (!v2 && raw.captions !== undefined && raw.captions !== null) problems.push({ code: "field_invalid", params: { field: "captions" } });
+  if (v2 && raw.captions !== undefined && raw.captions !== null) captions = parseCaptions(raw.captions, problems);
   if (v2) {
     if (raw.slotId !== undefined && raw.slotId !== null) {
       if (typeof raw.slotId === "string" && /^[A-Za-z0-9_-]{1,40}$/.test(raw.slotId)) slotId = raw.slotId;
@@ -190,9 +211,66 @@ export function parseReleasePackage(raw: unknown): { pkg: ReleasePackage | null;
       localizations,
       containsSyntheticMedia,
       thumbnails,
+      captions,
     },
     problems: [],
   };
+}
+
+/** v2 `captions`: a list of { language, file (inside the folder, .srt/.vtt), name, sha256 (64 hex) }; [] is none. */
+function parseCaptions(value: unknown, problems: PackageProblem[]): PackageCaption[] | null {
+  const invalid = () => (problems.push({ code: "field_invalid", params: { field: "captions" } }), null);
+  if (!Array.isArray(value)) return invalid();
+  const list: PackageCaption[] = [];
+  for (const entry of value) {
+    if (
+      !isObject(entry) ||
+      typeof entry.language !== "string" ||
+      typeof entry.file !== "string" ||
+      !isSafeRelativePath(entry.file) ||
+      captionFormatOfName(entry.file) === null ||
+      typeof entry.name !== "string" ||
+      typeof entry.sha256 !== "string" ||
+      !/^[0-9a-f]{64}$/i.test(entry.sha256)
+    ) {
+      return invalid();
+    }
+    list.push({ language: entry.language, file: entry.file, name: entry.name, sha256: entry.sha256.toLowerCase() });
+  }
+  return list.length > 0 ? list : null;
+}
+
+/** BL-269: the place a caption check stands on -- the channel's switch, the video's code, frame and duration. */
+export type CaptionContext = { captionsEnabled: boolean; video: string; orientation: "vertical" | "horizontal" | null; durationSeconds: number | null };
+
+/**
+ * BL-269 (VIDEO_CAPTIONS_PLAN.md §3.1, ADR 0074 §2–§3): every reason a package's captions cannot be written -- one code with a
+ * `reason` (`captions_invalid`), plus `captions_missing` for a file not found. Pure; used by the package checks (blocking, never a
+ * warning) and by the add path after upload (whose mp4 may be gone: the duration then comes from the manifest). `facts` are the
+ * files as read now, by file name.
+ */
+export function captionsProblems(captions: readonly PackageCaption[] | null | undefined, facts: readonly CaptionFacts[], context: CaptionContext): PackageProblem[] {
+  if (!captions || captions.length === 0) return [];
+  const problems: PackageProblem[] = [];
+  const invalid = (reason: string, extra: Record<string, string | number> = {}) => problems.push({ code: "captions_invalid", params: { reason, ...extra } });
+  if (!context.captionsEnabled) invalid("channel_disabled");
+  if (context.video.startsWith("S") || context.orientation === "vertical") invalid("not_horizontal");
+  else if (context.orientation === null) invalid("orientation_unknown");
+  if (captions.length > 1) invalid("count", { count: captions.length });
+  for (const caption of captions) {
+    if (caption.language !== CAPTIONS_LANGUAGE) invalid("language", { language: caption.language });
+    const nameProblem = captionNameProblem(caption.name);
+    if (nameProblem) invalid("name", { detail: nameProblem });
+    const fact = facts.find((f) => f.file === caption.file);
+    if (!fact || !fact.exists) {
+      problems.push({ code: "captions_missing", params: { file: caption.file } });
+      continue;
+    }
+    if (!fact.sizeBytes || fact.sizeBytes > CAPTIONS_MAX_BYTES) invalid("size", { bytes: fact.sizeBytes ?? 0, max: CAPTIONS_MAX_BYTES });
+    else if (fact.sha256 !== caption.sha256) invalid("sha256", { file: caption.file });
+    else if (!fact.check || !fact.check.ok) invalid("format", { detail: fact.check && !fact.check.ok ? fact.check.detail : "not read" });
+  }
+  return problems;
 }
 
 /** v2 `thumbnails`: a list of { file (inside the folder), role: default | test }, no file twice, exactly one default. */
@@ -323,6 +401,15 @@ function allPackageChecks(pkg: ReleasePackage, facts: PackageFacts, channel: Cha
       });
     }
   }
+  // BL-269: the captions, blocking (never in PACKAGE_WARNING_CODES).
+  problems.push(
+    ...captionsProblems(pkg.captions, facts.captions ?? [], {
+      captionsEnabled: channel.captionsEnabled === true,
+      video: pkg.video,
+      orientation: facts.orientation ?? null,
+      durationSeconds: facts.video.durationSeconds ?? pkg.durationSeconds,
+    })
+  );
   if (!facts.youtubeRecordExists && facts.sameTitleVideoId !== null) problems.push({ code: "same_title_on_channel", params: { videoId: facts.sameTitleVideoId } });
   return problems;
 }

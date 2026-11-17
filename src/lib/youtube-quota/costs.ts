@@ -42,6 +42,8 @@ export const DATA_API_UNIT_COSTS: Readonly<Record<string, number>> = {
   "captions.insert": 400,
   "captions.update": 450,
   "captions.delete": 50,
+  // BL-269: not in the table; "A call to this method has a quota cost of 200 units" (captions/download reference, read 2026-11-17).
+  "captions.download": 200,
   "thumbnails.set": 50,
   "watermarks.set": 50,
   "watermarks.unset": 50,

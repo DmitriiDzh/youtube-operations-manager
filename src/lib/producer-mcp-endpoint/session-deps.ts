@@ -17,7 +17,7 @@ import { createPortfolioOverviewServices, createUploadMilestonesServices } from 
 import { createReachReportsCore } from "@/lib/reach-reports";
 import { PRODUCER_API_VERSION } from "@/mcp/producer-tools";
 import { createLiveAnalyticsCore } from "@/lib/live-analytics";
-import { createPackageMetadataCore, createUploadQueueControlCore, type SlotDecision } from "@/lib/publishing";
+import { createPackageCaptionsCore, createPackageMetadataCore, createUploadQueueControlCore, type SlotDecision } from "@/lib/publishing";
 import { createClipReviewsProducerCore } from "@/lib/clip-reviews";
 import type { ProducerMcpSession } from "./index";
 import type { PublishingPlansProducerSurface } from "@/lib/publishing-plans";
@@ -155,6 +155,25 @@ export function createProducerSessionDeps(
               ...(await createPackageMetadataCore().apply(
                 input.channelId,
                 { video: input.video, ...(input.expectedManifestSha256 !== undefined ? { expectedManifestSha256: input.expectedManifestSha256 } : {}) },
+                { kind: "producer" }
+              )),
+            },
+    },
+    // BL-269 (ADR 0074 §8, §10; owner TG 4590/4592/4660): a package's captions onto its uploaded video -- the only wiring of the
+    // package-captions service to an MCP endpoint; actor producer.
+    captions: {
+      add: async ({ channelId, video, dryRun, overwrite, expectedManifestSha256, expectedTrackId }) =>
+        dryRun === true
+          ? { ...(await createPackageCaptionsCore().preview(channelId, { video, overwrite: overwrite === true }, { kind: "producer" })) }
+          : {
+              ...(await createPackageCaptionsCore().apply(
+                channelId,
+                {
+                  video,
+                  overwrite: overwrite === true,
+                  ...(expectedManifestSha256 !== undefined ? { expectedManifestSha256 } : {}),
+                  ...(expectedTrackId !== undefined ? { expectedTrackId } : {}),
+                },
                 { kind: "producer" }
               )),
             },

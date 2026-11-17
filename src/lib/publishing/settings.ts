@@ -18,6 +18,8 @@ export const PUBLISHING_SETTING_FIELDS = [
   // Owner msgs 2751/2753: «Прямая реклама» and the channel's own tags.
   "paidProductPlacement",
   "channelTags",
+  // BL-269 (ADR 0074 §2, owner TG 4592): English captions on the channel's long videos (WWE); off by default.
+  "captionsEnabled",
 ] as const;
 export type PublishingSettingField = (typeof PUBLISHING_SETTING_FIELDS)[number];
 
@@ -47,6 +49,8 @@ export type PublishingSettings = {
   paidProductPlacement: boolean;
   /** Tags every upload of the channel gets after the package's own (one tag each; the package's come first, none twice). */
   channelTags: string[];
+  /** BL-269: a package's `captions` may be written on this channel's horizontal long videos; off: a `captions` field is a problem. */
+  captionsEnabled: boolean;
 };
 
 /** The channel's own tags: at most this many, each 1-100 characters without `<`, `>` or a comma. */
@@ -64,6 +68,7 @@ export const DEFAULT_PUBLISHING_SETTINGS: PublishingSettings = {
   notifySubscribers: true,
   paidProductPlacement: false,
   channelTags: [],
+  captionsEnabled: false,
 };
 
 /**
@@ -102,6 +107,7 @@ export function publishingSettingProblem(field: PublishingSettingField, value: u
     case "embeddable":
     case "notifySubscribers":
     case "paidProductPlacement":
+    case "captionsEnabled":
       return typeof value === "boolean" ? null : `${field} must be true or false`;
     case "channelTags": {
       if (!Array.isArray(value) || value.length > CHANNEL_TAGS_MAX) return `channelTags must be a list of at most ${CHANNEL_TAGS_MAX} tags`;
