@@ -191,6 +191,12 @@ test("AC-WT-08: restart current right after the script -- no_restart_request is 
   assert.equal(only(never.lines).error?.code, "no_restart_request");
   assert.ok(never.now() - START >= 30_000 && never.now() - START < 40_000);
 
+  // The deadline comes inside the grace, after real answers: the last answer (no_restart_request) is returned, not a timeout.
+  const short = harness(() => ({ toolError: { code: "no_restart_request", message: "none", details: { serverStartedAt: "2026-11-17T08:00:00.000Z", lastRestart: null } } }));
+  assert.equal(await runWaitCli(["restart", "current", "--timeout", "10"], short.io), 2);
+  assert.equal(only(short.lines).error?.code, "no_restart_request");
+  assert.ok(short.now() - START >= 10_000 && short.now() - START < 20_000);
+
   // The server was restarting already (connection refused), came back started after this wait began, and has no row: done.
   const boot = harness(({ n }) =>
     n < 4

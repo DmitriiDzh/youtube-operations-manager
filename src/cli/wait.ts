@@ -280,6 +280,7 @@ export async function runWaitCli(argv: readonly string[], io: WaitCliIo): Promis
   const deadline = started + options.timeoutSeconds * 1000;
   let connected = false;
   let lossSince: number | null = null;
+  let lastToolError: CliError | null = null; // a retried answer (no_restart_request in the grace), returned if the deadline hits
   let rpcId = 0;
 
   for (;;) {
@@ -289,6 +290,7 @@ export async function runWaitCli(argv: readonly string[], io: WaitCliIo): Promis
         emit({ final: false, outcome: "still_running" });
         return 2;
       }
+      if (lastToolError) return fail(lastToolError);
       return fail({ code: connected ? "timeout" : "server_unreachable", message: connected ? "The wait timed out before the first answer." : "The app could not be reached before the timeout." });
     }
     const block = Math.max(1, Math.min(WAIT_MAX_SECONDS, Math.ceil(remaining / 1000)));
@@ -331,6 +333,7 @@ export async function runWaitCli(argv: readonly string[], io: WaitCliIo): Promis
           return 0;
         }
         if (io.now() - started < WAIT_CLI_RESTART_GRACE_MS) {
+          lastToolError = error;
           await io.sleep(WAIT_CLI_RETRY_MS);
           continue;
         }
