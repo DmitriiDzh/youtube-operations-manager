@@ -93,3 +93,7 @@ next-env.d.ts
 # BL-116: the detached server's output (both launchers)
 /.launcher.log
 /.launcher.log.1
+
+# Python bytecode
+__pycache__/
+*.pyc
