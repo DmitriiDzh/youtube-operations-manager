@@ -1336,7 +1336,7 @@ test("AC-FD-07: boot wires the sync-preserving hooks around its migrations, on t
 });
 
 // ---------------------------------------------------------------------------------------------
-// BL-270 (owner TG 4662/4665): a cheap change check before the full fingerprint, at most one export per 10 minutes
+// BL-270 (owner TG 4662/4665): a cheap change check before the full fingerprint; the export debounce (review)
 // ---------------------------------------------------------------------------------------------
 
 test("BL-270: quiet ticks of an in-sync device do not read the whole transferred data again", () =>
@@ -1455,5 +1455,20 @@ test("BL-270 review (negative): never two automatic exports within 60 s -- a cha
     assert.equal((await a.runner.tick()).state, "waiting", "50 s after the last export");
     a.clock.t += 30_000;
     assert.equal((await a.runner.tick()).state, "exported", "80 s: past the floor; the change's age is unknown, so not held back");
+    a.client.close();
+  }));
+
+test("BL-270 review: the forced export-only flush (idle shutdown, restart when idle) exports inside the debounce window", () =>
+  withTempDir("device-sync-", async (root) => {
+    const a = await makeDevice(root, "a");
+    await addResearchChannel(a.client, "UC1");
+    assert.equal((await a.runner.tick()).state, "exported");
+    const first = a.status().lastExportSnapshotId;
+    await addResearchChannel(a.client, "UC2");
+    a.clock.t += 30_000;
+    assert.equal((await a.runner.tick()).state, "waiting", "an automatic tick waits for the quiet time");
+    a.clock.t += 5_000;
+    assert.equal((await a.runner.tick({ force: true, exportOnly: true })).state, "exported");
+    assert.notEqual(a.status().lastExportSnapshotId, first);
     a.client.close();
   }));

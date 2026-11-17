@@ -133,7 +133,8 @@ root also holds `change-drafts/`, `editorial-profile/`, and similar folders, whi
   The first observation in a new process has no known age and is not held back (only the 60 s floor applies). The tick's dirty
   check reuses the last full fingerprint while the transferred tables' change counters and `schema_version` are unchanged (at most
   10 minutes); the in-lock checks (AC-AS-05/07) stay full. The residual window for a change made just before switching computers
-  is about 2 minutes after a single edit (90 s quiet plus a 30 s tick), up to 10 minutes under continuous editing (it fails toward
+  is 60–90 s after a single edit (the 90 s are counted from the last tick that still saw the old content, so the change itself
+  is 60–90 s old at the export), up to 10 minutes under continuous editing (it fails toward
   "ask", never toward overwrite).
 - It also runs just before the idle auto-shutdown exits, when nothing is in flight, and (BL-270) just before restart-when-idle
   sends its stop signal (forced, export only).

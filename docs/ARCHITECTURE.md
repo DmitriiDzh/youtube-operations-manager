@@ -2428,8 +2428,9 @@ single-writer, whole-copy semantics. Plan and acceptance criteria:
      parent pointers through every manifest in the folder.
    - "Newer" means other devices' snapshots that are not known. Of those, only the tips count.
    - No tips: export if dirty, otherwise idle. An automatic export is debounced (BL-270 and its
-     review): it runs once the content fingerprint has been unchanged for 90 s after the last change
-     a tick saw (`DEVICE_SYNC_EXPORT_QUIET_MS`), or after 10 minutes of continuous churn
+     review): it runs once the content fingerprint has been unchanged for 90 s, counted from the last
+     tick that still saw the old content, so 60–90 s after the change itself
+     (`DEVICE_SYNC_EXPORT_QUIET_MS`), or after 10 minutes of continuous churn
      (`DEVICE_SYNC_EXPORT_MAX_DELAY_MS`), never within 60 s of the previous export
      (`DEVICE_SYNC_MIN_EXPORT_INTERVAL_MS`). The debounce state is in memory; the first observation
      in a process is not held back. "Sync now", the idle-shutdown flush and the restart-when-idle

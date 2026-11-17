@@ -68,4 +68,6 @@ Automatic device-sync exports are debounced since BL-270 (DEVICE_AUTO_SYNC_PLAN.
 yet when the restart fires. After recording `restarting` and before SIGTERM the restart awaits the server's registered pre-stop flush
 -- device sync's forced export-only tick, the same one the idle shutdown runs (`setRestartPreStopFlush`, injected from
 `src/instrumentation.ts`, so this module never imports device sync). The waiting reasons already require no held operation lock, so
-the export does not wait on another one. A failed flush is logged (`restart_when_idle.before_stop_failed`) and the stop still follows.
+the export does not wait on another one. A failed flush is logged (`restart_when_idle.before_stop_failed`) and the stop still follows. Like the idle shutdown's
+flush, it is deliberately not raced against a timeout (an exit during the export would leave its operation lock stale); a flush that
+hangs leaves the request `restarting` until the owner cancels it (stuck after 5 minutes) or the process is stopped by hand.
