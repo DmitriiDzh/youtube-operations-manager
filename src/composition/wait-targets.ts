@@ -206,6 +206,9 @@ export function createWaitPorts(reads: WaitTargetReads): Partial<Record<WaitTarg
     ports.media_session = async (input, scope) => {
       const session = record(await orNotFound(() => read(input.id)));
       if (!visible(session.channelId, input, scope)) throw notFound();
+      // The Operator (no channel scope) sees only the sessions the factory started -- the same fence as its get tool; a channel worker
+      // sees every session of its own channel (its agent_get_media_session does too).
+      if (scope.channelId === null && session.requestedBy !== "factory") throw notFound();
       const status = String(session.status);
       const outcome = mediaSessionOutcome(status, input.until === "ended" ? "ended" : "ready");
       return observation(input.id, status, outcome, {
@@ -229,9 +232,15 @@ export function createWaitPorts(reads: WaitTargetReads): Partial<Record<WaitTarg
 
   if (reads.mediaJob) {
     const read = reads.mediaJob;
+    const sessionOf = reads.mediaSession;
     ports.media_job = async (input, scope) => {
       const job = record(await orNotFound(() => read(input.id)));
       if (!visible(job.channelId, input, scope)) throw notFound();
+      // As for sessions: the Operator sees only the jobs of factory sessions (its get tool's rule), a worker every job of its channel.
+      if (scope.channelId === null) {
+        const session = sessionOf && typeof job.sessionId === "string" ? record(await orNotFound(() => sessionOf(job.sessionId as string))) : {};
+        if (session.requestedBy !== "factory") throw notFound();
+      }
       const status = String(job.status);
       return observation(input.id, status, mediaJobOutcome(status), { ...jobSnapshot(job), sessionId: job.sessionId ?? null, templateId: job.templateId ?? null, progress: job.progress ?? null });
     };

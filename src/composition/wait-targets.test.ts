@@ -112,7 +112,7 @@ test("AC-WT-03 media_session: until ready (default) and until ended, every statu
   const ended: Record<string, [boolean, string]> = { ...ready, running: [false, "still_running"], stopping: [false, "still_running"], done: [true, "succeeded"] };
   for (const [until, table] of [["ready", ready], ["ended", ended]] as const) {
     for (const [status, [final, outcome]] of Object.entries(table)) {
-      const reads: WaitTargetReads = { mediaSession: async () => ({ sessionId: "s1", channelId: "UC_A", status }) };
+      const reads: WaitTargetReads = { mediaSession: async () => ({ sessionId: "s1", channelId: "UC_A", requestedBy: "factory", status }) };
       const result = await waitOnce(reads, { target: "media_session", id: "s1", ...(until === "ended" ? { until } : {}) });
       assert.deepEqual([result.final, result.outcome], [final, outcome], `${until} ${status}`);
     }
@@ -130,7 +130,7 @@ test("AC-WT-03 media_job, gemini_job, speech_job, sound_job: every status", asyn
     cancelled: [true, "cancelled"],
   };
   for (const [status, [final, outcome]] of Object.entries(media)) {
-    const result = await waitOnce({ mediaJob: async () => ({ jobId: "j1", channelId: "UC_A", status }) }, { target: "media_job", id: "j1" });
+    const result = await waitOnce({ mediaJob: async () => ({ jobId: "j1", sessionId: "s1", channelId: "UC_A", status }), mediaSession: async () => ({ requestedBy: "factory" }) }, { target: "media_job", id: "j1" });
     assert.deepEqual([result.final, result.outcome], [final, outcome], `media ${status}`);
   }
   const provider: Record<string, [boolean, string]> = { queued: [false, "still_running"], submitting: [false, "still_running"], running: [false, "still_running"], done: [true, "succeeded"], failed: [true, "failed"] };
@@ -208,8 +208,8 @@ test("AC-WT-03 restart: open/restarting run; done (with toVersion/toSchema), exp
 test("AC-WT-10 scoping: a worker on another channel's upload, session, job, Gemini/speech/sound job, request, storyboard or render gets the same not_found as a missing id", async () => {
   const otherChannel: WaitTargetReads = {
     upload: { byId: async () => uploadRow({ channelId: "UC_B" }), latest: async () => uploadRow({ channelId: "UC_B" }) },
-    mediaSession: async () => ({ sessionId: "s1", channelId: "UC_B", status: "running" }),
-    mediaJob: async () => ({ jobId: "j1", channelId: "UC_B", status: "done" }),
+    mediaSession: async () => ({ sessionId: "s1", channelId: "UC_B", requestedBy: "factory", status: "running" }),
+    mediaJob: async () => ({ jobId: "j1", sessionId: "s1", channelId: "UC_B", status: "done" }),
     geminiJob: async () => ({ job: { jobId: "gm_1", channelId: "UC_B", status: "done" } }),
     speechJob: async () => ({ provider: "gemini", job: { jobId: "gm_2", channelId: "UC_B", kind: "speech", status: "done" } }),
     soundJob: async () => ({ job: { jobId: "el_1", channelId: "UC_B", kind: "sfx", status: "done" } }),
@@ -257,7 +257,7 @@ test("AC-WT-10 scoping: a worker on another channel's upload, session, job, Gemi
 });
 
 test("AC-WT-15: a target whose reads are missing answers target_unavailable; the others still work", async () => {
-  const reads: WaitTargetReads = { mediaJob: async () => ({ jobId: "j1", channelId: "UC_A", status: "done" }) };
+  const reads: WaitTargetReads = { mediaJob: async () => ({ jobId: "j1", sessionId: "s1", channelId: "UC_A", status: "done" }), mediaSession: async () => ({ requestedBy: "factory" }) };
   assert.equal(JSON.parse(await errorOf(waitOnce(reads, { target: "gemini_job", id: "gm_1" }))).code, "target_unavailable");
   assert.equal((await waitOnce(reads, { target: "media_job", id: "j1" })).outcome, "succeeded");
   // A module whose read keeps failing (not a not-found) is target_unavailable after three reads, not not_found.
@@ -272,4 +272,23 @@ test("AC-WT-15: a target whose reads are missing answers target_unavailable; the
   const wait = createOperationWait({ ports: createWaitPorts(broken), now: () => now, sleep: async (ms) => void (now += ms), shutdownSignal: () => new AbortController().signal, restarting: async () => false });
   await assert.rejects(wait.waitFor({ target: "media_job", id: "j1", timeoutSeconds: 240 }, OPERATOR), (error: unknown) => isDomainError(error) && error.code === "target_unavailable");
   assert.equal(calls, 3);
+});
+
+// Review finding (BL-271): the Operator's get tools see only factory sessions and their jobs (AGENT_ISOLATION_SETUP §6: "It sees and
+// stops only the sessions it started"); its wait must not show more. A channel worker sees every session and job of its own channel.
+test("review: the Operator waits only on factory sessions / jobs (an owner-approved agent session is not_found); a worker on any of its channel's", async () => {
+  const agentSession: WaitTargetReads = {
+    mediaSession: async () => ({ sessionId: "s_agent", channelId: "UC_A", requestedBy: "agent", status: "running" }),
+    mediaJob: async () => ({ jobId: "j_agent", sessionId: "s_agent", channelId: "UC_A", createdBy: "agent", status: "done" }),
+  };
+  // The owner's own job in a factory session is the Operator's to see (its get tool checks the session, not who made the job).
+  const ownerJobInFactorySession: WaitTargetReads = {
+    mediaSession: async () => ({ sessionId: "s_f", channelId: "UC_A", requestedBy: "factory", status: "running" }),
+    mediaJob: async () => ({ jobId: "j_owner", sessionId: "s_f", channelId: "UC_A", createdBy: "operator", status: "done" }),
+  };
+  assert.equal((await waitOnce(ownerJobInFactorySession, { target: "media_job", id: "j_owner" }, OPERATOR)).outcome, "succeeded");
+  assert.equal(await errorOf(waitOnce(agentSession, { target: "media_session", id: "s_agent" }, OPERATOR)), notFoundShape("media_session", "s_agent"));
+  assert.equal(await errorOf(waitOnce(agentSession, { target: "media_job", id: "j_agent" }, OPERATOR)), notFoundShape("media_job", "j_agent"));
+  assert.equal((await waitOnce(agentSession, { target: "media_session", id: "s_agent", channelId: "UC_A" }, WORKER_A)).outcome, "succeeded");
+  assert.equal((await waitOnce(agentSession, { target: "media_job", id: "j_agent", channelId: "UC_A" }, WORKER_A)).outcome, "succeeded");
 });
