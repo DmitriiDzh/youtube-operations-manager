@@ -1138,7 +1138,13 @@ A second agent role, separate from the channel agents. Technical contract only (
   POST only (405), the MCP connection switch (403 `MCP_CONNECTION_DISABLED`), a token (401 `AGENT_TOKEN_REQUIRED`), the token (401 `AGENT_TOKEN_INVALID` for an
   unknown, revoked or wrong-type token, including a channel token; 503 `AGENT_ENDPOINT_UNAVAILABLE` if the database cannot answer). The token is re-verified on
   every tool call, so a revocation applies to the next call. A factory token on `/api/mcp` is rejected the same way.
-- **Factory API version:** `1.52.0` since BL-267 (PRD-REQ-0195 A, ADR 0073, additive: `factory_publishing_template_get` (READ) --
+- **Factory API version:** `1.53.0` since BL-269 (FO-REQ-0055, ADR 0074, additive: `yt-release-package/2` `captions: [{ language, file, name, sha256 }]`
+  is read and checked -- plan / calendar packages gain `captions` and the blocking codes `captions_missing` / `captions_invalid` (reason:
+  `channel_disabled`, `not_horizontal`, `orientation_unknown`, `count`, `language`, `name`, `size`, `sha256`, `format`); the upload record
+  `yt-release-upload/1` gains `videoSha256` (or null), `videoSizeBytes` and `captions: [{ trackId, language, name, sha256, at, by, verified?, pending? }]` (`pending: true` with `verified: false`: sent, YouTube
+  still processing -- re-checked by the next add; the runner's record step keeps entries already there, one per track id, the later `at` wins);
+  the factory gets no caption tool; Agent API `4.24.0` the same fields in `agent_get_publishing_calendar` (uploads gain `captions`, the step's
+  outcome, once it ran)); `1.52.0` since BL-267 (PRD-REQ-0195 A, ADR 0073, additive: `factory_publishing_template_get` (READ) --
   `{ template: { format: 'week-template/1', channelId, versionId, contentHash, horizonWeeks, displayTimeZone, days: { mon..sun?: [{ kind:
   long | short, hours?, publishTimeUtc }] }, by, at } | null, proposal | null, matchRules: { shortMaxSeconds: 180, hoursTolerance: 0.1,
   time: exact_minute_utc, position: first_created } }` (bundle 2.5.48 reads exactly these); plan slots gain `dating { source: template |
@@ -1504,7 +1510,8 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
 
 - **Transport:** as the factory endpoint, with `Authorization: Bearer ytom_pr_...` (the same checks and codes; a channel or factory token is
   401 `AGENT_TOKEN_INVALID` here, and a producer token on `/api/mcp` and `/api/mcp/factory`). Re-verified on every tool call.
-- **Producer API version:** `1.25.0` (since BL-267, ADR 0073, additive: the weekly-plan tools below, permission `PLAN_MOVE`,
+- **Producer API version:** `1.26.0` (since BL-269, ADR 0074, additive: `producer_video_captions_add` below, permission `CAPTIONS_WRITE`,
+  `captionsTools` in `producer_get_capabilities`; calendar packages gain `captions`); `1.25.0` (BL-267, ADR 0073, additive: the weekly-plan tools below, permission `PLAN_MOVE`,
   `planTools` / `planMoveTools` in `producer_get_capabilities`); `1.24.0` (BL-265, ADR 0072, additive: `producer_video_metadata_update`, permission `METADATA_WRITE`
   and `metadataTools` in `producer_get_capabilities`; calendar `warnings`; the media-keyed review gate; the queue add's "tried" rule by
   the row's mp4; wake status `packaging_comment`); `1.23.0` = BL-263 (ADR 0071: video codes may be `S<n>` in `agent_get_publishing_calendar`,
@@ -1564,6 +1571,20 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
   `_move_not_here`, `_move_youtube_unavailable`, `_move_youtube_failed`, `_move_upload_active`, `validation_failed` (`toWeekStart` / `date` / `publishAt`: `week_start_not_monday`,
   `date_invalid`, `outside_week`, `publish_at_invalid`, `date_mismatch`, `in_past` (< 30 min), `beyond_horizon` (> 52 weeks),
   `too_many_slots`).
+- **Captions tool (BL-269, ADR 0074, owner TG 4590/4592/4660; Producer 1.26.0):** `producer_video_captions_add` `{ channelId, video, dryRun?,
+  overwrite?, expectedManifestSha256?, expectedTrackId? }` (strict: no file path) → the English captions the package's CURRENT manifest states,
+  onto the video its upload record names, through `src/lib/video-captions/` (device gate, quota guard 550 / 800, backup -- an overwrite also
+  the replaced track's text via `captions.download` --, identity check, Live writes immediately before the one `captions.insert` /
+  `captions.update`, read-back, audit `source: video_captions`, actor `producer`). Without `overwrite` an English standard/forced track refuses
+  (`captions_foreign_track` / `captions_own_track_differs`); with it the one English standard non-draft track is replaced (id and name kept;
+  `captions_track_ambiguous` / `_forced` / `_draft` refuse; none: an insert). Never a delete, never an ASR track. Dry run `{ dryRun: true,
+  mode: insert | update | none, target, englishTracks, units: 51, writeUnits, manifestSha256, ... }`; real `{ mode, written, alreadyPresent,
+  trackId, trackName, verified, verificationDetail, pending, backupPath, recorded, uploadStepsMarked, ... }` plus `forChannelId`. Other errors:
+  `upload_package_not_ready`, `package_metadata_not_uploaded`, `package_metadata_manifest_changed`, `captions_not_in_package`,
+  `captions_missing`, `captions_invalid`, `captions_step_pending`, `captions_upload_unfinished` (the upload record is still the runner's first,
+  `result: "uploaded"` -- that upload, maybe on the other computer, has not finished its steps; allowed when this computer's own rows of the
+  video all ended), `captions_track_changed`, `captions_scope_missing`, `video_not_in_channel`,
+  `youtube_quota_exceeded`, `backup_item_failed`, `WRITE_CHANNEL_MISMATCH`, `live_writes_disabled`, `operation_lock_held` / `device_in_recovery_mode`.
 - **Metadata tool (BL-265, ADR 0072, owner TG 4578/4581; Producer 1.24.0):** `producer_video_metadata_update` `{ channelId, video, dryRun? }`
   (strict: no text of the caller's) → dry run `{ dryRun: true, video, videoId, manifestSha256, etag, baseline: upload_row | metadata_apply | unknown,
   fields: [{ field: title | description | tags, youtube, uploaded, manifest, status: same | write | conflict }], changed, audioLanguageLeftOut,

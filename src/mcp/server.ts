@@ -97,6 +97,7 @@ import {
   PRODUCER_PLAN_TOOLS,
   PRODUCER_PLAN_MOVE_TOOLS,
   PRODUCER_METADATA_TOOLS,
+  PRODUCER_CAPTIONS_TOOLS,
 } from "./producer-tools";
 import { listProducerProposalsInputSchema, markProposalsDoneInputSchema, submitProducerProposalInputSchema } from "@/lib/agent-proposals/schemas";
 import {
@@ -545,6 +546,14 @@ export type ProducerSession = {
     update(input: { channelId: string; video: string; dryRun?: boolean; expectedManifestSha256?: string }): Promise<Record<string, unknown>>;
   };
   /**
+   * BL-269 (ADR 0074 §8, §10; owner TG 4590/4592/4660): a release package's English captions onto its uploaded video through
+   * `src/lib/publishing/package-captions.ts` → `src/lib/video-captions/` (`session-deps.ts` wires it; nothing else in src/mcp
+   * reaches it). `overwrite` replaces the video's one English standard track.
+   */
+  captions: {
+    add(input: { channelId: string; video: string; dryRun?: boolean; overwrite?: boolean; expectedManifestSha256?: string; expectedTrackId?: string | null }): Promise<Record<string, unknown>>;
+  };
+  /**
    * BL-267 (ADR 0073 §5, owner TG 4630/4636): the weekly plan's Producer surface (`session-deps.ts` wires the composition's): the
    * template read and proposal, plan reads, and the immediate move. No approve, veto or template decision.
    */
@@ -658,6 +667,21 @@ export const producerVideoThumbnailReplaceInputSchema = z
   .strict();
 
 // BL-265 (ADR 0072 §5): the packaging fix's input -- the package's own values only (no text of the caller's is ever written).
+export const producerVideoCaptionsAddInputSchema = z
+  .object({
+    channelId: producerQueueChannelId,
+    video: z.string().min(1).max(32).describe("The release's video code as in its package, e.g. V27 (a long, horizontal video); its upload record names the video on YouTube."),
+    dryRun: z.boolean().optional().describe("true: every read and check, the track an overwrite would replace and the units -- no download, backup or write. Call it first."),
+    overwrite: z.boolean().optional().describe("true: replace the video's one English standard caption track (foreign or the app's own) with the package's captions (captions.update, ~800 units). Without it an existing English track refuses."),
+    expectedManifestSha256: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .optional()
+      .describe("Optional: the manifestSha256 your dry run showed; refused (package_metadata_manifest_changed) when the package was re-packaged since."),
+    expectedTrackId: z.string().min(1).max(200).nullable().optional().describe("Optional: target.trackId your dry run showed (null: none, an insert); refused (captions_track_changed) when the video's tracks changed since."),
+  })
+  .strict();
+
 export const producerVideoMetadataUpdateInputSchema = z
   .object({
     channelId: producerQueueChannelId,
@@ -3157,14 +3181,14 @@ export function createMcpServer(
     "producer_get_capabilities",
     {
       description:
-        "The Producer role's own report: its API version, its permissions (READ; DRAFT for its proposals only; UPLOAD_QUEUE for this computer's upload queue) and the tools it can call. Every channel tool needs `channelId` -- one of producer_list_channels -- and answers with `forChannelId`. No tool here writes to YouTube or spends money by itself: the DRAFT tools (draftTools) store a proposal or mark one read, and a proposal changes nothing until the owner approves it in YT Manager; the UPLOAD_QUEUE tools (uploadQueueTools) list, order, cancel and add rows of this computer's upload queue -- the app's own uploader then uploads a queued row as private, with its identity check, and only while the owner's Live writes switch is on; a date comes only from a weekly-plan slot the owner approved. The clip review tools (clipReviewTools) submit a clip already in a channel's folder for the owner to watch, and read his answer: only the owner approves or returns a clip, in YT Manager. THUMBNAIL_WRITE (thumbnailTools, since 1.20.0): producer_video_thumbnail_replace writes a video's custom thumbnail on YouTube (owner's decision, any video of a connected channel), with backup, identity check, Live writes, read-back and audit. METADATA_WRITE (metadataTools, since 1.24.0): producer_video_metadata_update writes an uploaded video's title / description / tags from its package's current manifest, refusing any conflict, with the same safety steps. PLAN_MOVE (planMoveTools, since 1.25.0): producer_publishing_plan_move_slot moves a weekly-plan slot anywhere at once and, for a video already dated, writes the new date on YouTube with the same safety steps. These three are the only YouTube writes a Producer tool makes itself; producer_week_template_propose is a DRAFT the owner decides.",
+        "The Producer role's own report: its API version, its permissions (READ; DRAFT for its proposals only; UPLOAD_QUEUE for this computer's upload queue) and the tools it can call. Every channel tool needs `channelId` -- one of producer_list_channels -- and answers with `forChannelId`. No tool here writes to YouTube or spends money by itself: the DRAFT tools (draftTools) store a proposal or mark one read, and a proposal changes nothing until the owner approves it in YT Manager; the UPLOAD_QUEUE tools (uploadQueueTools) list, order, cancel and add rows of this computer's upload queue -- the app's own uploader then uploads a queued row as private, with its identity check, and only while the owner's Live writes switch is on; a date comes only from a weekly-plan slot the owner approved. The clip review tools (clipReviewTools) submit a clip already in a channel's folder for the owner to watch, and read his answer: only the owner approves or returns a clip, in YT Manager. THUMBNAIL_WRITE (thumbnailTools, since 1.20.0): producer_video_thumbnail_replace writes a video's custom thumbnail on YouTube (owner's decision, any video of a connected channel), with backup, identity check, Live writes, read-back and audit. METADATA_WRITE (metadataTools, since 1.24.0): producer_video_metadata_update writes an uploaded video's title / description / tags from its package's current manifest, refusing any conflict, with the same safety steps. PLAN_MOVE (planMoveTools, since 1.25.0): producer_publishing_plan_move_slot moves a weekly-plan slot anywhere at once and, for a video already dated, writes the new date on YouTube with the same safety steps. CAPTIONS_WRITE (captionsTools, since 1.26.0): producer_video_captions_add puts a package's English captions onto its uploaded video (overwrite: true replaces the video's one English standard track), with the same safety steps. These four are the only YouTube writes a Producer tool makes itself; producer_week_template_propose is a DRAFT the owner decides.",
       inputSchema: z.object({}).strict(),
     },
     async () =>
       toolSuccessResult({
         role: "producer",
         producerApiVersion: PRODUCER_API_VERSION,
-        permissions: ["READ", "DRAFT", "UPLOAD_QUEUE", "THUMBNAIL_WRITE", "METADATA_WRITE", "PLAN_MOVE"],
+        permissions: ["READ", "DRAFT", "UPLOAD_QUEUE", "THUMBNAIL_WRITE", "METADATA_WRITE", "PLAN_MOVE", "CAPTIONS_WRITE"],
         channelRequired: true,
         tools: [...PRODUCER_TOOL_NAMES],
         draftTools: [...PRODUCER_DRAFT_TOOLS],
@@ -3172,6 +3196,7 @@ export function createMcpServer(
         clipReviewTools: [...PRODUCER_CLIP_REVIEW_TOOLS],
         thumbnailTools: [...PRODUCER_THUMBNAIL_TOOLS],
         metadataTools: [...PRODUCER_METADATA_TOOLS],
+        captionsTools: [...PRODUCER_CAPTIONS_TOOLS],
         planTools: [...PRODUCER_PLAN_TOOLS],
         planMoveTools: [...PRODUCER_PLAN_MOVE_TOOLS],
       })
@@ -3368,6 +3393,17 @@ export function createMcpServer(
       inputSchema: producerVideoMetadataUpdateInputSchema,
     },
     async (args: z.infer<typeof producerVideoMetadataUpdateInputSchema>) => toolSuccessResult(await producerSession!.packageMetadata.update(args))
+  );
+
+  // BL-269 (ADR 0074 §8, §10; owner TG 4590/4592/4660): a package's English captions onto its uploaded video -- the session's `captions` only.
+  registerTool(
+    "producer_video_captions_add",
+    {
+      description:
+        "Put a release package's English captions onto the video its upload record names (1.26.0, CAPTIONS_WRITE) -- e.g. V19, V27 and later WWE long videos uploaded before captions existed, or after the factory fixed the file. Only the captions the package's CURRENT manifest states (`captions`: one English .vtt/.srt inside its folder, its SHA-256), never a file of yours; only on a channel whose owner turned captions on and only on a horizontal long video (an S code or a vertical frame is refused). Input: channelId, video (V27), dryRun (optional; call it first), overwrite (optional), expectedManifestSha256 and expectedTrackId (optional: the dry run's manifestSha256 and target.trackId). Without overwrite: an English standard or forced track already on the video refuses -- captions_foreign_track (a track the app did not add) or captions_own_track_differs (the app's own, from another file); one the app added from this very file is already present (no write). With overwrite: true (owner's decision, TG 4660) the video's one English standard track -- foreign or the app's own -- is replaced with the package's file (captions.update keeps its id and name); refused when there is more than one English track (captions_track_ambiguous), the only one is forced (captions_track_forced) or a draft (captions_track_draft); no English track: a plain insert. ASR tracks are never touched; nothing is ever deleted. dryRun returns { dryRun: true, video, videoId, manifestSha256, mode (insert | update | none), target { trackId, language, name, trackKind, lastUpdated, ours } | null, englishTracks, units (51), writeUnits (550 insert / 800 overwrite) } -- no download, backup or write. Otherwise: the device gate, the quota guard, a backup (the track list and the file; an overwrite also downloads the replaced track's current text first -- if that fails nothing is written), the channel identity check, the owner's Live writes switch immediately before the one captions.insert / captions.update, then a read-back (the track serving, its language and name, an overwrite's lastUpdated advanced, every other track unchanged); audited with source video_captions, actor producer; the release's V<n>_youtube.json then lists the track as the app's own. Returns { mode, written, alreadyPresent, trackId, trackName, verified, verificationDetail, pending (YouTube still processing), backupPath, recorded, uploadStepsMarked, ... } and forChannelId. Errors: upload_package_not_ready, package_metadata_not_uploaded (no upload record yet: captions go up with the upload), package_metadata_manifest_changed, captions_not_in_package, captions_missing, captions_invalid (details.reason: channel_disabled, not_horizontal, orientation_unknown, count, language, name, size, sha256, format), captions_step_pending (this computer's upload of it is still running its steps), captions_upload_unfinished (the upload record is still the runner's first one -- that upload, maybe on the other computer, has not finished its steps), captions_foreign_track, captions_own_track_differs, captions_track_ambiguous, captions_track_forced, captions_track_draft, captions_track_changed, captions_scope_missing (the owner must reconnect the channel), video_not_in_channel, youtube_quota_exceeded, backup_item_failed, WRITE_CHANNEL_MISMATCH, live_writes_disabled, operation_lock_held / device_in_recovery_mode.",
+      inputSchema: producerVideoCaptionsAddInputSchema,
+    },
+    async (args: z.infer<typeof producerVideoCaptionsAddInputSchema>) => toolSuccessResult(await producerSession!.captions.add(args))
   );
 
   // BL-241 (docs/roadmap/plans/CLIP_REVIEWS_PLAN.md, ADR 0061; owner msgs 4010/4011): clips for review. These tools reach only the

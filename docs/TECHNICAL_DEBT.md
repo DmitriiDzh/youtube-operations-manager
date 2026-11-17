@@ -2280,6 +2280,19 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Amended (BL-267, ADR 0073 §5):** decisions are now read by slot id across weeks (a moved slot keeps its veto and approvals); a
   build without BL-267 still reads them by week, which is why a vetoed slot cannot be moved.
 
+## RISK-157 — Captions or thumbnail done later: a row dated by the owner's own approval stays undated — OPEN, 2026-11-17
+
+- **Affected components:** `src/lib/publishing/index.ts` `markUploadCaptionsSetLater` / `markUploadThumbnailSetLater`,
+  `plan-schedule.ts` (BL-269 review #6, ADR 0074 §8; BL-255).
+- **Risk:** when the upload's captions (or thumbnail) step did not pass, the runner withholds the date and the video stays private.
+  A later verified add marks the row's step done; the weekly plan's pass then dates a row that names a plan slot (`checksPassed`).
+  A row whose date came from the owner's own upload approval (no slot) is not in that pass: its `publishAt` stays withheld.
+- **Mitigation:** fail closed (private, no date, never published early); the owner sees the withheld note on the row and sets the
+  date in Studio or through a plan slot. Re-running the runner's date step for such a row would be a new `publishAt` write path
+  (identity, backup, Live writes, read-back) -- deliberately not added with the captions fixes.
+- **Gate(s):** none (no write is made). **Re-evaluate:** if the owner dates videos by his own approval and then fixes captions or
+  thumbnails later often enough to want the date applied automatically.
+
 ## RISK-156 — Week template: mixed builds, agents changing dates, and the template maps' first write — OPEN, 2026-11-16
 
 - **Affected components:** `src/lib/publishing-plans/` (template, moves), `src/lib/publishing/plan-schedule.ts` (owned dates, explicit

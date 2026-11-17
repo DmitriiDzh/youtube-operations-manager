@@ -73,6 +73,8 @@ export function progressOfPackage(scanned: ScannedPackage, channelSyntheticMedia
       problems: scanned.problems.map((p) => p.code),
       // BL-265: warnings only when there are some (the package's shape is unchanged otherwise).
       ...((scanned.warnings ?? []).length > 0 ? { warnings: (scanned.warnings ?? []).map((p) => p.code) } : {}),
+      // BL-269 (Factory 1.53.0, Agent 4.24.0): the manifest's captions, only when it states some (the shape is unchanged otherwise).
+      ...(pkg.captions && pkg.captions.length > 0 ? { captions: { file: pkg.captions[0].file, language: pkg.captions[0].language, sha256: pkg.captions[0].sha256 } } : {}),
       // BL-242 (ADR 0062 §2): part of what the owner approves in the `packaged` stage.
       manifestSha256: scanned.manifestSha256,
       // BL-257 (ADR 0070): the owner's return comment from package review, for the slot's status line (only when returned).

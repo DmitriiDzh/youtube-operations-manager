@@ -139,6 +139,9 @@ const WRITE_PRIMITIVE_NAMES = [
   // BL-223 (ADR 0050): a channel's description, keywords and banner (owner msgs 3482/3488).
   "insertChannelBanner",
   "updateChannelBrandingSettings",
+  // BL-269 (ADR 0074): the caption writer's insert and (explicit overwrite only) update; no delete primitive.
+  "insertVideoCaption",
+  "updateVideoCaption",
 ];
 
 test("youtube-write-gateway inventory: every file that imports a real write primitive also calls assertLiveWritesAuthorized", async () => {
@@ -215,4 +218,28 @@ test("AC-CB-11: channelBanners.insert and the brandingSettings update live only 
   assert.deepEqual(brandingPart, ["src/lib/youtube-write-gateway/index.ts"]);
   const localizationWriter = await readFile(path.join(REPO_ROOT, "src/lib/channel-localizations/adapters/youtube-api.ts"), "utf8");
   assert.ok(!/brandingSettings|insertChannelBanner|updateChannelBrandingSettings/.test(localizationWriter));
+});
+
+// BL-269 AC-CAP-23 (VIDEO_CAPTIONS_PLAN.md §3.2, ADR 0074 §1, §10): `captions.insert` and `captions.update` are called only inside
+// this module (the write pattern covers both); their two primitives are called only by the caption writer's adapter in
+// `src/lib/video-captions/`; and no file anywhere -- this module included -- calls `captions.delete`.
+test("AC-CAP-23: captions.insert/update only in the gateway, their primitives only from video-captions, captions.delete nowhere", async () => {
+  const verb = (name: string) => new RegExp(`\\.captions\\.${name}\\s*\\(`);
+  assert.ok(WRITE_CALL_PATTERN.test("youtube.captions.insert({"));
+  assert.ok(WRITE_CALL_PATTERN.test("youtube.captions.update({"));
+  assert.ok(WRITE_CALL_PATTERN.test(["youtube", "captions", "delete({"].join("."))); // split: this file must not hold the call text
+  const writeCalls: string[] = [];
+  const deleteCalls: string[] = [];
+  const primitiveCallers: string[] = [];
+  for (const file of await listAllScannedFiles()) {
+    const content = await readFile(file, "utf8");
+    const rel = path.relative(REPO_ROOT, file);
+    if (verb("delete").test(content)) deleteCalls.push(rel);
+    if (file.endsWith(".test.ts")) continue;
+    if (verb("insert").test(content) || verb("update").test(content)) writeCalls.push(rel);
+    if (/\b(insertVideoCaption|updateVideoCaption)\b/.test(content)) primitiveCallers.push(rel);
+  }
+  assert.deepEqual(deleteCalls, []);
+  assert.deepEqual(writeCalls, ["src/lib/youtube-write-gateway/captions.ts"]);
+  assert.deepEqual(primitiveCallers.sort(), ["src/lib/video-captions/adapters/youtube-writes.ts", "src/lib/youtube-write-gateway/captions.ts"]);
 });

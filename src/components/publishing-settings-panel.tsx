@@ -15,13 +15,15 @@ import { UtcTimeField } from "./utc-time-field";
 type View = { settings: Settings; saved: string[]; conflictedFields: string[] };
 type Playlist = { id: string; title: string };
 
-const FLAGS: Array<{ field: "containsSyntheticMedia" | "madeForKids" | "embeddable" | "notifySubscribers" | "paidProductPlacement"; label: UiTextKey }> = [
+const FLAGS: Array<{ field: "containsSyntheticMedia" | "madeForKids" | "embeddable" | "notifySubscribers" | "paidProductPlacement" | "captionsEnabled"; label: UiTextKey }> = [
   { field: "containsSyntheticMedia", label: "publishingSettings.field.containsSyntheticMedia" },
   { field: "madeForKids", label: "publishingSettings.field.madeForKids" },
   { field: "embeddable", label: "publishingSettings.field.embeddable" },
   { field: "notifySubscribers", label: "publishingSettings.field.notifySubscribers" },
   // Owner msgs 2751/2753: Studio's «Прямая реклама».
   { field: "paidProductPlacement", label: "publishingSettings.field.paidProductPlacement" },
+  // BL-269 (ADR 0074 §2, owner TG 4592): English caption tracks from the package (WWE long videos).
+  { field: "captionsEnabled", label: "publishingSettings.field.captionsEnabled" },
 ];
 
 /** The channel tags as typed: comma-separated, trimmed, empty ones dropped, each once (case-insensitive). */

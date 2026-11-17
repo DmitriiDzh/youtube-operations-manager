@@ -7,7 +7,7 @@
 
 import type { StoredPublishingUpload } from "@/lib/db";
 import { approvalNamesUpload, mediaOfPackageJson, type SlotDecision } from "./slot-decision";
-import type { UploadSteps } from "./upload-runner";
+import { captionsPassed, type UploadSteps } from "./upload-runner";
 
 /** video-details' rule: a date within 15 minutes is neither written nor removed (the video could publish meanwhile). */
 const MARGIN_MS = 15 * 60_000;
@@ -56,7 +56,8 @@ export const sameInstant = (a: string | null, b: string | null) => (a === null |
 /** The upload's own checks passed, so the plan may give the video a date (the runner's rule for the date step). */
 export function checksPassed(steps: UploadSteps): boolean {
   const translations = steps.localizations === undefined || steps.localizations === "none" || steps.localizations === "verified";
-  return translations && steps.thumbnail === "set" && steps.playlist !== "failed" && steps.verify?.result === "verified";
+  // BL-269 (ADR 0074 §7): the captions step too -- a refused / failed / mismatched captions step keeps the video undated.
+  return translations && captionsPassed(steps) && steps.thumbnail === "set" && steps.playlist !== "failed" && steps.verify?.result === "verified";
 }
 
 /**

@@ -59,7 +59,11 @@
 // slot anywhere at once and writes a dated video's new date on YouTube); producer_get_capabilities lists planTools / planMoveTools.
 // producer_upload_queue_add: a date by the weekly-plan rule (the owner's approved template with his media approval, or his explicit
 // one-slot date). Additive.
-export const PRODUCER_API_VERSION = "1.25.0";
+// 1.26.0 (BL-269, owner TG 4590/4592/4660, ADR 0074): producer_video_captions_add -- the English captions of a release package onto
+// the video its upload record names (dryRun first; `overwrite: true` replaces the video's one English standard track); permission
+// CAPTIONS_WRITE and captionsTools in producer_get_capabilities. agent_get_publishing_calendar's packages gain `captions` and the
+// problem codes captions_missing / captions_invalid (details.reason); uploads gain steps.captions. Additive.
+export const PRODUCER_API_VERSION = "1.26.0";
 
 /** The channel agent's READ tools the Producer gets; each call names its channel and runs in that channel's agent scope. */
 export const PRODUCER_CHANNEL_TOOLS: Readonly<Record<string, { capability: string }>> = Object.freeze({
@@ -138,6 +142,7 @@ export const PRODUCER_ONLY_TOOLS = [
   "producer_clip_review_withdraw",
   "producer_video_thumbnail_replace",
   "producer_video_metadata_update",
+  "producer_video_captions_add",
   "producer_week_template_get",
   "producer_week_template_propose",
   "producer_publishing_plan_get",
@@ -173,6 +178,13 @@ export const PRODUCER_THUMBNAIL_TOOLS = ["producer_video_thumbnail_replace"] as 
  * (video-details' writer: identity check, backup, Live writes, read-back, audit), refusing any conflict; nothing else.
  */
 export const PRODUCER_METADATA_TOOLS = ["producer_video_metadata_update"] as const;
+
+/**
+ * BL-269 (ADR 0074 §8, §10; owner TG 4590/4592/4660): the Producer's captions tool -- exactly this one, the test pins the list. It
+ * writes the English captions of a release package onto the video its upload record names (or, with `overwrite`, replaces the
+ * video's one English standard track) through `src/lib/video-captions/` (identity check, backup, Live writes, read-back, audit).
+ */
+export const PRODUCER_CAPTIONS_TOOLS = ["producer_video_captions_add"] as const;
 
 export const PRODUCER_CLIP_REVIEW_TOOLS = ["producer_clip_review_submit", "producer_clip_review_list", "producer_clip_review_get", "producer_clip_review_withdraw"] as const;
 

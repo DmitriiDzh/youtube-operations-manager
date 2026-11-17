@@ -141,7 +141,9 @@ export function PublishingNewPackage({ channelId, onClose, onSaved }: { channelI
     setConfirmReplace(false);
     setError(null);
   };
-  const problemText = (problem: Problem) => t(`publishingPackages.problem.${problem.code}` as UiTextKey, problem.params ?? {});
+  // BL-269: `captions_invalid` has one text per reason.
+  const problemText = (problem: Problem) =>
+    t((problem.code === "captions_invalid" && typeof problem.params?.reason === "string" ? `publishingPackages.problem.captions_invalid.${problem.params.reason}` : `publishingPackages.problem.${problem.code}`) as UiTextKey, problem.params ?? {});
   const duration = (seconds: number) => t("duration.hoursMinutes", { h: Math.floor(seconds / 3600), m: Math.floor((seconds % 3600) / 60) });
   const title = edits.title ?? draft?.title ?? "";
   const description = edits.description ?? draft?.description ?? "";

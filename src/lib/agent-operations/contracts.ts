@@ -130,7 +130,10 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // that never block); the review gate's owner_review_* codes now follow the video (mp4), not the manifest. Additive.
 // 4.23.0 (BL-267, ADR 0073): agent_publishing_template_get (READ, as factory_publishing_template_get 1.52.0); plan slots gain dating /
 // foreignPublishAt / movedFrom; agent_publishing_plan_save refuses slot_dated. Additive.
-export const AGENT_API_VERSION = "4.23.0";
+// 4.24.0 (BL-269, ADR 0074): agent_get_publishing_calendar's packages gain `captions` ({ language, file, name, sha256, problemReasons }
+// or null) and the problem codes captions_missing / captions_invalid; uploads gain `captions` (the step's outcome) once it ran; the
+// plan's packages gain `captions`. No caption tool for channel agents. Additive.
+export const AGENT_API_VERSION = "4.24.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry
