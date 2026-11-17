@@ -2,7 +2,7 @@
 
 This is the authoritative list referenced by `AGENTS.md` §F. It is binding exactly as if it were written in
 `AGENTS.md` itself: the Change Set / localization mechanism has authority over `title` and `description` per
-language only (`AGENTS.md` §F), and every other YouTube writer or exception that exists is listed here. Any new
+language only (`AGENTS.md` §F); the writers and exceptions authorized beyond that are listed here. Any new
 writer or exception must be added to this file. The entries below were moved verbatim, unchanged, from
 `AGENTS.md` §F on 2026-11-17 to keep that always-loaded file small; their order and wording are the original.
 

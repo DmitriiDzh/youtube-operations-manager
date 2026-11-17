@@ -2,7 +2,7 @@
 
 This is the **primary persistent instruction file** for any coding agent in this repository. `CLAUDE.md` only imports it (`@AGENTS.md`); never put rules there instead of here.
 
-It does not duplicate `docs/PROJECT_SPEC.md` (requirements/roadmap) or `docs/DEVELOPMENT_PLAYBOOK.md` (how-to). Long original wording of shortened rules: `docs/AGENT_RULES_DETAIL.md`; authorized YouTube writers: `docs/WRITE_AUTHORIZATIONS.md`.
+It does not duplicate `docs/PROJECT_SPEC.md` (requirements/roadmap) or `docs/DEVELOPMENT_PLAYBOOK.md` (how-to). Many rules here are short forms; their original full wording is in `docs/AGENT_RULES_DETAIL.md`, which is binding and wins wherever a short form seems narrower. Authorized YouTube writers: `docs/WRITE_AUTHORIZATIONS.md`.
 
 ## A. Mandatory documentation reading
 
@@ -10,7 +10,7 @@ Before making architectural, product, or safety-critical changes, read (in this 
 
 `docs/PROJECT_SPEC.md` (requirements, write-safety, phases, acceptance) → `docs/ROADMAP_STATUS.md` (what is actually complete, at which commit, what is assigned next) → `docs/SYSTEM_MAP.md` (where every subsystem is, its status) → `docs/ARCHITECTURE.md` (internals, data flows, limitations) → `docs/DEVELOPMENT_PLAYBOOK.md` (how to extend) → `docs/TECHNICAL_DEBT.md` (risks and gates; check before touching anything a risk references) → `docs/decisions/` (ADRs; check before altering anything one governs).
 
-**Narrow reading for small slices.** The full list is required when a change adds a subsystem, module boundary or reusable pattern; touches write-safety, channel identity, conflict detection, approval integrity or data preservation; changes a persisted schema or a public API/MCP contract; or when unsure. A small additive slice following an established pattern reads only the touched subsystem's `docs/SYSTEM_MAP.md`/`docs/ARCHITECTURE.md` sections plus what else bears on it. When unsure, read more, not less (`docs/AGENT_RULES_DETAIL.md` §A).
+**Narrow reading for small slices.** The full list is required when a change adds a subsystem, module boundary or reusable pattern; touches write-safety, channel identity, conflict detection, approval integrity or data preservation; changes a persisted schema or a public API/MCP contract; or when unsure. A small additive slice within an already-assigned phase that follows an established pattern reads only the touched subsystem's `docs/SYSTEM_MAP.md`/`docs/ARCHITECTURE.md` sections plus what else bears on it. When unsure, read more, not less; this is never a loophole to skip anything safety-relevant (`docs/AGENT_RULES_DETAIL.md` §A).
 
 `src/**` is the source of truth for **what exists**; `docs/PROJECT_SPEC.md` for **what is required**. If they disagree, report the discrepancy — never silently rewrite requirements to match an incomplete implementation, nor docs to claim something is implemented when it is not.
 
@@ -66,7 +66,7 @@ Also inspect `git status` and `git diff --check` before presenting work. Never s
 - Never allow blank spreadsheet cells to imply deletion unless explicitly designed and confirmed.
 - Never overwrite unrelated existing YouTube localizations.
 - The Change Set / localization mechanism (import, AI generation, tracked-language management, deletion) has authority over exactly `title` and `description`, per language, and nothing else — never `defaultLanguage`/`defaultAudioLanguage`, tags, category, privacy, scheduling, or captions/subtitles (`docs/PROJECT_SPEC.md` §21).
-- **Every other authorized YouTube writer, and every exception to the line above, is listed in `docs/WRITE_AUTHORIZATIONS.md`, which is binding exactly as if it were written in this file.** No YouTube write is authorized beyond what this section and that file allow. Read that file before touching any YouTube write path; any new writer or exception must be added there.
+- **Every other authorized YouTube writer, and every exception to the line above, is listed in `docs/WRITE_AUTHORIZATIONS.md`, which is binding exactly as if it were written in this file; any new writer must be added there.** Read it before touching any YouTube write or anything it governs: Batches' language fields, video details, live and channel translations, channel branding, uploads and their translations, the upload queue, publish dates, the weekly plan and week template, social cross-posts, thumbnails, the owner package-review gate, package metadata after upload, captions, and which agent roles get which of these tools.
 - Channel-context validation is not automatic — a route or service taking a `channelId` must itself verify the requested resource belongs to that channel (see `docs/DEVELOPMENT_PLAYBOOK.md` §6.6). *An operation is not automatically secure merely because it only touches local SQLite data.*
 - Known, currently-accepted security tradeoffs (plaintext local token storage, no per-user ownership boundary, best-effort upload-size enforcement) are tracked in `docs/TECHNICAL_DEBT.md` with explicit re-evaluation triggers — do not silently carry a *new* security-relevant gap forward without adding it there.
 
@@ -151,7 +151,7 @@ Established 2026-09-19. Authoritative for how work moves through branches and wh
 | Create a `feature/*` branch for an approved task | Authorized by default |
 | Commit locally on a `feature/*` branch | Authorized by default |
 | Merge a completed, verified **small/low-risk** change into local `dev` (`--no-ff`) — a narrow bug fix, a documentation-only change, a single-file or config/script fix | Authorized by default |
-| Merge a completed, verified **substantive feature** into local `dev` (`--no-ff`) — new functionality, a new module/subsystem, a multi-file behavioral change | Requires the owner's explicit "yes, merge" for that work, given after presenting it as finished |
+| Merge a completed, verified **substantive feature** into local `dev` (`--no-ff`) — new functionality, a new module/subsystem, a multi-file behavioral change, anything the agent would itself describe as "a feature" | Requires the project owner's explicit "yes, merge" for that specific piece of work, given after presenting it as finished (established 2026-09-22, see prose below) |
 | `git push` of `dev` | Authorized by default — standing project-owner approval granted 2026-09-19 (see note below) |
 | Merge `dev` into `main` | Separate, explicit project-owner approval required every time |
 | `git push` of `main` | Separate, explicit project-owner approval required every time |
