@@ -42,7 +42,6 @@ export const shell: Record<keyof typeof en, string> = {
   "tabs.content.videos": "Видео",
   "tabs.content.streams": "Трансляции",
   "tabs.content.calendar": "Календарь",
-  "tabs.content.publishing": "Ролики и релизы",
   "tabs.content.weekPlan": "План",
   "contentTabs.badge.releases": "{count, plural, one {# ролик готов} few {# ролика готовы} many {# роликов готовы} other {# ролика готовы}} к следующему шагу (пакет или загрузка)",
   "contentTabs.badge.calendar": "Запланировано меньше чем на 7 дней вперёд",

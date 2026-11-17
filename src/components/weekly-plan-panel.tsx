@@ -5,6 +5,10 @@ import { ThumbnailReplaceButton } from "./thumbnail-replace";
 import { SlotSocialPreview } from "./slot-social-preview";
 import { OrientationIcon } from "./orientation-icon";
 import { VideoPlayButton } from "./video-popup";
+import { PackagingActions } from "./package-packaging-actions";
+import { CaptionsActions } from "./package-captions-actions";
+import type { ActiveUpload } from "./plan-extras-model";
+import type { PlanPackageRow } from "./plan-extras";
 import { estimateUploadUnits } from "@/lib/publishing/publish-dates";
 import type { UiTextKey } from "@/lib/ui-text";
 import { ActionButton, SkeletonLines } from "./busy-feedback";
@@ -154,7 +158,21 @@ function sameClock(slot: Pick<PlanSlotDto, "date" | "publishAt" | "publishAtUtc"
 const weekdayKey = (n: number) => `weekPlan.weekday.${n}` as UiTextKey;
 const actorKey = (actor: "factory" | "worker" | "owner" | "producer", capital = false) => (capital ? `weekPlan.actorCap.${actor}` : `weekPlan.actor.${actor}`) as UiTextKey;
 
-export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | null; visible: boolean }) {
+export function WeeklyPlanPanel({
+  channelId,
+  visible,
+  uploads,
+  packages,
+  onPackagingChanged,
+}: {
+  channelId: string | null;
+  visible: boolean;
+  /** BL-266: this channel's uploads not over yet, by video number -- the slot card's percent (from «План»'s queue line). */
+  uploads?: ReadonlyMap<string, ActiveUpload>;
+  /** BL-266: the package scan rows by manifest hash -- an uploaded package's packaging and captions actions on its card. */
+  packages?: ReadonlyMap<string, PlanPackageRow>;
+  onPackagingChanged?: () => void;
+}) {
   const t = useT();
   const { language } = useUiText();
   const ownerZone = useUserTimezone();
@@ -343,6 +361,9 @@ export function WeeklyPlanPanel({ channelId, visible }: { channelId: string | nu
         onCancelEdit={() => setEditing(null)}
         onMove={(shownHash, toWeekStart, date, time, dryRun) => move(slot, shownHash, toWeekStart, date, time, dryRun)}
         onAskDate={() => setConfirmDate(slot)}
+        upload={slot.package ? (uploads?.get(slot.package.video) ?? null) : null}
+        scanned={slot.package?.manifestSha256 ? (packages?.get(slot.package.manifestSha256) ?? null) : null}
+        onPackagingChanged={onPackagingChanged}
       />
     ) : null;
 
@@ -553,6 +574,11 @@ function SlotRow(props: {
   onCancelEdit: () => void;
   onMove: (shownHash: string, toWeekStart: string, date: string, time: string, dryRun: boolean) => Promise<MoveAnswer | null>;
   onAskDate: () => void;
+  /** BL-266: the slot's video upload not over yet (status and percent), else null. */
+  upload: ActiveUpload | null;
+  /** BL-266: the slot package's scan row (packaging and captions actions once uploaded), else null. */
+  scanned: PlanPackageRow | null;
+  onPackagingChanged?: () => void;
 }) {
   const t = useT();
   const { slot, plan, mode, at } = props;
@@ -679,6 +705,12 @@ function SlotRow(props: {
               {slot.movedFrom && <span className="text-zinc-500">{t(slot.movedFrom.by === "producer" ? "weekTemplate.movedByProducer" : "weekTemplate.movedByOwner", { at: at(slot.movedFrom.at) })}</span>}
             </div>
           )}
+          {/* BL-266: the slot's video is being uploaded from this computer -- its status and percent (the queue line has the list). */}
+          {props.upload && (
+            <div className="mt-0.5 text-xs">
+              <span className="rounded bg-indigo-950/60 px-1.5 py-0.5 text-indigo-200">{t(`publishingUploads.status.${props.upload.status}` as UiTextKey, { percent: props.upload.percent })}</span>
+            </div>
+          )}
           {/* BL-242 R3: a date on YouTube no approval of this slot counts for -- approving moves it, vetoing removes it. */}
           {strayDateOf(slot) && <div className="truncate text-xs text-amber-300">{t("weekPlan.onYoutube", { at: at(strayDateOf(slot)!) })}</div>}
           {/* BL-242 round 3: two packages with one video number -- the uploads date neither. */}
@@ -750,6 +782,13 @@ function SlotRow(props: {
       )}
       {props.editing && !slot.vetoed && (
         <MoveEditor slot={slot} plan={plan} ownerZone={props.ownerZone} zoneOf={props.zoneOf} busy={props.busy} onCancel={props.onCancelEdit} onMove={props.onMove} />
+      )}
+      {/* BL-266 (moved from «Ролики и релизы»; BL-265/BL-269): an uploaded package's packaging and captions actions, on its own card. */}
+      {props.scanned && props.scanned.youtube && props.scanned.state !== "deleted_on_youtube" && props.scanned.manifestSha256 && props.scanned.video && (
+        <div className="flex flex-wrap items-center gap-3 px-4 pb-2">
+          <PackagingActions channelId={props.channelId} video={props.scanned.video} manifestSha256={props.scanned.manifestSha256} differs={props.scanned.youtubeTextsDiffer ?? null} onChanged={() => props.onPackagingChanged?.()} />
+          {(props.scanned.pkg?.captions?.length ?? 0) > 0 && <CaptionsActions channelId={props.channelId} video={props.scanned.video} onChanged={() => props.onPackagingChanged?.()} />}
+        </div>
       )}
       {pkg && <SlotSocialPreview channelId={props.channelId} video={pkg.video} manifestSha256={pkg.manifestSha256 ?? null} slotTime={wall.time} />}
     </li>

@@ -41,10 +41,10 @@ export const RESEARCH_TABS = [
 
 // BL-176 (LIVE_STREAMS_PLAN.md §3.12): Content gets sub-tabs -- today's videos list and the channel's live stream.
 // BL-182 (PUBLISHING_PLAN.md §2 stage 1): «Календарь» -- the publishing calendar and the coverage reminder; stage 2: «Публикация»
-// -- the channel's publishing defaults and its release packages.
+// -- the channel's publishing defaults and its release packages. BL-266 (owner TG 4730/4732): «Публикация» («Ролики и релизы») is gone --
+// «План» carries its videos without a slot, the upload queue and the packages; its settings are in Settings → Channels.
 export const CONTENT_TABS = [
   { value: "videos", labelKey: "tabs.content.videos" },
-  { value: "publishing", labelKey: "tabs.content.publishing" },
   // BL-225 (WEEKLY_PUBLISHING_PLAN.md stage 1 item 6, owner msg 3534): the week's publishing plan, approved by the owner.
   // BL-267 (owner msg 4572, ADR 0073 §7): «План» (Неделя | Месяц | Шаблон недели); «Календарь» is its «Месяц» view now.
   { value: "week-plan", labelKey: "tabs.content.weekPlan" },
@@ -93,6 +93,16 @@ const SUB_TABS_BY_SECTION: Record<string, readonly string[]> = {
   analytics: ANALYTICS_SUB_TABS.map((t) => t.key),
   settings: SETTINGS_SUB_TABS.map((t) => t.value),
 };
+
+/**
+ * Where a former Content sub-tab address leads now, or null when it is not a former one: BL-241 «Клипы на проверку» moved to Media
+ * (owner msg 4025); BL-266 «Публикация» is part of «План» (owner TG 4730/4732).
+ */
+export function contentSubTabRedirect(sub: string): string | null {
+  if (sub === "clips") return "/media/clips";
+  if (sub === "publishing") return "/content/week-plan";
+  return null;
+}
 
 /** AC-RT-01: is `/<section>/<sub>` a sub-tab address? */
 export function isSectionSubTab(section: string, sub: string): boolean {

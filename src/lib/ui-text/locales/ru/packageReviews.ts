@@ -32,7 +32,7 @@ export const packageReviews: Record<keyof typeof en, string> = {
   "packageReviews.description": "Описание",
   "packageReviews.thumbnail": "Обложка",
   "packageReviews.noThumbnail": "Файла обложки нет на этом компьютере.",
-  "packageReviews.otherProblems": "{count, plural, one {У фабрики ещё # проблема} few {У фабрики ещё # проблемы} many {У фабрики ещё # проблем} other {У фабрики ещё # проблемы}} (Контент → «Публикация»).",
+  "packageReviews.otherProblems": "{count, plural, one {У фабрики ещё # проблема} few {У фабрики ещё # проблемы} many {У фабрики ещё # проблем} other {У фабрики ещё # проблемы}} (Контент → «План» → «⋯» → «Пакеты релизов и ручная загрузка»).",
   "packageReviews.noSha256": "В пакете нет контрольной суммы видео, поэтому его нельзя одобрить: фабрика её добавит.",
   "packageReviews.decided.approved": "Вы одобрили {when}",
   "packageReviews.decided.returned": "Вы вернули {when}",
@@ -65,6 +65,6 @@ export const packageReviews: Record<keyof typeof en, string> = {
   "packageReviews.comment.confirm": "Отправить комментарий",
   "packageReviews.packagingComments": "Ваши комментарии к упаковке",
   "packageReviews.uploadedHint": "Это видео уже на YouTube. Его название, описание и теги ещё можно поправить из пакета:",
-  "packageReviews.uploadedLink": "Контент → «Ролики и релизы»",
+  "packageReviews.uploadedLink": "Контент → «План» (карточка слота или «⋯» → «Пакеты релизов и ручная загрузка»)",
   "packageReviews.player.unavailable": "Видео не воспроизводится: его файла нет на этом компьютере.",
 };

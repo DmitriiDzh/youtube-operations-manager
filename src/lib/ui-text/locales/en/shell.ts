@@ -42,7 +42,6 @@ export const shell = {
   "tabs.content.videos": "Videos",
   "tabs.content.streams": "Live streams",
   "tabs.content.calendar": "Calendar",
-  "tabs.content.publishing": "Videos & releases",
   "tabs.content.weekPlan": "Plan",
   "contentTabs.badge.releases": "{count, plural, one {# video is} other {# videos are}} ready for the next step (a package or an upload)",
   "contentTabs.badge.calendar": "Fewer than 7 days are scheduled ahead",

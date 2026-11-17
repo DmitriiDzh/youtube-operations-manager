@@ -1,15 +1,14 @@
 "use client";
 
 import { useRouter, useSelectedLayoutSegment } from "next/navigation";
-import type { ReactNode } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { useAppChannel } from "@/components/app-channel";
 import { ContentManager } from "@/components/content-manager";
 import { FeatureErrorBoundary } from "@/components/feature-error-boundary";
 import { LiveStreamPanel } from "@/components/live-stream-panel";
-import { PublishingPackages } from "@/components/publishing-packages";
-import { LocalVideoCleanupCard } from "@/components/local-video-cleanup-card";
-import { PublishingSettingsPanel } from "@/components/publishing-settings-panel";
-import { VideoProjectsPanel } from "@/components/video-projects-panel";
+import { PlanExtras, type PlanPackageRow } from "@/components/plan-extras";
+import { activeUploadsByVideo } from "@/components/plan-extras-model";
+import type { UploadRow } from "@/components/publishing-uploads";
 import { WeeklyPlanPanel } from "@/components/weekly-plan-panel";
 import { WeeklyTemplateBuildCard } from "@/components/weekly-template-build-card";
 import { CONTENT_TABS } from "@/components/section-tabs";
@@ -18,7 +17,8 @@ import { useT } from "@/components/ui-text-provider";
 
 // BL-149 (docs/roadmap/plans/APP_ROUTES_PLAN.md): the section's own address. BL-176 (LIVE_STREAMS_PLAN.md §3.12): Content has
 // two sub-tabs -- «Видео» (the list it always was) and «Трансляции» (the active channel's live stream). BL-182 adds «Календарь» and «Публикация». Both stay mounted once
-// shown and are only hidden, like the other sections' sub-tabs; both remount when the channel changes.
+// shown and are only hidden, like the other sections' sub-tabs; both remount when the channel changes. BL-266 (owner TG 4730/4732): «Публикация»
+// is gone -- its videos without a slot, upload queue and packages are on «План» (PlanExtras), its two settings cards in Settings → Channels.
 export default function ContentLayout({ children }: { children: ReactNode }) {
   const { channel } = useAppChannel();
   const router = useRouter();
@@ -26,6 +26,20 @@ export default function ContentLayout({ children }: { children: ReactNode }) {
   const segment = useSelectedLayoutSegment();
   // BL-221 (CONTENT_UX_PLAN.md stage E): what each tab is waiting for, on the tab itself.
   const badges = useContentTabBadges(channel?.id ?? null);
+  // BL-266: «План»'s queue line and package scan feed its slot cards (one read each).
+  // Each kept with its channel: another channel's rows (the same video numbers) never reach this channel's cards.
+  const channelId = channel?.id ?? null;
+  const [uploadRows, setUploadRows] = useState<{ channelId: string | null; rows: UploadRow[] }>({ channelId: null, rows: [] });
+  const [packageRows, setPackageRows] = useState<{ channelId: string | null; rows: PlanPackageRow[] }>({ channelId: null, rows: [] });
+  const [packagesKey, setPackagesKey] = useState(0);
+  const uploadsByVideo = useMemo(() => activeUploadsByVideo(uploadRows.channelId === channelId ? uploadRows.rows : []), [uploadRows, channelId]);
+  const packagesBySha = useMemo(
+    () => new Map((packageRows.channelId === channelId ? packageRows.rows : []).filter((p) => p.manifestSha256).map((p) => [p.manifestSha256 as string, p])),
+    [packageRows, channelId]
+  );
+  const onUploads = useCallback((rows: UploadRow[]) => setUploadRows({ channelId, rows }), [channelId]);
+  const onPackages = useCallback((rows: PlanPackageRow[]) => setPackageRows({ channelId, rows }), [channelId]);
+  const onPackagingChanged = useCallback(() => setPackagesKey((k) => k + 1), []);
   const tab = CONTENT_TABS.find((item) => item.value === segment)?.value ?? null;
   if (!tab) return <>{children}</>;
   return (
@@ -41,7 +55,8 @@ export default function ContentLayout({ children }: { children: ReactNode }) {
             className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${tab === item.value ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
           >
             {t(item.labelKey)}
-            {item.value === "publishing" && badges.releases > 0 && (
+            {/* BL-266: the former «Ролики и релизы» count -- videos ready for a package or an upload -- is on «План» now. */}
+            {item.value === "week-plan" && badges.releases > 0 && (
               <span className="ml-1.5 rounded-full bg-violet-600/80 px-1.5 text-[10px] font-semibold text-white" title={t("contentTabs.badge.releases", { count: badges.releases })}>
                 {badges.releases}
               </span>
@@ -70,32 +85,16 @@ export default function ContentLayout({ children }: { children: ReactNode }) {
             <ContentManager />
           </FeatureErrorBoundary>
         </div>
-        <div className={tab === "publishing" ? undefined : "hidden"}>
-          <FeatureErrorBoundary label={t("tabs.content.publishing")}>
-            <div className="space-y-4">
-              {/* BL-194 (ADR 0040): the videos in work come first; their own boundary keeps Publishing working if they fail (§M). */}
-              <FeatureErrorBoundary label={t("videoProjects.title")}>
-                <VideoProjectsPanel channelId={channel?.id ?? null} visible={tab === "publishing"} />
-              </FeatureErrorBoundary>
-              <PublishingPackages channelId={channel?.id ?? null} visible={tab === "publishing"} />
-              {/* BL-238 (ADR 0058, AGENTS.md §M): the local video cleanup in its own boundary -- Publishing works without it. */}
-              <FeatureErrorBoundary label={t("cleanup.title")}>
-                <LocalVideoCleanupCard channelId={channel?.id ?? null} visible={tab === "publishing"} />
-              </FeatureErrorBoundary>
-              {/* BL-221: the channel's publishing defaults are set rarely -- folded under the board and the packages. */}
-              <details className="group rounded-xl border border-zinc-800 bg-zinc-900">
-                <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-zinc-200 hover:text-white">{t("publishingSettings.collapsedTitle")}</summary>
-                <div className="border-t border-zinc-800 p-2">
-                  <PublishingSettingsPanel channelId={channel?.id ?? null} visible={tab === "publishing"} />
-                </div>
-              </details>
-            </div>
-          </FeatureErrorBoundary>
-        </div>
         {/* BL-225 (ADR 0051, AGENTS.md §M): the weekly plan in its own boundary -- Content works without it. */}
         <div className={tab === "week-plan" ? undefined : "hidden"}>
+          {/* BL-266 (AGENTS.md §M): the former «Ролики и релизы» lines in their own boundary -- the plan works without them. */}
+          <div className="mb-4">
+            <FeatureErrorBoundary label={t("planExtras.packages.close")}>
+              <PlanExtras channelId={channel?.id ?? null} visible={tab === "week-plan"} onUploads={onUploads} onPackages={onPackages} packagesRefreshKey={packagesKey} />
+            </FeatureErrorBoundary>
+          </div>
           <FeatureErrorBoundary label={t("tabs.content.weekPlan")}>
-            <WeeklyPlanPanel channelId={channel?.id ?? null} visible={tab === "week-plan"} />
+            <WeeklyPlanPanel channelId={channel?.id ?? null} visible={tab === "week-plan"} uploads={uploadsByVideo} packages={packagesBySha} onPackagingChanged={onPackagingChanged} />
           </FeatureErrorBoundary>
           {/* BL-231 (FO-REQ-0046, AGENTS.md §M): the factory's weekly build in its own boundary -- the plan works without it. BL-267
               (owner O7): «Собрать неделю по шаблону», shown only for a music template (the card hides itself otherwise). */}

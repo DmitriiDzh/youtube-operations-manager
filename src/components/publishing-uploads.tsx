@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { isCancellable, isPublishAtSet, isSending } from "@/lib/publishing/upload-runner";
 import { formatDisplayDateTime, formatDisplayDateUtc } from "@/lib/shared-formatting";
 import { errorText, type UiTextKey } from "@/lib/ui-text";
@@ -9,7 +9,7 @@ import { useT } from "./ui-text-provider";
 import { UploadBandwidthNote } from "./upload-bandwidth-note";
 import { useUtcLocalHint } from "./utc-time-field";
 
-type UploadRow = {
+export type UploadRow = {
   id: string;
   video: string;
   status: "queued" | "uploading" | "processing" | "finishing" | "paused" | "done" | "failed" | "cancelled";
@@ -68,7 +68,7 @@ function PublishTime({ publishAt, set }: { publishAt: string; set: boolean }) {
  * why, and when it continues by itself), done (with anything the read-back found) or failed. Polled while one is active. An
  * upload that has not reached YouTube can be cancelled.
  */
-export function PublishingUploads({ channelId, visible, refreshKey }: { channelId: string | null; visible: boolean; refreshKey: number }) {
+export function PublishingUploads({ channelId, visible, refreshKey, onRows }: { channelId: string | null; visible: boolean; refreshKey: number; /** BL-266: «План» reads the same rows (the slot cards' percent, the queue line) -- one poll, not two. */ onRows?: (rows: UploadRow[]) => void }) {
   const t = useT();
   const [rows, setRows] = useState<UploadRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -76,6 +76,11 @@ export function PublishingUploads({ channelId, visible, refreshKey }: { channelI
   /** BL-244: the upload being sent that the owner asked to stop (confirmed in the app's own dialog). */
   const [stopping, setStopping] = useState<string | null>(null);
   const [moving, setMoving] = useState(false);
+  // A ref, so a new callback from the parent never makes a new `load` (and a read loop).
+  const onRowsRef = useRef(onRows);
+  useEffect(() => {
+    onRowsRef.current = onRows;
+  }, [onRows]);
 
   const load = useCallback(async () => {
     if (!channelId) return;
@@ -84,6 +89,7 @@ export function PublishingUploads({ channelId, visible, refreshKey }: { channelI
       const data = await res.json();
       if (!res.ok) throw new Error(errorText(t, data, t("publishingPackages.loadFailed")));
       setRows(data.uploads as UploadRow[]);
+      onRowsRef.current?.(data.uploads as UploadRow[]);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : t("publishingPackages.loadFailed"));
