@@ -9,6 +9,7 @@ import { withTempDir } from "@/test-support/temp-dir";
 import { SNAPSHOT_REPLACE_ON_IMPORT_TABLES, type SqlExecutor } from "./contracts";
 import { computeContentFingerprint } from "./adapters/fingerprint";
 import { scrubDatabaseCopy } from "./adapters/scrub";
+import { applySnapshotToDatabase } from "./services";
 import {
   createCachedContentFingerprint,
   ensureTransferredChangeTriggers,
@@ -232,4 +233,55 @@ test("BL-270: the scrubbed export copy carries neither the triggers nor the coun
     await copy.execute("DELETE FROM research_channels");
     copy.close();
     client.close();
+  }));
+
+// Review of BL-270 (finding 5): measured on a real 22 MB snapshot, an import with the triggers in place took ~300 ms instead of
+// ~160 ms (a counter bump per row, no truncate optimisation). The import drops the triggers inside its transaction and restores
+// them before COMMIT: each counter moves exactly once (so every cached fingerprint is recomputed), the triggers are back, and a
+// rolled-back import leaves them as they were.
+test("BL-270 review: an import moves each counter once (not once per row) and leaves the triggers installed and counting", () =>
+  withTempDir("change-counter-", async (dir) => {
+    const live = await makeClient(dir);
+    const staged = await makeClient(dir, "staged.db");
+    for (let i = 0; i < 20; i++) await addResearchChannel(staged, `UC-s${i}`);
+    staged.close();
+    for (let i = 0; i < 5; i++) await addResearchChannel(live, `UC-l${i}`);
+    const cached = createCachedContentFingerprint(live);
+    const before = await cached.fingerprint(); // installs the triggers
+    const keyBefore = await readTransferredChangeKey(live);
+    const countersBefore = await readTransferredChangeCounters(live);
+    await applySnapshotToDatabase(live, path.join(dir, "staged.db"));
+    const countersAfter = await readTransferredChangeCounters(live);
+    for (const table of SNAPSHOT_REPLACE_ON_IMPORT_TABLES) {
+      if (!(table in countersBefore)) continue;
+      assert.equal(countersAfter[table] - countersBefore[table], 1, `${table}: one bump for the whole import`);
+    }
+    assert.notEqual(await readTransferredChangeKey(live), keyBefore);
+    assert.equal(await ensureTransferredChangeTriggers(live), "ready", "every trigger is back");
+    const after = await cached.fingerprint();
+    assert.notEqual(after, before);
+    assert.equal(after, await computeContentFingerprint(live));
+    await addResearchChannel(live, "UC-after-import");
+    assert.equal((await readTransferredChangeCounters(live)).research_channels, countersAfter.research_channels + 1);
+    live.close();
+  }));
+
+test("BL-270 review (negative): a rolled-back import keeps the triggers exactly as they were", () =>
+  withTempDir("change-counter-", async (dir) => {
+    const live = await makeClient(dir);
+    const staged = await makeClient(dir, "staged.db");
+    await addResearchChannel(staged, "UC-s");
+    staged.close();
+    await ensureTransferredChangeTriggers(live);
+    const countersBefore = await readTransferredChangeCounters(live);
+    await assert.rejects(
+      applySnapshotToDatabase(live, path.join(dir, "staged.db"), {
+        afterMerge: async () => {
+          throw new Error("abort");
+        },
+      })
+    );
+    assert.equal(await ensureTransferredChangeTriggers(live), "ready");
+    assert.deepEqual(await readTransferredChangeCounters(live), countersBefore);
+    live.close();
   }));

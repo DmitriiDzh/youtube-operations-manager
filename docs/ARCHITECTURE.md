@@ -2404,7 +2404,12 @@ single-writer, whole-copy semantics. Plan and acceptance criteria:
      migration rebuilt a table) are re-installed by `ensureTransferredChangeTriggers` on the next
      tick and force a full computation; a missing counter table (a new, imported or staged database)
      is created the same way. The scrub drops the counter table and the triggers from every
-     snapshot copy. Only the tick's decision uses the cache;
+     snapshot copy. The import (`applySnapshotToDatabase`) drops the triggers inside its
+     `BEGIN IMMEDIATE` and restores them before COMMIT, bumping every counter once: with them in
+     place the whole-table replace bumped a counter per row and lost the truncate optimisation
+     (review finding 5, real 22 MB snapshot: ~160 ms without triggers, ~300 ms with them, ~180 ms
+     with the drop/restore). The data-policy purges delete only expired rows (`WHERE`), so they keep
+     the triggers. Only the tick's decision uses the cache;
      the in-lock checks before an export or an import (step 5) still compute in full. Measured on a
      real 22 MB snapshot: full fingerprint ~960 ms wall / ~580 ms CPU, cached check ~0.7 ms.
      `PRAGMA data_version` alone was rejected: it moves with every commit by another connection

@@ -74,6 +74,29 @@ export async function ensureTransferredChangeTriggers(client: SqlExecutor): Prom
 }
 
 /**
+ * BL-270 review (finding 5): a whole-table replace (the snapshot import's DELETE + INSERT ... SELECT) with the triggers in place loses
+ * SQLite's truncate optimisation and bumps a counter per row (measured on a real 22 MB snapshot: ~160 ms -> ~300 ms). The import drops
+ * this device's change triggers inside its own transaction and puts them back before COMMIT (`restoreTransferredChangeTriggers`), so
+ * a rollback restores them too. Returns whether any were there (only then are they put back).
+ */
+export async function dropTransferredChangeTriggers(client: SqlExecutor): Promise<boolean> {
+  const triggers = (await client.execute(
+    `SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE '${TRANSFERRED_CHANGE_TRIGGER_PREFIX}%'`
+  )) as ExecuteResult;
+  for (const row of triggers.rows) await client.execute(`DROP TRIGGER IF EXISTS "${String(row.name)}"`);
+  return triggers.rows.length > 0;
+}
+
+/**
+ * Puts the triggers back after `dropTransferredChangeTriggers` and bumps every counter once, so every cached fingerprint -- in this
+ * process or another -- is recomputed at its next read (the schema cookie moved with the DROP/CREATE too).
+ */
+export async function restoreTransferredChangeTriggers(client: SqlExecutor): Promise<void> {
+  await ensureTransferredChangeTriggers(client);
+  await client.execute(`UPDATE "${TRANSFERRED_CHANGE_COUNTER_TABLE}" SET version = version + 1`);
+}
+
+/**
  * The cheap key: the database's schema cookie (`PRAGMA schema_version` -- any CREATE/DROP/ALTER, a table rebuild included, moves
  * it) and every counter. The same key means no transferred row was written through SQL since it was read and no schema change
  * happened. `null` when there is no counter table.
