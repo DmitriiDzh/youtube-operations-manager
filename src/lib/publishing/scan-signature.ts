@@ -32,6 +32,8 @@ export function referencedFilesOf(pkg: ScannedPackage): string[] {
   if (pkg.pkg) {
     files.push(`${pkg.folder}/${pkg.pkg.files.video}`, `${pkg.folder}/${pkg.pkg.files.thumbnail}`, `${pkg.folder}/${youtubeRecordFileName(pkg.pkg.video)}`);
     for (const thumbnail of pkg.pkg.thumbnails ?? []) files.push(`${pkg.folder}/${thumbnail.file}`);
+    // BL-269: the caption files a v2 package names.
+    for (const caption of pkg.pkg.captions ?? []) files.push(`${pkg.folder}/${caption.file}`);
   }
   return files;
 }

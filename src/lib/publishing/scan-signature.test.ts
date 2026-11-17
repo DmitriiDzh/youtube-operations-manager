@@ -81,21 +81,27 @@ test("BL-270 review (finding 2): a video-details local-copy write (a veto clears
   }
 });
 
-function pkg(folder: string, video: string, thumbnails: string[] = []): ScannedPackage {
+function pkg(folder: string, video: string, thumbnails: string[] = [], captions: string[] = []): ScannedPackage {
   return {
     manifestPath: `${folder}/${video}_release.json`,
     folder,
-    pkg: { video, files: { video: `renders/${video}.mp4`, thumbnail: `${video}.jpg` }, thumbnails: thumbnails.map((file) => ({ file, role: "test" })) },
+    pkg: {
+      video,
+      files: { video: `renders/${video}.mp4`, thumbnail: `${video}.jpg` },
+      thumbnails: thumbnails.map((file) => ({ file, role: "test" })),
+      captions: captions.map((file) => ({ language: "en", file, name: "", sha256: "x" })),
+    },
   } as unknown as ScannedPackage;
 }
 
 test("BL-270 review (finding 3): the files a package names are listed, deeper paths included", () => {
-  assert.deepEqual(referencedFilesOf(pkg("04 Videos/11 November/1117 V12", "V12", ["t2.jpg"])), [
+  assert.deepEqual(referencedFilesOf(pkg("04 Videos/11 November/1117 V12", "V12", ["t2.jpg"], ["subs/V12.en.vtt"])), [
     "04 Videos/11 November/1117 V12/V12_release.json",
     "04 Videos/11 November/1117 V12/renders/V12.mp4",
     "04 Videos/11 November/1117 V12/V12.jpg",
     "04 Videos/11 November/1117 V12/V12_youtube.json",
     "04 Videos/11 November/1117 V12/t2.jpg",
+    "04 Videos/11 November/1117 V12/subs/V12.en.vtt",
   ]);
 });
 
