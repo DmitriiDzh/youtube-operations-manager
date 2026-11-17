@@ -154,6 +154,12 @@ export type RestartWhenIdleDependencies = {
   build: () => { version: string; schema: number };
   /** Sends this process the graceful stop (SIGTERM) -- called at most once per process. */
   stop: () => void;
+  /**
+   * BL-270 review (finding 1): awaited just before `stop` -- the server's forced export-only device-sync tick, the same flush the idle
+   * shutdown runs, so the last changes are published before the process goes away. A rejection never prevents the stop. Optional:
+   * omitted = nothing to flush.
+   */
+  beforeStop?: () => Promise<void>;
   /** Takes the developer's request file: its text (the file is removed first), or null when there is none. */
   takeRequestFile: () => Promise<string | null>;
   log: (event: string, context: Record<string, unknown>) => void;

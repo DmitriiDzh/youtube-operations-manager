@@ -15,7 +15,8 @@
 - **The check** runs every 15 s while a request is open, on this computer, and lists every reason the restart must wait.
 - **The restart:** when no reason is left, the server records `restarting` (version, schema, who asked, minutes waited) and
   sends itself SIGTERM. That is the same graceful stop as `stop.sh`, and launchd starts the next run, rebuilding first if `dev`
-  moved. This happens only under the macOS system service (`YTOM_SERVICE_MODE=1`). Anywhere else the request is refused with
+  moved. Since BL-270 (ADR 0049 Amendment 2) it first awaits device sync's forced export-only tick (the idle shutdown's flush), so
+  the last changes are published; a failed flush does not prevent the stop. This happens only under the macOS system service (`YTOM_SERVICE_MODE=1`). Anywhere else the request is refused with
   `restart_needs_service`.
 - **On boot:** a request left `restarting` becomes `done`, with the new version and schema. The card shows it as the last restart.
 - **Holds:** `restart_holds`, 1–60 minutes, each with a reason and who set it (`factory`, `worker:<channelId>`, `owner`). A hold

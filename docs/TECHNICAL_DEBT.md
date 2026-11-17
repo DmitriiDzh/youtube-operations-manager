@@ -1465,14 +1465,21 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 
 - **Affected components:** `src/lib/device-sync/`, `src/instrumentation.ts` (ADR 0012).
 - **Residual risks:**
-  - **Wider unpublished window (BL-270, 2026-11-17, owner TG 4662/4665).** Automatic exports run at most once per 10 minutes
-    (was 60 s), so a change made on one computer can stay unpublished for up to ~10 minutes; editing on the other computer in that
-    window gives a divergence prompt (fails toward "ask", never toward overwrite). "Sync now" and the idle-shutdown flush are forced.
-    Re-evaluate if the owner sees divergence prompts after switching computers.
-  - **Changes made just before a manual stop.** Changes from the last ~10 minutes (BL-270; was ~1 minute) before a manual stop
+  - **Debounced export window (BL-270, 2026-11-17, owner TG 4662/4665; review finding 1).** An automatic export waits until the
+    transferred data has been quiet for 90 s (up to ~2 minutes with the 30 s tick), or dirty for 10 minutes under continuous churn;
+    never two within 60 s. A change can therefore stay unpublished for ~2 minutes after a single edit (was ~1 minute), up to
+    10 minutes while edits keep coming. Editing on the other computer in that window gives a divergence prompt (fails toward "ask",
+    never toward overwrite). "Sync now", the idle-shutdown flush and the restart-when-idle flush (ADR 0049 Amendment 2) are forced.
+    **Peer automatic writers:** the risk is not only a human switching computers -- a background writer on the other computer
+    (a collection loop, an agent's MCP write, a market-record assignment) that writes transferred tables while this computer's change
+    is still unpublished also makes a divergence, without anyone switching. Under continuous churn on one side that window is up to
+    10 minutes per export instead of ~1 minute, so such prompts can become more frequent on the computer whose loops write
+    transferred data. Re-evaluate if the owner sees divergence prompts after switching computers or without switching.
+  - **Changes made just before a manual stop.** Changes from the last ~2 minutes (BL-270 debounce; up to 10 under continuous
+    churn; was ~1 minute) before a manual stop
     (`stop.sh` / SIGTERM) are not published until this device's server runs again. There is
     deliberately no export in signal handlers: a killed export leaves an operation lock that is
-    never auto-released. The idle shutdown does flush.
+    never auto-released. The idle shutdown and restart-when-idle do flush.
   - **Only the web server syncs.** MCP/CLI writes made while the server is down are detected by the
     fingerprint and published at the next server start.
   - **Stale operation locks.** Automatic exports take the lock about once a minute. A process killed

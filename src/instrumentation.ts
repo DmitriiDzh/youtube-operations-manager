@@ -236,6 +236,18 @@ async function startServerSession() {
     }
     return ticking;
   };
+  // BL-270: the forced export-only tick that publishes the last changes before this process goes away -- the idle shutdown and
+  // (review finding 1) restart-when-idle, just before its stop signal. Straight to the runner (it runs one action at a time), never
+  // through `tickQuietly`, which would hand back an unforced tick already in flight and skip the forced export.
+  const flushDeviceSync = async () => {
+    await deviceSync.tick({ force: true, exportOnly: true }).catch(() => undefined);
+  };
+  try {
+    const { setRestartPreStopFlush } = await import("@/lib/restart-when-idle");
+    setRestartPreStopFlush(flushDeviceSync);
+  } catch (error) {
+    console.warn(`[restart-when-idle] pre-stop flush not registered: ${error instanceof Error ? error.message : String(error)}`);
+  }
   // First tick shortly after boot: this is the "load the latest data at startup" moment.
   setTimeout(() => void tickQuietly(), DEVICE_SYNC_BOOT_DELAY_MS).unref();
   setInterval(() => void tickQuietly(), DEVICE_SYNC_TICK_MS).unref();
@@ -882,12 +894,8 @@ async function startServerSession() {
   const onIdle = createIdleHandler(idleAction, {
     // A running generation pod is terminated BEFORE the process goes away (AC-P14-09; bounded inside).
     stopPods: () => media.stopForShutdown(),
-    // BL-270: straight to the runner (it runs one action at a time), never through `tickQuietly`, which would hand back an
-    // unforced tick already in flight and skip the forced export -- with a 10-minute export interval that would leave the last
-    // changes unpublished until the next start.
-    flush: async () => {
-      await deviceSync.tick({ force: true, exportOnly: true }).catch(() => undefined);
-    },
+    // BL-270: the shared forced export-only flush (see `flushDeviceSync`).
+    flush: flushDeviceSync,
     exit: () => process.exit(0),
     onSessionEnded: () => idleLogger.info({ event: "idle_shutdown.session_ended", context: {} }),
     onSessionEndFailed: (error) =>

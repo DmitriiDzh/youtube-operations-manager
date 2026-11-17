@@ -2422,10 +2422,13 @@ single-writer, whole-copy semantics. Plan and acceptance criteria:
    - "Known" is the local head plus its ancestry: recorded `ancestors_json`, `lineage.json`, and
      parent pointers through every manifest in the folder.
    - "Newer" means other devices' snapshots that are not known. Of those, only the tips count.
-   - No tips: export if dirty, otherwise idle. An automatic export runs at most once per 10 minutes
-     (`DEVICE_SYNC_MIN_EXPORT_INTERVAL_MS`, BL-270; was 60 s); a change inside the window stays
-     dirty and is exported by the first tick after it. "Sync now" and the idle-shutdown flush (which
-     calls the runner directly, never through the in-flight tick) are forced.
+   - No tips: export if dirty, otherwise idle. An automatic export is debounced (BL-270 and its
+     review): it runs once the content fingerprint has been unchanged for 90 s after the last change
+     a tick saw (`DEVICE_SYNC_EXPORT_QUIET_MS`), or after 10 minutes of continuous churn
+     (`DEVICE_SYNC_EXPORT_MAX_DELAY_MS`), never within 60 s of the previous export
+     (`DEVICE_SYNC_MIN_EXPORT_INTERVAL_MS`). The debounce state is in memory; the first observation
+     in a process is not held back. "Sync now", the idle-shutdown flush and the restart-when-idle
+     pre-stop flush (both call the runner directly, never through the in-flight tick) are forced.
    - One tip that is a fast-forward, with local clean: import.
    - A newer schema: `update_app`.
    - Anything else: divergence.

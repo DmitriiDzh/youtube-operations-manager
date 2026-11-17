@@ -12,11 +12,12 @@ import { createRestartWhenIdle } from "./services";
 const T0 = Date.parse("2026-10-24T10:00:00.000Z");
 const MIN = 60_000;
 
-function fixture(options: { serviceMode?: boolean } = {}) {
+function fixture(options: { serviceMode?: boolean; beforeStop?: (order: string[]) => Promise<void> } = {}) {
   const state = {
     now: T0,
     serviceMode: options.serviceMode ?? true,
     stops: 0,
+    order: [] as string[],
     file: null as string | null,
     logs: [] as Array<{ event: string; context: Record<string, unknown> }>,
     build: { version: "0.9.0 (abc123def456)", schema: 108 },
@@ -76,7 +77,11 @@ function fixture(options: { serviceMode?: boolean } = {}) {
     newId: () => `id-${++state.nextId}`,
     serviceMode: () => state.serviceMode,
     build: () => state.build,
-    stop: () => void state.stops++,
+    stop: () => {
+      state.stops++;
+      state.order.push("stop");
+    },
+    beforeStop: options.beforeStop ? () => options.beforeStop!(state.order) : undefined,
     takeRequestFile: async () => {
       const text = state.file;
       state.file = null;
@@ -406,4 +411,47 @@ test("review: a holder keeps at most 3 active holds; another holder is not limit
   for (let i = 0; i < 3; i++) await f.service.hold({ heldBy: "factory", minutes: 60, reason: `step ${i}` });
   await rejects(f.service.hold({ heldBy: "factory", minutes: 60, reason: "one more" }), "validation_failed");
   await f.service.hold({ heldBy: "owner", minutes: 5, reason: "owner's own" });
+});
+
+// BL-270 review (finding 1): with automatic exports debounced, the restart must not leave the last changes unpublished -- it runs
+// the server's forced export-only flush (the idle shutdown's) before the stop signal, and a failed flush never prevents the stop.
+test("BL-270 review: restart-when-idle runs the pre-stop flush to completion before the stop signal, once", async () => {
+  let flushes = 0;
+  const f = fixture({
+    beforeStop: async (order) => {
+      flushes++;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      order.push("flush");
+    },
+  });
+  await f.service.request("owner");
+  f.state.now = T0 + 5 * MIN;
+  await Promise.all([f.service.tick(), f.service.tick()]);
+  await f.service.tick();
+  assert.deepEqual(f.state.order, ["flush", "stop"]);
+  assert.equal(flushes, 1);
+});
+
+test("BL-270 review (negative): a failing pre-stop flush is logged and the stop is still sent", async () => {
+  const f = fixture({
+    beforeStop: async () => {
+      throw new Error("sync folder gone");
+    },
+  });
+  await f.service.request("owner");
+  f.state.now = T0 + 5 * MIN;
+  await f.service.tick();
+  assert.equal(f.state.stops, 1);
+  assert.ok(f.state.logs.some((l) => l.event === "restart_when_idle.before_stop_failed"));
+});
+
+test("BL-270 review: the server registers device sync's forced export-only tick as the restart's pre-stop flush, shared with idle shutdown", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const path = await import("node:path");
+  const source = await readFile(path.join(process.cwd(), "src/instrumentation.ts"), "utf8");
+  assert.match(source, /const flushDeviceSync = async \(\) => \{\s*await deviceSync\.tick\(\{ force: true, exportOnly: true \}\)/);
+  assert.match(source, /setRestartPreStopFlush\(flushDeviceSync\)/);
+  assert.match(source, /flush: flushDeviceSync,/);
+  const core = await readFile(path.join(process.cwd(), "src/lib/restart-when-idle/index.ts"), "utf8");
+  assert.match(core, /beforeStop: async \(\) =>/);
 });
