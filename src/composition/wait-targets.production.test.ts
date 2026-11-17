@@ -35,12 +35,15 @@ async function codeOf(promise: Promise<unknown>): Promise<{ code: string; detail
 
 test("real reads: a missing id of every target is not_found at the first read, for the Operator and for a worker", async () => {
   const wait = createProductionOperationWait();
+  // Warm-up, untimed: the first call of each target loads its module (and the database) -- under a full parallel run that alone can
+  // take seconds. The timed pass below then shows the answer comes from the first read, well inside every poll interval (>= 5 s).
+  for (const input of CASES) await codeOf(wait.waitFor({ ...input, timeoutSeconds: 240 }, { channelId: null }));
   for (const scope of [{ channelId: null }, { channelId: "UC_PROD_A" }]) {
     for (const input of CASES) {
       const started = Date.now();
       const answer = await codeOf(wait.waitFor({ ...input, timeoutSeconds: 240 }, scope));
       assert.deepEqual(answer, { code: "not_found", details: { target: input.target, id: input.id } }, `${JSON.stringify(input)} scope ${scope.channelId}`);
-      assert.ok(Date.now() - started < 5000, `${input.target}: answered at the first read, not after polling`);
+      assert.ok(Date.now() - started < 4000, `${input.target}: answered at the first read, not after polling`);
     }
   }
 });
