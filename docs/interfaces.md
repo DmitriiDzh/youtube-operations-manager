@@ -344,6 +344,31 @@ below.
 
 ---
 
+### Wait CLI (`npm run --silent wait -- <target> <id>`, BL-271, ADR 0075)
+
+For agents, not the operator CLI: no "Operator CLI access" gate and no database access. It is a thin HTTP client of the caller's own
+MCP endpoint, so it waits with exactly that token's rights. Run it from the app folder as a **background** shell command:
+`npm --prefix <app folder> run --silent wait -- <target> <id> [--channel <channelId>] [--storyboard <storyboardId>] [--until <until>]
+[--timeout <seconds>] [--url <url>] [--token-env <VAR>]`.
+
+- **Token.** Read from the environment variable `YTOM_TOKEN` (or the one `--token-env` names); never accepted as an argument
+  (`token_in_argument`), never printed. Its prefix picks the endpoint and tool: `ytom_ch_` → `/api/mcp` `agent_wait`, `ytom_fo_` →
+  `/api/mcp/factory` `factory_wait`, `ytom_pr_` → `/api/mcp/producer` `producer_wait`. `--url` / `YTOM_URL` (default
+  `http://127.0.0.1:3000`).
+- **Loop.** `*_wait` calls of `min(240, remaining)` seconds, nothing printed in between, until final or `--timeout` (default 14400,
+  at most 259200). After `restarting` / `server_stopping` it waits 5 s before the next call.
+- **Lost connection** (refused, reset, 502/503/504, a call 30 s past its block): retried every 5 s -- for `restart` until the
+  deadline; for any other target up to 10 minutes of continuous loss (60 s if the app never answered), then `server_unreachable`.
+  An endpoint refusal (401 / 403, e.g. a revoked token or the MCP switch off) and a tool error end the wait at once.
+- **`restart current`.** Allows 30 s for a request to appear (the developer script's file is taken up within 15 s), pins the request id
+  from the first answer, and also counts a server started after the wait began (`no_restart_request` with a later
+  `details.serverStartedAt`) as done.
+- **Output.** Exactly one line on stdout: `{ target, id, final, outcome, status, snapshot, waitedSeconds, error? }` (`error: { code,
+  message }` for usage and endpoint errors). Example: `{"target":"upload","id":"up_8f2","final":true,"outcome":"succeeded","status":"done","snapshot":{"uploadId":"up_8f2","channelId":"UC…","video":"V61","videoId":"abcdefghijk",…},"waitedSeconds":1834}`.
+- **Exit codes.** 0 `succeeded`; 1 `failed`, `partly_failed`, `cancelled`, `rejected`, `changes_requested`, `expired`; 2 everything
+  else (timeout `still_running`, `blocked`, `not_in_review`, `not_found`, `invalid_request`, `server_unreachable`, `token_missing`,
+  `target_unavailable`, usage).
+
 ## MCP server (`POST /api/mcp`, served by the running app)
 
 The app itself serves MCP (stateless Streamable HTTP, `src/lib/agent-mcp-endpoint`, route
@@ -1113,6 +1138,9 @@ nothing. This replaces BL-091's per-capability zones, which are retired in
     (READ; not counted as an MCP call for the quiet window); `agent_hold_restart { minutes (whole, 1-60), reason (1-200) }` →
     `{ hold }` with `heldBy: "worker:<bound channel>"` and `agent_release_hold { holdId }` → `{ hold, released }` (DRAFT, local,
     device mutation gate first; another's hold → `not_found`; both logged in the worker log, the hold's id as the target).
+    Wait (BL-271, ADR 0075, Agent API 4.25.0, additive): `agent_wait` is `factory_wait` (below) for the bound channel -- `channelId`
+    put in when left out, another channel → `CHANNEL_NOT_ACTIVE`, another channel's upload / session / job / request / storyboard /
+    render → `not_found` exactly like a missing id. READ; not logged in the worker log; not counted as an MCP call.
   - `list` / `transcript` / `preview` / `channel_sync` are confined to the bound channel.
   - Market tools return only records the operator assigned to that channel (below).
   - Channel-less hypotheses are invisible.
@@ -1138,7 +1166,7 @@ A second agent role, separate from the channel agents. Technical contract only (
   POST only (405), the MCP connection switch (403 `MCP_CONNECTION_DISABLED`), a token (401 `AGENT_TOKEN_REQUIRED`), the token (401 `AGENT_TOKEN_INVALID` for an
   unknown, revoked or wrong-type token, including a channel token; 503 `AGENT_ENDPOINT_UNAVAILABLE` if the database cannot answer). The token is re-verified on
   every tool call, so a revocation applies to the next call. A factory token on `/api/mcp` is rejected the same way.
-- **Factory API version:** `1.53.0` since BL-269 (FO-REQ-0055, ADR 0074, additive: `yt-release-package/2` `captions: [{ language, file, name, sha256 }]`
+- **Factory API version:** `1.54.0` since BL-271 (ADR 0075, additive: `factory_wait` below); `1.53.0` since BL-269 (FO-REQ-0055, ADR 0074, additive: `yt-release-package/2` `captions: [{ language, file, name, sha256 }]`
   is read and checked -- plan / calendar packages gain `captions` and the blocking codes `captions_missing` / `captions_invalid` (reason:
   `channel_disabled`, `not_horizontal`, `orientation_unknown`, `count`, `language`, `name`, `size`, `sha256`, `format`); the upload record
   `yt-release-upload/1` gains `videoSha256` (or null), `videoSizeBytes` and `captions: [{ trackId, language, name, sha256, at, by, verified?, pending? }]` (`pending: true` with `verified: false`: sent, YouTube
@@ -1436,6 +1464,27 @@ A second agent role, separate from the channel agents. Technical contract only (
       (strict) → `{ hold }` with `heldBy: "factory"`. Ends by itself at `until`. Out of bounds: `validation_failed`.
     - **`factory_release_hold`** (WRITE, local; gate first) `{ holdId }` → `{ hold, released (false when it had already ended) }`.
       Only the Operator's own holds; another's → `not_found`.
+  - **BL-271 wait tool (Factory API 1.54.0, ADR 0075, `docs/roadmap/plans/WAIT_TOOLS_PLAN.md`).** **`factory_wait`** (READ, local;
+    no mutation gate; not counted as an MCP call, so a long wait never delays a restart) `{ target, id, channelId?, storyboardId?,
+    until?, timeoutSeconds? }` → `{ target, id (resolved), final, outcome, status, snapshot, waitedSeconds, nextCallHint? }`. Reads at
+    once, then every 5 s (uploads 10 s, translation requests and storyboards 15 s); answers once: final, or after `timeoutSeconds`
+    (default 50, clamped to 1-240) with `final: false, outcome: still_running` (never an error). Early, with `final: false`:
+    `restarting`, `server_stopping`, `blocked` (an upload paused for `auth` / `live_writes_off`), `not_in_review` (a storyboard draft).
+    - Targets (this computer only; plan §2): `upload` (`uploadId`, or the video code with `channelId` -- the newest row; running while
+      queued / uploading / processing / finishing / paused for quota or the upload limit; `done` / `failed` / `cancelled`);
+      `media_session` (`until: ready` default -- `running` succeeds, `stopping` / `done` before it fail; `until: ended` -- `done`);
+      `media_job` (the Operator sees only factory sessions and their jobs, as its get tools; a worker any of its channel); `gemini_job`,
+      `speech_job`, `sound_job` (sfx / music); `translation_request` (`channelId` required; `until:
+      finished` default -- `partly_done` is `partly_failed`; `until: claimed`); `storyboard_review` (`channelId`); `storyboard_render`
+      (`channelId`, `storyboardId`); `restart` (a request id, or `current`; `done` with `toVersion` / `toSchema`, `expired`,
+      `cancelled`). Not targets: the weekly build (no state in YT Manager), recode / rename (synchronous).
+    - Outcomes: `succeeded`, `failed`, `partly_failed`, `cancelled`, `rejected`, `changes_requested`, `expired`, `still_running`,
+      `blocked`, `not_in_review`, `restarting`, `server_stopping`. Errors: `not_found`, `invalid_request`, `target_unavailable` (the
+      target's module cannot be read), `no_restart_request` (`details.serverStartedAt`, `details.lastRestart`).
+    - Client limit: Claude Code kills an HTTP MCP call after ~60 s unless the server entry sets `"timeout": 300000`
+      (`docs/AGENT_ISOLATION_SETUP.md` §3); for longer waits use the Wait CLI (above).
+    - Example: `factory_wait { "target": "media_job", "id": "mj_41", "timeoutSeconds": 50 }` →
+      `{"target":"media_job","id":"mj_41","final":true,"outcome":"succeeded","status":"done","snapshot":{"jobId":"mj_41","channelId":"UC…","status":"done","outputs":[…],…},"waitedSeconds":35}`.
   - **BL-184 storyboard tools (Factory API 1.16.0, ADR 0038, `docs/roadmap/plans/STORYBOARD_PLAN.md`).** A storyboard is the keyframes of a video loop, one segment of video between each two (and the last back to the first with `loop`) and a prop table; the owner comments, asks for changes and approves in Media → Раскадровка. Synced between the computers (sync family `storyboards`).
     - **`factory_storyboard_create`** (WRITE; device mutation gate first) `{ channelId (connected, with a workspace), storyboardId? (1-40 [A-Za-z0-9_-]; default sb_<random>), planId?, title (≤ 200), loop, keyframes: [{ id, file (relative to the channel's 99 Data Exchange: "Sent to YTM/..." or "From YTM/gemini|media/<jobId>/..."; .png/.jpg/.jpeg/.webp), caption?, parentKeyframeId? }] (2-24, in order), segments: [{ id, fromKeyframeId, toKeyframeId, action (≤ 4000), durationSeconds (> 0, ≤ 600), model?, settings?, estimateUsd? }] (exactly one per neighbouring pair, plus last -> first with loop), props?: [{ id, name, kind: object | character, cells: { keyframeId: text } }] (≤ 40), notes? }` → `{ storyboard }` (version 1, a draft). Each file's sha256 and size are frozen in the version. Refusals: `validation_failed` (details.field and the id), `storyboard_file_unavailable`, `storyboard_channel_unavailable`.
     - **`factory_storyboard_update`** (WRITE) `{ channelId, storyboardId, the whole content again }` → `{ storyboard, changed, versionNumber }`: a content change (a file's bytes included) makes the next version, a draft until submitted; the same content changes nothing. An approval never carries over to a new version.
@@ -1510,7 +1559,7 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
 
 - **Transport:** as the factory endpoint, with `Authorization: Bearer ytom_pr_...` (the same checks and codes; a channel or factory token is
   401 `AGENT_TOKEN_INVALID` here, and a producer token on `/api/mcp` and `/api/mcp/factory`). Re-verified on every tool call.
-- **Producer API version:** `1.26.0` (since BL-269, ADR 0074, additive: `producer_video_captions_add` below, permission `CAPTIONS_WRITE`,
+- **Producer API version:** `1.27.0` (since BL-271, ADR 0075, additive: `producer_wait` below); `1.26.0` (since BL-269, ADR 0074, additive: `producer_video_captions_add` below, permission `CAPTIONS_WRITE`,
   `captionsTools` in `producer_get_capabilities`; calendar packages gain `captions`); `1.25.0` (BL-267, ADR 0073, additive: the weekly-plan tools below, permission `PLAN_MOVE`,
   `planTools` / `planMoveTools` in `producer_get_capabilities`); `1.24.0` (BL-265, ADR 0072, additive: `producer_video_metadata_update`, permission `METADATA_WRITE`
   and `metadataTools` in `producer_get_capabilities`; calendar `warnings`; the media-keyed review gate; the queue add's "tried" rule by
@@ -1571,6 +1620,10 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
   `_move_not_here`, `_move_youtube_unavailable`, `_move_youtube_failed`, `_move_upload_active`, `validation_failed` (`toWeekStart` / `date` / `publishAt`: `week_start_not_monday`,
   `date_invalid`, `outside_week`, `publish_at_invalid`, `date_mismatch`, `in_past` (< 30 min), `beyond_horizon` (> 52 weeks),
   `too_many_slots`).
+- **Wait tool (BL-271, ADR 0075; Producer 1.27.0):** `producer_wait { target: upload | restart, id, channelId?, timeoutSeconds? }` --
+  `factory_wait` limited to this computer's uploads (any channel, `uploadId` or the video code with `channelId`) and restart requests
+  (Q6); any other target → `invalid_request` (logged). READ; in the call log; the Producer's only call not counted as MCP activity.
+  Example: `producer_wait { "target": "upload", "id": "V61", "channelId": "UC…", "timeoutSeconds": 50 }`.
 - **Captions tool (BL-269, ADR 0074, owner TG 4590/4592/4660; Producer 1.26.0):** `producer_video_captions_add` `{ channelId, video, dryRun?,
   overwrite?, expectedManifestSha256?, expectedTrackId? }` (strict: no file path) → the English captions the package's CURRENT manifest states,
   onto the video its upload record names, through `src/lib/video-captions/` (device gate, quota guard 550 / 800, backup -- an overwrite also

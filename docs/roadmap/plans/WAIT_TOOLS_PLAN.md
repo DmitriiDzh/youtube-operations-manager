@@ -8,7 +8,9 @@ Sources:
   running"). Each wake-up re-reads the agent's whole context (~590k tokens).
 - ADR 0075 (`docs/decisions/0075-wait-tools.md`, Proposed) records the decision.
 
-This plan covers only planning. No production code is written until the owner assigns the build.
+Built on `feature/bl-271-wait` (2026-11-17). Stage 0 measured Claude Code's real limit: see ADR 0075 "Stage 0 measurements" -- its
+default is about **60 s** per HTTP MCP call (not 300 s); the 50 s default and 240 s cap stand, and a longer block needs the server
+entry's `timeout`.
 
 ## 1. What exists (verified in `src/**`, dev `58fdfde5`)
 
@@ -333,6 +335,17 @@ Expected values come from §2 and §4, written by hand.
 - Any write, YouTube call or paid call.
 
 ## 9. Questions (owner / Operator), with recommended answers
+
+**Resolved 2026-11-17 (coordinator):** Q1 the CLI is `npm run --silent wait -- <target> <id> [...]` (package.json script +
+`src/cli/wait.ts`; no `bin` -- the Operator may wrap it). Q2 `auth` / `live_writes_off` pause → `blocked`, exit 2. Q3 `partly_done` →
+`partly_failed`, exit 1. Q4 weekly build deferred. Q5 recode / rename have no wait target (synchronous; a different meaning from the
+Operator later is a follow-up). Q6 the Producer may wait on `restart`. Q7 every role runs Claude Code; stage 0 measured Claude Code only.
+Q8 no tokenless shell mode beyond the CLI.
+
+**Built deviations.** A `restart` CLI wait retries a lost server until its deadline also on the first round (a restart may already be
+under way when it starts); other targets keep the 60 s first-round grace. The CLI backs off 5 s after `restarting` / `server_stopping`.
+An endpoint refusal (401 / 403) exits 2 at once. A resource seen once and then missing counts as a failed read (an Automerge document
+that cannot be read looks empty), not as `not_found`.
 
 - **Q1. The CLI's name.** `ytm wait …` needs a `bin` entry and a link on PATH; the repo has none today.
   **Recommended:** ship `npm run --silent wait -- …` from the app folder now, and add a `ytm` bin later if the Operator wants it.

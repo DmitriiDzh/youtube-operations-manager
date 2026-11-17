@@ -66,6 +66,15 @@ Claude Code: `claude mcp add --transport http ytom-channel-a http://127.0.0.1:30
 Each agent (and therefore each channel) gets its own server entry and its own token.
 `AGENT_CONNECTION_ID` is no longer used (`docs/decisions/0011-retire-agent-capability-zones.md`).
 
+**Waiting for long operations (BL-271, ADR 0075).** Claude Code kills an HTTP MCP call after about 60 s unless the server entry
+sets a higher `timeout` (ms), so `*_wait` calls default to 50 s. To let one call block up to 240 s, add `"timeout": 300000` to the
+entry (in `.mcp.json`: `{ "type": "http", "url": "…", "headers": { … }, "timeout": 300000 }`). For anything longer, run the wait CLI
+as a background shell command from the agent's own folder: `npm --prefix <app folder> run --silent wait -- <target> <id>`. It reads
+the agent's own token from `YTOM_TOKEN` (or the variable `--token-env <VAR>` names, e.g. the one its MCP entry already uses), set in
+the agent's launch environment -- never typed into the command line (refused as `token_in_argument`). Claude Code is
+notified once when it exits, and nothing is spent while it waits. The token decides what it may wait on, exactly as for the MCP tool.
+(Codex, if ever used: `tool_timeout_sec = 300` in its `[mcp_servers.<name>]` table; not measured.)
+
 **Migrating from the stdio setup (`AGENT_API_VERSION` 2.0.0).** Remove the old `npm run
 mcp:video-metadata` entry and its `cwd`, and add the URL entry above. `YTOM_AGENT_TOKEN` is only the
 name of an environment variable of the agent's own client, and the examples now use one per channel.

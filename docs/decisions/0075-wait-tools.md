@@ -1,6 +1,6 @@
 # 0075. Waiting for long operations without spending agent tokens: a read-only wait core, `*_wait` MCP tools and a CLI
 
-Status: Proposed (2026-11-17).
+Status: Accepted (2026-11-17; built on `feature/bl-271-wait`, stage 0 measured -- see "Stage 0 measurements").
 
 **Date:** 2026-11-17.
 - **Plan:** `docs/roadmap/plans/WAIT_TOOLS_PLAN.md`, acceptance AC-WT-01..18. Backlog BL-271.
@@ -18,7 +18,7 @@ Constraints found in the code and the clients:
 - **Responses arrive all at once.** The MCP endpoints are stateless Streamable HTTP with JSON responses, so a blocked call sends
   nothing until it returns.
 - **Client limits.**
-  - Claude Code kills a non-stdio call that is silent for 300 s (idle limit).
+  - Claude Code kills an HTTP MCP call after about 60 s by default (measured in stage 0; the plan first inferred a 300 s idle limit).
   - Codex's `tool_timeout_sec` defaults to 60 s (OpenAI docs; stage 0 measures it).
   - The TS SDK's default request timeout is 60 s.
 - **Restart when idle.** It counts the start of every MCP call except the status polls, and stops the process with SIGTERM, then
@@ -61,9 +61,39 @@ Constraints found in the code and the clients:
    - **Preferred path.** The CLI, run as a background shell command, is the way for any wait longer than a few minutes.
    - **Restart.** `restart current` allows 30 s for the developer's request file to be taken up, pins the request id, and also
      treats a later `serverStartedAt` as done (a request file satisfied at boot, with no row).
-   - **Codex.** Whether a Codex session gets the CLI's exit without polling is unverified. Stage 0 probes it, and the owner
-     says which client each role runs.
+   - **Clients.** Every role runs Claude Code (Q7); a background shell command's exit notifies the session once.
 5. **Versions.** Factory API 1.54.0, Agent API 4.25.0, Producer API 1.27.0. All texts are English. No Web UI change.
+
+## Stage 0 measurements (2026-11-17)
+
+A standalone sleep-only MCP server (same transport: stateless Streamable HTTP, `enableJsonResponse: true`; no app, no DB) was called
+by a real **Claude Code 2.1.322** (`claude -p`, `--strict-mcp-config`, one `sleep` tool):
+
+| block | client config | result |
+|---|---|---|
+| 50 s | default | passes (answer after 50 s) |
+| 75 s | default | killed at ~60 s ("The operation timed out.") |
+| 240 s, 330 s | default | killed at ~60 s |
+| 240 s | server entry `"timeout": 300000` | passes |
+| 240 s | `MCP_TOOL_TIMEOUT=300000` | passes |
+
+- So Claude Code's **default** limit for an HTTP MCP call is about **60 s**, not the 300 s idle limit the plan inferred. The binary sets
+  the call limit to the server entry's `timeout` (or `MCP_TOOL_TIMEOUT`) and the idle limit to max(300 s, that timeout).
+- A bare `tools/call` POST without `initialize` works on a stateless server.
+- Interactive sessions may move an MCP call that runs over 120 s into the background (feature flag `tengu_mcp_auto_background`); `-p`
+  does not. Correctness is the same either way.
+- **Decision:** default **50 s** (works unconfigured) and cap **240 s** stay as planned. A block over ~55 s needs `"timeout": 300000`
+  in the agent's server entry (`docs/AGENT_ISOLATION_SETUP.md` §3). The CLI is our own HTTP client and always uses 240 s rounds.
+- **Codex** was not probed: every role runs Claude Code (Q7).
+- **AC-WT-18:** a CLI wait (`npm run --silent wait -- media_job …`) run as a background shell command from a Claude Code session
+  against a fake `factory_wait` endpoint that became final after 600 s: three calls (240 / 240 / the rest), exit 0 after 593 s, one
+  JSON line, empty stderr; the session got one notification when the process exited and spent no turn before.
+
+## Questions resolved (coordinator, 2026-11-17)
+
+Q1 `npm run --silent wait -- …` (no `bin`); Q2 an upload paused for `auth` / `live_writes_off` answers `blocked`, exit 2; Q3
+`partly_done` is `partly_failed`, exit 1; Q4 the weekly build is deferred; Q5 recode / rename have no target (synchronous); Q6 the
+Producer may wait on `restart`; Q7 every role runs Claude Code; Q8 no tokenless shell mode beyond the CLI.
 
 ## Consequences
 
@@ -72,14 +102,13 @@ Constraints found in the code and the clients:
   CLI survives the server going down and reports the new version.
 - The 240 s cap is tied to today's clients. If stage 0 or a client update shows other limits, this ADR is amended with the
   measured values before the tools ship.
-- The owner decides the open points in the plan's §9: the CLI name, paused uploads, `partly_done`, the weekly build, the
-  meaning of "recode jobs", and the Producer's `restart` target.
+- The plan's §9 questions are resolved (above).
 
 ## Alternatives rejected
 
 - **A CLI reading SQLite directly** (like `operation-lock`). It has no channel identity, so it gives a worker every channel's
   state, it duplicates the status mapping, and an `@/lib/db` import migrates the DB.
-- **Blocks of 9–10 minutes.** Claude Code kills them at 300 s of silence, and Codex at 60 s by default.
+- **Blocks of 9–10 minutes.** Claude Code kills them at about 60 s by default (300 s at most with a raised idle limit), and Codex at 60 s by default.
 - **SSE progress for the wait tool.** It does not lift Claude Code's hard limit and it changes the transport for one tool. The
   CLI covers long waits.
 - **Webhooks or push to agents.** There is no agent-side listener contract. ADR 0066's wake files remain for owner decisions.
