@@ -2,7 +2,7 @@
 
 This is the **primary persistent instruction file** for any coding agent in this repository. `CLAUDE.md` only imports it (`@AGENTS.md`); never put rules there instead of here.
 
-It does not duplicate `docs/PROJECT_SPEC.md` (requirements/roadmap) or `docs/DEVELOPMENT_PLAYBOOK.md` (how-to). Many rules here are short forms; their original full wording is in `docs/AGENT_RULES_DETAIL.md`, which is binding and wins wherever a short form seems narrower. Authorized YouTube writers: `docs/WRITE_AUTHORIZATIONS.md`.
+It does not duplicate `docs/PROJECT_SPEC.md` (requirements/roadmap) or `docs/DEVELOPMENT_PLAYBOOK.md` (how-to). Many rules here are short forms; their original full wording is in `docs/AGENT_RULES_DETAIL.md`, which is binding and wins wherever the two differ. Authorized YouTube writers: `docs/WRITE_AUTHORIZATIONS.md`.
 
 ## A. Mandatory documentation reading
 
@@ -91,7 +91,7 @@ The active/authorized channel identity must be validated before write operations
 
 **Single read gateway (ADR 0007).** Only `src/lib/youtube-read-gateway/` reaches a real YouTube-family read client: callers import only the barrel `@/lib/youtube-read-gateway`, never a child (`data-api.ts`, `analytics-api.ts`) or `googleapis` (`read-gateway-inventory.test.ts` enforces it). A new read category is a new child re-exported from the barrel.
 
-**Reads toggles.** `getDataApiReadsEnabled`/`getAnalyticsReadsEnabled` (`src/lib/db.ts`) are checked in each child's client constructor; default on, persistent (like Live Writes, ADR 0044). Disabled reads also fail writes that need those reads (fail closed, intended). Live Writes alone authorizes a write (`docs/AGENT_RULES_DETAIL.md` §G).
+**Reads toggles.** `getDataApiReadsEnabled`/`getAnalyticsReadsEnabled` (`src/lib/db.ts`) are checked in each child's client constructor; default on, persistent. Live Writes is likewise on by default, never reset, and only the owner switches it off (ADR 0044). Disabled reads also fail writes that need those reads (fail closed, intended). Read toggles never authorize a write; of the toggles, only Live Writes gates writes, and every other write gate still applies (`docs/AGENT_RULES_DETAIL.md` §G).
 
 ## H. Documentation maintenance
 
@@ -168,7 +168,7 @@ A prior approval never carries forward to a new, unrelated action, **except** `g
 ### K.3 Verification discipline
 
 - **During development:** focused tests as needed; no full-suite rerun after every micro-edit without reason.
-- **Before merging into `dev`:** the task's acceptance tests, then `npm test`, `npm run lint`, `npm run build`, `git diff --check`; re-verify the safety/data invariants the change touches (live-write barrier, channel scoping, credential non-exposure); independent review where the task calls for it.
+- **Before merging into `dev`:** the task's acceptance tests, then `npm test`, `npm run lint`, `npm run build`, `git diff --check`; re-verify the safety/data invariants the change touches (e.g. live-write barrier, channel scoping, credential non-exposure); independent review where the task calls for it.
 - **After merging into `dev`:** verify the merge commit itself (unless that exact commit was already checked); a merge alone is never evidence of stability.
 - **Before any release:** verify the actual release candidate and its artifacts, including cross-platform packaging/runtime and database migrations, explicitly, not by inference from `npm test`.
 - Never state that a test ran, or what it found, unless it was actually executed in this session.
