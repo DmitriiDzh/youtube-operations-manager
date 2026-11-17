@@ -79,4 +79,3 @@ Plan: `docs/roadmap/plans/GEMINI_MEDIA_PLAN.md` (AC-GM-01..16). Schema v83, Fact
   Servers → Sessions (§50).
 - **Limits.** The money limits were per computer until BL-193; since then they are shared by every computer on the key (§50, RISK-123); prices are code constants; the Veo previews were removed by BL-180. Not in this slice:
   Gemini Omni Flash, the Batch API, Veo extension, multi-turn editing, generation-plan attempts from Gemini jobs.
-

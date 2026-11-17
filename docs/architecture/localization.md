@@ -153,4 +153,3 @@ Owner exception 2026-10-12 (msg 2665), recorded in `docs/PROJECT_SPEC.md` §14 a
     The entries are derived on every poll, so they clear once the translations are applied.
   - `agent_get_channel_context` gains `missingTranslations` `{videoCount, byLanguage, videos[{videoId, missingLanguages}]}`,
     additive.
-

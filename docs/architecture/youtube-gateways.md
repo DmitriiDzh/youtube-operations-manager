@@ -101,4 +101,3 @@ data from the API is kept at most 30 days, and no metrics are derived from it.
   in-memory cache for 30 minutes, never persisted.
 - **Not exposed to agents yet:** the Wikipedia signals and the Music chart. That depends on the separate
   agent-recommendations proposal.
-

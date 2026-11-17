@@ -175,4 +175,3 @@ RunPod reads only through the media gateway (`src/lib/media-gateway/`), so its s
   - Runtime build pods use the same limit and retry count (`runtime-builds.ts`).
   - RunPod's REST API cannot exclude a machine, so "avoid a bad host" (request item 3) is not done; a retry may land anywhere.
 - **Not done.** Our own Docker image; pruning old runtimes from the volume (RISK-132); running a template's job in the test.
-

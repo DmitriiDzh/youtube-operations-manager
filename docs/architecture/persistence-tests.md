@@ -46,4 +46,3 @@ listStoredVideosByChannel(id)  — all videos for a channel, newest first
 `src/lib/channel-sync/adapters/store.ts` wraps these as the `channelStore` dependency injected into `services.ts`, exactly mirroring how `write-context`'s `channelSelectionStore` wraps `getSelectedChannelId`/`setSelectedChannelId`.
 
 ---
-

@@ -168,4 +168,3 @@ title/description (`docs/WRITE_AUTHORIZATIONS.md`, PROJECT_SPEC §21), reversing
   only while unedited (compared as stored: title trimmed, description CRLF → LF, so a just-saved card is clean). No native dialogs; all text in `ui-text` (`live.translations.*`).
 - **Not yet verified:** whether
   a live broadcast's video reads its localizations back is unverified until the first real go-live with a set.
-

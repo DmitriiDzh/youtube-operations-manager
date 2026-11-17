@@ -143,4 +143,3 @@
   `/api/channels/[channelId]/publishing/package-metadata`, кнопки на строке загруженного пакета в «Ролики и релизы»
   (`package-packaging-actions.tsx`), инструмент Продюсера `producer_video_metadata_update` (конфликт — отказ). В `video-details`: Live writes
   прямо перед записью, `channelId` в снимке, `verifyUnchanged`, правило описания в сверке.
-

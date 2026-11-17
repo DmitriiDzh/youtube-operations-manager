@@ -180,4 +180,3 @@ Plan: `docs/roadmap/plans/SUGGESTED_SOURCES_PLAN.md` (AC-SS-01..09). Schema v94.
 - **Reads.** `listStoredSuggestedSources` backs `agent_get_stored_suggested_sources`: the engine's read, then each row is classified --
   `ours` with the title and channel from `videos` / `channels`, else `external` with the title row only when fetched at or after now − 30
   days (so a row the purge has not reached yet is never served).
-

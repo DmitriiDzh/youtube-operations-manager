@@ -94,4 +94,3 @@
 - **Под сборки:** `YTM_GIT_TOKEN` в env, только если токен сохранён и в профиле есть github.com; в ошибках, записи задачи и аудите — `[redacted]`; в чтениях пода замаскирован (`redactPodEnv`). Поды сессий токен не получают.
 - **`runtime-build.sh`:** `git -c http.https://github.com/.extraheader=…` только для github.com; `unset` после клонов (в env PID 1 токен остаётся — RISK-137); 403 к токену — `github_token_forbidden`; нечитаемый сохранённый токен валит каждый старт сборки; проверка утечки (токен и base64-заголовок, вся папка среды с `build.log`) перед `.ready` и в `finish` — при находке папка очищается и сборка падает.
 - **UI:** «Настройки» → «Облачные API» → карточка «GitHub» (`GithubTokenSettings`); маршруты `/api/media-generation/github-token` (+`/test`), нужна сессия. Нет раздела в `.ytmkeys`, нет пути через MCP (RISK-137).
-

@@ -190,4 +190,3 @@ Consolidated here so no reader has to infer these from scattered footnotes. Full
 None of these are Phase 4.5 defects — they are pre-existing, now-consolidated facts about the current state of the system, gated for resolution per `docs/TECHNICAL_DEBT.md`'s gate classifications and the release-readiness checkpoints (Gates A–D) referenced there.
 
 ---
-

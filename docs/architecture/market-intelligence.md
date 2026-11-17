@@ -476,4 +476,3 @@ Plan: `docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md`. Schema v74.
 - Two entry points: `createAgentProposalSubmitCore` (wired into `ProducerSession.proposals` by the Producer session deps,
   `src/lib/producer-mcp-endpoint/session-deps.ts` since BL-166) and
   `createAgentProposalReviewCore` (the Web routes and the summary count). The approval inventory test pins that split.
-

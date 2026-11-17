@@ -541,4 +541,3 @@ nothing while a node works before its first step, so such a stretch shows only t
     back as codes (`gemini_disabled`, `gemini_key_missing`, `gemini_limit_exceeded`, ...). The form shows the price-list figure
     for another computer (that computer computes its own estimate and limits).
   - The job list refreshes on the window event `media-jobs:changed` the form fires after a create or a send.
-

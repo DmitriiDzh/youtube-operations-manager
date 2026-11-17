@@ -27,4 +27,3 @@
   `/api/disk-guard` (statfs now; folder sizes only with `?measure=1`, one measurement at a time per process — a second request
   shares the running one).
 - **Limitations:** RISK-145.
-

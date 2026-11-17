@@ -245,4 +245,3 @@ Plan: `docs/roadmap/plans/SYSTEM_TOPIC_PLAN.md`. Built on `feature/bl-228-system
   connection (restart: until the deadline; others: 10 minutes), pins `restart current`'s id and treats a later `serverStartedAt` as done.
 - **Client limits (stage 0):** Claude Code 2.1.322 kills an HTTP MCP call after ~60 s by default; the server entry's `timeout`
   (ms) raises it. Hence the 50 s default; the CLI is the path for long waits.
-

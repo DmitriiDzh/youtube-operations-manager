@@ -302,4 +302,3 @@ Owner, Telegram 2026-10-16, msgs 2864/2867.
   (wrong password or damage changes nothing), the legacy file's ciphertext is the RunPod set, then every present section is checked
   before any is stored, then RunPod then Gemini are stored. Routes `/api/cloud-credentials/export|import` (Web session only).
 - **Versions.** Agent API 3.19.0, Factory API 1.19.0; sync families `gemini_spend`, `gemini_settings` (15 in all).
-

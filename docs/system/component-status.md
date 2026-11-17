@@ -108,4 +108,3 @@ Auth (Web + CLI PKCE/device flow), credential resolution, write-context guardrai
 AI-генерация метаданных, publishing/upload видео, thumbnail-модуль, multi-user SaaS/RBAC, миграция БД-инструментария (Drizzle Kit) — до первого неаддитивного изменения схемы. **YouTube Analytics больше не в этом списке** — реализовано (Phase 8, §2.9i; Studio-Parity S6b Overview, §2.9n); этот абзац не обновлялся с момента Phase 6 (см. предупреждение выше), актуальный статус — §2 целиком.
 
 ---
-

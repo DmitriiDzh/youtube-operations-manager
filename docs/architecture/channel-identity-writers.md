@@ -86,4 +86,3 @@ only writer of a channel's `brandingSettings` (`docs/WRITE_AUTHORIZATIONS.md`, P
   `POST .../apply`.
 - **Not yet verified against the real API:** whether YouTube keeps `bannerExternalUrl` exactly as sent, and how it formats keywords;
   the read-back reports either. The first real apply is the live acceptance.
-

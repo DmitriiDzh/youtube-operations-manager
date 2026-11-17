@@ -736,4 +736,3 @@ stages. Stage 1 collects and measures. Stage 2 would show provisional values, an
   - Labels are Google's code names.
   - Each day comes with its file's `createTime` and lag.
   - It is a local read; `state` is the traffic-source job's.
-

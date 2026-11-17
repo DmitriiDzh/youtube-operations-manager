@@ -179,4 +179,3 @@ Owner msgs 3439/3444/3449/3451/3453. On branch `feature/content-ux-redesign`. No
   `concurrentViewers` when nobody watches; owner msg 3453); otherwise no count stays unknown. Producer API 1.12.0.
 - **Tab badges.** `content-tab-badges.ts`: video-projects (edit + package phases), the calendar's `coverage.due`, the live overview's
   health (bad / noData / revoked while live); local reads once a minute.
-

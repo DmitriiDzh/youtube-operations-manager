@@ -37,4 +37,3 @@
   привязываются непривязанные задания этого компьютера.
 - **Маршруты:** `/api/channels/[channelId]/video-costs` (+ `/[video]`, `/backfill`, `/backfill/storyboards/[storyboardId]`,
   `/backfill/runs`); Контент → «Ролики в работе»: итог у ролика, окно запусков, «Старые запуски».
-

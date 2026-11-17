@@ -69,4 +69,3 @@ It is recorded here rather than carried silently (`AGENTS.md` §F).
 - Any read-time re-validation. It would be meaningless, because nothing here ever opens the path.
 - Cleanup of a row when its channel is disconnected. The row stays, is hidden from the Settings
   list, and reappears if the channel is reconnected.
-

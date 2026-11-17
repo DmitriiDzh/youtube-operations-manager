@@ -197,6 +197,8 @@ def write(path, origin, idxname, secs):
     write_raw(path, out)
 
 def write_raw(path, out):
+    while out and out[-1] == '':
+        out = out[:-1]
     with open(path, 'w', encoding='utf-8') as fh:
         fh.write('\n'.join(out) + '\n')
 

@@ -156,4 +156,3 @@ surface, needs its own separate assignment); evidence selection during AI genera
 exposed in the Web UI (fully built and tested at the
 API/service layer -- the "Generate with AI" panel is notes-only for this first UI pass, evidence
 still attaches to a saved hypothesis through the existing, separate evidence form).
-

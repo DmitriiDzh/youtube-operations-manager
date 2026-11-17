@@ -422,4 +422,3 @@ Plan: `docs/roadmap/plans/ANALYTICS_DATA_SHARING_PLAN.md`; owner msgs 2004/2008.
 - **Measured on a copy of the Mac's database (2026-10-07).**
   - Everything: 45,780 metric rows and 1,880 reach rows, 4.3 MB as JSON. One day: about 11,000 rows.
   - Export of a day: 35 ms. A full re-import into the same data: 1.1 s, and nothing changed.
-

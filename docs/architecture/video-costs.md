@@ -81,4 +81,3 @@ Plan: `docs/roadmap/plans/VIDEO_COST_PLAN.md` §2 stages 2-4 (criteria 3-9). Sch
   total chip per video from its own fetch, `video-cost-dialog.tsx`, `video-costs-backfill.tsx` in its own `FeatureErrorBoundary`).
 - **Limits.** RunPod jobs are `pending` (0) until their session ends; a published video's lines leave the reports after 120 days
   (`Vn_cost.json` keeps them); runs that left every database are lost (RISK-130).
-

@@ -27,4 +27,3 @@
 - **Схема:** v37 (Wikipedia).
 - **Настройки:** тумблеры «RSS feed reads» и «Wikipedia reads» в карточке чтения Settings → API.
 - **Подробно:** ARCHITECTURE §24, план `docs/roadmap/plans/PHASE_13_PLAN.md`.
-
