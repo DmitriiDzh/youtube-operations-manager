@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { dashboardRedirectTarget, isSectionSubTab, productionRedirectTarget, rememberablePath, sectionHref, sectionOf } from "./section-tabs";
+import { CONTENT_TABS, contentSubTabRedirect, dashboardRedirectTarget, isSectionSubTab, productionRedirectTarget, rememberablePath, sectionHref, sectionOf } from "./section-tabs";
 
 // BL-149 (docs/roadmap/plans/APP_ROUTES_PLAN.md): the address rules, from the plan's address table and AC-RT-01/04.
 
@@ -74,4 +74,19 @@ test("AC-SM-02: plans (a review too) and jobs → Media; everything else -- /pro
   assert.equal(productionRedirectTarget(["models"], {}), "/servers/models");
   assert.equal(productionRedirectTarget(["templates"], {}), "/servers/templates");
   assert.equal(productionRedirectTarget(["plans", "a b"], {}), "/media/plans/a%20b", "a segment stays one segment");
+});
+
+// BL-266 (owner TG 4730/4732, a changed requirement): Content's «Публикация» («Ролики и релизы») tab is removed -- «План» covers it.
+test("BL-266: the content tabs are «Видео», «План», «Трансляции»; /content/publishing is no tab and leads to «План»", () => {
+  assert.deepEqual(
+    CONTENT_TABS.map((tab) => tab.value),
+    ["videos", "week-plan", "streams"]
+  );
+  assert.equal(isSectionSubTab("content", "publishing"), false);
+  for (const sub of ["videos", "week-plan", "streams"]) assert.ok(isSectionSubTab("content", sub), sub);
+  assert.equal(contentSubTabRedirect("publishing"), "/content/week-plan");
+  // BL-241's move keeps working; a current tab or an unknown address is no redirect (the page answers a 404 for the unknown one).
+  assert.equal(contentSubTabRedirect("clips"), "/media/clips");
+  assert.equal(contentSubTabRedirect("week-plan"), null);
+  assert.equal(contentSubTabRedirect("nope"), null);
 });

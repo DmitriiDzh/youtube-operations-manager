@@ -272,7 +272,7 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
                 {item.state === "uploaded" && (
                   <p className="text-xs text-zinc-400">
                     {t("packageReviews.uploadedHint")}{" "}
-                    <Link href="/content/publishing" className="text-violet-300 underline hover:text-violet-200">
+                    <Link href="/content/week-plan" className="text-violet-300 underline hover:text-violet-200">
                       {t("packageReviews.uploadedLink")}
                     </Link>
                   </p>

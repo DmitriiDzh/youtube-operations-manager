@@ -37,6 +37,10 @@ import { InfoTooltip } from "@/components/info-tooltip";
 import { FeatureErrorBoundary } from "@/components/feature-error-boundary";
 import { UiLanguageSettings } from "@/components/ui-language-settings";
 import { RemoteAccessSettings } from "@/components/remote-access-settings";
+import { useAppChannel } from "@/components/app-channel";
+import { LocalVideoCleanupCard } from "@/components/local-video-cleanup-card";
+import { PublishingSettingsPanel } from "@/components/publishing-settings-panel";
+import { LOCAL_CLEANUP_ANCHOR, PUBLISHING_SETTINGS_ANCHOR } from "@/components/plan-extras";
 import { useT } from "@/components/ui-text-provider";
 import type { UiTextKey } from "@/lib/ui-text";
 
@@ -51,6 +55,7 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
   // A crashed card names itself in the error fallback ("Settings — Retention").
   const section = (card: UiTextKey) => `${t("nav.settings")} — ${t(card)}`;
   const segment = useSelectedLayoutSegment();
+  const { channel } = useAppChannel();
   const settingsSubTab: SettingsSubTab | undefined = SETTINGS_SUB_TABS.find((t) => t.value === segment)?.value;
   const setSettingsSubTab = (next: SettingsSubTab) => router.push(`/settings/${next}`);
   if (!settingsSubTab) return <>{children}</>;
@@ -127,6 +132,28 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
         <FeatureErrorBoundary label={section("social.title")}>
           <SocialAccountsSettings />
         </FeatureErrorBoundary>
+        {/* BL-266 (owner TG 4730/4732): the active channel's publishing defaults and its local copy cleanup, moved here from the former
+            Content → «Ролики и релизы». Each in its own boundary (AGENTS.md §M); both remount for another channel, and say which
+            channel they set (the cleanup deletes this computer's files of that channel). */}
+        {channel && (
+          <div key={channel.id} className="space-y-3">
+            <div>
+              <h3 className="text-sm font-semibold text-zinc-100">{t("planExtras.settings.channel", { channel: channel.title })}</h3>
+              <p className="mt-0.5 text-xs text-zinc-400">{t("planExtras.settings.channelHint")}</p>
+            </div>
+            {/* The «⋯» links on «План» land on these anchors. */}
+            <div id={PUBLISHING_SETTINGS_ANCHOR} className="scroll-mt-20">
+              <FeatureErrorBoundary label={section("publishingSettings.collapsedTitle")}>
+                <PublishingSettingsPanel channelId={channel.id} visible={settingsSubTab === "channels"} />
+              </FeatureErrorBoundary>
+            </div>
+            <div id={LOCAL_CLEANUP_ANCHOR} className="scroll-mt-20">
+              <FeatureErrorBoundary label={section("cleanup.title")}>
+                <LocalVideoCleanupCard channelId={channel.id} visible={settingsSubTab === "channels"} />
+              </FeatureErrorBoundary>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className={settingsSubTab === "ai-agent" ? "space-y-6" : "hidden"}>

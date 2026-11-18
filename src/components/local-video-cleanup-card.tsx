@@ -8,7 +8,7 @@ import { InfoTooltip } from "./info-tooltip";
 import { ToggleSwitch } from "./toggle-switch";
 import { useT } from "./ui-text-provider";
 
-// BL-238 (FO-REQ-0051, ADR 0058): Content → Publishing → «Удалять локальную копию после загрузки». The channel's switch on THIS
+// BL-238 (FO-REQ-0051, ADR 0058): Content → Publishing → «Удалять локальную копию после загрузки» (BL-266: now Settings → Channels). The channel's switch on THIS
 // computer (on by default since owner msg 3900; turning it on asks once more, inline), the space freed, the uploads waiting and why, the last deletes
 // and refusals. Reads and writes only `/api/channels/<id>/local-video-cleanup`; wrapped in its own error boundary (AGENTS.md §M).
 

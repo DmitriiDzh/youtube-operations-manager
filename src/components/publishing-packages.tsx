@@ -78,7 +78,19 @@ function PlannedTime({ date, publishTimeUtc }: { date: string | null; publishTim
  * its approval screen come next. The planned time is the package's day at the channel's publish time (UTC, owner msgs
  * 2725/2727). Loaded when the tab is shown and on «Обновить»; reading the folder makes no YouTube call.
  */
-export function PublishingPackages({ channelId, visible }: { channelId: string | null; visible: boolean }) {
+export function PublishingPackages({
+  channelId,
+  visible,
+  showUploads = true,
+  onQueued,
+}: {
+  channelId: string | null;
+  visible: boolean;
+  /** BL-266: on «План» the uploads list is its own queue line, so the packages do not list it a second time. */
+  showUploads?: boolean;
+  /** BL-266: told after uploads were queued here, so a list shown elsewhere reads at once. */
+  onQueued?: () => void;
+}) {
   const { t, formatNumber } = useUiText();
   const [result, setResult] = useState<ScanResult | null>(null);
   const [settings, setSettings] = useState<PublishingSettings | null>(null);
@@ -182,6 +194,7 @@ export function PublishingPackages({ channelId, visible }: { channelId: string |
         setSelected([]);
         setTypedDates({});
         setUploadsKey((k) => k + 1);
+        onQueued?.();
         await load();
 
       } catch (e) {
@@ -350,7 +363,7 @@ export function PublishingPackages({ channelId, visible }: { channelId: string |
         </>
       )}
 
-      <PublishingUploads channelId={channelId} visible={visible} refreshKey={uploadsKey} />
+      {showUploads && <PublishingUploads channelId={channelId} visible={visible} refreshKey={uploadsKey} />}
 
       {composing && (
         <PublishingNewPackage

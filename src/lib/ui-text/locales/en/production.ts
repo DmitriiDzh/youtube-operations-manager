@@ -497,7 +497,7 @@ export const production = {
   "serversAnalytics.byVideo.title": "By video",
   "serversAnalytics.byVideo.hint": "video number",
   "serversAnalytics.byVideo.unlinked": "No video number",
-  "serversAnalytics.byVideo.tip": "{share}% of the spend is not linked to a video. Older runs can be linked in Content → «Ролики в работе» → «не привязано».",
+  "serversAnalytics.byVideo.tip": "{share}% of the spend is not linked to a video. Older runs can be linked in Content → «Plan» → «No slot» → the board («Show every video»).",
   "serversAnalytics.byWho.title": "Who and where",
   "serversAnalytics.byWho.hint": "channel · started by · GPU",
   "serversAnalytics.daily.title": "Spend by day",

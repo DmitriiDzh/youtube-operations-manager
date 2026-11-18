@@ -115,6 +115,7 @@ Every section below was moved verbatim (2026-11-17, `docs/roadmap/plans/DOCS_SPL
 | BL-223 | the channel branding writer | `docs/architecture/channel-identity-writers.md` |
 | BL-225 | the weekly publishing plan | `docs/architecture/publishing.md` |
 | BL-221 | the Content section redesign | `docs/architecture/web-ui.md` |
+| BL-266 | «Ролики и релизы» folded into «План» | `docs/architecture/web-ui.md` |
 | BL-228 | one-time paid approvals through the HUB "System" topic | `docs/architecture/agent-operations.md` |
 | BL-229 | the music library per genre | `docs/architecture/media-review.md` |
 | BL-236 | speech in designed channel voices | `docs/architecture/media-review.md` |
