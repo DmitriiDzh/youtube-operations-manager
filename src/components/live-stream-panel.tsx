@@ -242,7 +242,7 @@ export function LiveStreamPanel({ channelId, visible }: { channelId: string | nu
         <>
           {/* BL-221 (CONTENT_UX_PLAN.md stage C): the state and the figures first, full width; what is set once is folded. */}
           <div className="grid gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
-            <StatusCard overview={overview} base={base!} onChanged={load} />
+            <StatusCard overview={overview} base={base!} onChanged={load} visible={visible} />
             <LiveStreamAnalyticsCard base={base!} visible={visible} />
           </div>
           <div className="max-w-4xl space-y-6">
@@ -350,7 +350,7 @@ function YoutubeHealth({ youtube }: { youtube: NonNullable<Overview["youtube"]> 
   );
 }
 
-function StatusCard({ overview, base, onChanged }: { overview: Overview; base: string; onChanged: () => Promise<void> }) {
+function StatusCard({ overview, base, onChanged, visible }: { overview: Overview; base: string; onChanged: () => Promise<void>; visible: boolean }) {
   const t = useT();
   // BL-195 (UI_FEEDBACK_CLARITY_PLAN.md stage C): start, stop, restart and go live act on YouTube and the encoder -- each runs
   // behind the blocking window with its own text.
@@ -424,7 +424,7 @@ function StatusCard({ overview, base, onChanged }: { overview: Overview; base: s
           )}
         </div>
       )}
-      {on && <UploadBandwidthNote />}
+      {on && <UploadBandwidthNote visible={visible} />}
       {on && overview.youtube && <YoutubeHealth youtube={overview.youtube} />}
       <div className="flex flex-wrap gap-2">
         {!on && (

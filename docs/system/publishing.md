@@ -17,7 +17,7 @@
 - **Этап 2** (`docs/ARCHITECTURE.md` §47.3).
   - Общие теги канала (`channelTags`, FO-MSG-0017 / BL-190): пакет с `tags: []` получает теги канала, с непустыми — только свои (сообщение владельца 2817, вариант «б»); окно подтверждения показывает теги каждой строки и их источник; тег с `<`/`>` в пакете — проблема `tags_angle_brackets`.
   - Дефолты публикации канала: `publishing/settings.ts`, семейство синхронизации `channel-publishing-settings` (документ на
-    канал), конфликты в «Слиянии»; Контент → «Публикация», время — `UtcTimeField` (12:00 UTC по умолчанию).
+    канал), конфликты в «Слиянии»; Настройки → Каналы (до BL-266 — Контент → «Публикация»), время — `UtcTimeField` (12:00 UTC по умолчанию).
   - Пакеты релизов: `publishing/packages.ts`, `package-scan.ts` (`04 Videos/**/V*_release.json`, проверки по правилам YouTube,
     состояние по `Vn_youtube.json`; обход и чтения — общий `src/lib/workspace-videos/`, BL-187). BL-243 (ADR 0063): состояние
     `deleted_on_youtube` — видео записи помечено синхронизацией удалённым (`removed_on_youtube_at`); `uploaded_unknown` — его нет
@@ -75,7 +75,7 @@
   - Затем sha256 из пакета, если он есть.
 - **Удаление:** метка `….mp4.deleted.json` (`deleted-video/1`, контракт Оператора) пишется через tmp + fsync + rename, затем перечитывается; только после этого unlink. Перед unlink повторно проверяются allowlist, dev/inode/размер и метка.
 - **Журнал:** «ждёт» не пишется и проверяется снова. «Отказ» и «удалён» пишутся один раз на загрузку в `local_video_cleanup_log` (v116, device-local) и строкой в `99 Data Exchange/From YTM/cleanup-log.csv`.
-- **Переключатель:** `app_settings.local_video_cleanup_settings`, на канал и компьютер, по умолчанию вкл. (сообщение владельца 3900: с первой проверки, старые загрузки не трогаются; «выкл.» владельца сохраняется), не синхронизируется. UI: карточка в Контент → Публикация (`LocalVideoCleanupCard`, своя `FeatureErrorBoundary`): переключатель с подтверждением, освобождено ГБ, ожидают, последние удаления/отказы. Маршрут `GET/PUT /api/channels/[channelId]/local-video-cleanup`; MCP-инструмента нет.
+- **Переключатель:** `app_settings.local_video_cleanup_settings`, на канал и компьютер, по умолчанию вкл. (сообщение владельца 3900: с первой проверки, старые загрузки не трогаются; «выкл.» владельца сохраняется), не синхронизируется. UI: карточка в Настройки → Каналы (до BL-266 — Контент → Публикация; `LocalVideoCleanupCard`, своя `FeatureErrorBoundary`): переключатель с подтверждением, освобождено ГБ, ожидают, последние удаления/отказы. Маршрут `GET/PUT /api/channels/[channelId]/local-video-cleanup`; MCP-инструмента нет.
 - **Не в этом этапе:** очистка старых видео кнопкой владельца, предпросмотр `factory_cleanup_preview`, видео, загруженные не через YT Manager (вариант Б).
 
 ### 2.9bl Проверка владельцем итогового пакета (BL-257, owner msgs 4514/4516/4519, ADR 0070, `docs/roadmap/plans/PACKAGE_REVIEW_PLAN.md`) — **IMPLEMENTED на ветке** `feature/bl-257-package-review` (ждёт ревью и разрешения на мердж)
@@ -140,6 +140,6 @@
   `package_slot_changed`, нечитаемый манифест ждёт до 10 мин. «Tried» — по ключу медиа (`triedKeysOf`).
 - **Правка упаковки после загрузки:** `publishing/package-metadata.ts` (без нового писателя: `video-details.applyFieldsUpdate`) —
   название/описание/теги из текущего манифеста, тройная проверка, отказ при незавершённой загрузке; маршрут
-  `/api/channels/[channelId]/publishing/package-metadata`, кнопки на строке загруженного пакета в «Ролики и релизы»
+  `/api/channels/[channelId]/publishing/package-metadata`, кнопки на строке загруженного пакета («План» → «⋯» → пакеты, и на карточке слота; до BL-266 — «Ролики и релизы»)
   (`package-packaging-actions.tsx`), инструмент Продюсера `producer_video_metadata_update` (конфликт — отказ). В `video-details`: Live writes
   прямо перед записью, `channelId` в снимке, `verifyUnchanged`, правило описания в сверке.

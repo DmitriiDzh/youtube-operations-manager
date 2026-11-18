@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { OrientationIcon, type Orientation } from "./orientation-icon";
 import { VideoPlayButton } from "./video-popup";
 import { formatDisplayDate, formatDisplayDateTime, resolvePublishDate } from "@/lib/shared-formatting";
@@ -14,7 +14,7 @@ import { FeatureErrorBoundary } from "./feature-error-boundary";
 import { canLink, PIPELINE_PHASES, pipelinePhase, type PipelinePhase } from "./video-pipeline";
 import { VideoLinkDialog } from "./video-link-dialog";
 
-// BL-194 stage 1 (docs/roadmap/plans/VIDEO_COST_PLAN.md §2 "UI", ADR 0040): Content → «Публикация» starts with the channel's videos
+// BL-194 stage 1 (docs/roadmap/plans/VIDEO_COST_PLAN.md §2 "UI", ADR 0040; BL-266: now under «План» → «Без слота»): Content → «Публикация» started with the channel's videos
 // in work. «Новый ролик» reserves the next number (with an optional working title); a number two computers took at once is shown
 // on both, and only the computer that lost is offered the next free number -- in a dialog, never by itself.
 
@@ -69,7 +69,19 @@ const PUBLISHED_SHOWN = 6;
 
 const computerName = (r: { hostName: string | null; deviceId: string | null }, fallback: string) => r.hostName ?? r.deviceId ?? fallback;
 
-export function VideoProjectsPanel({ channelId, visible }: { channelId: string | null; visible: boolean }) {
+export function VideoProjectsPanel({
+  channelId,
+  visible,
+  onlyVideos = null,
+  onList,
+}: {
+  channelId: string | null;
+  visible: boolean;
+  /** BL-266: «План» → «Без слота» shows only these numbers on the board (null: every number). The header's actions stay. */
+  onlyVideos?: ReadonlySet<string> | null;
+  /** BL-266: each list this board reads (also after a new, renumbered or cancelled number), so «Без слота» recounts from it. */
+  onList?: (list: VideoListView) => void;
+}) {
   const { t } = useUiText();
   const [list, setList] = useState<VideoListView | null>(null);
   const [loading, setLoading] = useState(false);
@@ -88,6 +100,11 @@ export function VideoProjectsPanel({ channelId, visible }: { channelId: string |
   const [costOf, setCostOf] = useState<VideoProjectView | null>(null);
 
   const base = channelId ? `/api/channels/${encodeURIComponent(channelId)}/video-projects` : null;
+  // A ref, so a new callback from the parent never makes a new `load` (and a read loop).
+  const onListRef = useRef(onList);
+  useEffect(() => {
+    onListRef.current = onList;
+  }, [onList]);
 
   const load = useCallback(async () => {
     if (!base) return;
@@ -98,6 +115,7 @@ export function VideoProjectsPanel({ channelId, visible }: { channelId: string |
       if (!res.ok) throw new Error(errorText(t, data, t("videoProjects.loadFailed")));
       setList(data as VideoListView);
       setError(null);
+      onListRef.current?.(data as VideoListView);
     } catch (e) {
       setError(e instanceof Error ? e.message : t("videoProjects.loadFailed"));
     } finally {
@@ -175,7 +193,8 @@ export function VideoProjectsPanel({ channelId, visible }: { channelId: string |
   }
 
   if (!channelId) return null;
-  const videos = list?.videos ?? [];
+  const allVideos = list?.videos ?? [];
+  const videos = onlyVideos ? allVideos.filter((v) => onlyVideos.has(v.video)) : allVideos;
   const canCreate = list?.workspace === "ok" && Boolean(list.nextVideo);
   const syncedOf = (v: VideoProjectView) => (v.youtubeVideoId ? synced?.get(v.youtubeVideoId) ?? null : null);
   const columns = new Map<PipelinePhase, VideoProjectView[]>(PIPELINE_PHASES.map((phase) => [phase, []]));
@@ -227,7 +246,7 @@ export function VideoProjectsPanel({ channelId, visible }: { channelId: string |
         </p>
       )}
       {linkable > 0 && <p className="text-xs text-zinc-400">{t("pipeline.linkHint", { count: linkable })}</p>}
-      {list && videos.length === 0 && <p className="text-xs text-zinc-400">{t("videoProjects.emptyAll")}</p>}
+      {list && videos.length === 0 && <p className="text-xs text-zinc-400">{t(onlyVideos && allVideos.length > 0 ? "planExtras.unslotted.none" : "videoProjects.emptyAll")}</p>}
       {videos.length > 0 && (
         // BL-221 (CONTENT_UX_PLAN.md stage B): one board by phase instead of one list; each number in exactly one column.
         <div className="overflow-x-auto">
@@ -346,7 +365,7 @@ export function VideoProjectsPanel({ channelId, visible }: { channelId: string |
       {list && (
         // BL-194 stage 4: older runs, in their own boundary (a failure there never hides the list).
         <FeatureErrorBoundary label={t("videoCostsBackfill.title")}>
-          <VideoCostsBackfill channelId={channelId} videos={videos} onChanged={() => void loadCosts()} />
+          <VideoCostsBackfill channelId={channelId} videos={allVideos} onChanged={() => void loadCosts()} />
         </FeatureErrorBoundary>
       )}
       {linking && (

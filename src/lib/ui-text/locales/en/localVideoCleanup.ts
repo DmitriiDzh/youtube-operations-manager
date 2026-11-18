@@ -1,4 +1,4 @@
-// BL-238 (FO-REQ-0051, ADR 0058): the local video cleanup card under Content → Publishing.
+// BL-238 (FO-REQ-0051, ADR 0058): the local video cleanup card under Content → Publishing (BL-266: Settings → Channels).
 export const localVideoCleanup = {
   "cleanup.title": "Delete the local copy after upload",
   "cleanup.info":

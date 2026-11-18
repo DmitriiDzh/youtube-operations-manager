@@ -32,7 +32,7 @@ export const packageReviews = {
   "packageReviews.description": "Description",
   "packageReviews.thumbnail": "Thumbnail",
   "packageReviews.noThumbnail": "The thumbnail file is not on this computer.",
-  "packageReviews.otherProblems": "{count, plural, one {The factory still has # problem to fix} other {The factory still has # problems to fix}} (Content → «Publishing»).",
+  "packageReviews.otherProblems": "{count, plural, one {The factory still has # problem to fix} other {The factory still has # problems to fix}} (Content → «Plan» → «⋯» → «Release packages and manual upload»).",
   "packageReviews.noSha256": "The package does not state the video's checksum, so it cannot be approved: the factory adds it.",
   "packageReviews.decided.approved": "You approved it {when}",
   "packageReviews.decided.returned": "You returned it {when}",
@@ -66,6 +66,6 @@ export const packageReviews = {
   "packageReviews.comment.confirm": "Send comment",
   "packageReviews.packagingComments": "Your packaging comments",
   "packageReviews.uploadedHint": "This video is on YouTube. Its title, description and tags can still be fixed from the package:",
-  "packageReviews.uploadedLink": "Content → «Videos & releases»",
+  "packageReviews.uploadedLink": "Content → «Plan» (the slot card, or «⋯» → «Release packages and manual upload»)",
   "packageReviews.player.unavailable": "The video cannot be played: its file is not on this computer.",
 } as const;

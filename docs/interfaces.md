@@ -2100,7 +2100,7 @@ Web session required; every route requires the channel to be the active one (ADR
 - `GET|PUT /api/channels/[channelId]/storyboard-settings` — `{ requireApproved, changedAt, changedBy }`: the gate setting, synced, on by default.
 - `GET /api/storyboard-alerts` — `{ activeChannelId, channels: [{ channelId, waiting, storyboardId (when exactly one) }] }`: storyboards in review per connected channel (the Media badge and the bell).
 
-### Video numbers API (BL-194 stage 1, ADR 0040, Content → «Публикация»)
+### Video numbers API (BL-194 stage 1, ADR 0040, Content → «План» → «Без слота»; «Публикация» before BL-266)
 
 Session and the ACTIVE channel required (ADR 0004); the channel comes from the address only. The same rules as `factory_video_*`.
 
@@ -2111,7 +2111,7 @@ Session and the ACTIVE channel required (ADR 0004); the channel comes from the a
 - `PUT /api/channels/[channelId]/storyboards/[storyboardId]/video` `{ videoNumber: "V49" | null }` and `POST /api/generation-plans/[planId]/video` `{ videoNumber }` — the owner's video picker. `GET /api/channels/[channelId]/videos` stays the channel's synced YouTube videos (`channel-sync`), hence the name `video-projects`.
 - RunPod `POST /api/media-generation/jobs` and Gemini `POST /api/gemini-media/jobs` accept `videoNumber` (the same rules as the Factory tools).
 
-### Local video cleanup API (BL-238, ADR 0058, Content → «Публикация»)
+### Local video cleanup API (BL-238, ADR 0058, Settings → Channels; Content → «Публикация» before BL-266)
 
 - `GET /api/channels/[channelId]/local-video-cleanup` → `{ channelId, enabled, enabledAt, freedBytes, deletedCount, waiting: [{ video, reason, checkedAt }], recent: [{ video, action: deleted | refused, reason, bytes, at, path }] }` for THIS computer. `PUT` with `{ enabled: boolean }` sets the owner's switch and returns the same view. Both require a session and the active channel. There is no MCP tool.
 - **File contract (the Operator's workflow bundle):** after a delete, `V<n> <channel>.mp4.deleted.json` sits next to where the mp4 was:

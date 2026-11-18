@@ -27,7 +27,7 @@ const SOURCE_TITLE: Record<ActivitySource, UiTextKey> = {
 const SOURCE_HREF: Record<ActivitySource, string> = {
   operations: "/content/videos",
   media_jobs: "/servers/sessions",
-  uploads: "/content/publishing",
+  uploads: "/content/week-plan",
   live_streams: "/content/streams",
 };
 

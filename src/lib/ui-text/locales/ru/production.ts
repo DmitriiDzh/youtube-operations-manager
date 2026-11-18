@@ -498,7 +498,7 @@ export const production: Record<keyof typeof en, string> = {
   "serversAnalytics.byVideo.title": "По роликам",
   "serversAnalytics.byVideo.hint": "номер видео",
   "serversAnalytics.byVideo.unlinked": "Без номера видео",
-  "serversAnalytics.byVideo.tip": "{share}% трат не привязано к ролику. Старые запуски можно привязать в «Контент» → «Ролики в работе» → «не привязано».",
+  "serversAnalytics.byVideo.tip": "{share}% трат не привязано к ролику. Старые запуски можно привязать в «Контент» → «План» → «Без слота» → доска («Показать все ролики»).",
   "serversAnalytics.byWho.title": "Кто и где",
   "serversAnalytics.byWho.hint": "канал · кто запустил · GPU",
   "serversAnalytics.daily.title": "Расходы по дням",

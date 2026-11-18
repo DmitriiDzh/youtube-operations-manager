@@ -179,3 +179,30 @@ Owner msgs 3439/3444/3449/3451/3453. On branch `feature/content-ux-redesign`. No
   `concurrentViewers` when nobody watches; owner msg 3453); otherwise no count stays unknown. Producer API 1.12.0.
 - **Tab badges.** `content-tab-badges.ts`: video-projects (edit + package phases), the calendar's `coverage.due`, the live overview's
   health (bad / noData / revoked while live); local reads once a minute.
+
+## BL-266 — «Ролики и релизы» folded into «План» (owner TG 4730/4732)
+
+UI only: no route, MCP, schema or YouTube-write change; every write stays in the component and route it had.
+
+- **Tabs.** `CONTENT_TABS` = videos / week-plan / streams. `contentSubTabRedirect` (`section-tabs.ts`) sends `/content/publishing` to
+  `/content/week-plan` (and `/content/clips` to Media, BL-241); `activity-indicator` and the package review link lead to «План».
+  `content-tab-badges`' `releases` count is the «План» tab's violet badge.
+- **`PlanExtras`** (`src/components/plan-extras.tsx`, own `FeatureErrorBoundary` in the content layout, over every «План» view): «Без
+  слота: N» (`plan-extras-model.unslottedVideos`: numbers in the prep/edit/package phases that no scanned package names a
+  `pkg.slotId` for; reads `video-projects` and `publishing/packages` once a minute while visible) opens `VideoProjectsPanel` with
+  `onlyVideos` (a «show all» toggle keeps every board action for slotted numbers); «Очередь: N · Vn p%» (`uploadQueueSummary`,
+  this channel's uploads on this computer, not the cross-channel `queueLength`) opens `PublishingUploads`, which stays mounted
+  hidden and hands its rows up (`onRows`) -- one poll for the line and the slot cards; «⋯» opens `PublishingPackages`
+  (`showUploads={false}`, `onQueued` refreshes the queue) and links to Settings → Channels. Each part has its own boundary.
+- **Slot card** (`WeeklyPlanPanel`): `uploads` (`activeUploadsByVideo`, joined by `slot.package.video`) shows the upload status and
+  percent; `packages` (scan rows by manifest hash) shows `PackagingActions` / `CaptionsActions` for an uploaded package, under the
+  same conditions as the packages list. The layout keeps both row sets with their channel id, so another channel's rows never
+  reach these cards.
+- **Settings → Channels** mounts `PublishingSettingsPanel` and `LocalVideoCleanupCard` for the active channel (`useAppChannel`),
+  keyed by channel id, under a «Канал: …» heading, each in its own boundary, wrapped in the anchors `#publishing-settings` / `#local-video-cleanup` the «⋯» links use.
+- **Review fixes.** One `video-projects` read: `useContentTabBadges` returns its list (`projects`, the last good one) and
+  `acceptProjects`; the open board hands each list it reads up (`onList`) instead of triggering a read. A package holds its slot
+  unless it is `deleted_on_youtube` or marked `slot_taken` (`holdsSlot`; `slot_duplicate` packages still claim it). The scan's rows
+  are applied only when `status` is `ok`. «Без слота» marks numbers in dispute (the board filter includes them), an unavailable
+  workspace and unlinked generation costs. Opened parts stay mounted (hidden when closed). `PublishingUploads` and
+  `UploadBandwidthNote` (new `visible` prop) poll through `startVisibleInterval`.

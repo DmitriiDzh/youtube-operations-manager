@@ -123,7 +123,7 @@ is already set everywhere), 2734 (one merge for the whole stage).
   list over YouTube's 500 characters; FO-MSG-0017 / BL-190: the approval dialog shows each row's tag count, characters and source -- the package's, or the channel's when the package has `tags: []` -- and a package tag with `<` or `>` is the problem `tags_angle_brackets`). Studio's automatic chapters, places and concept explanations have no Data API property: they stay
   as YouTube sets them (on), changeable only in Studio. A stored value this build cannot use falls back to the default. Saved fields only (the panel sends
   what the owner changed); a conflict is chosen in Merge (actor-based, like the language settings). Routes:
-  `GET/PUT /api/channels/[id]/publishing-settings`, `GET/POST .../publishing-settings/conflicts`. Panel: Content → «Публикация»,
+  `GET/PUT /api/channels/[id]/publishing-settings`, `GET/POST .../publishing-settings/conflicts`. Panel: Settings → Channels (Content → «Публикация» before BL-266),
   the time as `UtcTimeField`.
 - **Release packages** (`publishing/packages.ts`, `package-scan.ts`). The scan walks `04 Videos/` of the channel workspace on this
   computer (the shared `src/lib/workspace-videos/` walk and reads since BL-187), at most three levels, never through a symlinked folder, for `V*_release.json` (`yt-release-package/1`, FO-REQ-0023 §4 A);
@@ -211,7 +211,7 @@ is already set everywhere), 2734 (one merge for the whole stage).
   nothing written: no video or thumbnail, an unreadable length, no baseline, an empty title, bad input; an existing package without
   `replace`; one with `Vn_youtube.json` or held by an upload (`localHeldVideos`, `peerUploadsOf` -- shared with the approval). Problems
   the scan reports do not refuse: the package shows as not ready with them.
-- **UI** (Content → «Публикация»): the package list with checkboxes, a date per chosen package (DD.MM.YYYY UTC day; empty = private
+- **UI** (Content → «План» → «⋯» → release packages since BL-266; Content → «Публикация» before): the package list with checkboxes, a date per chosen package (DD.MM.YYYY UTC day; empty = private
   without a date), «Загрузить выбранные» → the approval dialog (rows, times in UTC and the owner's time, the shared settings, the
   units estimate, the Live-writes note), then the uploads list (state, share sent, pause reason and when it continues, the
   read-back result) polled while one is active.
@@ -253,7 +253,7 @@ is already set everywhere), 2734 (one merge for the whole stage).
   (before the identity read on the first start; not on a resumed session) and fails it with `video_hash_mismatch` (L5).
 - **Schema v103:** `publishing_uploads.automatic INTEGER NOT NULL DEFAULT 0`. The runner is unchanged: an automatic row is inserted
   private without `publishAt`, gets no date afterwards, and goes to the release playlist.
-- **Visibility.** Content → «Публикация» marks the row «автоматически»; `agent_get_publishing_calendar`'s `uploads` carry
+- **Visibility.** The uploads list (Content → «План» → «Очередь», Content → «Публикация» before BL-266) marks the row «автоматически»; `agent_get_publishing_calendar`'s `uploads` carry
   `automatic`, `progressPercent` (floor of stored / total bytes, null when the total is 0) and `finishedAt` (Agent API 3.20.0, Producer
   API 1.10.0; `calendar-reads.ts` `agentUploadOf`). No agent tool reaches the watcher, `queueAutomatic` or the setter
   (`no-agent-upload-tool.test.ts`, AC-AU-11).
