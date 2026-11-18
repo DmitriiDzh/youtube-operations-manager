@@ -65,7 +65,9 @@
 // problem codes captions_missing / captions_invalid (details.reason); uploads gain steps.captions. Additive.
 // 1.27.0 (BL-271, owner TG 3617/3618, ADR 0075): producer_wait (READ) -- wait until one upload of this computer or a restart is final
 // (timeoutSeconds default 50, clamped 1-240); not counted as MCP activity; any other target is invalid_request. Additive.
-export const PRODUCER_API_VERSION = "1.27.0";
+// 1.28.0 (FO-REQ-0056 part 2): channel_video_list gains the selectable field `tags` and agent_get_video_context's metadata gains
+// `tags` (snippet.tags as of the last channel sync; [] = none; null = not read yet). Read-only, local copy. Additive; no tool added.
+export const PRODUCER_API_VERSION = "1.28.0";
 
 /** The channel agent's READ tools the Producer gets; each call names its channel and runs in that channel's agent scope. */
 export const PRODUCER_CHANNEL_TOOLS: Readonly<Record<string, { capability: string }>> = Object.freeze({

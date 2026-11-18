@@ -54,6 +54,8 @@ export type StoredVideoRecord = {
   likeCount: number | null;
   durationSeconds: number | null;
   liveBroadcastContent?: string | null;
+  /** FO-REQ-0056: null = not read since tags were stored (absent in older stores: the same). */
+  tags?: string[] | null;
   publishAt: string | null;
   lastSyncedAt: Date;
 };
@@ -116,6 +118,7 @@ type ServiceDependencies = {
         likeCount: number | null;
         durationSeconds: number | null;
         liveBroadcastContent?: string | null;
+        tags: string[];
         publishAt: string | null;
       }>,
       syncedAt: Date
@@ -179,6 +182,7 @@ function mapStoredVideo(record: StoredVideoRecord): SyncedVideo {
     publishAt: record.publishAt,
     durationSeconds: record.durationSeconds ?? null,
     liveBroadcastContent: record.liveBroadcastContent ?? null,
+    tags: record.tags ?? null,
   };
 }
 
@@ -283,6 +287,7 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
             likeCount: video.likeCount,
             durationSeconds: video.durationSeconds,
             liveBroadcastContent: video.liveBroadcastContent,
+            tags: video.tags,
             publishAt: video.publishAt,
           })),
           syncedAt

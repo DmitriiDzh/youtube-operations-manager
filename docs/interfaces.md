@@ -437,7 +437,11 @@ Key MCP tools:
     (it mutates local state even though it never touches YouTube).
   - `channel_list` — `{ credentialRef? }` → `{ channels: SyncedChannel[] }`. Read-only.
   - `channel_video_list` — `{ channelId, credentialRef? }` → `{ channelId, videos: SyncedVideo[] }`.
-    Read-only.
+    Read-only. **Tags (FO-REQ-0056 part 2, Agent API 4.26.0 / Producer 1.28.0, additive):** every `SyncedVideo` has
+    `tags: string[] | null` -- YouTube's `snippet.tags` as of the last `channel_sync`, in YouTube's order and spelling; `[]` when
+    the video has none; `null` when this copy has not read them yet (rows synced before schema v123 `videos.tags_json`, until
+    the next sync). `"tags"` is selectable in `fields` and is left out when `fields` does not name it. The sync already reads
+    the `snippet` part, so tags cost no extra quota and no tool makes a YouTube call for them.
 - AI Localization tools (BL-075/BL-078, `docs/roadmap/BACKLOG.md`) — wrap the exact same two
   service functions the Web UI's own `POST .../ai-localization/{generate,change-sets}` routes
   already call; no new validation/persistence logic. Neither accepts `credentialRef` (mirrors
@@ -545,7 +549,8 @@ Key MCP tools:
     such check). Local read only.
   - `agent_get_video_context` — `{ channelId, videoId, include? }` → `VideoContext`, section-
     selectable: `"metadata"` (title, description, publish date, privacy status, default
-    language, last sync time) and/or `"localizations"` (every existing per-language
+    language, last sync time, `durationSeconds`, `liveBroadcastContent`, and since Agent API 4.26.0 / Producer 1.28.0
+    `tags` -- the same value as `channel_video_list`'s `tags`: `[]` none, `null` not read yet) and/or `"localizations"` (every existing per-language
     title/description already synced locally). Omitting `include` returns both sections; an
     omitted section is left entirely absent from the response (`undefined`), not an empty
     placeholder, for token efficiency. Requires `channelId` to be the caller's active channel and
@@ -1143,6 +1148,9 @@ nothing. This replaces BL-091's per-capability zones, which are retired in
     Wait (BL-271, ADR 0075, Agent API 4.25.0, additive): `agent_wait` is `factory_wait` (below) for the bound channel -- `channelId`
     put in when left out, another channel → `CHANNEL_NOT_ACTIVE`, another channel's upload / session / job / request / storyboard /
     render → `not_found` exactly like a missing id. READ; not logged in the worker log; not counted as an MCP call.
+    Video tags (FO-REQ-0056 part 2, Agent API 4.26.0, additive): `channel_video_list` (field `tags`, selectable in `fields`) and
+    `agent_get_video_context`'s `metadata.tags` give each video's YouTube tags as of the last `channel_sync` (`[]` none, `null` not
+    read yet) -- local copy only, no YouTube call.
   - `list` / `transcript` / `preview` / `channel_sync` are confined to the bound channel.
   - Market tools return only records the operator assigned to that channel (below).
   - Channel-less hypotheses are invisible.
@@ -1562,7 +1570,8 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
 
 - **Transport:** as the factory endpoint, with `Authorization: Bearer ytom_pr_...` (the same checks and codes; a channel or factory token is
   401 `AGENT_TOKEN_INVALID` here, and a producer token on `/api/mcp` and `/api/mcp/factory`). Re-verified on every tool call.
-- **Producer API version:** `1.27.0` (since BL-271, ADR 0075, additive: `producer_wait` below); `1.26.0` (since BL-269, ADR 0074, additive: `producer_video_captions_add` below, permission `CAPTIONS_WRITE`,
+- **Producer API version:** `1.28.0` (FO-REQ-0056 part 2, additive: `channel_video_list` / `agent_get_video_context` carry each
+  video's synced `tags`, see the channel-sync tools above); `1.27.0` (BL-271, ADR 0075, additive: `producer_wait` below); `1.26.0` (since BL-269, ADR 0074, additive: `producer_video_captions_add` below, permission `CAPTIONS_WRITE`,
   `captionsTools` in `producer_get_capabilities`; calendar packages gain `captions`); `1.25.0` (BL-267, ADR 0073, additive: the weekly-plan tools below, permission `PLAN_MOVE`,
   `planTools` / `planMoveTools` in `producer_get_capabilities`); `1.24.0` (BL-265, ADR 0072, additive: `producer_video_metadata_update`, permission `METADATA_WRITE`
   and `metadataTools` in `producer_get_capabilities`; calendar `warnings`; the media-keyed review gate; the queue add's "tried" rule by

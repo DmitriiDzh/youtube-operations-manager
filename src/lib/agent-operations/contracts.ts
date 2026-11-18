@@ -135,7 +135,10 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // plan's packages gain `captions`. No caption tool for channel agents. Additive.
 // 4.25.0 (BL-271, owner TG 3617/3618, ADR 0075): agent_wait (READ, as factory_wait 1.54.0, this channel only -- another channel's id is
 // not_found) -- wait until one operation is final without polling; not counted as MCP activity. Additive.
-export const AGENT_API_VERSION = "4.25.0";
+// 4.26.0 (FO-REQ-0056 part 2): channel_video_list gains the selectable field `tags` and agent_get_video_context's metadata gains `tags`
+// -- each video's YouTube snippet.tags as of the last channel sync ([] = none; null = not read yet, until the next sync). Read-only,
+// from the local copy (no YouTube call, no quota). Additive.
+export const AGENT_API_VERSION = "4.26.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry
@@ -328,6 +331,8 @@ export type VideoMetadataContext = {
   /** FO-REQ-0015 item 6: the stored length in seconds and YouTube's `liveBroadcastContent`; null when unknown. */
   durationSeconds: number | null;
   liveBroadcastContent: string | null;
+  /** FO-REQ-0056: YouTube's `snippet.tags` as of the last sync (`[]` = none); null = not read yet (synced before tags were stored). */
+  tags: string[] | null;
 };
 
 export type VideoContext = {

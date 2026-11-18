@@ -228,6 +228,35 @@ test("getVideosMetadataContextBatch requests contentDetails and parses duration 
   assert.equal(results[1]?.durationSeconds, null);
 });
 
+// FO-REQ-0056 part 2: a video's tags are YouTube's `snippet.tags` (official videos resource: a list of strings, omitted when the
+// video has none). The sync read must return them as given and `[]` when absent, without asking YouTube for any new part.
+test("getVideosMetadataContextBatch returns snippet.tags as given, [] when YouTube omits them, with the same parts as before", async () => {
+  let requestedParts: string[] | undefined;
+  const youtube = fakeYoutubeClient({
+    videosList: (async (args: { part?: string[] }) => {
+      requestedParts = args.part;
+      return {
+        data: {
+          items: [
+            {
+              id: "v1",
+              snippet: { title: "T", description: "D", publishedAt: "2026-01-01T00:00:00.000Z", tags: ["Zeta tag", "alpha", "Zeta tag"] },
+              status: { privacyStatus: "public" },
+            },
+            { id: "v2", snippet: { title: "T2", description: "D2", publishedAt: "2026-01-01T00:00:00.000Z" }, status: { privacyStatus: "public" } },
+          ],
+        },
+      };
+    }) as unknown as youtube_v3.Youtube["videos"]["list"],
+  });
+
+  const results = await getVideosMetadataContextBatch(youtube, ["v1", "v2"]);
+
+  assert.deepEqual(requestedParts, ["snippet", "status", "localizations", "statistics", "contentDetails"]);
+  assert.deepEqual(results[0]?.tags, ["Zeta tag", "alpha", "Zeta tag"]);
+  assert.deepEqual(results[1]?.tags, []);
+});
+
 // Owner instruction, 2026-09-26: Content tab's "Publish" column needs YouTube's own
 // scheduled-publish time for a still-private video (`status.publishAt`), distinct from
 // `snippet.publishedAt`. `status` was already a requested part (for `privacyStatus`), so this is

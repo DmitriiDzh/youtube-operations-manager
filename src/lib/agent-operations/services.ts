@@ -1055,6 +1055,7 @@ type StoredVideoForContext = {
   lastSyncedAt: Date;
   durationSeconds?: number | null;
   liveBroadcastContent?: string | null;
+  tags?: string[] | null;
 };
 
 type StoredEditorialProfileForContext = {
@@ -1298,6 +1299,8 @@ export function createAgentOperationsServices(deps: ServiceDependencies) {
           // FO-REQ-0015 item 6: stored by the sync, null when unknown.
           durationSeconds: video.durationSeconds ?? null,
           liveBroadcastContent: video.liveBroadcastContent ?? null,
+          // FO-REQ-0056: stored by the sync; null when not read yet.
+          tags: video.tags ?? null,
         };
       }
 
