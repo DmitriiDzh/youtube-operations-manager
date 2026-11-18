@@ -9172,7 +9172,7 @@ export async function upsertVideos(
     liveBroadcastContent?: string | null;
     /**
      * FO-REQ-0056: `snippet.tags` as read (`[]` = none). Unlike the other columns, an omitted value leaves the stored tags as they
-     * are: a targeted re-upsert (video-details' cache refresh) that does not carry tags must not erase what the last sync read.
+     * are: a targeted re-upsert that does not carry tags must not erase what the last read stored.
      */
     tags?: string[];
     publishAt?: string | null;
@@ -9347,9 +9347,9 @@ export async function markVideosRemovedOnYoutube(
 }
 
 /** `src/lib/video-details/` (2026-09-20) needs a single stored video's current cached fields to
- * merge a live-write's freshly-verified values onto before re-upserting -- `upsertVideos` always
- * replaces every column of the row it's given, so a caller wanting to update only some columns
- * must first read the rest. `null` when the video was never synced locally at all. */
+ * merge a live-write's freshly-verified values onto before re-upserting -- `upsertVideos`
+ * replaces every column of the row it's given except `tags` (kept as stored when an entry omits it,
+ * FO-REQ-0056), so a caller wanting to update only some columns must first read the rest. `null` when the video was never synced locally at all. */
 export async function getStoredVideo(channelId: string, videoId: string): Promise<StoredVideo | null> {
   const rows = await db
     .select()
