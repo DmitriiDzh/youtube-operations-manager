@@ -91,7 +91,7 @@ Owner: «даже если одна из соц сетей отваливала�
    the retry waits for the slot's (possibly moved) planned time. The mark is cleared when the runner takes the job over, and
    otherwise with the job's own code whenever it can no longer be carried out without a new click: refused again by the
    identity read (the network's code), `retry_slot_not_approved` (the slot no longer approved or listed for that network --
-   also when the plan read fails: fail closed), `retry_blocked` (the package's block or video refused for that network),
+   also when the plan read fails: fail closed; a mark set while a pass was reading the plan waits for the next pass), `retry_blocked` (the package's block or video refused for that network),
    `retry_expired` (the mark is older than 48 h; a slot moved more than 48 h past the retry therefore expires, not posts). A full
    24 h limit keeps the mark, shown as `retry_waiting_quota`. A slot read past the look-back only for a retry or an in-flight
    job never counts against a current slot of the same video in the "one video in two approved slots" rule (the old slot

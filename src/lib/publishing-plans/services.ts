@@ -578,8 +578,10 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
    * while a social post goes out AT and after the slot's time. Fail closed: only the `packaged` stage counts (a slot-stage approval
    * names no package); an unreadable package scan approves nothing; a slot id in two plans and two approvals of one video number
    * approve nothing. Read-only; never a decision.
-   * `opts.alsoSlotIds` (owner TG 4780): slots evaluated however long ago their time was -- only for the owner's explicit retry of a
-   * failed social post; every other rule (dated by the plan, not vetoed, the CURRENT manifest) applies to them unchanged.
+   * `opts.alsoSlotIds` (owner TG 4780): slots evaluated however long ago their time was -- those of the owner's pending retry of a
+   * failed social post or of a social job still in flight, and the entry's own slot in the runner's approval re-check. The approval
+   * rules (dated by the plan, not vetoed, the CURRENT manifest) apply to them unchanged; such an old slot only never counts against
+   * a slot inside the look-back in the "one video in two approved slots" rule (it is itself still disapproved by it).
    */
   async function socialSlotStates(channelId: string, opts: { alsoSlotIds?: readonly string[] } = {}): Promise<SocialSlotState[]> {
     // BL-267 (owner O10, ADR 0073 §3, AC-WT-37): one plan for YouTube and the social networks -- a slot authorizes its package's
