@@ -191,3 +191,80 @@ test("BL-270 review (negative): a file changed while the scan ran, or an unreada
   await unreadable.packagesOf("UC1");
   assert.equal(unreadable.state.scans, 2);
 });
+
+// Owner TG 4784 («План» loads slowly): the plan list, the shown week, the calendar and the alerts ask at once; on a cold cache each
+// scanned `04 Videos/` on its own. Concurrent callers share the one read under way.
+test("owner 4784: concurrent cold reads of one channel share one scan; another channel scans on its own", async () => {
+  const scans: string[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const packagesOf = createPackagesReader({
+    removedVideos: async () => [],
+    scan: async (channelId) => {
+      scans.push(channelId);
+      await gate;
+      return { status: "ok", packages: [] };
+    },
+    synthetic: async () => false,
+    now: () => 1_000_000,
+    cache: new Map<string, PackagesEntry>(),
+  });
+  const reads = [packagesOf("UC1"), packagesOf("UC1"), packagesOf("UC1"), packagesOf("UC2")];
+  await new Promise((resolve) => setImmediate(resolve));
+  release();
+  const [a, b, c, other] = await Promise.all(reads);
+  assert.deepEqual(scans, ["UC1", "UC2"]);
+  assert.equal(a, b);
+  assert.equal(b, c);
+  assert.notEqual(a, other);
+});
+
+test("owner 4784 (negative): a failed shared read is not kept -- the next call scans again", async () => {
+  let calls = 0;
+  const packagesOf = createPackagesReader({
+    removedVideos: async () => [],
+    scan: async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("disk gone");
+      return { status: "ok", packages: [] };
+    },
+    synthetic: async () => false,
+    now: () => 1_000_000,
+    cache: new Map<string, PackagesEntry>(),
+  });
+  const [x, y] = await Promise.all([packagesOf("UC1"), packagesOf("UC1")]);
+  assert.equal(x.packages, null);
+  assert.equal(y.packages, null);
+  assert.equal(calls, 1, "shared while under way");
+  assert.deepEqual((await packagesOf("UC1")).packages, [], "read again after it ended");
+  assert.equal(calls, 2);
+});
+
+test("owner 4784 (negative): an invalidation during a read -- the next caller scans again, and the older answer is not kept", async () => {
+  const cache = new Map<string, PackagesEntry>();
+  let scans = 0;
+  const gates: Array<() => void> = [];
+  const packagesOf = createPackagesReader({
+    removedVideos: async () => [],
+    scan: async () => {
+      scans += 1;
+      await new Promise<void>((resolve) => gates.push(resolve));
+      return { status: "ok", packages: [] };
+    },
+    synthetic: async () => false,
+    now: () => 1_000_000,
+    cache,
+  });
+  const before = packagesOf("UC1");
+  await new Promise((resolve) => setImmediate(resolve));
+  invalidatePackagesEntry(cache, "UC1"); // the owner's review decision while the scan runs
+  const after = packagesOf("UC1");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(scans, 2, "the caller after the invalidation does not join the older read");
+  gates[0]();
+  await before;
+  assert.equal(cache.has("UC1"), false, "the read that began before the invalidation is not kept");
+  gates[1]();
+  await after;
+  assert.equal(cache.has("UC1"), true, "the read after it is kept");
+});

@@ -51,7 +51,24 @@ export type PackagesCacheDeps = {
  * failed (not kept either).
  */
 export function createPackagesReader(deps: PackagesCacheDeps) {
-  return async function packagesOf(channelId: string): Promise<PackagesEntry> {
+  /**
+   * Owner TG 4784 («План» loads slowly): the plan list, the shown week, the calendar and the alerts ask at the same moment, and on a
+   * cold cache each of them walked `04 Videos/` on its own. Callers arriving while a read of the channel is under way share that
+   * read; `invalidatePackagesEntry` forgets it (a caller after the invalidation reads again, and the older read is not kept).
+   */
+  const inflight = inflightOf(deps.cache);
+  return function packagesOf(channelId: string): Promise<PackagesEntry> {
+    const running = inflight.get(channelId);
+    if (running) return running;
+    const read = readPackages(channelId).finally(() => {
+      if (inflight.get(channelId) === read) inflight.delete(channelId);
+    });
+    inflight.set(channelId, read);
+    return read;
+  };
+
+  async function readPackages(channelId: string): Promise<PackagesEntry> {
+    const generation = generationOf(deps.cache, channelId);
     const hit = deps.cache.get(channelId);
     if (hit && deps.now() - hit.at < PACKAGES_CACHE_MS) return hit;
     const signatureOf = async () => (deps.signature ? await deps.signature(channelId).catch(() => null) : null);
@@ -90,18 +107,37 @@ export function createPackagesReader(deps: PackagesCacheDeps) {
         signature: filesSignature === null ? null : before,
         ...(filesSignature !== undefined ? { filesSignature } : {}),
       };
-      if (read.ok) deps.cache.set(channelId, entry);
+      // Kept only while no invalidation came during the read (that read may have seen the state before the change).
+      if (read.ok && generationOf(deps.cache, channelId) === generation) deps.cache.set(channelId, entry);
       return entry;
     } catch {
       return { at: deps.now(), packages: null, synthetic: false, removedVideoIds };
     }
-  };
+  }
 }
 
 /**
+ * Per cache: the read under way for each channel, and how many times the channel was invalidated. Kept on the cache object itself
+ * (under a registry symbol), so every copy of this module the server bundles -- the cache is one `globalThis` map -- shares it.
+ */
+type SharedState = { inflight: Map<string, Promise<PackagesEntry>>; generations: Map<string, number> };
+const STATE_KEY = Symbol.for("ytom.publishingPlanProgress.cache.state");
+function stateOf(cache: Map<string, PackagesEntry>): SharedState {
+  const holder = cache as Map<string, PackagesEntry> & { [STATE_KEY]?: SharedState };
+  holder[STATE_KEY] ??= { inflight: new Map(), generations: new Map() };
+  return holder[STATE_KEY];
+}
+const inflightOf = (cache: Map<string, PackagesEntry>) => stateOf(cache).inflight;
+const generationOf = (cache: Map<string, PackagesEntry>, channelId: string) => stateOf(cache).generations.get(channelId) ?? 0;
+
+/**
  * BL-257 (ADR 0070, PACKAGE_REVIEW_PLAN.md AC-PR-10): the owner's package-review decision (or switch) changes what the scan says, so
- * the channel's kept answer is dropped -- the slot moves at the plan screen's next read instead of up to a minute later.
+ * the channel's kept answer is dropped -- the slot moves at the plan screen's next read instead of up to a minute later. Owner TG
+ * 4784: a read still under way is forgotten too (the next caller scans again) and its answer is not kept.
  */
 export function invalidatePackagesEntry(cache: Map<string, PackagesEntry>, channelId: string): void {
   cache.delete(channelId);
+  const state = stateOf(cache);
+  state.inflight.delete(channelId);
+  state.generations.set(channelId, (state.generations.get(channelId) ?? 0) + 1);
 }

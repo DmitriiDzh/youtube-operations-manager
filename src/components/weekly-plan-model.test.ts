@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { canApprove, changedField, deletedOnYoutube, defaultWeek, duplicateWarningOf, stageOf, strayDateOf, lengthLabel, mondayOf, pipelineOf, replacedToPull, shiftWeek, slotsToApprove, splitVetoed, ownerReviewOf, tileCounts, wallParts, weekCoverageLine, zonedParts, type PlanSlotDto } from "./weekly-plan-model";
+import { canApprove, changedField, channelZoneOf, createWeekLoader, currentWeekStart, deletedOnYoutube, duplicateWarningOf, stageOf, strayDateOf, lengthLabel, mondayOf, pipelineOf, replacedToPull, shiftWeek, slotsToApprove, splitVetoed, ownerReviewOf, tileCounts, wallParts, weekCoverageLine, weekFromSearch, zonedParts, type PlanSlotDto } from "./weekly-plan-model";
 
 // BL-225 (WEEKLY_PUBLISHING_PLAN.md stage 1 item 6, AC-WP-15): the screen's pure rules. Values by hand: 2026-10-26 is a Monday,
 // 2026-11-01 its Sunday; 18:00 in Tokyo is 09:00Z, which is 10:00 in Berlin (CET, UTC+1, after 25.10); 23:30Z on 31.10 is 08:30 on Sunday 1.11 in Tokyo.
@@ -36,12 +36,105 @@ test("AC-WP-15: weeks -- the Monday of any day, the arrows step seven days", () 
   assert.equal(shiftWeek("2026-10-26", -1), "2026-10-19");
 });
 
-test("AC-WP-15: the screen opens on the earliest week waiting for the owner, else this week's plan, else the next one, else this week", () => {
-  const plan = (weekStart: string, needsApproval: number) => ({ weekStart, counts: { slots: 3, approved: 0, needsApproval, vetoed: 0 } });
-  assert.equal(defaultWeek([plan("2026-11-09", 2), plan("2026-11-02", 1), plan("2026-10-26", 0)], "2026-10-28"), "2026-11-02");
-  assert.equal(defaultWeek([plan("2026-11-02", 0), plan("2026-10-26", 0)], "2026-10-28"), "2026-10-26");
-  assert.equal(defaultWeek([plan("2026-11-09", 0), plan("2026-10-19", 0)], "2026-10-28"), "2026-11-09");
-  assert.equal(defaultWeek([], "2026-10-28"), "2026-10-26");
+// Owner TG 4784 (2026-11-23) replaced AC-WP-15's opening rule (the earliest week waiting for approval): the screen opens on the
+// current week, in the channel's zone. Values by hand: 2026-11-23 and 2026-11-30 are Mondays; Berlin is UTC+1 in winter, Los Angeles
+// UTC-8, Tokyo UTC+9; 2026-12-28 is the Monday of the week holding 31.12.2026 and 03.01.2027.
+test("owner 4784: the screen opens on the current week -- the Monday of today in the channel's zone, across the Sunday/Monday line", () => {
+  assert.equal(currentWeekStart("2026-11-29T23:30:00.000Z", "UTC"), "2026-11-23"); // Sunday 23:30 in UTC
+  assert.equal(currentWeekStart("2026-11-29T22:30:00.000Z", "Europe/Berlin"), "2026-11-23"); // Sunday 23:30 in Berlin
+  assert.equal(currentWeekStart("2026-11-29T23:30:00.000Z", "Europe/Berlin"), "2026-11-30"); // already Monday 00:30 in Berlin
+  assert.equal(currentWeekStart("2026-11-30T05:00:00.000Z", "America/Los_Angeles"), "2026-11-23"); // still Sunday 21:00 there
+  assert.equal(currentWeekStart("2026-11-29T14:30:00.000Z", "Asia/Tokyo"), "2026-11-23"); // Sunday 23:30 in Tokyo
+  assert.equal(currentWeekStart("2026-11-29T15:30:00.000Z", "Asia/Tokyo"), "2026-11-30"); // Monday 00:30 in Tokyo
+  assert.equal(currentWeekStart("2026-11-23T00:00:00.000Z", "UTC"), "2026-11-23"); // Monday 00:00 starts the week
+  assert.equal(currentWeekStart("2026-12-31T12:00:00.000Z", "UTC"), "2026-12-28");
+  assert.equal(currentWeekStart("2027-01-03T23:30:00.000Z", "UTC"), "2026-12-28"); // across the year
+});
+
+test("owner 4784: the channel's zone is the newest week's zone; no plan or an unusable zone gives none", () => {
+  const p = (weekStart: string, timeZone: string) => ({ weekStart, timeZone });
+  assert.equal(channelZoneOf([p("2026-11-16", "Asia/Tokyo"), p("2026-11-30", "Europe/Berlin"), p("2026-11-23", "UTC")]), "Europe/Berlin");
+  assert.equal(channelZoneOf([]), null);
+  assert.equal(channelZoneOf([p("2026-11-30", "Mars/Olympus"), p("2026-11-23", "UTC")]), null);
+});
+
+test("owner 4784: a deliberate link keeps its week -- only a real Monday as YYYY-MM-DD counts", () => {
+  assert.equal(weekFromSearch("?week=2026-11-23"), "2026-11-23");
+  assert.equal(weekFromSearch("?tab=x&week=2026-11-30"), "2026-11-30");
+  assert.equal(weekFromSearch("?week=2026-11-24"), null); // a Tuesday
+  assert.equal(weekFromSearch("?week=2026-02-30"), null); // no such day
+  assert.equal(weekFromSearch("?week=23.11.2026"), null);
+  assert.equal(weekFromSearch(""), null);
+});
+
+/** A promise the test settles by hand. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+test("owner 4784: an older week's answer arriving after a newer one's is ignored, and the older read is aborted", async () => {
+  const pending = new Map<string, ReturnType<typeof deferred<string>>>();
+  const signals = new Map<string, AbortSignal>();
+  const applied: string[] = [];
+  const failed: string[] = [];
+  const loader = createWeekLoader<string>({
+    fetchWeek: (week, signal) => {
+      const d = deferred<string>();
+      pending.set(week, d);
+      signals.set(week, signal);
+      return d.promise;
+    },
+    apply: (week, answer) => applied.push(`${week}=${answer}`),
+    fail: (week) => failed.push(week),
+  });
+  const a = loader.load("2026-11-23");
+  const b = loader.load("2026-11-16");
+  assert.equal(signals.get("2026-11-23")?.aborted, true);
+  assert.equal(signals.get("2026-11-16")?.aborted, false);
+  pending.get("2026-11-16")!.resolve("plan-16");
+  await b;
+  pending.get("2026-11-23")!.resolve("plan-23"); // the late, older answer (a server that ignored the abort)
+  await a;
+  assert.deepEqual(applied, ["2026-11-16=plan-16"]);
+  assert.deepEqual(failed, []);
+});
+
+test("owner 4784: a stale failure is not shown; the newest read's failure is; nothing applies after cancel()", async () => {
+  const pending = new Map<string, ReturnType<typeof deferred<string>>>();
+  const applied: string[] = [];
+  const failed: string[] = [];
+  const loader = createWeekLoader<string>({
+    fetchWeek: (week) => {
+      const d = deferred<string>();
+      pending.set(week, d);
+      return d.promise;
+    },
+    apply: (week, answer) => applied.push(`${week}=${answer}`),
+    fail: (week) => failed.push(week),
+  });
+  const a = loader.load("2026-11-09");
+  const b = loader.load("2026-11-16");
+  pending.get("2026-11-09")!.reject(new Error("404 of the older week"));
+  await a;
+  pending.get("2026-11-16")!.reject(new Error("network"));
+  await b;
+  assert.deepEqual(failed, ["2026-11-16"]);
+  const c = loader.load("2026-11-23");
+  loader.cancel();
+  pending.get("2026-11-23")!.resolve("plan-23");
+  await c;
+  assert.deepEqual(applied, []);
+  // The same week read again (the minute's poll) applies normally.
+  const d = loader.load("2026-11-23");
+  pending.get("2026-11-23")!.resolve("plan-23b");
+  await d;
+  assert.deepEqual(applied, ["2026-11-23=plan-23b"]);
 });
 
 test("AC-WP-15: «Одобрить неделю» covers the slots that wait -- never a vetoed, released or approved one", () => {

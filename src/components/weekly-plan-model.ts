@@ -87,16 +87,66 @@ export function mondayOf(date: string): string {
 export const shiftWeek = (weekStart: string, weeks: number): string => new Date(Date.parse(`${weekStart}T00:00:00Z`) + weeks * 7 * DAY_MS).toISOString().slice(0, 10);
 
 /**
- * The week the screen opens on: the earliest plan still waiting for the owner; else the plan of this week; else the next plan
- * ahead; else this week (no plan yet).
+ * Owner TG 4784 (2026-11-23): the screen always opens on the CURRENT week -- the Monday of today in `timeZone` (the channel's zone,
+ * see `channelZoneOf`; null = the browser's). Weeks run Monday..Sunday in the plan's own zone (the server refuses another start).
+ * It replaces BL-225's rule (the earliest week waiting for approval), which opened next week while this one was running.
  */
-export function defaultWeek(plans: readonly Pick<PlanSummaryDto, "weekStart" | "counts">[], today: string): string {
-  const thisWeek = mondayOf(today);
-  const waiting = plans.filter((p) => p.counts.needsApproval > 0).map((p) => p.weekStart).sort();
-  if (waiting.length > 0) return waiting[0];
-  if (plans.some((p) => p.weekStart === thisWeek)) return thisWeek;
-  const ahead = plans.map((p) => p.weekStart).filter((w) => w > thisWeek).sort();
-  return ahead[0] ?? thisWeek;
+export function currentWeekStart(nowIso: string, timeZone: string | null): string {
+  return mondayOf(zonedParts(nowIso, timeZone).ymd);
+}
+
+/**
+ * The channel's zone as the plans keep it: the newest week's `timeZone` (the server's `channelTimeZone` rule,
+ * WEEKLY_PUBLISHING_PLAN.md "slots in the channel's time zone"); null when there is no plan or the zone is unusable.
+ */
+export function channelZoneOf(plans: readonly Pick<PlanSummaryDto, "weekStart" | "timeZone">[]): string | null {
+  const newest = [...plans].sort((a, b) => (a.weekStart < b.weekStart ? 1 : -1))[0];
+  if (!newest?.timeZone) return null;
+  try {
+    new Intl.DateTimeFormat("en-GB", { timeZone: newest.timeZone });
+    return newest.timeZone;
+  } catch {
+    return null;
+  }
+}
+
+/** A deliberate link to one week (`?week=YYYY-MM-DD`, a real Monday), else null -- the screen then opens on the current week. */
+export function weekFromSearch(search: string): string | null {
+  const value = new URLSearchParams(search).get("week");
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const at = Date.parse(`${value}T00:00:00Z`);
+  if (Number.isNaN(at) || new Date(at).toISOString().slice(0, 10) !== value) return null;
+  return mondayOf(value) === value ? value : null;
+}
+
+/**
+ * Owner TG 4784 (the view "breaks" when switching weeks): one week read at a time. `load(week)` aborts the read before it, and an
+ * answer is applied only when it belongs to the newest read -- an older week's answer arriving after a newer one's is dropped, so
+ * it can never replace the shown week (or mark it «no plan» with its 404). Pure over `fetchWeek`; the panel wires the real fetch.
+ */
+export function createWeekLoader<T>(deps: { fetchWeek(week: string, signal: AbortSignal): Promise<T>; apply(week: string, answer: T): void; fail(week: string): void }) {
+  let newest = 0;
+  let controller: AbortController | null = null;
+  return {
+    async load(week: string): Promise<void> {
+      const token = ++newest;
+      controller?.abort();
+      const own = new AbortController();
+      controller = own;
+      try {
+        const answer = await deps.fetchWeek(week, own.signal);
+        if (token === newest) deps.apply(week, answer);
+      } catch {
+        if (token === newest && !own.signal.aborted) deps.fail(week);
+      }
+    },
+    /** The panel is hidden or gone: nothing still in flight is applied. */
+    cancel(): void {
+      newest += 1;
+      controller?.abort();
+      controller = null;
+    },
+  };
 }
 
 /** A slot the owner can approve now: not vetoed, not released, needing approval (BL-242: never one waiting for its package). */

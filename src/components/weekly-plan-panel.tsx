@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ThumbnailReplaceButton } from "./thumbnail-replace";
 import { SlotSocialPreview } from "./slot-social-preview";
 import { OrientationIcon } from "./orientation-icon";
@@ -24,7 +24,10 @@ import {
   type DatingState,
   deletedOnYoutube,
   changedField,
-  defaultWeek,
+  channelZoneOf,
+  createWeekLoader,
+  currentWeekStart,
+  weekFromSearch,
   lengthLabel,
   pipelineOf,
   replacedToPull,
@@ -178,9 +181,12 @@ export function WeeklyPlanPanel({
   const ownerZone = useUserTimezone();
   const [summaries, setSummaries] = useState<PlanSummaryDto[] | null>(null);
   const [week, setWeek] = useState<string | null>(null);
-  const [plan, setPlan] = useState<PlanDto | "none" | null>(null);
-  // BL-235: what YouTube has for the shown week (the shared coverage), next to the approvals; null when unknown.
-  const [coverage, setCoverage] = useState<{ weekStart: string; value: WeekCoverageDto } | null>(null);
+  // Owner TG 4784: the read week, always with the week it is for -- a plan (with BL-235's coverage: what YouTube has for that week,
+  // null when unknown) or «none» (404). The screen shows it only while that week is the selected one.
+  const [loaded, setLoaded] = useState<{ week: string; plan: PlanDto | "none"; coverage: WeekCoverageDto | null } | null>(null);
+  // Owner TG 4784: the owner moved off the week the screen opened on (arrows, a move, a `?week=` link) -- then the opening week is
+  // never recomputed under him.
+  const navigated = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const mode: Mode = "one";
@@ -198,7 +204,7 @@ export function WeeklyPlanPanel({
     setNowMs(Date.now());
     const id = setInterval(() => setNowMs(Date.now()), 30_000);
     return () => clearInterval(id);
-  }, [plan]);
+  }, [loaded]);
   // BL-240 (A): pulled slots sit under one closed row; opening it is for this visit only.
   const [showVetoed, setShowVetoed] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
@@ -217,40 +223,79 @@ export function WeeklyPlanPanel({
 
   const loadList = useCallback(async () => {
     if (!base) return;
+    // BL-267: the template, for the week's ghost rows (a failed read just shows none) -- read beside the list, not after it.
+    void fetch(`${base}/template`)
+      .then((r) => (r.ok ? (r.json() as Promise<TemplateAnswerDto>) : null))
+      .then((answer) => setTemplate(answer))
+      .catch(() => setTemplate(null));
     try {
       const res = await fetch(base);
       if (!res.ok) throw new Error(String(res.status));
       const body = (await res.json()) as { plans: PlanSummaryDto[] };
       setSummaries(body.plans);
-      // BL-267: the template, for the week's ghost rows (a failed read just shows none).
-      void fetch(`${base}/template`)
-        .then((r) => (r.ok ? (r.json() as Promise<TemplateAnswerDto>) : null))
-        .then((answer) => setTemplate(answer))
-        .catch(() => setTemplate(null));
-      setWeek((current) => current ?? defaultWeek(body.plans, zonedParts(new Date().toISOString(), null).ymd));
       setError(null);
     } catch {
       setError(t("weekPlan.loadFailed"));
     }
   }, [base, t]);
 
-  const loadPlan = useCallback(async () => {
-    if (!base || !week) return;
-    try {
-      const res = await fetch(`${base}/${week}`);
-      if (res.status === 404) {
-        setPlan("none");
-        return;
-      }
-      if (!res.ok) throw new Error(String(res.status));
-      const body = (await res.json()) as { plan: PlanDto; coverage?: WeekCoverageDto | null };
-      setPlan(body.plan);
-      setCoverage(body.coverage ? { weekStart: body.plan.weekStart, value: body.coverage } : null);
-      setError(null);
-    } catch {
-      setError(t("weekPlan.loadFailed"));
-    }
-  }, [base, week, t]);
+  // Owner TG 4784 (the view broke when switching weeks): one week read at a time -- the read before is aborted, and an older week's
+  // answer arriving late is dropped instead of replacing the selected week (which left the screen empty until the next minute).
+  const loader = useRef<ReturnType<typeof createWeekLoader<{ plan: PlanDto; coverage: WeekCoverageDto | null } | "none">> | null>(null);
+  useEffect(() => {
+    if (!base) return;
+    const current = createWeekLoader<{ plan: PlanDto; coverage: WeekCoverageDto | null } | "none">({
+      fetchWeek: async (w, signal) => {
+        const res = await fetch(`${base}/${w}`, { signal });
+        if (res.status === 404) return "none";
+        if (!res.ok) throw new Error(String(res.status));
+        const body = (await res.json()) as { plan: PlanDto; coverage?: WeekCoverageDto | null };
+        return { plan: body.plan, coverage: body.coverage ?? null };
+      },
+      apply: (w, answer) => {
+        setLoaded(answer === "none" ? { week: w, plan: "none", coverage: null } : { week: w, plan: answer.plan, coverage: answer.coverage });
+        setError(null);
+      },
+      fail: () => setError(t("weekPlan.loadFailed")),
+    });
+    loader.current = current;
+    return () => {
+      current.cancel();
+      if (loader.current === current) loader.current = null;
+    };
+  }, [base, t]);
+  const weekRef = useRef(week);
+  useEffect(() => {
+    weekRef.current = week;
+  }, [week]);
+  const loadPlan = useCallback(async (which?: string) => {
+    const w = which ?? weekRef.current;
+    if (w) await loader.current?.load(w);
+  }, []);
+
+  // Owner TG 4784: each time the tab opens, the current week -- in the channel's zone once the plans are read (the owner's own zone,
+  // else the browser's, until then); a deliberate `?week=` link keeps its week. The week is known at once, so the week's read runs
+  // beside the list's instead of waiting for it.
+  const zoneRef = useRef<string | null>(null);
+  useEffect(() => {
+    zoneRef.current = channelZoneOf(summaries ?? []) ?? ownerZone;
+  }, [summaries, ownerZone]);
+  useEffect(() => {
+    if (!visible) return;
+    const linked = weekFromSearch(window.location.search);
+    navigated.current = linked !== null;
+    setWeek(linked ?? currentWeekStart(new Date().toISOString(), zoneRef.current));
+  }, [visible, channelId]);
+  // The plans (the channel's zone) or the owner's zone arrived, or a minute passed into a new week: the opening week follows them
+  // while the owner has not moved off it.
+  useEffect(() => {
+    if (!visible || navigated.current) return;
+    setWeek(currentWeekStart(new Date().toISOString(), channelZoneOf(summaries ?? []) ?? ownerZone));
+  }, [visible, summaries, ownerZone]);
+  const goToWeek = (next: string) => {
+    navigated.current = true;
+    setWeek(next);
+  };
 
   // While visible: the list and the shown week, then every minute (the agents' saves and the other computer's decisions arrive by
   // sync); a hidden tab reads nothing.
@@ -262,11 +307,10 @@ export function WeeklyPlanPanel({
   }, [visible, loadList]);
   useEffect(() => {
     if (!visible || !week) return;
-    setPlan((current) => (current !== "none" && current?.weekStart === week ? current : null));
-    void loadPlan();
-    const id = setInterval(() => void loadPlan(), 60_000);
+    void loadPlan(week);
+    const id = setInterval(() => void loadPlan(week), 60_000);
     return () => clearInterval(id);
-  }, [visible, week, loadPlan]);
+  }, [visible, week, loadPlan, base]);
 
   async function decide(action: "approve" | "revoke" | "veto" | "restore", slots: Array<{ slotId: string; contentHash?: string }>, busyKey: string) {
     if (!base || !week) return;
@@ -281,7 +325,12 @@ export function WeeklyPlanPanel({
         await loadPlan();
         return;
       }
-      if (body.plan) setPlan(body.plan);
+      if (body.plan) {
+        // The decision's own answer is newer than any read still in flight: that one is dropped.
+        const decided = body.plan;
+        loader.current?.cancel();
+        setLoaded((current) => ({ week: decided.weekStart, plan: decided, coverage: current?.week === decided.weekStart ? current.coverage : null }));
+      }
       setConfirmVeto(null);
       void loadList();
     } catch {
@@ -316,8 +365,9 @@ export function WeeklyPlanPanel({
       if (!dryRun) {
         if (body.youtube?.result === "failed") setActionError(t("weekTemplate.move.youtubeFailed", { reason: body.youtube.reason ?? "?" }));
         setEditing(null);
-        if (body.to.weekStart !== week) setWeek(body.to.weekStart);
-        await Promise.all([loadPlan(), loadList()]);
+        // The plan follows the slot to its week (read here for that week -- never the old closure's).
+        if (body.to.weekStart !== week) goToWeek(body.to.weekStart);
+        await Promise.all([loadPlan(body.to.weekStart), loadList()]);
       }
       return body;
     } catch {
@@ -328,7 +378,10 @@ export function WeeklyPlanPanel({
     }
   }
 
-  const shown = plan && plan !== "none" && plan.weekStart === week ? plan : null;
+  const shown = loaded && loaded.week === week && loaded.plan !== "none" && loaded.plan.weekStart === week ? loaded.plan : null;
+  const coverage = shown && loaded?.coverage ? loaded.coverage : null;
+  // Owner TG 4784: the selected week is not read yet (the open, a switch) -- a skeleton, never an empty or another week's body.
+  const weekLoading = week !== null && loaded?.week !== week;
   const ghosts = useMemo(() => (shown && template?.template && nowMs > 0 ? freePositions(template.template.days, shown.weekStart, shown.slots, nowMs) : []), [shown, template, nowMs]);
   // The owner's own time is shown only where it differs from the channel's (also when his zone is unknown and the browser's is used).
   const sameZone = shown ? shown.slots.every((s) => sameClock(s, ownerZone)) : true;
@@ -386,7 +439,7 @@ export function WeeklyPlanPanel({
   const vetoedCount = shown ? shown.counts.vetoed : 0;
   const units = estimateUploadUnits({ playlist: true, deferredPublishAt: true });
   const groups = shown ? splitVetoed(shown.slots) : { live: [], vetoed: [] };
-  const weekCoverage = shown && coverage?.weekStart === shown.weekStart ? weekCoverageLine(coverage.value) : null;
+  const weekCoverage = coverage ? weekCoverageLine(coverage) : null;
   const dayLabel = (date: string) => new Intl.DateTimeFormat(language, { day: "numeric", month: "short", timeZone: "UTC" }).format(new Date(`${date}T00:00:00Z`));
 
   const viewSwitch = (
@@ -420,11 +473,11 @@ export function WeeklyPlanPanel({
       {/* Week header: arrows, the range, the state. */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
-          <button type="button" onClick={() => week && setWeek(shiftWeek(week, -1))} disabled={!week} aria-label={t("weekPlan.prevWeek")} title={t("weekPlan.prevWeek")} className="rounded-md border border-zinc-700 px-2 py-1 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-40">
+          <button type="button" onClick={() => week && goToWeek(shiftWeek(week, -1))} disabled={!week} aria-label={t("weekPlan.prevWeek")} title={t("weekPlan.prevWeek")} className="rounded-md border border-zinc-700 px-2 py-1 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-40">
             ‹
           </button>
           <h2 className="text-lg font-semibold text-zinc-100">{week ? rangeLabel(week) : t("weekPlan.none")}</h2>
-          <button type="button" onClick={() => week && setWeek(shiftWeek(week, 1))} disabled={!week} aria-label={t("weekPlan.nextWeek")} title={t("weekPlan.nextWeek")} className="rounded-md border border-zinc-700 px-2 py-1 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-40">
+          <button type="button" onClick={() => week && goToWeek(shiftWeek(week, 1))} disabled={!week} aria-label={t("weekPlan.nextWeek")} title={t("weekPlan.nextWeek")} className="rounded-md border border-zinc-700 px-2 py-1 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-40">
             ›
           </button>
           {week && <span className={`ml-1 rounded-md px-2 py-0.5 text-xs font-medium ring-1 ${stateStyle}`}>{t(stateKey)}</span>}
@@ -432,7 +485,7 @@ export function WeeklyPlanPanel({
       </div>
 
       {error && <p className="rounded-md border border-red-900 bg-red-950/40 px-3 py-2 text-sm text-red-300">{error}</p>}
-      {!summaries && !error && <SkeletonLines lines={4} />}
+      {weekLoading && !error && <SkeletonLines lines={4} />}
 
       {shown && (
         <p className="text-sm text-zinc-500">
@@ -440,7 +493,7 @@ export function WeeklyPlanPanel({
         </p>
       )}
 
-      {plan === "none" && week && <p className="rounded-lg border border-dashed border-zinc-700 px-4 py-6 text-center text-sm text-zinc-400">{t("weekPlan.noPlan")}</p>}
+      {week && loaded?.week === week && loaded.plan === "none" && <p className="rounded-lg border border-dashed border-zinc-700 px-4 py-6 text-center text-sm text-zinc-400">{t("weekPlan.noPlan")}</p>}
 
       {shown && (
         <>
@@ -458,7 +511,7 @@ export function WeeklyPlanPanel({
             // BL-235 (owner msg 3806): the truth on YouTube next to the approvals -- a day is closed when a video is scheduled or
             // published on it with every tracked translation. It decides nothing here.
             <p
-              title={t("weekPlan.coverage.hint", { time: coverage?.value.asOf ? at(coverage.value.asOf) : t("weekPlan.coverage.never") })}
+              title={t("weekPlan.coverage.hint", { time: coverage?.asOf ? at(coverage.asOf) : t("weekPlan.coverage.never") })}
               className={`rounded-lg border px-4 py-2 text-sm ${weekCoverage.covered === weekCoverage.total ? "border-emerald-900 bg-emerald-950/30 text-emerald-200" : "border-yellow-800/70 bg-yellow-950/20 text-zinc-200"}`}
             >
               <span className="font-medium">{t("weekPlan.coverage.closed", { covered: weekCoverage.covered, total: weekCoverage.total })}</span>
