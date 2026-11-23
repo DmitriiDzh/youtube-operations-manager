@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ThumbnailReplaceButton } from "./thumbnail-replace";
 import { SlotSocialPreview } from "./slot-social-preview";
 import { OrientationIcon } from "./orientation-icon";
@@ -120,6 +120,15 @@ const STEP_STYLES: Record<PipelineStepState, string> = {
   failed: "border-red-800 bg-red-950/70 text-red-300",
   todo: "border-zinc-800 bg-zinc-900 text-zinc-500",
 };
+// Owner TG 4784: the slot rows share the list's columns (CSS subgrid) -- day, thumbnail, title, the step chain, and, where the list
+// is wide enough for the widest set of buttons (the `@container` holding the lists), the buttons. Narrower, the buttons take a
+// second line under the title and the chain, so they never move the chain either. Phones (below md) keep the stacked card.
+const ROWS_GRID = "md:grid md:grid-cols-[7.5rem_6rem_minmax(0,1fr)_max-content] md:gap-x-3 @min-[90rem]:grid-cols-[7.5rem_6rem_minmax(0,1fr)_max-content_max-content]";
+const ROW_ITEM = "md:col-span-full md:grid md:grid-cols-subgrid";
+const ROW_MAIN = "grid grid-cols-[6.5rem_1fr] items-center gap-3 px-4 py-3 md:col-span-full md:grid-cols-subgrid md:gap-y-2";
+const ROW_CHAIN = "col-span-2 md:col-span-1";
+const ROW_ACTIONS = "col-span-2 flex flex-wrap justify-end gap-2 md:col-span-2 md:col-start-3 @min-[90rem]:col-span-1 @min-[90rem]:col-start-5 @min-[90rem]:flex-nowrap";
+const SIZER_ACTIONS = "hidden flex-col gap-1 @min-[90rem]:col-start-5 @min-[90rem]:flex";
 const STATE_STYLES: Record<PlanSummaryDto["state"] | "none", string> = {
   awaiting_approval: "bg-amber-500/15 text-amber-300 ring-amber-500/30",
   planned: "bg-sky-500/15 text-sky-300 ring-sky-500/30",
@@ -530,9 +539,10 @@ export function WeeklyPlanPanel({
           {shown.slots.length === 0 ? (
             <p className="rounded-lg border border-dashed border-zinc-700 px-4 py-6 text-center text-sm text-zinc-400">{t("weekPlan.emptyPlan")}</p>
           ) : (
-            <div className="space-y-2">
+            <div className="@container space-y-2">
               {groups.live.length > 0 && (
-                <ul className="divide-y divide-zinc-800 overflow-hidden rounded-lg border border-zinc-800">
+                <ul className={`divide-y divide-zinc-800 overflow-hidden rounded-lg border border-zinc-800 ${ROWS_GRID}`}>
+                  <ColumnSizer />
                   {groups.live.map(({ slot, number }) => renderRow(slot, number))}
                 </ul>
               )}
@@ -547,7 +557,12 @@ export function WeeklyPlanPanel({
                     <span>{t(showVetoed ? "weekPlan.vetoedGroup.hide" : "weekPlan.vetoedGroup.show", { count: groups.vetoed.length })}</span>
                     <span aria-hidden>{showVetoed ? "▴" : "▾"}</span>
                   </button>
-                  {showVetoed && <ul className="divide-y divide-zinc-800 border-t border-zinc-800">{groups.vetoed.map(({ slot, number }) => renderRow(slot, number))}</ul>}
+                  {showVetoed && (
+                    <ul className={`divide-y divide-zinc-800 border-t border-zinc-800 ${ROWS_GRID}`}>
+                      <ColumnSizer />
+                      {groups.vetoed.map(({ slot, number }) => renderRow(slot, number))}
+                    </ul>
+                  )}
                 </div>
               )}
             </div>
@@ -709,10 +724,19 @@ function SlotRow(props: {
   // BL-243: a video deleted on YouTube is not there any more (its id is kept only to show which one it was).
   const afterUpload = !deletedOnYoutube(slot) && (slot.videoId !== null || slot.status === "uploading" || slot.status === "scheduled" || slot.status === "published");
 
+  // The buttons on the right, each by its own rule (restore and pull never together; revoke and the explicit date never together).
+  const showThumb = slot.videoId !== null && !deletedOnYoutube(slot);
+  const showRestore = canAct && slot.vetoed !== null;
+  const showRevoke = canAct && !slot.vetoed && mode === "one" && slot.approval === "approved";
+  const showDate = canAct && mode === "one" && canApprove(slot) && slot.dating?.source !== "template";
+  const showRetime = props.nowMs > 0 && canRetime(slot, props.nowMs) && !props.editing;
+  const showVeto = canAct && !slot.vetoed;
+
   return (
-    <li className={changed ? "bg-amber-950/20" : slot.vetoed ? "bg-zinc-950/40" : undefined}>
-      <div className="grid grid-cols-[6.5rem_1fr] items-center gap-3 px-4 py-3 md:grid-cols-[6.5rem_6rem_minmax(0,1fr)_auto_auto]">
-        <div className={slot.vetoed ? "text-zinc-500" : "text-zinc-100"}>
+    <li className={`${ROW_ITEM} ${changed ? "bg-amber-950/20" : slot.vetoed ? "bg-zinc-950/40" : ""}`}>
+      <div className={ROW_MAIN}>
+        {/* On a phone the day and time take the whole line (the thumbnail column is hidden there). */}
+        <div className={`col-span-2 md:col-span-1 ${slot.vetoed ? "text-zinc-500" : "text-zinc-100"}`}>
           <div className={`text-sm font-medium ${slot.vetoed ? "line-through" : ""}`}>{dayLabel}</div>
           {/* BL-267 (O6, AC-WT-43): the owner's own time with UTC beside it; the channel's time on hover. */}
           <div className="text-sm" title={t("weekTemplate.channelTime", { time: wall.time, zone: plan.timeZone })}>
@@ -774,52 +798,44 @@ function SlotRow(props: {
             </div>
           )}
         </div>
-        <div className="col-span-2 md:col-span-1" aria-label={t("weekPlan.pipelineLabel")}>
-          {pipeline ? (
-            <ol className="flex flex-wrap items-center gap-1 text-[11px]">
-              {pipeline.map((step, i) => (
-                <li key={step.step} className="flex items-center gap-1">
-                  {i > 0 && <span aria-hidden className="text-zinc-600">›</span>}
-                  <span className={`rounded border px-1.5 py-0.5 ${STEP_STYLES[step.state]}`}>{t(STEP_KEYS[step.step])}</span>
-                </li>
-              ))}
-            </ol>
-          ) : (
-            <span className="text-zinc-600">{t("weekPlan.none")}</span>
-          )}
+        <div className={ROW_CHAIN} aria-label={t("weekPlan.pipelineLabel")}>
+          {pipeline ? <PipelineChain steps={pipeline} /> : <span className="text-zinc-600">{t("weekPlan.none")}</span>}
         </div>
-        <div className="col-span-2 flex flex-wrap justify-end gap-2 md:col-span-1">
+        {(showThumb || showRestore || showRevoke || showDate || showRetime || showVeto) && (
+        <div className={ROW_ACTIONS}>
           {/* BL-255 (ADR 0069): an uploaded video's thumbnail can be replaced on YouTube without touching the slot or its approval. */}
-          {slot.videoId !== null && !deletedOnYoutube(slot) && <ThumbnailReplaceButton channelId={props.channelId} videoId={slot.videoId} videoNumber={pkg?.video ?? null} currentUrl={null} />}
-          {canAct && slot.vetoed && (
+          {showThumb && slot.videoId !== null && <ThumbnailReplaceButton channelId={props.channelId} videoId={slot.videoId} videoNumber={pkg?.video ?? null} currentUrl={null} />}
+          {showRestore && (
             <ActionButton busy={props.busy === `restore:${slot.slotId}`} busyLabel={t("weekPlan.action.saving")} disabled={anyBusy} onClick={() => void props.onDecide("restore", [{ slotId: slot.slotId }], `restore:${slot.slotId}`)} className="rounded-md border border-zinc-600 px-3 py-1 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-40">
               {t("weekPlan.action.restore")}
             </ActionButton>
           )}
-          {canAct && !slot.vetoed && mode === "one" && slot.approval === "approved" && (
+          {showRevoke && (
             <ActionButton busy={props.busy === `revoke:${slot.slotId}`} busyLabel={t("weekPlan.action.saving")} disabled={anyBusy} onClick={() => void props.onDecide("revoke", [{ slotId: slot.slotId, contentHash: slot.contentHash }], `revoke:${slot.slotId}`)} className="rounded-md border border-zinc-600 px-3 py-1 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-40">
               {t("weekPlan.action.revoke")}
             </ActionButton>
           )}
           {/* BL-267 (AC-WT-27): the explicit one-slot date, only where the template gives none; behind a dialog. */}
-          {canAct && mode === "one" && canApprove(slot) && slot.dating?.source !== "template" && (
+          {showDate && (
             <button type="button" disabled={anyBusy} onClick={props.onAskDate} className="rounded-md bg-violet-600 px-3 py-1 text-sm font-semibold text-white hover:bg-violet-500 disabled:opacity-40">
               {t("weekTemplate.date.action")}
             </button>
           )}
           {/* BL-256: move the slot to another day of the week or another time (not within 15 minutes of its time). */}
-          {props.nowMs > 0 && canRetime(slot, props.nowMs) && !props.editing && (
+          {showRetime && (
             <button type="button" disabled={anyBusy} onClick={props.onAskEdit} className="rounded-md border border-zinc-600 px-3 py-1 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-40">
               {t("weekPlan.action.retime")}
             </button>
           )}
-          {canAct && !slot.vetoed && (
+          {showVeto && (
             <button type="button" disabled={anyBusy || busyHere} onClick={props.onAskVeto} className="rounded-md border border-red-900 px-3 py-1 text-sm text-red-300 hover:bg-red-950/50 disabled:opacity-40">
               {t(mode === "one" ? "weekPlan.action.vetoShort" : "weekPlan.action.veto")}
             </button>
           )}
         </div>
+        )}
       </div>
+      <div className="md:col-span-full">
       {props.confirming && !slot.vetoed && (
         <div className="flex flex-wrap items-center gap-3 border-t border-red-900/60 bg-red-950/30 px-4 py-2 text-sm text-red-100" role="alert">
           <span>
@@ -844,6 +860,70 @@ function SlotRow(props: {
         </div>
       )}
       {pkg && <SlotSocialPreview channelId={props.channelId} video={pkg.video} manifestSha256={pkg.manifestSha256 ?? null} slotTime={wall.time} />}
+      </div>
+    </li>
+  );
+}
+
+/** The step chain План › Видео › Пакет › YouTube › Дата (one width in a language, whatever the states). */
+function PipelineChain({ steps }: { steps: ReadonlyArray<{ step: PipelineStep; state: PipelineStepState }> }) {
+  const t = useT();
+  return (
+    <ol className="flex flex-wrap items-center gap-0.5 text-[11px] min-[400px]:gap-1 md:flex-nowrap">
+      {steps.map((s, i) => (
+        <li key={s.step} className="flex items-center gap-0.5 whitespace-nowrap min-[400px]:gap-1">
+          {i > 0 && <span aria-hidden className="text-zinc-600">›</span>}
+          <span className={`rounded border px-1 py-0.5 min-[400px]:px-1.5 ${STEP_STYLES[s.state]}`}>{t(STEP_KEYS[s.step])}</span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+const ALL_STEPS = (["plan", "video", "package", "youtube", "date"] as const).map((step) => ({ step, state: "todo" as const }));
+
+/**
+ * Owner TG 4784: the chain's column and the buttons' column take their width from the widest content they can ever hold -- not from
+ * the rows of this week -- so the chain stands at the same place in every row and every week. An invisible first row of the list
+ * (the rows share its columns through CSS subgrid) holds the full chain and, where the buttons have their own column, every
+ * combination of buttons a row can show, in the current language, busy labels included.
+ */
+function ColumnSizer() {
+  const t = useT();
+  const plain = "whitespace-nowrap rounded-md border px-3 py-1 text-sm";
+  const thumb = <span className={plain}>{t("thumbReplace.button")}</span>;
+  const retime = <span className={plain}>{t("weekPlan.action.retime")}</span>;
+  const veto = <span className={plain}>{t("weekPlan.action.vetoShort")}</span>;
+  const saving = (
+    <span className={plain}>
+      <span className="inline-flex items-center gap-1.5">
+        <span className="inline-block h-3.5 w-3.5" />
+        {t("weekPlan.action.saving")}
+      </span>
+    </span>
+  );
+  const combos: ReactNode[][] = [
+    [thumb, <span key="r" className={plain}>{t("weekPlan.action.revoke")}</span>, retime, veto],
+    [thumb, <span key="d" className={`${plain} font-semibold`}>{t("weekTemplate.date.action")}</span>, retime, veto],
+    [thumb, saving, retime, veto],
+    [thumb, <span key="s" className={plain}>{t("weekPlan.action.restore")}</span>, retime],
+  ];
+  return (
+    <li aria-hidden className="invisible hidden h-0 overflow-hidden !border-0 md:col-span-full md:grid md:grid-cols-subgrid">
+      <div className="px-4 md:col-span-full md:grid md:grid-cols-subgrid">
+        <div className="md:col-start-4">
+          <PipelineChain steps={ALL_STEPS} />
+        </div>
+        <div className={SIZER_ACTIONS}>
+          {combos.map((combo, i) => (
+            <div key={i} className="flex flex-nowrap gap-2">
+              {combo.map((button, j) => (
+                <span key={j}>{button}</span>
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
     </li>
   );
 }

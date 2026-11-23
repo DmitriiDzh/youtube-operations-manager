@@ -323,6 +323,13 @@ FO-REQ-0040; owner msgs 3511/3534; plan `docs/roadmap/plans/WEEKLY_PUBLISHING_PL
   Видео › Пакет › YouTube › Дата, actions), amber rows for a change after approval, struck-through vetoed rows with «Вернуть»,
   the inline veto confirmation, and in «Всю неделю» the bar with the count, the quota estimate (`estimateUploadUnits`) and «Одобрить
   неделю»; «По одному» gives «Одобрить» / «Отозвать» per slot. The tab's badge reads `waiting`.
+  Owner TG 4784 (2026-11-23): the tab opens on the current week every time it is shown (`currentWeekStart` in the channel's zone =
+  the newest plan's `timeZone`, `channelZoneOf`; before the list arrives the owner's zone, else the browser's), unless the address
+  carries a deliberate `?week=<Monday>` (`weekFromSearch`); the week is known at once, so its read runs beside the list's. Week
+  reads go through `createWeekLoader` (the previous read aborted, only the newest read's answer applied; the state keeps the week it
+  belongs to, a skeleton until the selected week is read). The rows share the list's columns through CSS subgrid: the chain's track
+  and, in a list container of at least 90rem, the buttons' track are sized by an invisible first row (`ColumnSizer`) holding the full
+  chain and every button combination in the current language; narrower, the buttons take a second line under title and chain.
 - **BL-240 (ADR 0060) -- pulled and replaced slots.** The screen lists vetoed slots under one closed row (`splitVetoed`, numbers
   kept). `save` lets an agent remove a vetoed slot without an upload (also one approved before the veto) and audits it; the veto
   outlives the slot (`standingVetoOf`: `slotDecisions` still answers `vetoed` for its id, and a new slot with that id is refused
@@ -372,6 +379,8 @@ FO-REQ-0040; owner msgs 3511/3534; plan `docs/roadmap/plans/WEEKLY_PUBLISHING_PL
   The plan's `progress` port is filled by `src/lib/publishing-plan-progress/` (a composition module: the package scan, cached a
   minute, and this computer's upload rows -> `built` / `packaged` / `uploading` / `failed (code)` / `scheduled` / `published`,
   `videoId`, the package's facts), passed by `factory-channel-deps.ts` and the owner's routes. The agents' list takes `limit`.
+  Owner TG 4784: concurrent callers of one channel share the scan under way (`createPackagesReader`'s in-flight map, kept on the
+  cache object); `invalidatePackagesEntry` also forgets a read under way, and a read that began before it is not kept.
 - **Stage 3 -- uploads of approved slots** (ADR 0051 §7/§8/§10, `docs/WRITE_AUTHORIZATIONS.md` «Upload localizations»):
   - `auto-upload.ts` gets `slotDecisions` (from `src/composition/publishing-plan-slots.ts` -> the plan's `createPublishingPlansUploadCore`):
     vetoed -> skipped (`slot_vetoed`, not hashed); approved and > 15 min ahead -> `queueAutomatic({ slotPublishAt })`; else dateless.
