@@ -59,8 +59,12 @@ export type SocialJob = {
   createdAt: number;
   updatedAt: number;
   /**
-   * Owner TG 4780: the owner's explicit retry from the Web UI, waiting for the runner (null / absent: none). The runner then posts
-   * the job however late -- the 12 h window binds only the automatic start -- and clears the mark when it acts on it.
+   * Owner TG 4780: the owner's explicit retry from the Web UI, waiting for the runner (null / absent: none). The runner posts the
+   * job however late -- the 12 h window binds only the automatic start -- but never before its planned time. It clears the mark when
+   * it takes the job over, and also, with the job's own code, when it cannot act on it: `retry_slot_not_approved` (the slot is no
+   * longer approved / listed for this network), `retry_blocked` (the package's block or video is refused for this network), a
+   * refused identity read (that network's code) or `retry_expired` (older than `OWNER_RETRY_TTL_MS`). A full 24 h limit keeps the
+   * mark (`retry_waiting_quota`). No mark ever posts without the owner's fresh click once cleared.
    */
   ownerRetryAt?: number | null;
 };
@@ -85,6 +89,8 @@ export type RunnerDeps = {
     get(jobId: string): Promise<SocialJob | null>;
     /** Jobs still `uploading` / `processing` (also those whose slot no longer lists the network). */
     listActive(): Promise<SocialJob[]>;
+    /** Jobs with a pending owner retry (`ownerRetryPending`), whether or not their slot is still in the plan read. */
+    listRetries(): Promise<SocialJob[]>;
     insert(job: SocialJob): Promise<boolean>;
     update(jobId: string, set: Partial<SocialJob>): Promise<void>;
   };
@@ -105,6 +111,8 @@ export type RunnerDeps = {
 export const MAX_LATE_MS = 12 * 60 * 60_000;
 /** Meta processing that does not finish in this time fails the job (Instagram: a container expires after 24 h). */
 export const PROCESSING_TIMEOUT_MS = 60 * 60_000;
+/** An owner retry mark older than this is cleared (`retry_expired`): a retry never posts days later without a fresh click. */
+export const OWNER_RETRY_TTL_MS = 48 * 60 * 60_000;
 
 export const jobIdOf = (channelId: string, slotId: string, network: SocialNetwork) => `${channelId}|${slotId}|${network}`;
 
@@ -238,20 +246,38 @@ export function createCrossPostRunner(deps: RunnerDeps) {
     },
   };
 
+  /** The owner's retry answered without a post: the mark is cleared and the job keeps a code of its own (the owner may retry again). */
+  async function endRetry(jobId: string, errorCode: string, errorMessage: string, report: TickReport) {
+    await deps.jobs.update(jobId, { status: "failed", errorCode, errorMessage, ownerRetryAt: null, updatedAt: deps.now() });
+    report.failed.push(jobId);
+  }
+
+  const RETRY_END = {
+    expired: ["retry_expired", "The retry was not carried out within 48 hours; nothing was published. Retry again if it should still go out."],
+    notApproved: ["retry_slot_not_approved", "The slot is no longer approved for this post; the retry was dropped and nothing was published."],
+    blocked: ["retry_blocked", "The package's crossPost block or video is refused for this network; the retry was dropped and nothing was published."],
+  } as const;
+
   /**
-   * Starts a network's post. `retry`: the owner's retry of that failed job (owner TG 4780) -- no lateness window, the existing row
-   * is taken over instead of a new one inserted; every other gate (approval, identity, quota, sha256) is the same.
+   * Starts a network's post. `retry`: the owner's retry of that failed job (owner TG 4780) -- no lateness window (but never before
+   * the planned time), the existing row is taken over instead of a new one inserted; every other gate (approval, identity, quota,
+   * sha256) is the same, and a gate that refuses ends the retry with its own code (quota keeps it waiting).
    */
   async function start(entry: PlannedCrossPost, target: CrossPostTarget, plannedAt: number, report: TickReport, retry: SocialJob | null = null) {
     const network = target.network;
     const jobId = jobIdOf(entry.channelId, entry.slotId, network);
     const now = deps.now();
+    // Late is allowed for the owner's retry, early never (review 23.11): a slot moved to a later time waits for it.
+    if (now < plannedAt) return;
     const base: SocialJob = { jobId, channelId: entry.channelId, slotId: entry.slotId, video: entry.video, network, manifestSha256: entry.manifestSha256, plannedAt, status: "uploading", remoteId: null, uploadUrl: null, remotePostId: null, permalink: null, publishAttempted: false, errorCode: null, errorMessage: null, createdAt: now, updatedAt: now };
     if (!retry && now - plannedAt > MAX_LATE_MS) {
       if (await deps.jobs.insert({ ...base, status: "failed", errorCode: "missed_window", errorMessage: "This computer was not posting at the planned time." })) report.failed.push(jobId);
       return;
     }
-    if (!(await deps.plan.stillApproved(entry))) return;
+    if (!(await deps.plan.stillApproved(entry))) {
+      if (retry) await endRetry(jobId, ...RETRY_END.notApproved, report);
+      return;
+    }
     // AC-XP-8 for THIS network first (owner TG 4779): a definite refusal is recorded on this network's own job at once (it used to
     // hide behind the quota gate and end as `missed_window`); an unreachable Meta proves nothing -- the next pass asks again.
     let ctx: PostingTarget;
@@ -261,12 +287,16 @@ export function createCrossPostRunner(deps: RunnerDeps) {
       if (isTransient(error)) return;
       if (retry) {
         // The owner's retry is answered (refused again, with this network's own code); a new retry is the owner's to give.
-        await deps.jobs.update(jobId, { status: "failed", ...errorParts(error), ownerRetryAt: null, updatedAt: now });
-        report.failed.push(jobId);
+        const { errorCode, errorMessage } = errorParts(error);
+        await endRetry(jobId, errorCode, errorMessage, report);
       } else if (await deps.jobs.insert({ ...base, status: "failed", ...errorParts(error) })) report.failed.push(jobId);
       return;
     }
-    if (deps.quotaOk && !(await deps.quotaOk(entry.channelId, network).catch(() => false))) return;
+    if (deps.quotaOk && !(await deps.quotaOk(entry.channelId, network).catch(() => false))) {
+      // The owner's retry stays pending, visibly waiting for the network's 24 h limit (or the 48 h expiry).
+      if (retry && retry.errorCode !== "retry_waiting_quota") await deps.jobs.update(jobId, { errorCode: "retry_waiting_quota", errorMessage: "The retry waits for the network's 24 h posting limit; it is posted once a post fits again (within 48 hours of the retry)." });
+      return;
+    }
     if (retry) {
       // Re-read right before taking it over: still a pending retry that never sent a publishing call.
       const current = await deps.jobs.get(jobId);
@@ -310,6 +340,15 @@ export function createCrossPostRunner(deps: RunnerDeps) {
     }
   }
 
+  const retryExpired = (job: SocialJob, now: number) => typeof job.ownerRetryAt === "number" && now - job.ownerRetryAt > OWNER_RETRY_TTL_MS;
+
+  /** The owner's pending retry of a job whose slot this pass lists: expired, blocked, not yet due, or started. */
+  async function runRetry(job: SocialJob, entry: PlannedCrossPost, target: CrossPostTarget, blocked: boolean, report: TickReport) {
+    if (retryExpired(job, deps.now())) return endRetry(job.jobId, ...RETRY_END.expired, report);
+    if (blocked) return endRetry(job.jobId, ...RETRY_END.blocked, report);
+    await start(entry, target, plannedAtOf(entry, target), report, job);
+  }
+
   /** One network's pass: its slots in order, then its active jobs no slot lists any more. Never rejects; one step's throw skips only that step. */
   async function runLane(network: SocialNetwork, items: LaneItem[], entries: PlannedCrossPost[], report: TickReport) {
     const visited = new Set<string>();
@@ -320,7 +359,7 @@ export function createCrossPostRunner(deps: RunnerDeps) {
         const job = await deps.jobs.get(jobId);
         if (job) {
           if (job.status === "uploading" || job.status === "processing") await advance(job, entry, report);
-          else if (ownerRetryPending(job) && !blocked) await start(entry, target, plannedAtOf(entry, target), report, job);
+          else if (ownerRetryPending(job)) await runRetry(job, entry, target, blocked, report);
           continue;
         }
         if (blocked) continue;
@@ -347,6 +386,23 @@ export function createCrossPostRunner(deps: RunnerDeps) {
         report.errors.push(job.jobId);
       }
     }
+    // A pending owner retry whose slot this pass does not list for the network (no longer approved, its package or block changed,
+    // the network dropped from it -- or the plan read failed, which is treated the same: fail closed) is never left to post later
+    // without a fresh click: the mark is cleared with its own code.
+    let retries: SocialJob[] = [];
+    try {
+      retries = (await deps.jobs.listRetries()).filter((j) => j.network === network && !visited.has(j.jobId) && ownerRetryPending(j));
+    } catch {
+      report.errors.push(`${network}:listRetries`);
+    }
+    for (const job of retries) {
+      try {
+        const [code, message] = retryExpired(job, deps.now()) ? RETRY_END.expired : RETRY_END.notApproved;
+        await endRetry(job.jobId, code, message, report);
+      } catch {
+        report.errors.push(job.jobId);
+      }
+    }
   }
 
   async function tickOnce(): Promise<TickReport> {
@@ -358,9 +414,10 @@ export function createCrossPostRunner(deps: RunnerDeps) {
       const { targets, problems } = parseCrossPostBlock(entry.crossPost);
       const video = entry.videoFile ?? { durationSeconds: null, sizeBytes: null, width: null, height: null };
       const badNetworks = new Set([...problems, ...videoProblems(targets, video)].map((p) => p.network));
-      if (targets.length > 0 && !entry.videoSha256) continue; // a package without the video's sha256 never posts (AC-XP-10)
-      if (badNetworks.has(null)) continue; // the block itself is broken: nothing from it is posted
-      for (const target of targets) work.get(target.network)?.push({ entry, target, blocked: badNetworks.has(target.network) });
+      // A package without the video's sha256 never posts (AC-XP-10); a broken block posts nothing from it. Their targets are still
+      // listed, blocked, so an in-flight job is read on and an owner retry is answered `retry_blocked`; nothing new starts.
+      const wholeBlocked = (targets.length > 0 && !entry.videoSha256) || badNetworks.has(null);
+      for (const target of targets) work.get(target.network)?.push({ entry, target, blocked: wholeBlocked || badNetworks.has(target.network) });
     }
     const passes: Promise<void>[] = [];
     for (const network of SOCIAL_NETWORKS) {

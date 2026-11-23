@@ -617,9 +617,20 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
         out.push({ slotId: slot.slotId, weekStart: meta.weekStart, timeZone: meta.timeZone, publishAtUtc: slot.publishAtUtc, released: slot.released, vetoed: slot.vetoed !== null, approved, package: approved ? { ...current! } : null });
       }
     }
-    const videos = new Map<string, number>();
-    for (const s of out) if (s.approved && s.package) videos.set(s.package.video, (videos.get(s.package.video) ?? 0) + 1);
-    return out.map((s) => ((seen.get(s.slotId) ?? 0) > 1 || (s.package && (videos.get(s.package.video) ?? 0) > 1) ? { ...s, approved: false, package: null } : s));
+    // One video in two approved slots approves neither. Review 23.11: a slot read only through `alsoSlotIds` (past the look-back,
+    // for a retry or an in-flight job) never counts against a slot in the look-back -- an old slot of the same video must not
+    // disapprove the current one -- but is itself disapproved when its video is in any other approved slot (so the two never
+    // both post).
+    const recent = (s: SocialSlotState) => Date.parse(s.publishAtUtc) >= from;
+    const videosAll = new Map<string, number>();
+    const videosRecent = new Map<string, number>();
+    for (const s of out) {
+      if (!s.approved || !s.package) continue;
+      videosAll.set(s.package.video, (videosAll.get(s.package.video) ?? 0) + 1);
+      if (recent(s)) videosRecent.set(s.package.video, (videosRecent.get(s.package.video) ?? 0) + 1);
+    }
+    const twice = (s: SocialSlotState) => Boolean(s.package) && ((recent(s) ? videosRecent : videosAll).get(s.package!.video) ?? 0) > 1;
+    return out.map((s) => ((seen.get(s.slotId) ?? 0) > 1 || twice(s) ? { ...s, approved: false, package: null } : s));
   }
 
   /** The approvals of a slot that no later revocation of the same content cancelled -- revoked by a move (as by retime). */

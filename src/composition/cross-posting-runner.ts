@@ -1,6 +1,7 @@
 import { createCrossPostingCore, createCrossPostRunner, createSocialJobStore, postingEnabled, slotsBeyondLookback, type CrossPostRunner, type PlannedCrossPost } from "@/lib/cross-posting";
 import { listSocialAccounts } from "@/lib/db";
 import { createMetaClient } from "@/lib/social-gateway";
+import { stillApprovedVia } from "./cross-posting-approval";
 import { plannedCrossPostsOf, sha256OfFile, uploadBodyOf } from "./cross-posting-plan";
 
 // BL-252 stage 2 (ADR 0068 amendment 1 §5): the cross-posting runner of this process, composed here so `cross-posting` never imports
@@ -31,9 +32,9 @@ export function getCrossPostRunner(): CrossPostRunner {
     holder[RUNNER_KEY] = createCrossPostRunner({
       plan: {
         entries: () => allEntries(jobs),
-        // Re-read right before each publishing call: the slot still approved for the SAME manifest (released or not). The entry's own
-        // slot is read whatever its age (it is in this run because it is recent or the owner retried it; the rules are the same).
-        stillApproved: async (entry) => (await plannedCrossPostsOf(entry.channelId, { alsoSlotIds: [entry.slotId] }).catch(() => [])).some((e) => e.slotId === entry.slotId && e.manifestSha256 === entry.manifestSha256),
+        // Re-read right before each publishing call: the slot still approved for the SAME manifest (released or not), its own slot
+        // read whatever its age (`cross-posting-approval.ts`).
+        stillApproved: stillApprovedVia(plannedCrossPostsOf),
       },
       jobs,
       // AC-XP-8 per network (owner TG 4779): each network's own identity read; another network's problem never refuses it.

@@ -108,3 +108,38 @@ test("a slot named for the owner's retry is read however long ago, with the same
   vetoed.clock.now = new Date("2026-10-29T06:00:00Z");
   assert.equal((await vetoed.service.socialSlotStates(CH, { alsoSlotIds: ["s1"] }))[0].approved, false);
 });
+
+// Review 23.11 (owner TG 4780 with the rule «one video in two approved slots approves neither»): a slot read only because a retry or
+// an in-flight job names it (past the 36 h look-back) must not disapprove the CURRENT slot of the same video -- but it is itself
+// disapproved, so the two never both post. By hand: 15:00 JST = 06:00Z; s0 on Mon 26th (06:00Z), s1 on Fri 30th (06:00Z); "now" is
+// Thu 29th 06:00Z -- s0 is 72 h past (beyond the look-back), s1 is ahead.
+test("an old slot read for a retry never disapproves the current slot of the same video; the old slot itself is disapproved", async () => {
+  const h = harness();
+  await h.service.save({ channelId: CH, weekStart: WEEK, timeZone: "Asia/Tokyo", slots: [{ slotId: "s0", date: "2026-10-26", publishAt: "2026-10-26T15:00", lengthHint: "≈ 1 мин" }, { slotId: "s1", date: "2026-10-30", publishAt: "2026-10-30T15:00", lengthHint: "≈ 1 мин" }] }, "factory");
+  h.progress.set("s0", { status: "packaged", code: null, videoId: null, package: pkg("a".repeat(64)) });
+  h.progress.set("s1", { status: "packaged", code: null, videoId: null, package: pkg("c".repeat(64)) });
+  const plan: PlanView = (await h.service.get({ channelId: CH, weekStart: WEEK })).plan;
+  for (const s of plan.slots) await h.service.decide(CH, WEEK, { action: "approve", slots: [{ slotId: s.slotId, contentHash: s.contentHash }] }, "u1");
+  h.clock.now = new Date("2026-10-29T06:00:00Z");
+
+  const plain = await h.service.socialSlotStates(CH);
+  assert.deepEqual(plain.map((s) => [s.slotId, s.approved, s.package?.manifestSha256 ?? null]), [["s1", true, "c".repeat(64)]]);
+
+  const withRetry = await h.service.socialSlotStates(CH, { alsoSlotIds: ["s0"] });
+  const byId = new Map(withRetry.map((s) => [s.slotId, s]));
+  assert.equal(byId.get("s1")?.approved, true, "the current slot keeps its approval");
+  assert.equal(byId.get("s1")?.package?.manifestSha256, "c".repeat(64));
+  assert.equal(byId.get("s0")?.approved, false, "the old slot of the same video is disapproved");
+  assert.equal(byId.get("s0")?.package, null);
+});
+
+test("two current slots of one video still approve neither (the rule itself is unchanged)", async () => {
+  const h = harness();
+  await h.service.save({ channelId: CH, weekStart: WEEK, timeZone: "Asia/Tokyo", slots: [{ slotId: "s0", date: "2026-10-26", publishAt: "2026-10-26T15:00", lengthHint: "≈ 1 мин" }, { slotId: "s1", date: "2026-10-30", publishAt: "2026-10-30T15:00", lengthHint: "≈ 1 мин" }] }, "factory");
+  h.progress.set("s0", { status: "packaged", code: null, videoId: null, package: pkg("a".repeat(64)) });
+  h.progress.set("s1", { status: "packaged", code: null, videoId: null, package: pkg("c".repeat(64)) });
+  const plan: PlanView = (await h.service.get({ channelId: CH, weekStart: WEEK })).plan;
+  for (const s of plan.slots) await h.service.decide(CH, WEEK, { action: "approve", slots: [{ slotId: s.slotId, contentHash: s.contentHash }] }, "u1");
+  h.clock.now = new Date("2026-10-26T07:00:00Z"); // both within the look-back
+  assert.deepEqual((await h.service.socialSlotStates(CH)).map((s) => [s.slotId, s.approved]), [["s0", false], ["s1", false]]);
+});

@@ -62,7 +62,7 @@
 - **Этап 2 (dev be7fecc6):** публикация идёт по слоту плана недели — блок `crossPost` в манифесте `yt-release-package/2`, одно
   одобрение владельца покрывает YouTube и соцсети (SHA-256 манифеста; sha256 видео обязателен). `publishing-plans`
   `socialSlotStates` (одобрение/вето/выпуск по отдельности, только этап packaged); `src/composition/cross-posting-plan.ts` +
-  `cross-posting-runner.ts` (один исполнитель на процесс, тик раз в минуту из instrumentation). Шлюз: Instagram Reels
+  `cross-posting-runner.ts` (один исполнитель на процесс, тик раз в минуту из instrumentation; повторная проверка одобрения — `cross-posting-approval.ts`). Шлюз: Instagram Reels
   (resumable, `rupload.facebook.com`) и Reels страницы, `is_ai_generated`; каждый изменяющий вызов — за переключателем
   «Публикация в соцсети» (app_settings, выкл. по умолчанию, только Mac). Задания `social_post_jobs` (v122, device-local):
   uploading → processing → published/failed, без повторной публикации при обрыве; лимиты 24 ч (AC-XP-16); загрузка держит
@@ -76,8 +76,11 @@
 - **Повтор владельца (TG 4780):** «Повторить» в веб-интерфейсе больше не удаляет задание, а ставит отметку
   `social_post_jobs.owner_retry_at` (v123, аддитивно, device-local); исполнитель публикует такое задание даже позже 12 ч окна
   (слот этой задачи читается и старше 36 ч, `socialSlotStates(…, { alsoSlotIds })`), с теми же проверками одобрения, личности
-  сети, квоты и sha256; задание с отправленным вызовом публикации не повторяется. Автоматический поздний старт — по-прежнему
-  `missed_window`. У агентов такого инструмента нет.
+  сети, квоты и sha256; задание с отправленным вызовом публикации не повторяется (отметка ставится условным UPDATE). Не раньше
+  запланированного времени слота; отметка снимается со своим кодом, если повтор выполнить нельзя (`retry_slot_not_approved`,
+  `retry_blocked`, код проверки сети, `retry_expired` через 48 ч); при исчерпанной квоте ждёт (`retry_waiting_quota`). Instagram
+  читается отдельным запросом от страницы: его сбой останавливает только Instagram; `profile_id` из `debug_token` сверяется со
+  страницей. Автоматический поздний старт — по-прежнему `missed_window`. У агентов такого инструмента нет.
 
 ### 2.9bj YT Manager на телефоне (BL-254, `docs/roadmap/plans/MOBILE_UI_PLAN.md`) — **этап 1 IMPLEMENTED** (dev b38a79f4)
 - Ниже 768 px: `AppShell` прячет боковое меню (`max-md:hidden`), внизу `PhoneNav` (Главная · Контент · Медиа · Аналитика ·

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DomainError } from "@/lib/shared-domain";
-import { createCrossPostRunner, jobIdOf, MAX_LATE_MS, type PlannedCrossPost, type RunnerDeps, type SocialJob } from "./runner";
+import { createCrossPostRunner, jobIdOf, MAX_LATE_MS, ownerRetryPending, type PlannedCrossPost, type RunnerDeps, type SocialJob } from "./runner";
 
 // BL-252 stage 2 (ADR 0068 amendment 1; CROSS_POSTING_PLAN.md AC-XP-2/6/8/10/15) -- expectations from the plan, not the code:
 //  - nothing happens while the switch is off; nothing before the planned time; a network's own "at" moves only that network;
@@ -38,6 +38,7 @@ function harness(opts: { entries?: PlannedCrossPost[]; enabled?: boolean; approv
     jobs: {
       get: async (id) => (jobs.has(id) ? { ...jobs.get(id)! } : null),
       listActive: async () => [...jobs.values()].filter((j) => j.status === "uploading" || j.status === "processing").map((j) => ({ ...j })),
+      listRetries: async () => [...jobs.values()].filter(ownerRetryPending).map((j) => ({ ...j })),
       insert: async (job) => (jobs.has(job.jobId) ? false : (jobs.set(job.jobId, { ...job }), true)),
       update: async (id, set) => void jobs.set(id, { ...jobs.get(id)!, ...set }),
     },
@@ -193,6 +194,7 @@ test("AC-XP-8: a failed identity read fails the job before any publishing call",
     jobs: {
       get: async (id) => jobs.get(id) ?? null,
       listActive: async () => [],
+      listRetries: async () => [],
       insert: async (job) => (jobs.has(job.jobId) ? false : (jobs.set(job.jobId, job), true)),
       update: async (id, set) => void jobs.set(id, { ...jobs.get(id)!, ...set }),
     },
@@ -219,7 +221,7 @@ test("AC-XP-10: a package without the video's sha256 posts nothing; a file that 
   const calls: string[] = [];
   const runner = createCrossPostRunner({
     plan: { entries: async () => [entry()], stillApproved: async () => true },
-    jobs: { get: async (id) => jobs.get(id) ?? null, listActive: async () => [], insert: async (j) => (jobs.has(j.jobId) ? false : (jobs.set(j.jobId, j), true)), update: async (id, set) => void jobs.set(id, { ...jobs.get(id)!, ...set }) },
+    jobs: { get: async (id) => jobs.get(id) ?? null, listActive: async () => [], listRetries: async () => [], insert: async (j) => (jobs.has(j.jobId) ? false : (jobs.set(j.jobId, j), true)), update: async (id, set) => void jobs.set(id, { ...jobs.get(id)!, ...set }) },
     postingTarget: async (_c, network) => ({ network, token: "PT", pageId: "P1", accountId: network === "instagram" ? "IG1" : "P1" }),
     meta: new Proxy({}, { get: (_t, name) => async () => void calls.push(String(name)) }) as RunnerDeps["meta"],
     files: { body: (_p, size) => ({ stream: () => new Blob(["x"]).stream(), sizeBytes: size }), sha256: async () => "0".repeat(64) },
@@ -257,7 +259,7 @@ test("AC-XP-16: a network at its 24 h limit waits -- no job, nothing sent -- whi
   const calls: string[] = [];
   const runner = createCrossPostRunner({
     plan: { entries: async () => [entry()], stillApproved: async () => true },
-    jobs: { get: async (id) => jobs.get(id) ?? null, listActive: async () => [], insert: async (j) => (jobs.has(j.jobId) ? false : (jobs.set(j.jobId, j), true)), update: async (id, set) => void jobs.set(id, { ...jobs.get(id)!, ...set }) },
+    jobs: { get: async (id) => jobs.get(id) ?? null, listActive: async () => [], listRetries: async () => [], insert: async (j) => (jobs.has(j.jobId) ? false : (jobs.set(j.jobId, j), true)), update: async (id, set) => void jobs.set(id, { ...jobs.get(id)!, ...set }) },
     postingTarget: async (_c, network) => ({ network, token: "PT", pageId: "P1", accountId: network === "instagram" ? "IG1" : "P1" }),
     meta: new Proxy({}, { get: (_t, name) => async () => (calls.push(String(name)), { containerId: "C", videoId: "V", uploadUrl: "https://rupload.facebook.com/x" }) }) as RunnerDeps["meta"],
     files: { body: (_p, size) => ({ stream: () => new Blob(["x"]).stream(), sizeBytes: size }), sha256: async () => "f".repeat(64) },
@@ -277,7 +279,7 @@ test("review 14.11: a transient read failure after a publishing call keeps the j
   let now = T0 + 60_000;
   const runner = createCrossPostRunner({
     plan: { entries: async () => [], stillApproved: async () => true },
-    jobs: { get: async (id) => jobs.get(id) ?? null, listActive: async () => [...jobs.values()].filter((j) => j.status === "processing"), insert: async () => false, update: async (id, set) => void jobs.set(id, { ...jobs.get(id)!, ...set }) },
+    jobs: { get: async (id) => jobs.get(id) ?? null, listActive: async () => [...jobs.values()].filter((j) => j.status === "processing"), listRetries: async () => [], insert: async () => false, update: async (id, set) => void jobs.set(id, { ...jobs.get(id)!, ...set }) },
     postingTarget: async () => {
       throw new DomainError({ code: "social_unavailable", message: "Meta could not be reached (debug_token): timeout" });
     },

@@ -34,7 +34,12 @@ export type CrossPostingDeps = {
   /** This computer's switch «Публикация в соцсети» (app_settings JSON; off by default). */
   settings?: { read(): Promise<string | null>; write(json: string): Promise<void> };
   /** This computer's cross-posting jobs (for the screen, retries and the Facebook 24 h count). */
-  jobs?: { list(channelId: string | null): Promise<SocialJob[]>; get(jobId: string): Promise<SocialJob | null>; update(jobId: string, set: Partial<SocialJob>): Promise<void> };
+  jobs?: {
+    list(channelId: string | null): Promise<SocialJob[]>;
+    get(jobId: string): Promise<SocialJob | null>;
+    /** The owner's retry mark, set only while the job is failed, never sent a publishing call and has no post id (false otherwise). */
+    markOwnerRetry(jobId: string, at: number): Promise<boolean>;
+  };
   now: () => number;
   randomId: () => string;
 };
@@ -107,7 +112,7 @@ export function createCrossPostingServices(deps: CrossPostingDeps) {
    * every connected network. The token and Page asked about are the Facebook row's (the Page itself), else another network's own
    * (Facebook disconnected). The token never leaves this module except to the gateway through the runner.
    */
-  async function inspect(channelId: string): Promise<{ check: AccountCheck; rows: SocialAccountRow[]; token: string; pageId: string }> {
+  async function inspect(channelId: string): Promise<{ check: AccountCheck; rows: SocialAccountRow[]; token: string; pageId: string; live: MetaTokenInspection }> {
     const rows = await deps.store.list(channelId);
     const anchor = rows.find((r) => r.network === "facebook" && storedPageOf(r)) ?? rows.find((r) => storedPageOf(r));
     if (!anchor) throw new DomainError({ code: "not_found", message: `Channel ${channelId} has no connected Meta account.`, details: { channelId } });
@@ -126,7 +131,8 @@ export function createCrossPostingServices(deps: CrossPostingDeps) {
       else {
         if (missingScopes.length) problems.push("scope_missing");
         // Every Meta network posts with this one Page token: its row must name the Page asked about, and Meta must answer that Page.
-        if (storedPageOf(row) !== pageId || live.page?.pageId !== pageId) problems.push("page_mismatch");
+        // `debug_token`'s `profile_id` (the token's own Page), when Meta gives one, must be that Page too (review 23.11).
+        if (storedPageOf(row) !== pageId || live.page?.pageId !== pageId || (live.profileId !== undefined && live.profileId !== pageId)) problems.push("page_mismatch");
         problems.push(...identity.problems(row, live));
       }
       networks.push({ network, ok: problems.length === 0, problems, missingScopes, stored: row.externalId, live: live.valid ? identity.liveId(live) : null });
@@ -145,7 +151,7 @@ export function createCrossPostingServices(deps: CrossPostingDeps) {
       facebook: fb ? { stored: fb.externalId, live: live.page?.pageId ?? null, name: live.page?.pageName ?? null } : null,
       instagram: ig || live.instagram ? { stored: ig?.externalId ?? null, live: live.instagram?.igUserId ?? null, username: live.instagram?.username ?? null } : null,
     };
-    return { check, rows, token, pageId };
+    return { check, rows, token, pageId, live };
   }
 
   /** AC-XP-16, per network: the rolling 24 h count -- Instagram as Meta counts it (null: unknown), a Facebook Page by this computer's own Reels. */
@@ -289,10 +295,15 @@ export function createCrossPostingServices(deps: CrossPostingDeps) {
      * `social_account_mismatch` with `details.problems` (`not_connected` when the channel stored no account for the network).
      */
     async postingTarget(channelId: string, network: SocialNetwork): Promise<PostingTarget> {
-      const { check, rows, token, pageId } = await inspect(channelId);
+      const { check, rows, token, pageId, live } = await inspect(channelId);
       const own = check.networks.find((n) => n.network === network);
       const row = rows.find((r) => r.network === network);
       if (!own || !row) throw new DomainError({ code: "social_account_mismatch", message: `No ${network} account is connected for this channel (not_connected).`, details: { channelId, network, problems: ["not_connected"] } });
+      // Instagram unreadable for no definite reason (no answer, a 5xx, a rate limit) is not a verdict: refused as unavailable, so the
+      // runner asks again on its next pass and never fails a job (or one already publishing) for a blip. Still never posted on it.
+      if (!own.ok && live.instagramReadTransient && own.problems.length === 1 && own.problems[0] === "instagram_unreadable") {
+        throw new DomainError({ code: "social_unavailable", message: `The ${network} account could not be read just now (instagram_unreadable); asked again later.`, details: { channelId, network, problems: own.problems } });
+      }
       if (!own.ok) throw new DomainError({ code: "social_account_mismatch", message: `The connected ${network} account did not pass the check (${own.problems.join(", ")}).`, details: { channelId, network, problems: own.problems, missingScopes: own.missingScopes } });
       return { network, token, pageId, accountId: row.externalId };
     },
@@ -319,16 +330,21 @@ export function createCrossPostingServices(deps: CrossPostingDeps) {
     /**
      * The owner's retry (Web UI only; no MCP or agent path) of a failed job that never sent its publishing call. Owner TG 4780: the
      * retry is recorded on the job (`ownerRetryAt`) instead of forgetting it, and the runner then posts it however late -- the 12 h
-     * window binds only the automatic start; the slot's approval, the network's identity read and its quota still apply.
+     * window binds only the automatic start -- but never before its planned time; the slot's approval, the network's identity read
+     * and its quota still apply. A mark the runner cannot act on is cleared with its own code (slot no longer approved, network
+     * blocked, refused again) or after 48 h; the owner may then retry again.
      */
     async retryJob(raw: unknown): Promise<{ retried: boolean }> {
       const jobId = (raw as { jobId?: unknown } | null)?.jobId;
       if (typeof jobId !== "string" || !jobId) throw new DomainError({ code: "validation_failed", message: "jobId is required" });
       const job = deps.jobs ? await deps.jobs.get(jobId) : null;
       if (!job) throw new DomainError({ code: "not_found", message: "No such job on this computer." });
+      const refused = () => new DomainError({ code: "validation_failed", message: "Only a failed job that never sent its publishing call can be retried." });
       // Review 14.11: a job whose publishing call was sent may be live even without a post id -- never retried.
-      if (job.status !== "failed" || job.remotePostId || job.publishAttempted) throw new DomainError({ code: "validation_failed", message: "Only a failed job that never sent its publishing call can be retried." });
-      await deps.jobs!.update(jobId, { ownerRetryAt: deps.now() });
+      if (job.status !== "failed" || job.remotePostId || job.publishAttempted) throw refused();
+      // Review 23.11: the mark itself is conditional on the same facts, so a runner pass that took the job over between the read
+      // above and this write is never marked for another post.
+      if (!(await deps.jobs!.markOwnerRetry(jobId, deps.now()))) throw refused();
       return { retried: true };
     },
 

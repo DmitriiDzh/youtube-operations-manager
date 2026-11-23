@@ -2129,8 +2129,12 @@ export const socialPostJobs = sqliteTable(
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
     /**
-     * v123 (owner TG 4780): when the owner asked in the Web UI to retry this failed job. Pending while `>= updated_at`: the runner
-     * then starts it again however late (the 12 h window binds only the automatic start); kept as the record afterwards.
+     * v123 (owner TG 4780): when the owner asked in the Web UI to retry this failed job; null = no retry pending. Set only on a
+     * `failed` job that never sent a publishing call and has no post id (`markSocialPostJobOwnerRetry`, a conditional update). The
+     * runner starts it again however late but never before its planned time (the 12 h window binds only the automatic start), and
+     * sets it back to null when it takes the job over, when the retry is refused (identity, slot no longer approved, network
+     * blocked: each with its own error code) or when the mark is older than 48 h (`retry_expired`). While the network's 24 h limit
+     * is reached it stays set (error code `retry_waiting_quota`).
      */
     ownerRetryAt: integer("owner_retry_at", { mode: "timestamp_ms" }),
   },
@@ -17144,6 +17148,20 @@ export async function insertSocialPostJob(row: typeof socialPostJobs.$inferInser
 
 export async function updateSocialPostJob(jobId: string, set: Partial<typeof socialPostJobs.$inferInsert>, database: AppDb = db): Promise<void> {
   await database.update(socialPostJobs).set(set).where(eq(socialPostJobs.jobId, jobId));
+}
+
+/**
+ * The owner's retry mark (owner TG 4780, review 23.11): set only while the job is still `failed`, never sent a publishing call and
+ * has no post id -- in one conditional update, so a runner pass that took the job over (or published it) in between is never
+ * marked for another post. False when the row no longer qualifies.
+ */
+export async function markSocialPostJobOwnerRetry(jobId: string, at: Date, database: AppDb = db): Promise<boolean> {
+  const marked = await database
+    .update(socialPostJobs)
+    .set({ ownerRetryAt: at })
+    .where(and(eq(socialPostJobs.jobId, jobId), eq(socialPostJobs.status, "failed"), eq(socialPostJobs.publishAttempted, false), isNull(socialPostJobs.remotePostId)))
+    .returning({ jobId: socialPostJobs.jobId });
+  return marked.length === 1;
 }
 
 export async function deleteSocialPostJob(jobId: string, database: AppDb = db): Promise<void> {

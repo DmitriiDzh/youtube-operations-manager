@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { type Client } from "@libsql/client";
 import { createLibsqlClient } from "@/lib/libsql-client";
-import { createIsolatedDb, deleteSocialAccounts, getSocialPostJob, initializeDatabaseSchema, insertSocialPostJob, listSocialAccounts, SCHEMA_MIGRATIONS, updateSocialPostJob, upsertSocialAccount } from "@/lib/db";
+import { createIsolatedDb, deleteSocialAccounts, getSocialPostJob, initializeDatabaseSchema, insertSocialPostJob, listSocialAccounts, markSocialPostJobOwnerRetry, SCHEMA_MIGRATIONS, updateSocialPostJob, upsertSocialAccount } from "@/lib/db";
 import { SNAPSHOT_DEVICE_LOCAL_TABLES } from "@/lib/snapshot/contracts";
 
 // BL-252 (ADR 0068): schema v121 adds `social_accounts` -- one row per (channel, network); a second connect replaces the row.
@@ -91,5 +91,32 @@ test("schema v123 social_post_jobs.owner_retry_at: null by default, the owner's 
     assert.equal((await getSocialPostJob(job.jobId, database))?.ownerRetryAt?.getTime(), retry.getTime());
     await updateSocialPostJob(job.jobId, { ownerRetryAt: null }, database);
     assert.equal((await getSocialPostJob(job.jobId, database))?.ownerRetryAt, null);
+  });
+});
+
+// Review 23.11 (owner TG 4780: never a retry of a job whose publish call was sent): the owner's retry mark is one conditional update --
+// only a `failed` job with publish_attempted = 0 and no remote post id is marked; any other row is left untouched (false).
+test("markSocialPostJobOwnerRetry: marks only failed + never attempted + no post id; otherwise false and the row unchanged", async () => {
+  await withDb(async (client) => {
+    const database = createIsolatedDb(client);
+    const at = new Date("2026-11-20T12:00:00Z");
+    const retry = new Date("2026-11-23T10:00:00Z");
+    type Status = "failed" | "uploading" | "processing" | "published";
+    const base = { channelId: "UC1", slotId: "s6", video: "S6", network: "facebook" as const, manifestSha256: "m", plannedAt: at, status: "failed" as Status, createdAt: at, updatedAt: at };
+    const cases: Array<[string, { publishAttempted?: boolean; remotePostId?: string | null; status?: Status }, boolean]> = [
+      ["failed, never attempted", {}, true],
+      ["publish call sent", { publishAttempted: true }, false],
+      ["has a post id", { remotePostId: "V9" }, false],
+      ["taken over (uploading)", { status: "uploading" }, false],
+      ["processing", { status: "processing" }, false],
+      ["published", { status: "published", remotePostId: "V9" }, false],
+    ];
+    for (const [i, [name, over, expected]] of cases.entries()) {
+      const jobId = `UC1|s${i}|facebook`;
+      assert.equal(await insertSocialPostJob({ ...base, ...over, jobId }, database), true, name);
+      assert.equal(await markSocialPostJobOwnerRetry(jobId, retry, database), expected, name);
+      assert.equal((await getSocialPostJob(jobId, database))?.ownerRetryAt?.getTime() ?? null, expected ? retry.getTime() : null, name);
+    }
+    assert.equal(await markSocialPostJobOwnerRetry("UC1|missing|facebook", retry, database), false);
   });
 });

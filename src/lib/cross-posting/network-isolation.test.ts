@@ -3,7 +3,7 @@ import test from "node:test";
 import { DomainError } from "@/lib/shared-domain";
 import type { MetaPage, MetaTokenInspection } from "@/lib/social-gateway";
 import { createCrossPostingServices, createCrossPostRunner, type CrossPostingStore, type PlannedCrossPost, type SocialAccountRow, type SocialJob } from "./index";
-import { jobIdOf, MAX_LATE_MS, slotsBeyondLookback, type RunnerDeps } from "./runner";
+import { jobIdOf, MAX_LATE_MS, ownerRetryPending, slotsBeyondLookback, type RunnerDeps } from "./runner";
 
 /** publishing-plans' `SOCIAL_LOOKBACK_MS`: the plan's social read shows slots up to 36 h past. */
 const LOOKBACK_MS = 36 * 60 * 60_000;
@@ -90,7 +90,17 @@ async function world(opts: { entries?: PlannedCrossPost[]; igUsage?: () => Promi
       inspectPageToken: async () => inspection,
       igPublishingUsage: opts.igUsage ?? (async () => 0),
     },
-    jobs: { list: async (id) => [...jobs.values()].filter((j) => id === null || j.channelId === id), get: async (id) => jobs.get(id) ?? null, update: async (id, set) => void jobs.set(id, { ...jobs.get(id)!, ...set }) },
+    jobs: {
+      list: async (id) => [...jobs.values()].filter((j) => id === null || j.channelId === id),
+      get: async (id) => (jobs.has(id) ? { ...jobs.get(id)! } : null),
+      // As `markSocialPostJobOwnerRetry`'s WHERE (tested against SQLite in db-social-accounts.test.ts).
+      markOwnerRetry: async (id, at) => {
+        const j = jobs.get(id);
+        if (!j || j.status !== "failed" || j.publishAttempted || j.remotePostId) return false;
+        jobs.set(id, { ...j, ownerRetryAt: at });
+        return true;
+      },
+    },
     now: () => now,
     randomId: () => `random-id-${String(++n).padStart(8, "0")}`,
   });
@@ -120,6 +130,8 @@ async function world(opts: { entries?: PlannedCrossPost[]; igUsage?: () => Promi
     fbVideoStatus: () => call("fb.status", { videoStatus: "ready", publishStatus: "published", permalink: "https://facebook.com/reel/V1" }),
   };
   const entries = opts.entries ?? [slot("s6", T0)];
+  /** Slots whose approval the re-check right before a publishing call no longer finds (the plan read itself unchanged). */
+  const unapproved = new Set<string>();
   const runner = createCrossPostRunner({
     // As the composition reads the plan: the slots of the last 36 h (publishing-plans' look-back), plus `slotsBeyondLookback`;
     // the approval re-check reads the entry's own slot whatever its age.
@@ -128,11 +140,12 @@ async function world(opts: { entries?: PlannedCrossPost[]; igUsage?: () => Promi
         const extra = slotsBeyondLookback([...jobs.values()], "UC1");
         return entries.filter((e) => now - e.publishAt <= LOOKBACK_MS || extra.includes(e.slotId));
       },
-      stillApproved: async (entry) => entries.some((e) => e.slotId === entry.slotId && e.manifestSha256 === entry.manifestSha256),
+      stillApproved: async (entry) => !unapproved.has(entry.slotId) && entries.some((e) => e.slotId === entry.slotId && e.manifestSha256 === entry.manifestSha256),
     },
     jobs: {
       get: async (id) => (jobs.has(id) ? { ...jobs.get(id)! } : null),
       listActive: async () => [...jobs.values()].filter((j) => j.status === "uploading" || j.status === "processing").map((j) => ({ ...j })),
+      listRetries: async () => [...jobs.values()].filter(ownerRetryPending).map((j) => ({ ...j })),
       insert: async (job) => (jobs.has(job.jobId) ? false : (jobs.set(job.jobId, { ...job }), true)),
       update: async (id, set) => void jobs.set(id, { ...jobs.get(id)!, ...set }),
     },
@@ -147,6 +160,8 @@ async function world(opts: { entries?: PlannedCrossPost[]; igUsage?: () => Promi
   return {
     core,
     runner,
+    entries,
+    unapproved,
     rows,
     jobs,
     calls,
@@ -494,4 +509,194 @@ test("retry: an Instagram job 3 days late, retried by the owner, reaches its pub
   await w.runner.tick(); // FINISHED -> publish: needs the slot's entry on this later pass
   assert.equal(w.job("s6", "instagram")!.status, "published");
   assert.ok(w.calls.includes("ig.publish 1784"));
+});
+
+// ----- review 23.11: the retry's own limits and Instagram's read apart from the Page -----
+// Requirement (owner TG 4779/4780): the owner's explicit retry posts a failed job however late but never early, never one whose
+// publish call was sent, and never later without a fresh owner action once it can no longer be carried out. Expected values by hand.
+
+const IG_ONLY = { instagram: { caption: "IG" } };
+const HOUR = 60 * 60_000;
+
+test("retry: a slot moved to tomorrow, then retried, posts nothing today; it is posted at its new time", async () => {
+  const w = await world({ entries: [slot("s6", T0 + 4 * DAY, { crossPost: FB_ONLY })] }); // the slot now at T0+4d
+  const id = jobIdOf("UC1", "s6", "facebook");
+  w.jobs.set(id, failedFacebookJob("s6", T0));
+  w.at(T0 + 3 * DAY);
+  await w.core.retryJob({ jobId: id });
+  await w.run();
+  assert.deepEqual(w.calls, [], "nothing posted before the slot's time");
+  assert.equal(w.job("s6", "facebook")!.status, "failed");
+  assert.equal(w.job("s6", "facebook")!.ownerRetryAt, T0 + 3 * DAY, "the retry still waits");
+  w.at(T0 + 4 * DAY);
+  await w.run();
+  assert.equal(w.job("s6", "facebook")!.status, "published");
+  assert.equal(w.job("s6", "facebook")!.plannedAt, T0 + 4 * DAY);
+});
+
+test("retry: the slot no longer in the approved plan -> the mark is cleared (retry_slot_not_approved); re-approval never posts without a new click", async () => {
+  const w = await world({ entries: [slot("s6", T0, { crossPost: FB_ONLY })] });
+  const id = jobIdOf("UC1", "s6", "facebook");
+  w.jobs.set(id, failedFacebookJob("s6", T0));
+  w.at(T0 + 3 * DAY);
+  await w.core.retryJob({ jobId: id });
+  const kept = w.entries.splice(0);
+  await w.run();
+  assert.equal(w.job("s6", "facebook")!.status, "failed");
+  assert.equal(w.job("s6", "facebook")!.errorCode, "retry_slot_not_approved");
+  assert.equal(w.job("s6", "facebook")!.ownerRetryAt, null);
+  w.entries.push(...kept);
+  await w.run();
+  assert.equal(w.job("s6", "facebook")!.status, "failed");
+  assert.deepEqual(w.calls, []);
+  // The owner may retry again, and that click posts it.
+  assert.deepEqual(await w.core.retryJob({ jobId: id }), { retried: true });
+  await w.run();
+  assert.equal(w.job("s6", "facebook")!.status, "published");
+});
+
+test("retry: listed in the plan read but refused by the approval re-check -> retry_slot_not_approved, the mark cleared, nothing sent", async () => {
+  const w = await world({ entries: [slot("s6", T0, { crossPost: FB_ONLY })] });
+  const id = jobIdOf("UC1", "s6", "facebook");
+  w.jobs.set(id, failedFacebookJob("s6", T0));
+  w.at(T0 + 3 * DAY);
+  await w.core.retryJob({ jobId: id });
+  w.unapproved.add("s6");
+  await w.run();
+  assert.equal(w.job("s6", "facebook")!.errorCode, "retry_slot_not_approved");
+  assert.equal(w.job("s6", "facebook")!.ownerRetryAt, null);
+  w.unapproved.clear();
+  await w.run();
+  assert.deepEqual(w.calls, []);
+});
+
+test("retry: the network blocked for the slot (the package lost its video sha256) -> retry_blocked, the mark cleared, nothing sent", async () => {
+  const w = await world({ entries: [slot("s6", T0, { crossPost: FB_ONLY })] });
+  const id = jobIdOf("UC1", "s6", "facebook");
+  w.jobs.set(id, failedFacebookJob("s6", T0));
+  w.at(T0 + 3 * DAY);
+  await w.core.retryJob({ jobId: id });
+  w.entries[0] = slot("s6", T0, { crossPost: FB_ONLY, videoSha256: null });
+  await w.run();
+  assert.equal(w.job("s6", "facebook")!.errorCode, "retry_blocked");
+  assert.equal(w.job("s6", "facebook")!.ownerRetryAt, null);
+  w.entries[0] = slot("s6", T0, { crossPost: FB_ONLY });
+  await w.run();
+  assert.deepEqual(w.calls, []);
+});
+
+test("retry: Instagram's 24 h limit unknown/full -> the retry stays pending, shown as retry_waiting_quota; posted once a post fits", async () => {
+  let usage: number | null = null;
+  const w = await world({ entries: [slot("s6", T0, { crossPost: IG_ONLY })], igUsage: async () => usage });
+  const id = jobIdOf("UC1", "s6", "instagram");
+  w.jobs.set(id, { ...failedFacebookJob("s6", T0), jobId: id, network: "instagram", errorCode: "missed_window" });
+  w.at(T0 + 3 * DAY);
+  await w.core.retryJob({ jobId: id });
+  await w.run();
+  assert.equal(w.job("s6", "instagram")!.status, "failed");
+  assert.equal(w.job("s6", "instagram")!.errorCode, "retry_waiting_quota");
+  assert.equal(w.job("s6", "instagram")!.ownerRetryAt, T0 + 3 * DAY);
+  assert.ok(noIgCall(w.calls));
+  usage = 0;
+  w.at(T0 + 3 * DAY + HOUR);
+  await w.run();
+  assert.equal(w.job("s6", "instagram")!.status, "published");
+  assert.equal(w.job("s6", "instagram")!.errorCode, null);
+});
+
+test("retry: a mark older than 48 h is cleared (retry_expired) -- exactly 48 h still waits; the post never goes out without a new click", async () => {
+  const w = await world({ entries: [slot("s6", T0 + 6 * DAY, { crossPost: FB_ONLY })] }); // the slot moved 3 days past the retry
+  const id = jobIdOf("UC1", "s6", "facebook");
+  w.jobs.set(id, failedFacebookJob("s6", T0));
+  w.at(T0 + 3 * DAY);
+  await w.core.retryJob({ jobId: id });
+  w.at(T0 + 3 * DAY + 48 * HOUR);
+  await w.run();
+  assert.equal(w.job("s6", "facebook")!.ownerRetryAt, T0 + 3 * DAY, "48 h exactly: still pending");
+  w.at(T0 + 3 * DAY + 48 * HOUR + 60_000);
+  await w.run();
+  assert.equal(w.job("s6", "facebook")!.errorCode, "retry_expired");
+  assert.equal(w.job("s6", "facebook")!.ownerRetryAt, null);
+  w.at(T0 + 6 * DAY);
+  await w.run();
+  assert.equal(w.job("s6", "facebook")!.status, "failed");
+  assert.deepEqual(w.calls, []);
+});
+
+test("retry: an expired mark whose slot is no longer listed is cleared as retry_expired", async () => {
+  const w = await world({ entries: [slot("s6", T0, { crossPost: FB_ONLY })] });
+  const id = jobIdOf("UC1", "s6", "facebook");
+  w.jobs.set(id, failedFacebookJob("s6", T0, { ownerRetryAt: T0 + DAY }));
+  w.entries.splice(0);
+  w.at(T0 + 3 * DAY + 60_000); // 48 h 1 min after the mark
+  await w.run();
+  assert.equal(w.job("s6", "facebook")!.errorCode, "retry_expired");
+  assert.equal(w.job("s6", "facebook")!.ownerRetryAt, null);
+});
+
+test("retry click race: the job taken over (or published) between the read and the mark is not marked -- refused, no mark", async () => {
+  const stored: SocialJob = failedFacebookJob("s6", T0);
+  const marks: string[] = [];
+  const core = createCrossPostingServices({
+    store: { channelExists: async () => true, list: async () => [], upsert: async () => undefined, remove: async () => 0 },
+    appSecret: { read: async () => null, write: async () => ({ hints: {}, status: null, verifiedAt: null, updatedAt: 0, version: "v" }), clear: async () => undefined, info: async () => null },
+    sealer: { seal: async () => null, open: async () => null },
+    meta: { authorizeUrl: () => "", exchangeCode: async () => ({ userToken: "", expiresAt: null }), listPages: async () => [], inspectPageToken: async () => HEALTHY },
+    // `get` still sees the failed job; by the time of the mark the runner has taken it over (the conditional update finds no row).
+    jobs: { list: async () => [stored], get: async () => ({ ...stored }), markOwnerRetry: async (jobId) => (marks.push(jobId), false) },
+    now: () => T0,
+    randomId: () => "r",
+  });
+  await assert.rejects(core.retryJob({ jobId: stored.jobId }), (e: unknown) => e instanceof DomainError && e.code === "validation_failed");
+  assert.deepEqual(marks, [stored.jobId], "the mark was attempted once, conditionally");
+});
+
+test("Instagram read failing for no definite reason (5xx) while the Page answers: Facebook posts, Instagram is instagram_unreadable and waits", async () => {
+  const w = await world();
+  w.setInspection({ ...HEALTHY, instagram: null, instagramUnreadable: true, instagramReadTransient: true });
+  const check = await w.core.checkAccounts("UC1");
+  assert.deepEqual(check.networks.map((n) => [n.network, n.ok, n.problems]), [["facebook", true, []], ["instagram", false, ["instagram_unreadable"]]]);
+  await w.run();
+  assert.equal(w.job("s6", "facebook")!.status, "published");
+  assert.equal(w.job("s6", "instagram"), undefined, "no Instagram job: a blip is no verdict, the next pass asks again");
+  assert.ok(noIgCall(w.calls));
+  // Readable again: Instagram is posted on a later pass (within its window).
+  w.setInspection(HEALTHY);
+  await w.run();
+  assert.equal(w.job("s6", "instagram")!.status, "published");
+});
+
+test("Instagram read failing for no definite reason never fails an Instagram job already processing", async () => {
+  const w = await world();
+  const id = jobIdOf("UC1", "s6", "instagram");
+  w.jobs.set(id, { ...failedFacebookJob("s6", T0), jobId: id, network: "instagram", status: "processing", remoteId: "C1", errorCode: null, errorMessage: null, updatedAt: T0 });
+  w.setInspection({ ...HEALTHY, instagram: null, instagramUnreadable: true, instagramReadTransient: true });
+  await w.runner.tick();
+  assert.equal(w.job("s6", "instagram")!.status, "processing");
+  assert.ok(!w.calls.includes("ig.publish 1784"));
+});
+
+test("Instagram refused by Meta definitely (4xx) while the Page answers: Facebook posts, Instagram failed instagram_unreadable", async () => {
+  const w = await world();
+  w.setInspection({ ...HEALTHY, instagram: null, instagramUnreadable: true });
+  await w.run();
+  assert.equal(w.job("s6", "facebook")!.status, "published");
+  assert.equal(w.job("s6", "instagram")!.errorCode, "instagram_unreadable");
+  assert.ok(noIgCall(w.calls));
+});
+
+test("debug_token's profile_id names another Page -> both refused page_mismatch, nothing sent; the stored Page's id passes", async () => {
+  const w = await world();
+  w.setInspection({ ...HEALTHY, profileId: "222" });
+  const check = await w.core.checkAccounts("UC1");
+  assert.deepEqual(check.networks.map((n) => [n.network, n.problems]), [["facebook", ["page_mismatch"]], ["instagram", ["page_mismatch"]]]);
+  await assert.rejects(w.core.postingTarget("UC1", "facebook"), isMismatch("page_mismatch"));
+  await w.run();
+  assert.equal(w.job("s6", "facebook")!.errorCode, "page_mismatch");
+  assert.equal(w.job("s6", "instagram")!.errorCode, "page_mismatch");
+  assert.ok(noPostingCall(w.calls));
+
+  const same = await world();
+  same.setInspection({ ...HEALTHY, profileId: "111" });
+  assert.equal((await same.core.checkAccounts("UC1")).ok, true);
 });

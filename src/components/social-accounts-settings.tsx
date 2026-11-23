@@ -669,14 +669,18 @@ export function SocialAccountsSettings() {
                             {t("social.job.open")}
                           </a>
                         )}
-                        {j.status === "failed" && (
+                        {j.status === "failed" && j.errorCode !== "retry_waiting_quota" && (
                           <span className="text-zinc-500">
                             {j.errorMessage ?? j.errorCode}
                           </span>
                         )}
                         {j.status === "failed" && typeof j.ownerRetryAt === "number" && (
                           <span className="text-amber-300">
-                            {t("social.job.retryPending")}
+                            {t(
+                              j.errorCode === "retry_waiting_quota"
+                                ? "social.job.retryWaitingQuota"
+                                : "social.job.retryPending",
+                            )}
                           </span>
                         )}
                         {j.status === "failed" && !j.remotePostId && !j.publishAttempted && typeof j.ownerRetryAt !== "number" && (
