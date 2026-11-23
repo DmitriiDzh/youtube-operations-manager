@@ -45,8 +45,8 @@ Scenes (Tropico now, Japan and WWE later) are made in two steps: a master still 
    created only by the image-review routes (source scan).
 5. **Each owner decision wakes the Producer** exactly as clip decisions (ADR 0066): review-notify kind `image`, one file
    `REVIEW-DECISION-image-<imageId>-<decisionId>.md` with the status and his words, written by the periodic writer, nudged by the
-   decision. When an owner return made earlier on the other computer arrives after the Producer was told about a later approval, the
-   return decides; the Producer also gets `REVIEW-DECISION-image-<imageId>-<approvalId>-overturned-by-<returnId>.md` (status
+   decision. When an owner return decides an image that also has a later owner approval (the two computers answered separately), the
+   return decides; whichever reached this computer first, the Producer also gets `REVIEW-DECISION-image-<imageId>-<approvalId>-overturned-by-<returnId>.md` (status
    `approval_overturned`): the approval no longer counts, and a clip made from the image shows the owner its source as returned
    (review fix; the clip card shows the source still's current status and highlights anything but the two approvals).
 6. **Link to clips:** `producer_clip_review_submit` takes an optional `approvedImageId`, stored on the clip (an additive field in the

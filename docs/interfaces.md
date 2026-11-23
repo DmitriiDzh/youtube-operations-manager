@@ -1742,8 +1742,8 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
     submittedAt, device, status: pending | approved | approved_with_note | returned | withdrawn, comment, decidedAt, decidedOn }`;
     `comment` is the owner's words, always on `approved_with_note` (approved; apply the note) and `returned`, null otherwise. Shared by
     both computers (sync family `image_reviews`); the earliest owner answer counts, a withdrawal only without one. Each owner answer
-    also writes `REVIEW-DECISION-image-<imageId>-<decisionId>.md` into the Producer's Inbox (ADR 0066, kind `image`). An owner
-    return made earlier on the other computer that syncs in after a later approval also writes
+    also writes `REVIEW-DECISION-image-<imageId>-<decisionId>.md` into the Producer's Inbox (ADR 0066, kind `image`). When an
+    owner return decides an image that also has a later owner approval (two computers answered separately; either arrival order), it also writes
     `REVIEW-DECISION-image-<imageId>-<approvalId>-overturned-by-<returnId>.md` with status `approval_overturned` (the approval no
     longer counts; the image is returned).
 - **Image review owner routes (Web session + active channel):** `GET /api/channels/[channelId]/image-reviews` → `{ images (each also

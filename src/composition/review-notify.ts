@@ -119,10 +119,11 @@ const decisionText = (d: ImageReviewDecision) => `${d.id} (${d.kind}, ${d.at}${d
 
 /**
  * An owner `approved` / `approved_with_note` / `returned` record of an image; never the Producer's withdrawal or a submit. Review
- * (BL-272 item 2): when an owner RETURN made earlier (offline, on the other computer) arrives after a later approval, the earlier
- * return decides (ADR 0061 §5) -- the Producer gets one more notice per overturned approval (`approval_overturned`, its own id
- * `<approvalId>-overturned-by-<returnId>`, dated as the approval so it is in the window exactly when that approval's notice was):
- * the approval no longer counts and a clip made from the image shows its source as returned.
+ * (BL-272 item 2): when the deciding record is an owner RETURN and the document also holds a LATER owner approval (the two computers
+ * answered offline; the earlier return decides, ADR 0061 §5), the Producer gets one more notice per such approval
+ * (`approval_overturned`, its own id `<approvalId>-overturned-by-<returnId>`, dated as the approval so it is in the window exactly when
+ * that approval's notice was): the approval does not count and a clip made from the image shows its source as returned. It is written
+ * whichever record reached this computer first (the writer cannot know which notice the Producer read first).
  */
 export function imageNoticesOf(channel: Channel, snapshot: ImageReviewsSnapshot, sinceMs: number): ReviewDecisionNotice[] {
   const all = Object.values(snapshot.decisions);
@@ -167,7 +168,7 @@ export function imageNoticesOf(channel: Channel, snapshot: ImageReviewsSnapshot,
         context: [
           ...imageContext(image),
           { label: "Approval that no longer counts", value: decisionText(decision) },
-          { label: "Decided by", value: `an earlier owner return ${decisionText(deciding)}, synced to this computer after the approval: the earliest owner decision counts` },
+          { label: "Decided by", value: `an earlier owner return ${decisionText(deciding)} (the two computers answered separately): the earliest owner decision counts` },
           {
             label: "Next",
             value: `the image is RETURNED, not approved: do not make a clip from it (approvedImageId ${decision.imageId} is refused now); a clip already sent with it shows the owner its source as returned -- rework the image as the comment says and submit the new file (same sceneId)`,

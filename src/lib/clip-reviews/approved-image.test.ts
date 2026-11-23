@@ -80,7 +80,7 @@ async function coreWith(docs: Record<string, ImageReviewsSnapshot>) {
 const imageCore = coreWith(imageDocs);
 const imageOf: NonNullable<ClipReviewsPorts["imageOf"]> = async (channelId, imageId) => createClipSourceImageLookup(await imageCore)(channelId, imageId);
 
-function setup(withPort = true) {
+function setup(withPort = true, lookup: NonNullable<ClipReviewsPorts["imageOf"]> = imageOf) {
   const docs = new Map<string, ClipReviewsSnapshot>();
   const doc = (channelId: string) => docs.get(channelId) ?? (docs.set(channelId, { clips: {}, decisions: {} }), docs.get(channelId)!);
   const unused = async (): Promise<never> => {
@@ -107,7 +107,7 @@ function setup(withPort = true) {
     logError: () => undefined,
     staging: { create: unused, get: unused, list: unused, append: unused, head: unused, readAll: unused, hash: unused, remove: unused, removeOlderThan: unused },
     attachmentFiles: { write: unused, remove: unused, resolve: unused },
-    ...(withPort ? { imageOf } : {}),
+    ...(withPort ? { imageOf: lookup } : {}),
   };
   return { service: createClipReviewsService(ports), stored: (channelId: string) => Object.values(doc(channelId).clips) };
 }
@@ -187,4 +187,16 @@ test("BL-272 (review): the production imageOf port -- another channel's image is
   assert.equal(await lookup(A, "i_foreign"), null);
   assert.equal(await lookup(A, "i_missing"), null);
   assert.equal(await lookup(B, "i_none"), null);
+});
+
+// Review (item 2): `approvedImage: null` means "this computer's stills do not have it yet" (the image document has not synced here).
+// The clip stays listed; the card then names the still instead of showing it.
+test("BL-272 (review): a clip whose source still is not in this computer's image reviews lists with approvedImage null", async () => {
+  // Submitted while the image reviews had the approved still; listed on a computer whose stills document is still empty.
+  let current: NonNullable<ClipReviewsPorts["imageOf"]> = imageOf;
+  const { service } = setup(true, (channelId, imageId) => current(channelId, imageId));
+  const { clip } = await service.submit(submit("img_ok"), producer);
+  current = createClipSourceImageLookup(memoryImageCore());
+  const owner = await service.ownerList(A);
+  assert.deepEqual(owner.clips.map((c) => [c.clipId, c.approvedImageId, c.approvedImage]), [[clip.clipId, "img_ok", null]]);
 });

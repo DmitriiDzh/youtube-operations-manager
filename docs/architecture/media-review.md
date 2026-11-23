@@ -343,6 +343,6 @@ On branch `feature/bl-229-music-library`. No schema change; no YouTube call; not
   (`MEDIA_TABS` value `stills`, before `clips`), own error boundary in `production-panel.tsx`. The full-size viewer is an in-page layer
   with `useDialogFocus` (no browser dialog); its keys are the pure `image-reviews-model.viewerKeyAction` (Esc cancels an open
   confirmation first; at 100 % the arrows scroll by ref, PageUp / PageDown switch stills).
-- **Wake:** review-notify kind `image` (`composition/review-notify.ts` `imageNoticesOf`, source "images"). An earlier owner return
-  synced after a later approval adds one notice per overridden approval: status `approval_overturned`, decision id
+- **Wake:** review-notify kind `image` (`composition/review-notify.ts` `imageNoticesOf`, source "images"). A deciding owner return
+  with a later owner approval in the document (either arrival order) adds one notice per overridden approval: status `approval_overturned`, decision id
   `<approvalId>-overturned-by-<returnId>`, dated as the approval; the return's own notice carries an "Overturns" line.
