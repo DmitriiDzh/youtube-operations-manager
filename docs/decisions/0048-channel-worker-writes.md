@@ -24,7 +24,7 @@ Status: Accepted
    `GRANTED_PERMISSIONS` becomes `READ`, `DRAFT`, `EXECUTE`. `APPROVE` is still never granted: a worker never approves its own
    drafts (Change Sets, media sessions, collection requests stay owner-approved). A test ties the inventory to the channel tool
    registry in both directions.
-2. **Never public.** In an agent session `playlist_create` and `playlist_update` refuse `privacyStatus: "public"` with
+2. **Never public** (lifted for playlists by Amendment 1, 2026-11-23 -- a video still never). In an agent session `playlist_create` and `playlist_update` refuse `privacyStatus: "public"` with
    `AGENT_PUBLIC_NOT_ALLOWED` (`src/lib/channel-access`'s agent scope, checked by the playlist core right after input validation, before any credential or YouTube call). The owner's
    Web UI is unchanged.
 3. **No playlist delete.** `playlist_delete` becomes `operator-only` (not registered for a worker). It cannot be undone; a worker
@@ -54,3 +54,30 @@ Status: Accepted
   The media wiring stays outside `src/mcp` (`src/app/api/mcp/factory-media-deps.ts`, injected by the channel agents' route).
 - `docs/AGENT_OPERATIONS_INTERFACE.md` §3 and §8 are updated: §8's "no new YouTube write path" still holds (every write goes through
   the write gateway, the write-channel guardrail and Live writes), but a worker's writes are no longer only drafts.
+
+## Amendment 1 (2026-11-23): playlists may be public; the Producer edits playlists
+
+**Decided by** the owner, Telegram msg 4782: «нужно дать права продюсеру и агентам каналов редактировать плей листы. Добавлять /
+удалять оттуда видео. И делать их видимыми / приватными.» Recorded in `docs/WRITE_AUTHORIZATIONS.md` («Playlist editing by agents»).
+
+1. **Rule 2 is lifted for playlists only.** In an agent session `playlist_create` and `playlist_update` accept `privacyStatus:
+   "public"`; `agent_set_privacy` accepts `public` for `target: playlist`. The playlist core no longer calls
+   `assertAgentMayNotPublish`. A **video** is still never made public by an agent: `agent_set_privacy` with `target: video,
+   privacyStatus: public` is refused with `AGENT_PUBLIC_NOT_ALLOWED` before any read (the schema now accepts `public` so that the
+   refusal reaches the service and, with `dryRun: false`, the worker log, instead of failing as an input error). A video's public
+   state stays tied to schedules and the owner's approval gates.
+2. **Rule 3 is unchanged.** `playlist_delete` stays `operator-only`, for workers and for the Producer.
+3. **An earlier refusal of another channel.** In an agent scope every playlist write checks that `expectedChannelId` (when given) is
+   the scope's channel, before any credential or YouTube call (`channel-access.assertAgentScopeWriteChannel`, the guardrail's own code
+   `WRITE_CHANNEL_MISMATCH`). The write-channel guardrail and the playlist's owner check still run after it.
+4. **The Producer** (ADR 0034) gets the five playlist tools by name (`PRODUCER_PLAYLIST_CHANNEL_TOOLS` in
+   `src/mcp/producer-tools.ts`, pinned by the test): `playlist_list`, `playlist_create`, `playlist_update`, `playlist_add_videos`,
+   `playlist_remove_videos`, for any channel connected on this computer, each call in that channel's agent scope like its other
+   channel tools -- the same handlers, the same playlist core, the same write gateway with Live writes. Its `playlist_add_videos` adds
+   only the named channel's own videos (its local synced list; `not_found` for the whole call otherwise, before any call). It gets no
+   `agent_set_privacy` (that would also hide videos, which was not asked) and no delete. Its calls are logged in the Producer call log
+   (tool, channel, outcome, error code), refused calls included; the worker log stays the workers' own (it has no actor column).
+5. **No dry run** was added to the playlist tools (they never had one; every playlist change is reversible by another call).
+
+Consequences: Agent API 4.26.0 (MINOR: one refusal fewer; a wrong `expectedChannelId` gave `WRITE_CHANNEL_MISMATCH` before too, now
+earlier). Producer API 1.28.0 (MINOR: five tools, the permission `PLAYLIST_WRITE`, `playlistTools` / `playlistWriteTools`).

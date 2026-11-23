@@ -165,6 +165,15 @@ Plan: `docs/roadmap/plans/PRODUCER_ROLE_PLAN.md`. Status: on `feature/producer-r
   `producer-only` tools (classification class) run without a scope; one that names a `channelId` (the proposal tools, BL-163) is logged under
   it and answers with `forChannelId`, so the endpoint matches the call to the server's own log entry. A channel session never registers a producer tool; the SDK registration
   is still one call.
+- Playlists (owner TG 4782, 2026-11-23, ADR 0048 Amendment 1; Producer API 1.28.0): `PRODUCER_PLAYLIST_CHANNEL_TOOLS` is a third closed
+  map beside the READ and DRAFT ones, naming the channel agent's `youtube_writes` capabilities (`playlist_list` READ; `playlist_create`,
+  `_update`, `_add_videos`, `_remove_videos` EXECUTE; pinned by the test, never `playlist_delete`). They go through the same
+  `producerRegistration` branch and the same handlers and playlist core, so the write-channel guardrail, the playlist owner check, the
+  write gateway and `assertLiveWritesAuthorized` apply unchanged inside the channel's scope. Producer-only extra: for
+  `PRODUCER_OWN_VIDEO_TOOLS` (`playlist_add_videos`) the wrapper checks every `videoIds` entry against the channel's synced mirror
+  (`channel-access.assertAgentScopeVideo`) before the handler runs. In any agent scope the playlist core first refuses an
+  `expectedChannelId` other than the scope's (`channel-access.assertAgentScopeWriteChannel`, `WRITE_CHANNEL_MISMATCH`), and no longer
+  refuses `public` for a playlist (the video rule stays in `worker-privacy`).
 - `src/lib/portfolio-overview` adds up stored data per channel (`channel_metrics_daily`, Reach totals read in the channel's scope, synced
   videos' `publishedAt`, freshness); a source with nothing stored is `null`, not zero.
 - `producer_call_log` (v72) records every call with tool, channel, outcome and error code; pruned to 90 days on insert; shown on the Producer
