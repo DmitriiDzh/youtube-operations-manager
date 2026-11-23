@@ -47,6 +47,8 @@ import { ChannelVoicesPanel } from "./channel-voices-panel";
 import { ClipReviewsPanel } from "./clip-reviews-panel";
 import { PackageReviewsPanel } from "./package-reviews-panel";
 import { useClipsWaiting } from "./clip-reviews-badge";
+import { ImageReviewsPanel } from "./image-reviews-panel";
+import { useStillsWaiting } from "./image-reviews-badge";
 export { MEDIA_TABS, SERVERS_TABS };
 
 /** The balance is a RunPod call: on open, on demand, and once a minute while Production is open. */
@@ -316,15 +318,23 @@ export function MediaPanel({
   const [plansWaiting, setPlansWaiting] = useState<Partial<Record<PlanMediaKind, number>>>({});
   const [storyboardsWaiting, setStoryboardsWaiting] = useState(0);
   const clipsWaiting = useClipsWaiting(activeChannelId);
+  // BL-272: master still images waiting for the owner (the tab's own read, so Media works without the module).
+  const stillsWaiting = useStillsWaiting(activeChannelId);
   // BL-257: final videos waiting for the owner's review (reported by the panel itself).
   const [packagesWaiting, setPackagesWaiting] = useState(0);
-  const badges: Partial<Record<MediaTab, number>> = { music: plansWaiting.audio ?? 0, images: plansWaiting.image ?? 0, video: plansWaiting.video ?? 0, storyboards: storyboardsWaiting, clips: clipsWaiting, packages: packagesWaiting };
+  const badges: Partial<Record<MediaTab, number>> = { music: plansWaiting.audio ?? 0, images: plansWaiting.image ?? 0, video: plansWaiting.video ?? 0, storyboards: storyboardsWaiting, stills: stillsWaiting, clips: clipsWaiting, packages: packagesWaiting };
   return (
     <div className="max-w-5xl space-y-6">
       <NowRunningLine activeChannelId={activeChannelId} sessionsHref={sessionsHref} />
       <TabBar tabs={MEDIA_TABS} current={tab} onSelect={setTab} badges={badges} />
       <div className={tab === "storyboards" ? "space-y-6" : "hidden"}>
         <StoryboardsPanel channelId={activeChannelId} active={tab === "storyboards" && !paused} onOpen={(id) => onOpenStoryboard?.(id)} onWaiting={setStoryboardsWaiting} />
+      </div>
+      {/* BL-272 (ADR 0076, AGENTS.md §M): the master still images for review in their own boundary -- Media works without them. */}
+      <div className={tab === "stills" ? "space-y-6" : "hidden"}>
+        <FeatureErrorBoundary label={`${t("nav.media")} — ${t("tabs.media.stills")}`}>
+          <ImageReviewsPanel channelId={activeChannelId} visible={tab === "stills" && !paused} />
+        </FeatureErrorBoundary>
       </div>
       {/* BL-241 (ADR 0061, AGENTS.md §M; moved from Content, owner msg 4025): the clips for review in their own boundary -- Media
           works without them. */}

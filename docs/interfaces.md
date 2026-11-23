@@ -1562,7 +1562,7 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
 
 - **Transport:** as the factory endpoint, with `Authorization: Bearer ytom_pr_...` (the same checks and codes; a channel or factory token is
   401 `AGENT_TOKEN_INVALID` here, and a producer token on `/api/mcp` and `/api/mcp/factory`). Re-verified on every tool call.
-- **Producer API version:** `1.27.0` (since BL-271, ADR 0075, additive: `producer_wait` below); `1.26.0` (since BL-269, ADR 0074, additive: `producer_video_captions_add` below, permission `CAPTIONS_WRITE`,
+- **Producer API version:** `1.28.0` (since BL-272, ADR 0076, additive: the image review tools below, `imageReviewTools` in `producer_get_capabilities`, `approvedImageId` on `producer_clip_review_submit`); `1.27.0` (BL-271, ADR 0075, additive: `producer_wait` below); `1.26.0` (since BL-269, ADR 0074, additive: `producer_video_captions_add` below, permission `CAPTIONS_WRITE`,
   `captionsTools` in `producer_get_capabilities`; calendar packages gain `captions`); `1.25.0` (BL-267, ADR 0073, additive: the weekly-plan tools below, permission `PLAN_MOVE`,
   `planTools` / `planMoveTools` in `producer_get_capabilities`); `1.24.0` (BL-265, ADR 0072, additive: `producer_video_metadata_update`, permission `METADATA_WRITE`
   and `metadataTools` in `producer_get_capabilities`; calendar `warnings`; the media-keyed review gate; the queue add's "tried" rule by
@@ -1692,7 +1692,11 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
     `forChannelId`.
 - **Clip review tools (BL-241, `docs/roadmap/plans/CLIP_REVIEWS_PLAN.md`, ADR 0061).** `producer-only`; submit and withdraw are DRAFT, list and
   get READ. Only the owner approves or returns a clip (Web UI, Контент → «Клипы»); no tool here can. Nothing reaches YouTube.
-  - `producer_clip_review_submit` `{ channelId, sceneId (1-80), clipPath, note (1-2000), startSec?, endSec? }` → `{ clip, forChannelId }`.
+  - `producer_clip_review_submit` `{ channelId, sceneId (1-80), clipPath, note (1-2000), startSec?, endSec?, approvedImageId? }` → `{ clip, forChannelId }`.
+    `approvedImageId` (1.28.0, BL-272, ADR 0076): the approved master still the clip was made from -- an image of the same channel's
+    image reviews whose status is `approved` or `approved_with_note`; else `clip_review_image_not_found` (422: no such image in this
+    channel) or `clip_review_image_not_approved` (409, `details.status`). The clip then carries `approvedImageId` (the key is absent on a
+    clip submitted without one).
     `clipPath` relative to the channel workspace (`/` between folders, no `..`, not absolute; the real path inside the workspace, a regular
     file), `.mp4` / `.webm`, 5-300 s by ffprobe (±0.5 s), any size; `0 <= startSec < endSec <= duration`. Errors:
     `CHANNEL_NOT_ACTIVE`, `clip_review_workspace_unavailable`, `clip_review_not_video`, `clip_review_file_unavailable` (`details.reason`),
@@ -1717,7 +1721,33 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
   `DELETE .../uploads/[uploadId]`; the decision body takes `attachments: [uploadId]` (≤ 10); `GET .../[clipId]/attachments/[decisionId]/
   [index]` (loopback only; 404 `clip_attachment_missing` / `clip_attachment_not_found`, 409 `clip_attachment_changed`). Codes:
   `clip_attachment_too_many` 422, `_too_large` 413, `_type_not_allowed` / `_type_mismatch` 415, `_upload_unknown` 404,
-  `_upload_offset` / `_upload_incomplete` 409, `_upload_corrupt` 422, `_write_failed` 500.
+  `_upload_offset` / `_upload_incomplete` 409, `_upload_corrupt` 422, `_write_failed` 500. BL-272: a clip with `approvedImageId` also
+  carries `approvedImage: { imageId, sceneId, imagePath, status } | null` (that image now; null when it is gone).
+- **Image review tools (BL-272, ADR 0076; Producer 1.28.0).** `producer-only`; submit and withdraw are DRAFT, list and get READ. Only the
+  owner approves, approves with a note, or returns an image (Web UI, Медиа → «Кадры»); no tool here can. Nothing reaches YouTube.
+  - `producer_image_review_submit` `{ channelId, sceneId (1-80), imagePath, note? (1-2000), batchId?, requestId? }` → `{ image, replayed,
+    forChannelId }`. `imagePath` relative to the channel workspace (`/` between folders, no `..`, not absolute; the real path inside that
+    channel's workspace -- a symlink out of it or into another channel's folder is refused -- a regular file); `.png` / `.jpg` / `.jpeg`
+    whose header is that format, 16-16384 px a side, at most 50 MiB; size and SHA-256 stored (approval needs the same file). `batchId` /
+    `requestId`: `[A-Za-z0-9_.:-]{1,80}`. A known `requestId` with the same request answers the stored image with `replayed: true` (even
+    after the file changed or the owner answered); with another request `image_review_request_conflict` (`details.imageId`). Errors:
+    `CHANNEL_NOT_ACTIVE`, `image_review_workspace_unavailable`, `image_review_not_image`, `image_review_file_unavailable`
+    (`details.reason`), `image_review_duplicate` (`details.imageId`), `image_review_too_many_pending` (200 per channel),
+    `image_review_batch_full` (40 per batch), `validation_failed`, `operation_lock_held` / `device_in_recovery_mode`.
+  - `producer_image_review_list` `{ channelId, status?, batchId?, limit? (1-200, default 50) }` → `{ images, pending, forChannelId }`,
+    pending first (oldest first), then the rest newest first; `pending` counts within the batch when `batchId` is given.
+    `producer_image_review_get` `{ channelId, imageId }` → `{ image, forChannelId }` (`image_review_not_found`).
+    `producer_image_review_withdraw` `{ channelId, imageId }` → `{ image, forChannelId }` (pending only: `image_review_not_pending`).
+  - An image: `{ imageId, channelId, sceneId, imagePath, note ('' when none), batchId, requestId, width, height, sizeBytes, sha256,
+    submittedAt, device, status: pending | approved | approved_with_note | returned | withdrawn, comment, decidedAt, decidedOn }`;
+    `comment` is the owner's words, always on `approved_with_note` (approved; apply the note) and `returned`, null otherwise. Shared by
+    both computers (sync family `image_reviews`); the earliest owner answer counts, a withdrawal only without one. Each owner answer
+    also writes `REVIEW-DECISION-image-<imageId>-<decisionId>.md` into the Producer's Inbox (ADR 0066, kind `image`).
+- **Image review owner routes (Web session + active channel):** `GET /api/channels/[channelId]/image-reviews` → `{ images (each also
+  `file: ok | missing | changed`), waiting }`; `POST .../image-reviews/[imageId]/decision` `{ action: approve | approve_with_note | return,
+  comment? }` (a note-approval and a return need a comment, a plain approval takes none; 409 `image_review_not_pending` /
+  `image_review_file_missing` / `image_review_file_changed`); `GET .../[imageId]/image` (full size) and `.../[imageId]/preview` (a JPEG up
+  to 960 px, else the original) -- this computer's copy, to the owner's browser only (403 otherwise; 404 `image_review_file_missing`).
 
 ### Owner review of final release packages (BL-257, ADR 0070, `docs/roadmap/plans/PACKAGE_REVIEW_PLAN.md`)
 

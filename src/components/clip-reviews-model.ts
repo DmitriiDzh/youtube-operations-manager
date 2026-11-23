@@ -27,6 +27,10 @@ export type ClipDto = {
   /** BL-246: the deciding record's id (its attachments' folder), null while pending. */
   decisionId: string | null;
   attachments: ClipAttachmentDto[];
+  /** BL-272 (ADR 0076): the id of the approved master still the clip was made from (present only when the Producer named one). */
+  approvedImageId?: string;
+  /** BL-272: that still as it is now (absent when none was named; null when it is gone). */
+  approvedImage?: { imageId: string; sceneId: string; imagePath: string; status: string } | null;
 };
 
 /** `m:ss` of a number of seconds (rounded down to the second): 65.4 -> "1:05", 120 -> "2:00". */

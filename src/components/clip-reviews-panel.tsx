@@ -240,6 +240,7 @@ export function ClipReviewsPanel({ channelId, visible }: { channelId: string | n
             )}
             {clip.file === "changed" && <p className="rounded-md border border-orange-900 bg-orange-950/40 px-3 py-2 text-sm text-orange-200">{t("clipReviews.file.changedHelp")}</p>}
             <p className="whitespace-pre-wrap text-sm text-zinc-200">{clip.note}</p>
+            {clip.approvedImage !== undefined && <ClipSourceImage channelId={channelId} clip={clip} />}
             <dl className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500">
               {range && <dd>{t("clipReviews.range", range)}</dd>}
               <dd>{clip.device ? t("clipReviews.submittedOn", { when: at(clip.submittedAt), device: clip.device }) : t("clipReviews.submitted", { when: at(clip.submittedAt) })}</dd>
@@ -381,6 +382,29 @@ export function ClipReviewsPanel({ channelId, visible }: { channelId: string | n
         </>
       )}
     </section>
+  );
+}
+
+/**
+ * BL-272 (ADR 0076): the approved master still a clip was made from -- its large thumbnail (the image-reviews route) next to the
+ * clip, opening the full-size file in a new tab; a still no longer in the channel's image reviews is named, not shown.
+ */
+function ClipSourceImage({ channelId, clip }: { channelId: string; clip: ClipDto }) {
+  const t = useT();
+  const image = clip.approvedImage;
+  if (!image) return <p className="text-xs text-zinc-500">{t("clipReviews.sourceImageGone", { imageId: clip.approvedImageId ?? "" })}</p>;
+  const base = `/api/channels/${encodeURIComponent(channelId)}/image-reviews/${encodeURIComponent(image.imageId)}`;
+  return (
+    <div className="flex min-w-0 flex-wrap items-center gap-3 rounded-md border border-zinc-800 bg-zinc-950/60 p-2">
+      <a href={`${base}/image`} target="_blank" rel="noreferrer" title={t("clipReviews.sourceImageOpen")} className="block w-40 shrink-0 overflow-hidden rounded bg-black sm:w-48">
+        {/* eslint-disable-next-line @next/next/no-img-element -- a local file streamed by the route, not an optimisable asset */}
+        <img src={`${base}/preview`} alt="" loading="lazy" className="aspect-video w-full object-cover" />
+      </a>
+      <div className="min-w-0 space-y-1 text-xs">
+        <p className="text-sm text-zinc-200">{t("clipReviews.sourceImage", { scene: image.sceneId })}</p>
+        <p className="break-all font-mono text-zinc-500">{image.imagePath}</p>
+      </div>
+    </div>
   );
 }
 

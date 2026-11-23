@@ -38,6 +38,10 @@ export const clipReviews: Record<keyof typeof en, string> = {
   "clipReviews.decidedOn": "на {device}",
   "clipReviews.yourComment": "Ваш комментарий",
   "clipReviews.path": "Файл",
+  // BL-272 (ADR 0076): одобренный мастер-кадр, из которого сделан клип.
+  "clipReviews.sourceImage": "Сделан из одобренного кадра {scene}",
+  "clipReviews.sourceImageOpen": "Открыть кадр в полном размере",
+  "clipReviews.sourceImageGone": "Сделан из кадра {imageId}, которого больше нет в кадрах канала",
   "clipReviews.size": "{megabytes} МБ",
   "clipReviews.replayRange": "Отрезок ещё раз",
   "clipReviews.action.approve": "Одобрить",

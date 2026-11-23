@@ -36,6 +36,10 @@ export const clipReviews = {
   "clipReviews.decidedOn": "on {device}",
   "clipReviews.yourComment": "Your comment",
   "clipReviews.path": "File",
+  // BL-272 (ADR 0076): the approved master still the clip was made from.
+  "clipReviews.sourceImage": "Made from the approved still {scene}",
+  "clipReviews.sourceImageOpen": "Open the still full size",
+  "clipReviews.sourceImageGone": "Made from still {imageId}, which is no longer in this channel's stills",
   "clipReviews.size": "{megabytes} MB",
   "clipReviews.replayRange": "Play the range again",
   "clipReviews.action.approve": "Approve",
