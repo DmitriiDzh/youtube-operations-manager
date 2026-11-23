@@ -105,6 +105,42 @@ test("owner 4784: an older week's answer arriving after a newer one's is ignored
   assert.deepEqual(failed, []);
 });
 
+test("owner 4784: the minute's poll of the same week joins the read under way (a read slower than a minute still lands); fresh starts anew", async () => {
+  const pending: Array<ReturnType<typeof deferred<string>>> = [];
+  const signals: AbortSignal[] = [];
+  const applied: string[] = [];
+  const loader = createWeekLoader<string>({
+    fetchWeek: (_week, signal) => {
+      const d = deferred<string>();
+      pending.push(d);
+      signals.push(signal);
+      return d.promise;
+    },
+    apply: (week, answer) => applied.push(`${week}=${answer}`),
+    fail: () => undefined,
+  });
+  const first = loader.load("2026-11-23");
+  const tick = loader.load("2026-11-23"); // the poll, while the first read is still under way
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(pending.length, 1, "no second request");
+  assert.equal(signals[0].aborted, false, "the read under way is not aborted");
+  pending[0].resolve("slow");
+  await Promise.all([first, tick]);
+  assert.deepEqual(applied, ["2026-11-23=slow"]);
+  // After a move of this computer's, a fresh read replaces one under way (it may predate the move).
+  const stale = loader.load("2026-11-23");
+  const fresh = loader.load("2026-11-23", { fresh: true });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(pending.length, 3);
+  assert.equal(signals[1].aborted, true);
+  pending[2].resolve("after-move");
+  pending[1].resolve("before-move");
+  await Promise.all([stale, fresh]);
+  assert.deepEqual(applied, ["2026-11-23=slow", "2026-11-23=after-move"]);
+});
+
 test("owner 4784: a stale failure is not shown; the newest read's failure is; nothing applies after cancel()", async () => {
   const pending = new Map<string, ReturnType<typeof deferred<string>>>();
   const applied: string[] = [];

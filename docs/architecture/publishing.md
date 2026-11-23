@@ -326,10 +326,12 @@ FO-REQ-0040; owner msgs 3511/3534; plan `docs/roadmap/plans/WEEKLY_PUBLISHING_PL
   Owner TG 4784 (2026-11-23): the tab opens on the current week every time it is shown (`currentWeekStart` in the channel's zone =
   the newest plan's `timeZone`, `channelZoneOf`; before the list arrives the owner's zone, else the browser's), unless the address
   carries a deliberate `?week=<Monday>` (`weekFromSearch`); the week is known at once, so its read runs beside the list's. Week
-  reads go through `createWeekLoader` (the previous read aborted, only the newest read's answer applied; the state keeps the week it
-  belongs to, a skeleton until the selected week is read). The rows share the list's columns through CSS subgrid: the chain's track
-  and, in a list container of at least 90rem, the buttons' track are sized by an invisible first row (`ColumnSizer`) holding the full
-  chain and every button combination in the current language; narrower, the buttons take a second line under title and chain.
+  reads go through `createWeekLoader` (a read of another week aborts the one before, the minute's poll of the same week joins the
+  read under way, `fresh` after a move or a refusal; only the newest read's answer applied; the state keeps the week it belongs to, a
+  skeleton until the selected week is read; a decision's answer applies only while its week is shown). From a list container
+  (`@container`) of 44rem the rows share the list's columns through CSS subgrid: the chain's track and, from 90rem, the buttons'
+  track are sized by an invisible first row (`ColumnSizer`) holding the full chain and every button combination in the current
+  language; between 44 and 90rem the buttons take a second line under title and chain; under 44rem the stacked card.
 - **BL-240 (ADR 0060) -- pulled and replaced slots.** The screen lists vetoed slots under one closed row (`splitVetoed`, numbers
   kept). `save` lets an agent remove a vetoed slot without an upload (also one approved before the veto) and audits it; the veto
   outlives the slot (`standingVetoOf`: `slotDecisions` still answers `vetoed` for its id, and a new slot with that id is refused

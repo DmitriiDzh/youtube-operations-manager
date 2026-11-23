@@ -122,12 +122,12 @@ const STEP_STYLES: Record<PipelineStepState, string> = {
 };
 // Owner TG 4784: the slot rows share the list's columns (CSS subgrid) -- day, thumbnail, title, the step chain, and, where the list
 // is wide enough for the widest set of buttons (the `@container` holding the lists), the buttons. Narrower, the buttons take a
-// second line under the title and the chain, so they never move the chain either. Phones (below md) keep the stacked card.
-const ROWS_GRID = "md:grid md:grid-cols-[7.5rem_6rem_minmax(0,1fr)_max-content] md:gap-x-3 @min-[90rem]:grid-cols-[7.5rem_6rem_minmax(0,1fr)_max-content_max-content]";
-const ROW_ITEM = "md:col-span-full md:grid md:grid-cols-subgrid";
-const ROW_MAIN = "grid grid-cols-[6.5rem_1fr] items-center gap-3 px-4 py-3 md:col-span-full md:grid-cols-subgrid md:gap-y-2";
-const ROW_CHAIN = "col-span-2 md:col-span-1";
-const ROW_ACTIONS = "col-span-2 flex flex-wrap justify-end gap-2 md:col-span-2 md:col-start-3 @min-[90rem]:col-span-1 @min-[90rem]:col-start-5 @min-[90rem]:flex-nowrap";
+// second line under the title and the chain, so they never move the chain either. A list under 44rem (a phone, a narrow window beside the sidebar) keeps the stacked card.
+const ROWS_GRID = "@min-[44rem]:grid @min-[44rem]:grid-cols-[7.5rem_6rem_minmax(0,1fr)_max-content] @min-[44rem]:gap-x-3 @min-[90rem]:grid-cols-[7.5rem_6rem_minmax(0,1fr)_max-content_max-content]";
+const ROW_ITEM = "@min-[44rem]:col-span-full @min-[44rem]:grid @min-[44rem]:grid-cols-subgrid";
+const ROW_MAIN = "grid grid-cols-[6.5rem_1fr] items-center gap-3 px-4 py-3 @min-[44rem]:col-span-full @min-[44rem]:grid-cols-subgrid @min-[44rem]:gap-y-2";
+const ROW_CHAIN = "col-span-2 @min-[44rem]:col-span-1";
+const ROW_ACTIONS = "col-span-2 flex flex-wrap justify-end gap-2 @min-[44rem]:col-span-2 @min-[44rem]:col-start-3 @min-[90rem]:col-span-1 @min-[90rem]:col-start-5 @min-[90rem]:flex-nowrap";
 const SIZER_ACTIONS = "hidden flex-col gap-1 @min-[90rem]:col-start-5 @min-[90rem]:flex";
 const STATE_STYLES: Record<PlanSummaryDto["state"] | "none", string> = {
   awaiting_approval: "bg-amber-500/15 text-amber-300 ring-amber-500/30",
@@ -277,9 +277,9 @@ export function WeeklyPlanPanel({
   useEffect(() => {
     weekRef.current = week;
   }, [week]);
-  const loadPlan = useCallback(async (which?: string) => {
+  const loadPlan = useCallback(async (which?: string, fresh = false) => {
     const w = which ?? weekRef.current;
-    if (w) await loader.current?.load(w);
+    if (w) await loader.current?.load(w, { fresh });
   }, []);
 
   // Owner TG 4784: each time the tab opens, the current week -- in the channel's zone once the plans are read (the owner's own zone,
@@ -331,10 +331,11 @@ export function WeeklyPlanPanel({
       if (!res.ok) {
         const key = body.error ? ERROR_KEYS[body.error] : undefined;
         setActionError(key ? t(key) : t("weekPlan.error.generic", { code: body.error ?? String(res.status) }));
-        await loadPlan();
+        await loadPlan(undefined, true);
         return;
       }
-      if (body.plan) {
+      // Applied only while its week is still the shown one (the owner may have switched weeks during the save).
+      if (body.plan && body.plan.weekStart === weekRef.current) {
         // The decision's own answer is newer than any read still in flight: that one is dropped.
         const decided = body.plan;
         loader.current?.cancel();
@@ -368,7 +369,7 @@ export function WeeklyPlanPanel({
         const reason = body.details?.refused?.[0]?.reason;
         const key = (reason ? RETIME_REASON_KEYS[reason] : undefined) ?? (body.error ? ERROR_KEYS[body.error] : undefined);
         setActionError(key ? t(key) : t("weekPlan.error.generic", { code: reason ?? body.error ?? String(res.status) }));
-        await loadPlan();
+        await loadPlan(undefined, true);
         return null;
       }
       if (!dryRun) {
@@ -376,7 +377,7 @@ export function WeeklyPlanPanel({
         setEditing(null);
         // The plan follows the slot to its week (read here for that week -- never the old closure's).
         if (body.to.weekStart !== week) goToWeek(body.to.weekStart);
-        await Promise.all([loadPlan(body.to.weekStart), loadList()]);
+        await Promise.all([loadPlan(body.to.weekStart, true), loadList()]);
       }
       return body;
     } catch {
@@ -736,7 +737,7 @@ function SlotRow(props: {
     <li className={`${ROW_ITEM} ${changed ? "bg-amber-950/20" : slot.vetoed ? "bg-zinc-950/40" : ""}`}>
       <div className={ROW_MAIN}>
         {/* On a phone the day and time take the whole line (the thumbnail column is hidden there). */}
-        <div className={`col-span-2 md:col-span-1 ${slot.vetoed ? "text-zinc-500" : "text-zinc-100"}`}>
+        <div className={`col-span-2 @min-[44rem]:col-span-1 ${slot.vetoed ? "text-zinc-500" : "text-zinc-100"}`}>
           <div className={`text-sm font-medium ${slot.vetoed ? "line-through" : ""}`}>{dayLabel}</div>
           {/* BL-267 (O6, AC-WT-43): the owner's own time with UTC beside it; the channel's time on hover. */}
           <div className="text-sm" title={t("weekTemplate.channelTime", { time: wall.time, zone: plan.timeZone })}>
@@ -748,12 +749,12 @@ function SlotRow(props: {
           <img
             src={`/api/channels/${encodeURIComponent(props.channelId)}/publishing/packages/thumbnail?path=${encodeURIComponent(pkg.thumbnailPath)}`}
             alt={pkg.title}
-            className={`hidden h-[54px] w-24 rounded-md object-cover md:block ${slot.vetoed ? "opacity-50" : ""}`}
+            className={`hidden h-[54px] w-24 rounded-md object-cover @min-[44rem]:block ${slot.vetoed ? "opacity-50" : ""}`}
           />
         ) : (
-          <div className="hidden h-[54px] w-24 items-center justify-center rounded-md border border-dashed border-zinc-700 text-[10px] text-zinc-500 md:flex">{t("weekPlan.noThumbnail")}</div>
+          <div className="hidden h-[54px] w-24 items-center justify-center rounded-md border border-dashed border-zinc-700 text-[10px] text-zinc-500 @min-[44rem]:flex">{t("weekPlan.noThumbnail")}</div>
         )}
-        <div className="col-span-2 min-w-0 md:col-span-1">
+        <div className="col-span-2 min-w-0 @min-[44rem]:col-span-1">
           <div className={`flex items-center gap-1.5 truncate text-sm font-medium ${slot.vetoed ? "text-zinc-500" : "text-zinc-100"}`}>
             {/* BL-259 (owner msg 4397): vertical (Shorts) or horizontal. */}
             <OrientationIcon orientation={pkg?.orientation} />
@@ -835,7 +836,7 @@ function SlotRow(props: {
         </div>
         )}
       </div>
-      <div className="md:col-span-full">
+      <div className="@min-[44rem]:col-span-full">
       {props.confirming && !slot.vetoed && (
         <div className="flex flex-wrap items-center gap-3 border-t border-red-900/60 bg-red-950/30 px-4 py-2 text-sm text-red-100" role="alert">
           <span>
@@ -869,7 +870,7 @@ function SlotRow(props: {
 function PipelineChain({ steps }: { steps: ReadonlyArray<{ step: PipelineStep; state: PipelineStepState }> }) {
   const t = useT();
   return (
-    <ol className="flex flex-wrap items-center gap-0.5 text-[11px] min-[400px]:gap-1 md:flex-nowrap">
+    <ol className="flex flex-wrap items-center gap-0.5 text-[11px] min-[400px]:gap-1 @min-[44rem]:flex-nowrap">
       {steps.map((s, i) => (
         <li key={s.step} className="flex items-center gap-0.5 whitespace-nowrap min-[400px]:gap-1">
           {i > 0 && <span aria-hidden className="text-zinc-600">›</span>}
@@ -909,9 +910,9 @@ function ColumnSizer() {
     [thumb, <span key="s" className={plain}>{t("weekPlan.action.restore")}</span>, retime],
   ];
   return (
-    <li aria-hidden className="invisible hidden h-0 overflow-hidden !border-0 md:col-span-full md:grid md:grid-cols-subgrid">
-      <div className="px-4 md:col-span-full md:grid md:grid-cols-subgrid">
-        <div className="md:col-start-4">
+    <li aria-hidden className="invisible hidden h-0 overflow-hidden !border-0 @min-[44rem]:col-span-full @min-[44rem]:grid @min-[44rem]:grid-cols-subgrid">
+      <div className="px-4 @min-[44rem]:col-span-full @min-[44rem]:grid @min-[44rem]:grid-cols-subgrid">
+        <div className="@min-[44rem]:col-start-4">
           <PipelineChain steps={ALL_STEPS} />
         </div>
         <div className={SIZER_ACTIONS}>

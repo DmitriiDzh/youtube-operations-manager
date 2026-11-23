@@ -127,24 +127,37 @@ export function weekFromSearch(search: string): string | null {
 export function createWeekLoader<T>(deps: { fetchWeek(week: string, signal: AbortSignal): Promise<T>; apply(week: string, answer: T): void; fail(week: string): void }) {
   let newest = 0;
   let controller: AbortController | null = null;
+  // The read under way: the minute's poll of the same week joins it instead of aborting it (a read slower than a minute would
+  // otherwise be killed by every tick and never land).
+  let running: { week: string; done: Promise<void> } | null = null;
   return {
-    async load(week: string): Promise<void> {
+    /** `fresh`: after a change of this computer's (a move) -- a read already under way may predate it, so a new one starts. */
+    load(week: string, options: { fresh?: boolean } = {}): Promise<void> {
+      if (!options.fresh && running?.week === week) return running.done;
       const token = ++newest;
       controller?.abort();
       const own = new AbortController();
       controller = own;
-      try {
-        const answer = await deps.fetchWeek(week, own.signal);
-        if (token === newest) deps.apply(week, answer);
-      } catch {
-        if (token === newest && !own.signal.aborted) deps.fail(week);
-      }
+      const read = async (): Promise<void> => {
+        try {
+          const answer = await deps.fetchWeek(week, own.signal);
+          if (token === newest) deps.apply(week, answer);
+        } catch {
+          if (token === newest && !own.signal.aborted) deps.fail(week);
+        }
+      };
+      const done: Promise<void> = read().finally(() => {
+        if (running?.done === done) running = null;
+      });
+      running = { week, done };
+      return done;
     },
-    /** The panel is hidden or gone: nothing still in flight is applied. */
+    /** The panel is hidden or gone, or a decision's own answer is newer: nothing still in flight is applied. */
     cancel(): void {
       newest += 1;
       controller?.abort();
       controller = null;
+      running = null;
     },
   };
 }
