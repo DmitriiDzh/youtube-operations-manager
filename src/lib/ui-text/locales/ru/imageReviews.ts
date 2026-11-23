@@ -64,4 +64,6 @@ export const imageReviews: Record<keyof typeof en, string> = {
   "imageReviews.viewer.fit": "Вписать",
   "imageReviews.viewer.actual": "100 %",
   "imageReviews.viewer.label": "Кадр {scene} в полном размере",
+  "imageReviews.viewer.keys": "Клавиши: ← / → или PageUp / PageDown — предыдущий / следующий кадр · Esc — отменить начатый ответ, иначе закрыть",
+  "imageReviews.viewer.keysActual": "Клавиши: стрелки — двигать изображение · PageUp / PageDown — предыдущий / следующий кадр · Esc — отменить начатый ответ, иначе закрыть",
 };

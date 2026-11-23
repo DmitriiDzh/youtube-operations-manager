@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { answerReady, batchesOf, canApprove, fullSrcOf, previewSrcOf, versionsOf, type ImageDto } from "./image-reviews-model";
+import { answerReady, batchesOf, canApprove, fullSrcOf, previewSrcOf, versionsOf, viewerKeyAction, VIEWER_SCROLL_STEP, type ImageDto } from "./image-reviews-model";
 
 // BL-272 (ADR 0076; coordinator brief item 2): a batch is shown as one grid -- the images sharing a batchId, in the order the Producer
 // sent them; batches with something waiting come first, newest first, then the answered ones; the images sent without a batch form
@@ -72,3 +72,39 @@ test("BL-272: the preview and full image addresses name the image and its file v
   assert.equal(previewSrcOf("/api/channels/UC_a/image-reviews", image), "/api/channels/UC_a/image-reviews/img_1/preview?v=abcdef012345");
   assert.equal(fullSrcOf("/api/channels/UC_a/image-reviews", image), "/api/channels/UC_a/image-reviews/img_1/image?v=abcdef012345");
 });
+
+// Review (item 5): the viewer's keys, by hand from the brief -- Esc while typing or with a confirmation open cancels only the
+// confirmation (never closes the viewer, and not while saving); in the 100 % view the arrows scroll the image and PageUp / PageDown
+// switch stills; in the fitted view ← / → and PageUp / PageDown switch.
+test("BL-272 (review): Esc cancels only an open confirmation or the typing in it; otherwise it closes the viewer", () => {
+  const key = (k: string, over: Partial<Parameters<typeof viewerKeyAction>[0]> = {}) => viewerKeyAction({ key: k, typing: false, confirming: false, saving: false, actual: false, ...over });
+  assert.deepEqual(key("Escape"), { type: "close" });
+  assert.deepEqual(key("Escape", { confirming: true }), { type: "cancel_confirm" });
+  assert.deepEqual(key("Escape", { typing: true }), { type: "cancel_confirm" });
+  assert.deepEqual(key("Escape", { typing: true, confirming: true, actual: true }), { type: "cancel_confirm" });
+  assert.equal(key("Escape", { confirming: true, saving: true }), null);
+  assert.deepEqual(key("Escape", { saving: true }), { type: "close" });
+});
+
+test("BL-272 (review): fitted view -- ← / → and PageUp / PageDown switch stills; typing keeps every key", () => {
+  const key = (k: string, typing = false) => viewerKeyAction({ key: k, typing, confirming: false, saving: false, actual: false });
+  assert.deepEqual(key("ArrowLeft"), { type: "move", step: -1 });
+  assert.deepEqual(key("ArrowRight"), { type: "move", step: 1 });
+  assert.deepEqual(key("PageUp"), { type: "move", step: -1 });
+  assert.deepEqual(key("PageDown"), { type: "move", step: 1 });
+  assert.equal(key("ArrowUp"), null);
+  assert.equal(key("a"), null);
+  for (const k of ["ArrowLeft", "ArrowRight", "PageUp", "PageDown"]) assert.equal(key(k, true), null);
+});
+
+test("BL-272 (review): 100 % view -- the arrows scroll the image, PageUp / PageDown switch stills", () => {
+  const key = (k: string) => viewerKeyAction({ key: k, typing: false, confirming: false, saving: false, actual: true });
+  assert.equal(VIEWER_SCROLL_STEP, 80);
+  assert.deepEqual(key("ArrowLeft"), { type: "scroll", dx: -80, dy: 0 });
+  assert.deepEqual(key("ArrowRight"), { type: "scroll", dx: 80, dy: 0 });
+  assert.deepEqual(key("ArrowUp"), { type: "scroll", dx: 0, dy: -80 });
+  assert.deepEqual(key("ArrowDown"), { type: "scroll", dx: 0, dy: 80 });
+  assert.deepEqual(key("PageUp"), { type: "move", step: -1 });
+  assert.deepEqual(key("PageDown"), { type: "move", step: 1 });
+});
+

@@ -62,4 +62,6 @@ export const imageReviews = {
   "imageReviews.viewer.fit": "Fit",
   "imageReviews.viewer.actual": "100 %",
   "imageReviews.viewer.label": "Still {scene}, full size",
+  "imageReviews.viewer.keys": "Keys: ← / → or PageUp / PageDown — previous / next still · Esc — cancel the answer being written, otherwise close",
+  "imageReviews.viewer.keysActual": "Keys: arrows — move around the image · PageUp / PageDown — previous / next still · Esc — cancel the answer being written, otherwise close",
 } as const;

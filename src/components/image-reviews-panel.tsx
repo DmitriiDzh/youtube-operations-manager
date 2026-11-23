@@ -3,14 +3,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { UiTextKey } from "@/lib/ui-text";
 import { ActionButton, SkeletonLines } from "./busy-feedback";
-import { answerReady, batchesOf, canApprove, fullSrcOf, previewSrcOf, versionsOf, type ImageAction, type ImageBatch, type ImageDto, type ImageStatus } from "./image-reviews-model";
+import { answerReady, batchesOf, canApprove, fullSrcOf, previewSrcOf, versionsOf, viewerKeyAction, type ImageAction, type ImageBatch, type ImageDto, type ImageStatus } from "./image-reviews-model";
 import { useT, useUiText } from "./ui-text-provider";
 import { useDialogFocus } from "./use-dialog-focus";
 import { useUserTimezone } from "./use-user-timezone";
 
 // BL-272 (ADR 0076; owner TG 2547 via the Producer): Медиа → «Кадры». The questions the owner brings, in order: does anything wait for
 // me (the line on top, the waiting batches first), what does each still look like (one grid of large thumbnails per batch, any one
-// opened full size with ← / → through the batch and a 100 % view for details such as a passer-by), and his answer on each still:
+// opened full size -- ← / → or PageUp / PageDown through the batch, a 100 % view for details such as a passer-by where the arrows
+// scroll and PageUp / PageDown switch), and his answer on each still:
 // «Одобрить», «С заметкой» (approved; the note is required and is applied when the clip is made) or «Вернуть» (a comment required)
 // -- each confirmed inside the card or the viewer, never in a browser dialog. Answered batches fold below.
 
@@ -349,6 +350,9 @@ export function ImageReviewsPanel({ channelId, visible }: { channelId: string | 
             }
           }}
           onClose={() => setViewer(null)}
+          confirming={answer?.imageId === viewerBatch.images[viewerIndex].imageId}
+          saving={busy !== null}
+          onCancelConfirm={() => setAnswer(null)}
           header={
             <>
               <span className="min-w-0 truncate font-medium text-zinc-100">{viewerBatch.images[viewerIndex].sceneId}</span>
@@ -383,24 +387,55 @@ export function ImageReviewsPanel({ channelId, visible }: { channelId: string | 
 }
 
 /**
- * The full-size layer over the whole window (not a browser dialog): the image fitted or at 100 % (scrolling), ← / → through the
- * batch, Esc closes; the focus stays inside while it is open and goes back where it was.
+ * The full-size layer over the whole window (not a browser dialog): the image fitted or at 100 % (scrolling). Keys
+ * (`viewerKeyAction`): ← / → or PageUp / PageDown through the batch; at 100 % the arrows scroll the image and PageUp / PageDown
+ * switch; Esc cancels an open confirmation (or the typing in it) first, otherwise closes. The focus stays inside while it is open
+ * and goes back where it was.
  */
-function ImageViewer({ image, src, index, total, onMove, onClose, header, footer }: { image: ImageDto; src: string; index: number; total: number; onMove: (step: -1 | 1) => void; onClose: () => void; header: ReactNode; footer: ReactNode }) {
+function ImageViewer({
+  image,
+  src,
+  index,
+  total,
+  onMove,
+  onClose,
+  confirming,
+  saving,
+  onCancelConfirm,
+  header,
+  footer,
+}: {
+  image: ImageDto;
+  src: string;
+  index: number;
+  total: number;
+  onMove: (step: -1 | 1) => void;
+  onClose: () => void;
+  confirming: boolean;
+  saving: boolean;
+  onCancelConfirm: () => void;
+  header: ReactNode;
+  footer: ReactNode;
+}) {
   const t = useT();
   const ref = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const [actual, setActual] = useState(false);
   useDialogFocus(ref, { initial: "container" });
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      const typing = event.target instanceof HTMLElement && (event.target.tagName === "TEXTAREA" || event.target.tagName === "INPUT");
-      if (event.key === "Escape") onClose();
-      else if (!typing && event.key === "ArrowLeft") onMove(-1);
-      else if (!typing && event.key === "ArrowRight") onMove(1);
+      const typing = event.target instanceof HTMLElement && (event.target.tagName === "TEXTAREA" || event.target.tagName === "INPUT" || event.target.isContentEditable);
+      const action = viewerKeyAction({ key: event.key, typing, confirming, saving, actual });
+      if (!action) return;
+      event.preventDefault();
+      if (action.type === "cancel_confirm") onCancelConfirm();
+      else if (action.type === "close") onClose();
+      else if (action.type === "move") onMove(action.step);
+      else scrollRef.current?.scrollBy({ left: action.dx, top: action.dy });
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, onMove]);
+  }, [onClose, onMove, onCancelConfirm, confirming, saving, actual]);
   return (
     <div ref={ref} tabIndex={-1} role="dialog" aria-modal="true" aria-label={t("imageReviews.viewer.label", { scene: image.sceneId })} className="fixed inset-0 z-50 flex flex-col bg-black outline-none">
       <div className="flex min-w-0 flex-wrap items-center gap-2 border-b border-zinc-800 bg-zinc-950 px-4 py-2">
@@ -414,7 +449,7 @@ function ImageViewer({ image, src, index, total, onMove, onClose, header, footer
         </button>
       </div>
       <div className="relative min-h-0 flex-1">
-        <div className={`h-full w-full ${actual ? "overflow-auto" : "flex items-center justify-center overflow-hidden p-2"}`}>
+        <div ref={scrollRef} className={`h-full w-full ${actual ? "overflow-auto" : "flex items-center justify-center overflow-hidden p-2"}`}>
           {image.file === "missing" ? (
             <p className="p-6 text-center text-sm text-zinc-400">{t("imageReviews.file.missingHelp")}</p>
           ) : (
@@ -428,7 +463,10 @@ function ImageViewer({ image, src, index, total, onMove, onClose, header, footer
           ›
         </button>
       </div>
-      <div className="max-h-[45vh] overflow-y-auto border-t border-zinc-800 bg-zinc-950 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">{footer}</div>
+      <div className="max-h-[45vh] overflow-y-auto border-t border-zinc-800 bg-zinc-950 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+        {footer}
+        <p className="mt-2 hidden text-[11px] text-zinc-500 sm:block">{t(actual ? "imageReviews.viewer.keysActual" : "imageReviews.viewer.keys")}</p>
+      </div>
     </div>
   );
 }

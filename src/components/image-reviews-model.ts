@@ -89,3 +89,38 @@ export function previewSrcOf(base: string, image: Pick<ImageDto, "imageId" | "sh
 export function fullSrcOf(base: string, image: Pick<ImageDto, "imageId" | "sha256">): string {
   return `${base}/${encodeURIComponent(image.imageId)}/image?v=${image.sha256.slice(0, 12)}`;
 }
+
+/** How far one arrow key scrolls the 100 % view (px). */
+export const VIEWER_SCROLL_STEP = 80;
+
+export type ViewerKeyAction = { type: "cancel_confirm" } | { type: "close" } | { type: "move"; step: -1 | 1 } | { type: "scroll"; dx: number; dy: number } | null;
+
+/**
+ * Review (item 5): what a key does in the full-size viewer.
+ * - Esc while typing or while an answer's confirmation is open cancels only that confirmation (nothing while it is being saved, as
+ *   the Cancel button); otherwise it closes the viewer.
+ * - Typing: nothing else (the text field keeps its keys).
+ * - PageUp / PageDown: the previous / next still in the batch, in both views.
+ * - ← / →: the previous / next still in the fitted view; in the 100 % view the arrows (↑ / ↓ too) scroll the image.
+ */
+export function viewerKeyAction(input: { key: string; typing: boolean; confirming: boolean; saving: boolean; actual: boolean }): ViewerKeyAction {
+  const { key, typing, confirming, saving, actual } = input;
+  if (key === "Escape") {
+    if (typing || confirming) return saving ? null : { type: "cancel_confirm" };
+    return { type: "close" };
+  }
+  if (typing) return null;
+  if (key === "PageUp") return { type: "move", step: -1 };
+  if (key === "PageDown") return { type: "move", step: 1 };
+  if (actual) {
+    if (key === "ArrowLeft") return { type: "scroll", dx: -VIEWER_SCROLL_STEP, dy: 0 };
+    if (key === "ArrowRight") return { type: "scroll", dx: VIEWER_SCROLL_STEP, dy: 0 };
+    if (key === "ArrowUp") return { type: "scroll", dx: 0, dy: -VIEWER_SCROLL_STEP };
+    if (key === "ArrowDown") return { type: "scroll", dx: 0, dy: VIEWER_SCROLL_STEP };
+    return null;
+  }
+  if (key === "ArrowLeft") return { type: "move", step: -1 };
+  if (key === "ArrowRight") return { type: "move", step: 1 };
+  return null;
+}
+
