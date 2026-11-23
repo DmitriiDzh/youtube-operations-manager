@@ -123,4 +123,3 @@ export function viewerKeyAction(input: { key: string; typing: boolean; confirmin
   if (key === "ArrowRight") return { type: "move", step: 1 };
   return null;
 }
-

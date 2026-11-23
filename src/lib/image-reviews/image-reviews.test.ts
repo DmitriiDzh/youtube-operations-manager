@@ -349,4 +349,3 @@ test("BL-272 (review): listing 600 answered images resolves and hashes nothing; 
   assert.deepEqual(calls.resolve.sort(), ["03 Images/p1.png", "03 Images/p2.png"]);
   assert.deepEqual(calls.hash.sort(), ["/ws/03 Images/p1.png", "/ws/03 Images/p2.png"]);
 });
-

@@ -221,4 +221,3 @@ test("BL-272 (review): the overturn notice is dated as the approval -- outside t
   ]);
   assert.deepEqual(imageNoticesOf(CH, snapshot, Date.parse("2026-11-23T09:30:00Z")), []);
 });
-

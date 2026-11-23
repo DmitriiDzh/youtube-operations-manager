@@ -107,4 +107,3 @@ test("BL-272 (review): 100 % view -- the arrows scroll the image, PageUp / PageD
   assert.deepEqual(key("PageUp"), { type: "move", step: -1 });
   assert.deepEqual(key("PageDown"), { type: "move", step: 1 });
 });
-

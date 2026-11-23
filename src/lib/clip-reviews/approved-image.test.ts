@@ -188,4 +188,3 @@ test("BL-272 (review): the production imageOf port -- another channel's image is
   assert.equal(await lookup(A, "i_missing"), null);
   assert.equal(await lookup(B, "i_none"), null);
 });
-

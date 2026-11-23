@@ -153,4 +153,3 @@ test("BL-272 (review): the source still is highlighted unless approved or approv
   assert.deepEqual(sourceImageStateOf("archived"), { status: "unknown", highlight: true });
   assert.deepEqual(sourceImageStateOf(""), { status: "unknown", highlight: true });
 });
-
