@@ -2128,6 +2128,11 @@ export const socialPostJobs = sqliteTable(
     errorMessage: text("error_message"),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+    /**
+     * v123 (owner TG 4780): when the owner asked in the Web UI to retry this failed job. Pending while `>= updated_at`: the runner
+     * then starts it again however late (the 12 h window binds only the automatic start); kept as the record afterwards.
+     */
+    ownerRetryAt: integer("owner_retry_at", { mode: "timestamp_ms" }),
   },
   (table) => [index("social_post_jobs_channel_idx").on(table.channelId, table.slotId)]
 );
@@ -6208,6 +6213,18 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         updated_at INTEGER NOT NULL
       )`);
       await client.execute("CREATE INDEX IF NOT EXISTS social_post_jobs_channel_idx ON social_post_jobs (channel_id, slot_id)");
+    },
+  },
+  {
+    version: 123,
+    description:
+      "social_post_jobs.owner_retry_at -- BL-252 (ADR 0068 amendment 2, owner TG 4780): the owner's explicit retry of a failed social job is recorded on the job (the runner then posts it however late). Additive, nullable, device-local",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE social_post_jobs ADD COLUMN owner_retry_at INTEGER");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
     },
   },
 ];

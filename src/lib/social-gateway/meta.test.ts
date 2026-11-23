@@ -108,6 +108,21 @@ test("inspectPageToken: debug_token with the APP token (never the Page token as 
   assert.equal(calls[1].url.searchParams.get("access_token"), "PT");
 });
 
+// 2026-11-23 (owner TG 4779: a blocked Instagram must not stop Facebook): Meta refusing the read WITH the linked Instagram still
+// answers the Page (read again without it), Instagram then unknown; a 5xx / no answer / invalid token is not retried that way.
+test("inspectPageToken: a 4xx on the Page+Instagram read reads the Page alone and marks Instagram unreadable; a 5xx does not", async () => {
+  const debug = { status: 200, body: { data: { is_valid: true, scopes: ["pages_manage_posts"], expires_at: 0 } } };
+  const refused = fakeFetch([debug, { status: 400, body: { error: { message: "Unsupported get request", code: 100 } } }, { status: 200, body: { id: "111", name: "WWE" } }]);
+  const out = await createMetaClient({ fetchImpl: refused.impl }).inspectPageToken({ appId: "1", appSecret: "S", pageId: "111", pageToken: "PT" });
+  assert.deepEqual(out, { valid: true, scopes: ["pages_manage_posts"], expiresAt: null, page: { pageId: "111", pageName: "WWE" }, instagram: null, instagramUnreadable: true });
+  assert.equal(refused.calls[1].url.searchParams.get("fields"), "id,name,instagram_business_account{id,username}");
+  assert.equal(refused.calls[2].url.searchParams.get("fields"), "id,name");
+
+  const down = fakeFetch([debug, { status: 503, body: {} }, { status: 200, body: { id: "111", name: "WWE" } }]);
+  await assert.rejects(createMetaClient({ fetchImpl: down.impl }).inspectPageToken({ appId: "1", appSecret: "S", pageId: "111", pageToken: "PT" }), (e: unknown) => e instanceof DomainError && e.code === "social_request_rejected");
+  assert.equal(down.calls.length, 2);
+});
+
 test("inspectPageToken: an invalid token stops after debug_token (no Page read)", async () => {
   const { calls, impl } = fakeFetch([{ status: 200, body: { data: { is_valid: false, scopes: [] } } }]);
   const out = await createMetaClient({ fetchImpl: impl }).inspectPageToken({ appId: "1", appSecret: "S", pageId: "111", pageToken: "PT" });

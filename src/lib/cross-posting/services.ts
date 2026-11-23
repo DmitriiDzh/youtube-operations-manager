@@ -1,7 +1,7 @@
 import type { DeviceSecretSlot } from "@/lib/device-secrets";
 import type { EncryptedPayload } from "@/lib/shared-crypto";
-import type { MetaClient, MetaPage } from "@/lib/social-gateway";
-import { CONNECT_STATE_TTL_MS, DomainError, META_POSTING_SCOPES, type AccountCheck, type AccountCheckProblem, PENDING_PICK_TTL_MS, notConfigured, type MetaAppStatus, type PendingPageView, type SocialAccountRow, type SocialAccountView, type SocialNetwork } from "./contracts";
+import type { MetaClient, MetaPage, MetaTokenInspection } from "@/lib/social-gateway";
+import { CONNECT_STATE_TTL_MS, DomainError, META_NETWORK_SCOPES, type AccountCheck, type AccountCheckProblem, type NetworkAccountCheck, PENDING_PICK_TTL_MS, notConfigured, type MetaAppStatus, type PendingPageView, type PostingTarget, SOCIAL_NETWORKS, type SocialAccountRow, type SocialAccountView, type SocialNetwork } from "./contracts";
 import type { SocialJob } from "./runner";
 import { FACEBOOK_REEL, INSTAGRAM_REEL } from "./limits";
 import { disconnectInputSchema, parseWithSchema, selectPageInputSchema, setMetaAppInputSchema, setMetaConfigInputSchema, startConnectInputSchema } from "./schemas";
@@ -34,13 +34,29 @@ export type CrossPostingDeps = {
   /** This computer's switch «Публикация в соцсети» (app_settings JSON; off by default). */
   settings?: { read(): Promise<string | null>; write(json: string): Promise<void> };
   /** This computer's cross-posting jobs (for the screen, retries and the Facebook 24 h count). */
-  jobs?: { list(channelId: string | null): Promise<SocialJob[]>; get(jobId: string): Promise<SocialJob | null>; remove(jobId: string): Promise<void> };
+  jobs?: { list(channelId: string | null): Promise<SocialJob[]>; get(jobId: string): Promise<SocialJob | null>; update(jobId: string, set: Partial<SocialJob>): Promise<void> };
   now: () => number;
   randomId: () => string;
 };
 
 type ConnectState = { channelId: string; redirectUri: string; expiresAt: number };
 type PendingPick = { channelId: string; pages: MetaPage[]; expiresAt: number };
+
+/** The Page a row posts through (a Facebook row is the Page itself). */
+const storedPageOf = (row: SocialAccountRow): string | null => row.pageId ?? (row.network === "facebook" ? row.externalId : null);
+
+/**
+ * Per network (2026-11-23, owner TG 4779): the account Meta's live answer names for it and the problems only that network can have.
+ * The token's validity, the Page and the network's own scopes are judged for every network on top of this. A new network is a new
+ * entry (the Record makes it required), never a branch inside a shared check that could stop the others.
+ */
+const META_NETWORK_IDENTITY: Record<SocialNetwork, { liveId(live: MetaTokenInspection): string | null; problems(row: SocialAccountRow, live: MetaTokenInspection): AccountCheckProblem[] }> = {
+  facebook: { liveId: (live) => live.page?.pageId ?? null, problems: () => [] },
+  instagram: {
+    liveId: (live) => live.instagram?.igUserId ?? null,
+    problems: (row, live) => (live.instagram ? (live.instagram.igUserId === row.externalId ? [] : ["instagram_mismatch"]) : live.instagramUnreadable ? ["instagram_unreadable"] : ["instagram_unlinked"]),
+  },
+};
 
 function view(row: SocialAccountRow): SocialAccountView {
   return { channelId: row.channelId, network: row.network, externalId: row.externalId, displayName: row.displayName, username: row.username, pageId: row.pageId, tokenExpiresAt: row.tokenExpiresAt, connectedAt: row.connectedAt };
@@ -85,6 +101,67 @@ export function createCrossPostingServices(deps: CrossPostingDeps) {
   async function requireChannel(channelId: string) {
     if (!(await deps.store.channelExists(channelId))) throw new DomainError({ code: "not_found", message: `Channel ${channelId} is not connected here.`, details: { channelId } });
   }
+
+  /**
+   * AC-XP-8, per network (2026-11-23, owner TG 4779): one read of Meta's answer about the stored Page token, judged separately for
+   * every connected network. The token and Page asked about are the Facebook row's (the Page itself), else another network's own
+   * (Facebook disconnected). The token never leaves this module except to the gateway through the runner.
+   */
+  async function inspect(channelId: string): Promise<{ check: AccountCheck; rows: SocialAccountRow[]; token: string; pageId: string }> {
+    const rows = await deps.store.list(channelId);
+    const anchor = rows.find((r) => r.network === "facebook" && storedPageOf(r)) ?? rows.find((r) => storedPageOf(r));
+    if (!anchor) throw new DomainError({ code: "not_found", message: `Channel ${channelId} has no connected Meta account.`, details: { channelId } });
+    const pageId = storedPageOf(anchor)!;
+    const app = await readApp();
+    const token = await openToken(anchor.tokenSealed);
+    const live = await deps.meta.inspectPageToken({ appId: app.appId, appSecret: app.appSecret, pageId, pageToken: token });
+    const networks: NetworkAccountCheck[] = [];
+    for (const network of SOCIAL_NETWORKS) {
+      const row = rows.find((r) => r.network === network);
+      if (!row) continue;
+      const identity = META_NETWORK_IDENTITY[network];
+      const missingScopes = live.valid ? META_NETWORK_SCOPES[network].filter((s) => !live.scopes.includes(s)) : [];
+      const problems: AccountCheckProblem[] = [];
+      if (!live.valid) problems.push("token_invalid");
+      else {
+        if (missingScopes.length) problems.push("scope_missing");
+        // Every Meta network posts with this one Page token: its row must name the Page asked about, and Meta must answer that Page.
+        if (storedPageOf(row) !== pageId || live.page?.pageId !== pageId) problems.push("page_mismatch");
+        problems.push(...identity.problems(row, live));
+      }
+      networks.push({ network, ok: problems.length === 0, problems, missingScopes, stored: row.externalId, live: live.valid ? identity.liveId(live) : null });
+    }
+    const fb = rows.find((r) => r.network === "facebook") ?? null;
+    const ig = rows.find((r) => r.network === "instagram") ?? null;
+    const check: AccountCheck = {
+      channelId,
+      checkedAt: deps.now(),
+      ok: networks.every((n) => n.ok),
+      problems: [...new Set(networks.flatMap((n) => n.problems))],
+      missingScopes: [...new Set(networks.flatMap((n) => n.missingScopes))],
+      scopes: live.scopes,
+      tokenExpiresAt: live.expiresAt,
+      networks,
+      facebook: fb ? { stored: fb.externalId, live: live.page?.pageId ?? null, name: live.page?.pageName ?? null } : null,
+      instagram: ig || live.instagram ? { stored: ig?.externalId ?? null, live: live.instagram?.igUserId ?? null, username: live.instagram?.username ?? null } : null,
+    };
+    return { check, rows, token, pageId };
+  }
+
+  /** AC-XP-16, per network: the rolling 24 h count -- Instagram as Meta counts it (null: unknown), a Facebook Page by this computer's own Reels. */
+  const NETWORK_QUOTA: Record<SocialNetwork, (channelId: string) => Promise<{ used: number | null; limit: number }>> = {
+    facebook: async (channelId) => {
+      const since = deps.now() - 24 * 60 * 60_000;
+      const jobs = deps.jobs ? await deps.jobs.list(channelId) : [];
+      return { used: jobs.filter((j) => j.network === "facebook" && j.status === "published" && j.updatedAt >= since).length, limit: FACEBOOK_REEL.postsPer24h };
+    },
+    instagram: async (channelId) => {
+      const ig = (await deps.store.list(channelId)).find((r) => r.network === "instagram");
+      // The Instagram row's own sealed token (the Page's): Facebook's row is never needed to count Instagram.
+      const used = ig && deps.meta.igPublishingUsage ? await openToken(ig.tokenSealed).then((token) => deps.meta.igPublishingUsage!({ igUserId: ig.externalId, token })).catch(() => null) : null;
+      return { used, limit: INSTAGRAM_REEL.postsPer24h };
+    },
+  };
 
   const api = {
     async getMetaApp(): Promise<MetaAppStatus> {
@@ -185,33 +262,7 @@ export function createCrossPostingServices(deps: CrossPostingDeps) {
      * and compares that with what this channel stored. Read-only; the token is opened here and never leaves the module.
      */
     async checkAccounts(channelId: string): Promise<AccountCheck> {
-      const rows = await deps.store.list(channelId);
-      const fb = rows.find((r) => r.network === "facebook");
-      if (!fb || !fb.pageId) throw new DomainError({ code: "not_found", message: `Channel ${channelId} has no connected Facebook Page.`, details: { channelId } });
-      const ig = rows.find((r) => r.network === "instagram") ?? null;
-      const app = await readApp();
-      const token = await openToken(fb.tokenSealed);
-      const live = await deps.meta.inspectPageToken({ appId: app.appId, appSecret: app.appSecret, pageId: fb.pageId, pageToken: token });
-      const problems: AccountCheckProblem[] = [];
-      const missingScopes = META_POSTING_SCOPES.filter((s) => !live.scopes.includes(s));
-      if (!live.valid) problems.push("token_invalid");
-      else {
-        if (missingScopes.length) problems.push("scope_missing");
-        if (live.page?.pageId !== fb.externalId) problems.push("page_mismatch");
-        if (ig && !live.instagram) problems.push("instagram_unlinked");
-        else if (ig && live.instagram && live.instagram.igUserId !== ig.externalId) problems.push("instagram_mismatch");
-      }
-      return {
-        channelId,
-        checkedAt: deps.now(),
-        ok: problems.length === 0,
-        problems,
-        missingScopes: live.valid ? missingScopes : [],
-        scopes: live.scopes,
-        tokenExpiresAt: live.expiresAt,
-        facebook: { stored: fb.externalId, live: live.page?.pageId ?? null, name: live.page?.pageName ?? null },
-        instagram: ig || live.instagram ? { stored: ig?.externalId ?? null, live: live.instagram?.igUserId ?? null, username: live.instagram?.username ?? null } : null,
-      };
+      return (await inspect(channelId)).check;
     },
 
     async getPostingSettings(): Promise<PostingSettings> {
@@ -232,16 +283,18 @@ export function createCrossPostingServices(deps: CrossPostingDeps) {
     },
 
     /**
-     * The runner's port (AC-XP-8): the channel's Page token and ids, only after Meta's live answer matches what is stored (every
-     * posting scope, the same Page and Instagram). Never leaves this module except to the gateway through the runner.
+     * The runner's port (AC-XP-8, per network since 2026-11-23, owner TG 4779): the Page token and THIS network's account, only after
+     * Meta's live answer passes for this network (its scopes, the same Page, its own account). Another network's problem never
+     * refuses it; a problem of the shared Page token (`token_invalid`, `page_mismatch`) refuses every network. Refusals are
+     * `social_account_mismatch` with `details.problems` (`not_connected` when the channel stored no account for the network).
      */
-    async postingTarget(channelId: string): Promise<{ token: string; pageId: string; igUserId: string | null }> {
-      const check = await api.checkAccounts(channelId);
-      if (!check.ok) throw new DomainError({ code: "social_account_mismatch", message: `The connected Meta accounts did not pass the check (${check.problems.join(", ")}).`, details: { channelId, problems: check.problems } });
-      const rows = await deps.store.list(channelId);
-      const fb = rows.find((r) => r.network === "facebook")!;
-      const ig = rows.find((r) => r.network === "instagram") ?? null;
-      return { token: await openToken(fb.tokenSealed), pageId: fb.pageId ?? fb.externalId, igUserId: ig?.externalId ?? null };
+    async postingTarget(channelId: string, network: SocialNetwork): Promise<PostingTarget> {
+      const { check, rows, token, pageId } = await inspect(channelId);
+      const own = check.networks.find((n) => n.network === network);
+      const row = rows.find((r) => r.network === network);
+      if (!own || !row) throw new DomainError({ code: "social_account_mismatch", message: `No ${network} account is connected for this channel (not_connected).`, details: { channelId, network, problems: ["not_connected"] } });
+      if (!own.ok) throw new DomainError({ code: "social_account_mismatch", message: `The connected ${network} account did not pass the check (${own.problems.join(", ")}).`, details: { channelId, network, problems: own.problems, missingScopes: own.missingScopes } });
+      return { network, token, pageId, accountId: row.externalId };
     },
 
     /**
@@ -249,23 +302,25 @@ export function createCrossPostingServices(deps: CrossPostingDeps) {
      * a Facebook Page by this computer's own published Reels. Unknown counts as fitting only for Facebook (our own count is exact).
      */
     async quota(channelId: string): Promise<{ instagram: { used: number | null; limit: number }; facebook: { used: number; limit: number } }> {
-      const since = deps.now() - 24 * 60 * 60_000;
-      const jobs = deps.jobs ? await deps.jobs.list(channelId) : [];
-      const fbUsed = jobs.filter((j) => j.network === "facebook" && j.status === "published" && j.updatedAt >= since).length;
-      let igUsed: number | null = null;
-      const ig = (await deps.store.list(channelId)).find((r) => r.network === "instagram");
-      if (ig && deps.meta.igPublishingUsage) {
-        const fb = (await deps.store.list(channelId)).find((r) => r.network === "facebook");
-        if (fb) igUsed = await deps.meta.igPublishingUsage({ igUserId: ig.externalId, token: await openToken(fb.tokenSealed) }).catch(() => null);
-      }
-      return { instagram: { used: igUsed, limit: INSTAGRAM_REEL.postsPer24h }, facebook: { used: fbUsed, limit: FACEBOOK_REEL.postsPer24h } };
+      const [instagram, facebook] = await Promise.all([NETWORK_QUOTA.instagram(channelId), NETWORK_QUOTA.facebook(channelId)]);
+      return { instagram, facebook: { used: facebook.used ?? 0, limit: facebook.limit } };
+    },
+
+    /** The runner's quota gate for ONE network: counts only that network (unknown = wait). */
+    async quotaAllows(channelId: string, network: SocialNetwork): Promise<boolean> {
+      const q = await NETWORK_QUOTA[network](channelId);
+      return q.used !== null && q.used < q.limit;
     },
 
     async listJobs(channelId: string | null): Promise<SocialJob[]> {
       return deps.jobs ? deps.jobs.list(channelId) : [];
     },
 
-    /** The owner's retry of a failed job that never got a post id: the job is forgotten, the runner starts it again if still due. */
+    /**
+     * The owner's retry (Web UI only; no MCP or agent path) of a failed job that never sent its publishing call. Owner TG 4780: the
+     * retry is recorded on the job (`ownerRetryAt`) instead of forgetting it, and the runner then posts it however late -- the 12 h
+     * window binds only the automatic start; the slot's approval, the network's identity read and its quota still apply.
+     */
     async retryJob(raw: unknown): Promise<{ retried: boolean }> {
       const jobId = (raw as { jobId?: unknown } | null)?.jobId;
       if (typeof jobId !== "string" || !jobId) throw new DomainError({ code: "validation_failed", message: "jobId is required" });
@@ -273,7 +328,7 @@ export function createCrossPostingServices(deps: CrossPostingDeps) {
       if (!job) throw new DomainError({ code: "not_found", message: "No such job on this computer." });
       // Review 14.11: a job whose publishing call was sent may be live even without a post id -- never retried.
       if (job.status !== "failed" || job.remotePostId || job.publishAttempted) throw new DomainError({ code: "validation_failed", message: "Only a failed job that never sent its publishing call can be retried." });
-      await deps.jobs!.remove(jobId);
+      await deps.jobs!.update(jobId, { ownerRetryAt: deps.now() });
       return { retried: true };
     },
 

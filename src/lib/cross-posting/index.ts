@@ -10,7 +10,7 @@ import { createCrossPostingServices, type CrossPostingCore } from "./services";
 // the pending Page picks live in its memory, so every route bundle must reach the same one.
 export * from "./contracts";
 export { createCrossPostingServices, type CrossPostingCore, type CrossPostingDeps, type CrossPostingStore } from "./services";
-export { createCrossPostRunner, type PlannedCrossPost, type CrossPostRunner, type SocialJob } from "./runner";
+export { createCrossPostRunner, ownerRetryPending, type PlannedCrossPost, type CrossPostRunner, type SocialJob } from "./runner";
 export { parseCrossPostBlock, videoProblems, type CrossPostTarget, type CrossPostProblem } from "./cross-post-block";
 
 const CORE_KEY = Symbol.for("youtube-operations-manager.cross-posting-core");

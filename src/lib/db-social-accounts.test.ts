@@ -77,3 +77,19 @@ test("schema v122 social_post_jobs: a job id is inserted once (a second start is
     assert.equal(row?.remoteId, "C1");
   });
 });
+
+test("schema v123 social_post_jobs.owner_retry_at: null by default, the owner's retry time kept and cleared (owner TG 4780)", async () => {
+  assert.ok(SCHEMA_MIGRATIONS.find((m) => m.version === 123));
+  await withDb(async (client) => {
+    const database = createIsolatedDb(client);
+    const at = new Date("2026-11-20T12:00:00Z");
+    const job = { jobId: "UC1|s6|facebook", channelId: "UC1", slotId: "s6", video: "S6", network: "facebook" as const, manifestSha256: "m", plannedAt: at, status: "failed" as const, createdAt: at, updatedAt: at };
+    assert.equal(await insertSocialPostJob(job, database), true);
+    assert.equal((await getSocialPostJob(job.jobId, database))?.ownerRetryAt, null);
+    const retry = new Date("2026-11-23T10:00:00Z");
+    await updateSocialPostJob(job.jobId, { ownerRetryAt: retry }, database);
+    assert.equal((await getSocialPostJob(job.jobId, database))?.ownerRetryAt?.getTime(), retry.getTime());
+    await updateSocialPostJob(job.jobId, { ownerRetryAt: null }, database);
+    assert.equal((await getSocialPostJob(job.jobId, database))?.ownerRetryAt, null);
+  });
+});

@@ -20,12 +20,14 @@ const toJob = (r: StoredSocialPostJob): SocialJob => ({
   errorMessage: r.errorMessage,
   createdAt: r.createdAt.getTime(),
   updatedAt: r.updatedAt.getTime(),
+  ownerRetryAt: r.ownerRetryAt ? r.ownerRetryAt.getTime() : null,
 });
 
 const toDates = (set: Partial<SocialJob>) => {
-  const { plannedAt, createdAt, updatedAt, ...rest } = set;
+  const { plannedAt, createdAt, updatedAt, ownerRetryAt, ...rest } = set;
   return {
     ...rest,
+    ...(ownerRetryAt !== undefined ? { ownerRetryAt: ownerRetryAt === null ? null : new Date(ownerRetryAt) } : {}),
     ...(plannedAt !== undefined ? { plannedAt: new Date(plannedAt) } : {}),
     ...(createdAt !== undefined ? { createdAt: new Date(createdAt) } : {}),
     ...(updatedAt !== undefined ? { updatedAt: new Date(updatedAt) } : {}),
@@ -40,7 +42,7 @@ export function createSocialJobStore() {
     },
     list: async (channelId: string | null) => (await listSocialPostJobs(channelId)).map(toJob),
     listActive: async () => (await listSocialPostJobs(null)).filter((r) => r.status === "uploading" || r.status === "processing").map(toJob),
-    insert: (job: SocialJob) => insertSocialPostJob({ ...job, plannedAt: new Date(job.plannedAt), createdAt: new Date(job.createdAt), updatedAt: new Date(job.updatedAt) }),
+    insert: (job: SocialJob) => insertSocialPostJob({ ...job, plannedAt: new Date(job.plannedAt), createdAt: new Date(job.createdAt), updatedAt: new Date(job.updatedAt), ownerRetryAt: typeof job.ownerRetryAt === "number" ? new Date(job.ownerRetryAt) : null }),
     update: (jobId: string, set: Partial<SocialJob>) => updateSocialPostJob(jobId, toDates(set)),
     remove: (jobId: string) => deleteSocialPostJob(jobId),
   };

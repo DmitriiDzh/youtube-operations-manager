@@ -41,7 +41,7 @@ function harness(opts: { entries?: PlannedCrossPost[]; enabled?: boolean; approv
       insert: async (job) => (jobs.has(job.jobId) ? false : (jobs.set(job.jobId, { ...job }), true)),
       update: async (id, set) => void jobs.set(id, { ...jobs.get(id)!, ...set }),
     },
-    postingTarget: async () => ({ token: "PT", pageId: "P1", igUserId: "IG1" }),
+    postingTarget: async (_c, network) => ({ network, token: "PT", pageId: "P1", accountId: network === "instagram" ? "IG1" : "P1" }),
     meta: {
       igCreateReelContainer: async (i) => (calls.push(`ig.container ai=${i.isAiGenerated} caption=${i.caption}`), { containerId: "C1" }),
       igUploadReel: async () => {
@@ -98,12 +98,15 @@ test("AC-XP-15: nothing before the planned time; at the time both networks start
   assert.equal(h.jobs.size, 0);
   h.at(T0);
   await h.runner.tick();
-  assert.deepEqual(h.calls, ["ig.container ai=true caption=IG #x", "ig.upload", "fb.start", "fb.upload", "fb.finish ai=true title=T"]);
+  // 2026-11-23 (owner TG 4779: one network never waits for another): the networks run concurrently, so only each network's own
+  // order is required -- the earlier "Instagram first, then Facebook" sequence was that coupling.
+  assert.deepEqual(h.calls.filter((c) => c.startsWith("ig.")), ["ig.container ai=true caption=IG #x", "ig.upload"]);
+  assert.deepEqual(h.calls.filter((c) => c.startsWith("fb.")), ["fb.start", "fb.upload", "fb.finish ai=true title=T"]);
   assert.equal(h.jobs.get(IG)!.status, "processing");
   assert.equal(h.jobs.get(FB)!.status, "processing");
   h.calls.length = 0;
   await h.runner.tick(); // IG still IN_PROGRESS; FB ready -> published
-  assert.deepEqual(h.calls, ["ig.status", "fb.status"]);
+  assert.deepEqual([...h.calls].sort(), ["fb.status", "ig.status"]); // concurrent networks: the set matters, not the order
   assert.equal(h.jobs.get(FB)!.status, "published");
   assert.equal(h.jobs.get(FB)!.permalink, "https://facebook.com/reel/1");
   assert.equal(h.jobs.get(IG)!.status, "processing");
@@ -217,7 +220,7 @@ test("AC-XP-10: a package without the video's sha256 posts nothing; a file that 
   const runner = createCrossPostRunner({
     plan: { entries: async () => [entry()], stillApproved: async () => true },
     jobs: { get: async (id) => jobs.get(id) ?? null, listActive: async () => [], insert: async (j) => (jobs.has(j.jobId) ? false : (jobs.set(j.jobId, j), true)), update: async (id, set) => void jobs.set(id, { ...jobs.get(id)!, ...set }) },
-    postingTarget: async () => ({ token: "PT", pageId: "P1", igUserId: "IG1" }),
+    postingTarget: async (_c, network) => ({ network, token: "PT", pageId: "P1", accountId: network === "instagram" ? "IG1" : "P1" }),
     meta: new Proxy({}, { get: (_t, name) => async () => void calls.push(String(name)) }) as RunnerDeps["meta"],
     files: { body: (_p, size) => ({ stream: () => new Blob(["x"]).stream(), sizeBytes: size }), sha256: async () => "0".repeat(64) },
     enabled: async () => true,
@@ -255,7 +258,7 @@ test("AC-XP-16: a network at its 24 h limit waits -- no job, nothing sent -- whi
   const runner = createCrossPostRunner({
     plan: { entries: async () => [entry()], stillApproved: async () => true },
     jobs: { get: async (id) => jobs.get(id) ?? null, listActive: async () => [], insert: async (j) => (jobs.has(j.jobId) ? false : (jobs.set(j.jobId, j), true)), update: async (id, set) => void jobs.set(id, { ...jobs.get(id)!, ...set }) },
-    postingTarget: async () => ({ token: "PT", pageId: "P1", igUserId: "IG1" }),
+    postingTarget: async (_c, network) => ({ network, token: "PT", pageId: "P1", accountId: network === "instagram" ? "IG1" : "P1" }),
     meta: new Proxy({}, { get: (_t, name) => async () => (calls.push(String(name)), { containerId: "C", videoId: "V", uploadUrl: "https://rupload.facebook.com/x" }) }) as RunnerDeps["meta"],
     files: { body: (_p, size) => ({ stream: () => new Blob(["x"]).stream(), sizeBytes: size }), sha256: async () => "f".repeat(64) },
     enabled: async () => true,

@@ -89,3 +89,22 @@ test("slots more than 36 h in the past are not read", async () => {
   h.clock.now = new Date("2026-10-27T18:01:00Z"); // 36 h 1 min after 06:00Z on the 26th
   assert.deepEqual(await h.service.socialSlotStates(CH), []);
 });
+
+// Owner TG 4780: the owner's explicit retry of a failed social post must be able to post it however late -- the slot it names is read
+// past the 36 h look-back, with the same rules (approved, not vetoed, the current manifest); no other old slot appears.
+test("a slot named for the owner's retry is read however long ago, with the same approval rules; other old slots stay hidden", async () => {
+  const h = await approvedSlot();
+  h.clock.now = new Date("2026-10-29T06:00:00Z"); // 3 days after the slot's time
+  assert.deepEqual(await h.service.socialSlotStates(CH), []);
+  const [s] = await h.service.socialSlotStates(CH, { alsoSlotIds: ["s1"] });
+  assert.equal(s.slotId, "s1");
+  assert.equal(s.approved, true);
+  assert.equal(s.package?.manifestSha256, "a".repeat(64));
+  assert.deepEqual(await h.service.socialSlotStates(CH, { alsoSlotIds: ["other"] }), []);
+
+  const vetoed = await approvedSlot();
+  const plan = (await vetoed.service.get({ channelId: CH, weekStart: WEEK })).plan;
+  await vetoed.service.decide(CH, WEEK, { action: "veto", slots: [{ slotId: "s1", contentHash: plan.slots[0].contentHash }] }, "u1");
+  vetoed.clock.now = new Date("2026-10-29T06:00:00Z");
+  assert.equal((await vetoed.service.socialSlotStates(CH, { alsoSlotIds: ["s1"] }))[0].approved, false);
+});

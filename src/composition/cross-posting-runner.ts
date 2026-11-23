@@ -1,4 +1,4 @@
-import { createCrossPostingCore, createCrossPostRunner, createSocialJobStore, postingEnabled, type CrossPostRunner, type PlannedCrossPost } from "@/lib/cross-posting";
+import { createCrossPostingCore, createCrossPostRunner, createSocialJobStore, ownerRetryPending, postingEnabled, type CrossPostRunner, type PlannedCrossPost } from "@/lib/cross-posting";
 import { listSocialAccounts } from "@/lib/db";
 import { createMetaClient } from "@/lib/social-gateway";
 import { plannedCrossPostsOf, sha256OfFile, uploadBodyOf } from "./cross-posting-plan";
@@ -10,10 +10,18 @@ import { plannedCrossPostsOf, sha256OfFile, uploadBodyOf } from "./cross-posting
 const RUNNER_KEY = Symbol.for("ytom.crossPosting.runner");
 const holder = globalThis as unknown as Record<symbol, CrossPostRunner | undefined>;
 
-async function allEntries(): Promise<PlannedCrossPost[]> {
+/**
+ * The slots around now, plus (owner TG 4780) the slots of failed jobs the owner asked to retry, however long ago -- those are read
+ * with the same approval rules; only their age no longer hides them.
+ */
+async function allEntries(jobs: ReturnType<typeof createSocialJobStore>): Promise<PlannedCrossPost[]> {
   const channels = [...new Set((await listSocialAccounts(null)).map((a) => a.channelId))];
+  const retried = (await jobs.list(null).catch(() => [])).filter(ownerRetryPending);
   const out: PlannedCrossPost[] = [];
-  for (const channelId of channels) out.push(...(await plannedCrossPostsOf(channelId).catch(() => [])));
+  for (const channelId of channels) {
+    const alsoSlotIds = [...new Set(retried.filter((j) => j.channelId === channelId).map((j) => j.slotId))];
+    out.push(...(await plannedCrossPostsOf(channelId, { alsoSlotIds }).catch(() => [])));
+  }
   return out;
 }
 
@@ -23,21 +31,20 @@ export function getCrossPostRunner(): CrossPostRunner {
     const jobs = createSocialJobStore();
     holder[RUNNER_KEY] = createCrossPostRunner({
       plan: {
-        entries: allEntries,
-        // Re-read right before each publishing call: the slot still approved for the SAME manifest (released or not).
-        stillApproved: async (entry) => (await plannedCrossPostsOf(entry.channelId).catch(() => [])).some((e) => e.slotId === entry.slotId && e.manifestSha256 === entry.manifestSha256),
+        entries: () => allEntries(jobs),
+        // Re-read right before each publishing call: the slot still approved for the SAME manifest (released or not). The entry's own
+        // slot is read whatever its age (it is in this run because it is recent or the owner retried it; the rules are the same).
+        stillApproved: async (entry) => (await plannedCrossPostsOf(entry.channelId, { alsoSlotIds: [entry.slotId] }).catch(() => [])).some((e) => e.slotId === entry.slotId && e.manifestSha256 === entry.manifestSha256),
       },
       jobs,
-      postingTarget: (channelId) => core.postingTarget(channelId),
+      // AC-XP-8 per network (owner TG 4779): each network's own identity read; another network's problem never refuses it.
+      postingTarget: (channelId, network) => core.postingTarget(channelId, network),
       meta: createMetaClient({ postingAllowed: postingEnabled }),
       files: { body: uploadBodyOf, sha256: sha256OfFile },
       enabled: postingEnabled,
       now: () => Date.now(),
-      // AC-XP-16: Instagram as Meta counts it (unknown = wait), a Facebook Page by this computer's own count.
-      quotaOk: async (channelId, network) => {
-        const q = await core.quota(channelId);
-        return network === "instagram" ? q.instagram.used !== null && q.instagram.used < q.instagram.limit : q.facebook.used < q.facebook.limit;
-      },
+      // AC-XP-16, per network: Instagram as Meta counts it (unknown = wait), a Facebook Page by this computer's own count.
+      quotaOk: (channelId, network) => core.quotaAllows(channelId, network),
     });
   }
   return holder[RUNNER_KEY];

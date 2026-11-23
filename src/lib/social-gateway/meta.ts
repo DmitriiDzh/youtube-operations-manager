@@ -35,6 +35,8 @@ export type MetaTokenInspection = {
   expiresAt: number | null;
   page: { pageId: string; pageName: string } | null;
   instagram: { igUserId: string; username: string | null } | null;
+  /** Meta refused the read of the linked Instagram while the Page itself read fine: Instagram is unknown (never assumed). */
+  instagramUnreadable?: boolean;
 };
 
 export type MetaPage = {
@@ -242,10 +244,25 @@ export function createMetaClient(args: { fetchImpl?: Fetch; postingAllowed?: () 
       const scopes = Array.isArray(debug.scopes) ? debug.scopes.filter((s): s is string => typeof s === "string") : [];
       const exp = typeof debug.expires_at === "number" && debug.expires_at > 0 ? debug.expires_at * 1000 : null;
       if (!valid) return { valid: false, scopes, expiresAt: exp, page: null, instagram: null };
-      const u = new URL(`${META_GRAPH_BASE}/${encodeURIComponent(input.pageId)}`);
-      u.searchParams.set("fields", "id,name,instagram_business_account{id,username}");
-      u.searchParams.set("access_token", input.pageToken);
-      const p = await getJson(u, "page");
+      const pageRead = (fields: string) => {
+        const u = new URL(`${META_GRAPH_BASE}/${encodeURIComponent(input.pageId)}`);
+        u.searchParams.set("fields", fields);
+        u.searchParams.set("access_token", input.pageToken);
+        return getJson(u, "page");
+      };
+      // 2026-11-23 (owner TG 4779: one network's problem never stops another): Meta's definite refusal of the read WITH the linked
+      // Instagram (a blocked account) is read again without it, so the Page itself is still answered; Instagram is then unknown.
+      // No answer / 5xx / a rate limit / an invalid token are not retried -- they concern the Page read as well.
+      let p: Record<string, unknown>;
+      let instagramUnreadable = false;
+      try {
+        p = await pageRead("id,name,instagram_business_account{id,username}");
+      } catch (error) {
+        const status = error instanceof DomainError ? (error.details as { status?: unknown } | undefined)?.status : undefined;
+        if (!(error instanceof DomainError) || error.code !== "social_request_rejected" || typeof status !== "number" || status >= 500) throw error;
+        p = await pageRead("id,name");
+        instagramUnreadable = true;
+      }
       const ig = (p.instagram_business_account ?? null) as Record<string, unknown> | null;
       return {
         valid: true,
@@ -253,6 +270,7 @@ export function createMetaClient(args: { fetchImpl?: Fetch; postingAllowed?: () 
         expiresAt: exp,
         page: typeof p.id === "string" ? { pageId: p.id, pageName: typeof p.name === "string" ? p.name : p.id } : null,
         instagram: ig && typeof ig.id === "string" ? { igUserId: ig.id, username: typeof ig.username === "string" ? ig.username : null } : null,
+        ...(instagramUnreadable ? { instagramUnreadable: true } : {}),
       };
     },
 

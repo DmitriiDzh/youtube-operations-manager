@@ -36,6 +36,8 @@ type Job = {
   status: "uploading" | "processing" | "published" | "failed";
   remotePostId: string | null;
   publishAttempted?: boolean;
+  /** The owner's retry waiting for the runner (owner TG 4780). */
+  ownerRetryAt?: number | null;
   permalink: string | null;
   errorCode: string | null;
   errorMessage: string | null;
@@ -50,6 +52,8 @@ type Check = {
   ok: boolean;
   problems: string[];
   missingScopes: string[];
+  /** One entry per connected network: each network posts or stops on its own (owner TG 4779). */
+  networks: { network: Network; ok: boolean; problems: string[]; missingScopes: string[] }[];
   facebook: { name: string | null } | null;
   instagram: { username: string | null } | null;
 };
@@ -102,6 +106,51 @@ async function requestJson<T>(
   if (!response.ok)
     throw new Error(errorText(t, body, fallback, { showErrorField: false }));
   return body as T;
+}
+
+/**
+ * The identity check, per network (owner TG 4779): «Страница Facebook: OK, публикации идут» / «Instagram: не привязан. Публикации в
+ * эту сеть остановлены» with the fix below it -- never one verdict for the whole channel.
+ */
+function SocialCheckResult({ check, t }: { check: Check; t: ReturnType<typeof useT> }) {
+  const failed = check.networks.filter((n) => !n.ok);
+  const detail = (p: string, scopes: string[]) =>
+    p === "scope_missing"
+      ? t("social.check.scope_missing", { scopes: scopes.join(", ") })
+      : t(`social.check.${p}` as UiTextKey);
+  return (
+    <ul className="space-y-0.5 text-xs">
+      {check.networks.map((n) => {
+        const network = t(`social.network.${n.network}`);
+        return n.ok ? (
+          <li key={n.network} className="text-emerald-400">
+            {t("social.check.networkOk", { network })}
+          </li>
+        ) : (
+          <li key={n.network} className="text-amber-400">
+            {t("social.check.networkFailed", {
+              network,
+              problem: n.problems
+                .map((p) => t(`social.check.short.${p}` as UiTextKey))
+                .join(", "),
+            })}
+            <ul className="ml-3 text-amber-400/80">
+              {n.problems.map((p) => (
+                <li key={p}>{detail(p, n.missingScopes)}</li>
+              ))}
+            </ul>
+          </li>
+        );
+      })}
+      {failed.length === 0 ? (
+        <li className="text-emerald-400">{t("social.check.ok")}</li>
+      ) : (
+        failed.length < check.networks.length && (
+          <li className="text-zinc-400">{t("social.check.othersUnaffected")}</li>
+        )
+      )}
+    </ul>
+  );
 }
 
 export function SocialAccountsSettings() {
@@ -625,7 +674,12 @@ export function SocialAccountsSettings() {
                             {j.errorMessage ?? j.errorCode}
                           </span>
                         )}
-                        {j.status === "failed" && !j.remotePostId && !j.publishAttempted && (
+                        {j.status === "failed" && typeof j.ownerRetryAt === "number" && (
+                          <span className="text-amber-300">
+                            {t("social.job.retryPending")}
+                          </span>
+                        )}
+                        {j.status === "failed" && !j.remotePostId && !j.publishAttempted && typeof j.ownerRetryAt !== "number" && (
                           <button
                             type="button"
                             className={buttonClass}
@@ -639,27 +693,9 @@ export function SocialAccountsSettings() {
                     ))}
                 </ul>
               )}
-              {checks[channel.channelId] &&
-                (checks[channel.channelId].ok ? (
-                  <p className="text-xs text-emerald-400">
-                    {t("social.check.ok")}
-                  </p>
-                ) : (
-                  <ul className="space-y-0.5 text-xs text-amber-400">
-                    {checks[channel.channelId].problems.map((p) => (
-                      <li key={p}>
-                        {p === "scope_missing"
-                          ? t("social.check.scope_missing", {
-                              scopes:
-                                checks[channel.channelId].missingScopes.join(
-                                  ", ",
-                                ),
-                            })
-                          : t(`social.check.${p}` as UiTextKey)}
-                      </li>
-                    ))}
-                  </ul>
-                ))}
+              {checks[channel.channelId] && (
+                <SocialCheckResult check={checks[channel.channelId]} t={t} />
+              )}
               {own.length === 0 ? (
                 <p className="text-xs text-zinc-500">
                   {t("social.notConnected")}
