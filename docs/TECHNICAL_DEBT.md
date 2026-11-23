@@ -2267,6 +2267,21 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Amended (BL-267, ADR 0073 §5):** decisions are now read by slot id across weeks (a moved slot keeps its veto and approvals); a
   build without BL-267 still reads them by week, which is why a vetoed slot cannot be moved.
 
+## RISK-158 — A channel worker can add any video id, another channel's included, to its own channel's playlist — OPEN, 2026-11-23
+
+- **Affected components:** `src/lib/playlist-management/services.ts` `addVideosToPlaylist` in an agent scope; the worker's
+  `playlist_add_videos` (`src/mcp/server.ts`). Found by the independent review of the playlist rights (owner TG 4782, ADR 0048
+  Amendment 1).
+- **Risk:** in a worker's scope the playlist core checks the write channel (`expectedChannelId` = the token's channel) and that the
+  playlist is that channel's, but not whose the added videos are. A worker can put any public video id -- another of the owner's
+  channels, or someone else's -- into its own channel's playlist. The Producer's wrapper does check (`PRODUCER_OWN_VIDEO_TOOLS`:
+  only the named channel's own synced videos); the worker path does not.
+- **Mitigation:** the playlist is still only the worker's own channel's, every add is a real write with the Live writes check, and
+  every call is in the worker log (Settings → Channels) with its video ids. Restricting it would remove an existing worker
+  capability: an Agent API MAJOR change, the owner's decision -- deliberately not done on the branch that found it.
+- **Gate(s):** none (the write stays on the worker's own channel). **Re-evaluate:** when the owner decides whether workers may add
+  other channels' videos, or if a worker log shows another channel's videos added.
+
 ## RISK-157 — Captions or thumbnail done later: a row dated by the owner's own approval stays undated — OPEN, 2026-11-17
 
 - **Affected components:** `src/lib/publishing/index.ts` `markUploadCaptionsSetLater` / `markUploadThumbnailSetLater`,

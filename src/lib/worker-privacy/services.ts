@@ -65,6 +65,14 @@ export function createWorkerPrivacyServices(deps: WorkerPrivacyDeps) {
   return {
     async setPrivacy(input: unknown): Promise<SetPrivacyResult> {
       const parsed = parseWithSchema(setPrivacyInputSchema, input, "set privacy input");
+      if (parsed.target === "video" && parsed.privacyStatus === "public") {
+        // Defence in depth (review of owner msg 4782): the service itself never makes a video public, whatever the injected check does.
+        throw new DomainError({
+          code: "AGENT_PUBLIC_NOT_ALLOWED",
+          message: "A channel agent cannot make a video public -- that stays the owner's. Use private or unlisted.",
+          details: { privacyStatus: parsed.privacyStatus },
+        });
+      }
       if (parsed.target === "video") deps.assertMayNotPublish(parsed.privacyStatus);
       const dryRun = parsed.dryRun !== false;
       const base = { target: parsed.target, id: parsed.id, dryRun, privacyStatus: parsed.privacyStatus };

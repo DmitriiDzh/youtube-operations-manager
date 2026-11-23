@@ -74,6 +74,25 @@ test("msg 4782: a video is never made public by a worker -- refused before any r
   assert.deepEqual(writes, []);
 });
 
+// Defence in depth (independent review of owner msg 4782, ADR 0048 amendment 1): "videos stay never-public for workers" holds in the
+// service itself -- even if the injected channel-access check lets "public" through (a miswiring), nothing is read or written.
+test("msg 4782: with a permissive injected check the service itself still refuses a public video, before any read", async () => {
+  const mustNot = async () => {
+    throw new Error("must not be called");
+  };
+  const { services, writes } = fixture({
+    assertMayNotPublish: () => {},
+    findChannelVideo: mustNot,
+    currentBroadcastIds: mustNot,
+    readVideo: mustNot,
+    writeVideo: mustNot,
+  });
+  for (const dryRun of [false, true, undefined]) {
+    await assert.rejects(services.setPrivacy({ target: "video", id: "rec1", privacyStatus: "public", dryRun }), code("AGENT_PUBLIC_NOT_ALLOWED"));
+  }
+  assert.deepEqual(writes, []);
+});
+
 test("msg 4782: a worker makes its channel's playlist public (a preview first), and private again", async () => {
   const { services, writes } = fixture();
   const preview = await services.setPrivacy({ target: "playlist", id: "PL_PRIV", privacyStatus: "public" });

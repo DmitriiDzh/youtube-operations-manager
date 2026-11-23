@@ -12,7 +12,8 @@ import { createPlaylistManagementServices } from "./services";
 // - in an agent scope `public` is accepted for playlist_create / playlist_update (it was refused with AGENT_PUBLIC_NOT_ALLOWED before);
 // - another channel's expectedChannelId is refused (WRITE_CHANNEL_MISMATCH, the guardrail's code) before any credential or YouTube call;
 // - outside an agent scope (the owner) nothing of this applies.
-// (Which videos the Producer may add -- only the channel's own -- is checked on its endpoint: producer-mcp-endpoint.test.ts.)
+// (Which videos the Producer may add -- only the channel's own -- is checked on its endpoint: producer-mcp-endpoint.test.ts. A worker's
+// added video ids are not checked: docs/TECHNICAL_DEBT.md RISK-158.)
 
 const BOUND = { tokenId: "t-1", channelId: "UC_ACTIVE", userId: "user-1" };
 const codeIs = (expected: string) => (error: unknown) => isDomainError(error) && error.code === expected;
@@ -116,7 +117,9 @@ test("msg 4782: in an agent scope another channel's playlist under the bound cha
   );
 });
 
-test("msg 4782: in an agent scope the channel's own videos are added and removed", async () => {
+// Whose the added videos are is NOT checked in an agent scope (docs/TECHNICAL_DEBT.md RISK-158); this test claims only that the named
+// ids are added to and removed from the bound channel's own playlist.
+test("msg 4782: in an agent scope the named video ids are added to and removed from the bound channel's own playlist", async () => {
   const { services, calls } = fixture();
   await withAgentSessionForTests(BOUND, async () => {
     const added = await services.addVideosToPlaylist({ credentialRef: REF, playlistId: "p1", expectedChannelId: "UC_ACTIVE", videoIds: ["v-own-1", "v-own-2"] });
