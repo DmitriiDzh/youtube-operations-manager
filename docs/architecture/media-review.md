@@ -315,11 +315,13 @@ On branch `feature/bl-229-music-library`. No schema change; no YouTube call; not
 
 - **Module:** `src/lib/image-reviews/` -- `contracts.ts` (ports, limits, views, the file kinds), `schemas.ts` (strict inputs; the owner's
   decision: `approve` takes no comment, `approve_with_note` and `return` need one), `model.ts` (pure: the deciding record through the
-  shared rule, sort, file kind), `services.ts` (the Producer surface `submit/withdraw/list/get`, the owner surface `ownerList/decide/
-  imageFile/previewFile`), `index.ts` (production wiring: one lock per process, `media-preview` for the header read and the 960 px
+  shared rule, sort, file kind), `services.ts` (the Producer surface `submit/withdraw/list/get`, the owner surface `ownerList/
+  ownerWaiting/decide/imageFile/previewFile`), `index.ts` (production wiring: one lock per process, `media-preview` for the header read and the 960 px
   preview, `review-notify` nudge, audit).
-- **Shared:** `src/lib/review-items/` owns `earliestDecidingRecord` (ADR 0061 §5) and the workspace file adapter (`resolveReviewFile`,
-  `hashReviewFile` -- moved from clip-reviews' `adapters/files.ts`, which now delegates and keeps its names). The owner kinds of an image
+- **Shared:** `src/lib/review-items/` owns `earliestDecidingRecord` (ADR 0061 §5), the one image status rule (`images.ts`:
+  `decidingImageRecord`, `imageReviewStateOf` -- image-reviews' views and the clips' source-image port both use it) and the workspace
+  file adapter (`resolveReviewFile`, `hashReviewFile` with an LRU cache of 500, `lru.ts` -- moved from clip-reviews' `adapters/files.ts`,
+  which now delegates and keeps its names). The owner kinds of an image
   (`IMAGE_REVIEW_OWNER_KINDS`, `IMAGE_REVIEW_APPROVED_KINDS`) are constants of the sync-gateway family's contract, so clip-reviews and the
   review-notify composition use the same lists without importing image-reviews.
 - **Store:** sync family `image_reviews` (`sync-gateway/image-reviews`, `-sync`): the clip-reviews document shape with `images`;
@@ -327,15 +329,19 @@ On branch `feature/bl-229-music-library`. No schema change; no YouTube call; not
 - **Checks:** submit -- mutation gate, channel connected here; under the lock: a known `requestId` first (same request → the stored image,
   else `image_review_request_conflict`), workspace set, extension, the real path inside the workspace, ≤ 50 MiB, the header's format
   equals the extension's, 16–16384 px, duplicate pending path, 200 pending, 40 per batch. Decide -- pending here; both approvals need
-  this computer's file to match the stored size and SHA-256 (the owner's list also checks the hash: a still is small and the hash is
-  cached by size + mtime).
-- **Clip link:** `ClipReviewClip.approvedImageId?` (additive); `ClipReviewsPorts.imageOf?` wired in `clip-reviews/index.ts` from
-  `createImageReviewsCoreForProduction` + `earliestDecidingRecord`; submit refuses a missing port, an unknown id or another channel's
+  this computer's file to match the stored size and SHA-256. The owner's list checks this computer's copy only for a pending image
+  (`file: null` for the rest); `ownerWaiting` (`GET …/image-reviews?view=count`, the tab's badge) reads the document only.
+- **Clip link:** `ClipReviewClip.approvedImageId?` (additive); `ClipReviewsPorts.imageOf?` = `createClipSourceImageLookup(core)`
+  (`clip-reviews/adapters/source-image.ts`, `review-items.imageReviewStateOf`), wired in `clip-reviews/index.ts` over
+  `createImageReviewsCoreForProduction`; submit refuses a missing port, an unknown id or another channel's
   image (`clip_review_image_not_found`) and any status but the two approvals (`clip_review_image_not_approved`); views carry the key only
-  when set (the BL-241 views are unchanged); the owner's list adds `approvedImage`.
+  when set (the BL-241 views are unchanged); the owner's list adds `approvedImage` (the still NOW: the clip card shows its status and
+  highlights anything but the two approvals, `clip-reviews-model.sourceImageStateOf`; `null` = not in this computer's stills yet).
 - **Surfaces:** Producer API 1.28.0 (`session-deps.ts` wires `createImageReviewsProducerCore`); owner routes under
   `/api/channels/[channelId]/image-reviews` (the only callers of `createImageReviewsOwnerCore`, source scan); files to
   `isOwnerBrowserRequest` (loopback or the proxy's remote owner gate, as the clips since BL-251 amendment 2). Screen: Media → «Кадры»
   (`MEDIA_TABS` value `stills`, before `clips`), own error boundary in `production-panel.tsx`. The full-size viewer is an in-page layer
   with `useDialogFocus` (no browser dialog).
-- **Wake:** review-notify kind `image` (`composition/review-notify.ts` `imageNoticesOf`, source "images").
+- **Wake:** review-notify kind `image` (`composition/review-notify.ts` `imageNoticesOf`, source "images"). An earlier owner return
+  synced after a later approval adds one notice per overridden approval: status `approval_overturned`, decision id
+  `<approvalId>-overturned-by-<returnId>`, dated as the approval; the return's own notice carries an "Overturns" line.

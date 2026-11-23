@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { answeredGroupsOf, attachmentSrcOf, attachmentsReady, canApprove, clockOf, isImageMime, openGroupsFrom, percentOf, pieceOffsetsOf, rangeOf, returnCommentReady, scenesOf, videoSrcOf, type ClipDto } from "./clip-reviews-model";
+import { answeredGroupsOf, attachmentSrcOf, attachmentsReady, canApprove, clockOf, isImageMime, openGroupsFrom, percentOf, pieceOffsetsOf, rangeOf, returnCommentReady, scenesOf, sourceImageStateOf, videoSrcOf, type ClipDto } from "./clip-reviews-model";
 
 // BL-241 (CLIP_REVIEWS_PLAN.md item 5, ADR 0061 §6): the player plays the Producer's range (a media fragment), the row shows it on
 // the clip's clock, and «Одобрить» needs a waiting clip whose file here is the submitted one.
@@ -141,3 +141,16 @@ test("msg 4117: the stored open categories read back; anything else reads as all
   assert.deepEqual([...openGroupsFrom('{"approved":true}')], []);
   assert.deepEqual([...openGroupsFrom('["returned","pending","bogus","approved"]')].sort(), ["approved", "returned"]);
 });
+
+// BL-272 (review, item 2): the clip card shows its source still's status NOW and highlights it unless the still is approved (with or
+// without a note) -- an earlier answer synced later from the other computer may have returned it after the clip was sent.
+test("BL-272 (review): the source still is highlighted unless approved or approved with a note; an unknown status is highlighted too", () => {
+  assert.deepEqual(sourceImageStateOf("approved"), { status: "approved", highlight: false });
+  assert.deepEqual(sourceImageStateOf("approved_with_note"), { status: "approved_with_note", highlight: false });
+  assert.deepEqual(sourceImageStateOf("returned"), { status: "returned", highlight: true });
+  assert.deepEqual(sourceImageStateOf("withdrawn"), { status: "withdrawn", highlight: true });
+  assert.deepEqual(sourceImageStateOf("pending"), { status: "pending", highlight: true });
+  assert.deepEqual(sourceImageStateOf("archived"), { status: "unknown", highlight: true });
+  assert.deepEqual(sourceImageStateOf(""), { status: "unknown", highlight: true });
+});
+

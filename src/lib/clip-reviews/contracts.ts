@@ -70,7 +70,7 @@ export type OwnerClipView = Omit<ClipReviewView, "attachments"> & {
   /** The deciding record's id (the attachments' folder), null while pending. */
   decisionId: string | null;
   attachments: OwnerAttachmentView[];
-  /** BL-272: present only when the clip names an approved image -- that image now, or null when it is not in the channel any more. */
+  /** BL-272: present only when the clip names an approved image -- that image now (its status may have changed since), or null when this computer's image reviews do not have it (not synced here yet). */
   approvedImage?: ClipSourceImage | null;
 };
 

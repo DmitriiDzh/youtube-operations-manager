@@ -126,3 +126,99 @@ test("BL-272: imageNoticesOf -- only the owner's three kinds after the window st
   ]);
   assert.equal(noted.readTool, 'producer_image_review_get {"channelId":"UC_tropico","imageId":"i2"}');
 });
+
+// Review (item 2): an owner RETURN made earlier, offline on the other computer, arrives after the Producer was told about a later
+// approval. The earlier decision counts (ADR 0061 §5), so the Producer must learn the approval no longer counts. Through the real
+// writer and Inbox writer, three ticks: the approval alone; then the return arrives -- its own file and one overturn file; then nothing.
+test("BL-272 (review): a later-synced earlier return writes the return and an `approval_overturned` notice for the approval it overrides; nothing twice", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "image-review-overturn-"));
+  try {
+    const inbox = path.join(root, "00 YT Producer", "Inbox");
+    await mkdir(inbox, { recursive: true });
+    const img = { imageId: "img_p46", channelId: CH.channelId, sceneId: "P46", imagePath: "03 Images/Scenes/P46/master.png", note: "", batchId: null, requestId: null, width: 1920, height: 1080, sizeBytes: 5, sha256: "e".repeat(64), submittedAt: "2026-11-23T08:00:00.000Z", submittedBy: "p", device: "Mac" };
+    const doc: ImageReviewsSnapshot = {
+      images: { img_p46: img },
+      decisions: { d_mac: { id: "d_mac", imageId: "img_p46", kind: "approved", by: "owner", comment: null, device: "Mac", at: "2026-11-23T10:05:00.000Z" } },
+    };
+    const ledger = new Map<string, ReviewLedgerEntry>();
+    const settings = { value: JSON.stringify({ enabled: true, inboxPath: inbox }) as string | null, state: null as string | null };
+    const notify = createReviewNotify({
+      decisionSources: [{ name: "images", list: async (since) => imageNoticesOf(CH, doc, Date.parse(since)) }],
+      planSources: [],
+      settings: { read: async () => settings.value, write: async (json) => void (settings.value = json) },
+      state: { read: async () => settings.state, write: async (json) => void (settings.state = json) },
+      ledger: { has: async (keys) => new Set(keys.filter((k) => ledger.has(k))), record: async (entries) => entries.forEach((e) => ledger.set(e.key, e)), prune: async () => undefined },
+      inbox: { defaultPath: async () => inbox, producerFolderExists: async () => true, isDirectory, writeOnce: createInboxWriter(), sweepTemp: sweepInboxTemp },
+      platform: () => "darwin",
+      now: () => new Date("2026-11-23T11:00:00.000Z"),
+      log: () => undefined,
+    });
+
+    await notify.tick();
+    assert.deepEqual(await readdir(inbox), ["REVIEW-DECISION-image-img_p46-d_mac.md"]);
+
+    // The other computer's return, made at 10:00 (before the approval), syncs in.
+    doc.decisions.d_win = { id: "d_win", imageId: "img_p46", kind: "returned", by: "owner", comment: "небо слишком светлое", device: "Windows", at: "2026-11-23T10:00:00.000Z" };
+    await notify.tick();
+    assert.deepEqual((await readdir(inbox)).sort(), ["REVIEW-DECISION-image-img_p46-d_mac-overturned-by-d_win.md", "REVIEW-DECISION-image-img_p46-d_mac.md", "REVIEW-DECISION-image-img_p46-d_win.md"]);
+    const overturn = await readFile(path.join(inbox, "REVIEW-DECISION-image-img_p46-d_mac-overturned-by-d_win.md"), "utf8");
+    assert.match(overturn, /status: "?approval_overturned"?/);
+    assert.match(overturn, /небо слишком светлое/);
+    assert.match(overturn, /d_mac \(approved/);
+    assert.match(overturn, /RETURNED, not approved/);
+    const returned = await readFile(path.join(inbox, "REVIEW-DECISION-image-img_p46-d_win.md"), "utf8");
+    assert.match(returned, /status: "?returned"?/);
+    assert.match(returned, /Overturns/);
+
+    await notify.tick();
+    assert.equal((await readdir(inbox)).length, 3);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("BL-272 (review): no overturn notice for an earlier approval with a later return, two approvals, or a withdrawal", () => {
+  const image = (imageId: string) => ({ imageId, channelId: CH.channelId, sceneId: "P1", imagePath: `03 Images/${imageId}.png`, note: "", batchId: null, requestId: null, width: 1920, height: 1080, sizeBytes: 5, sha256: "e".repeat(64), submittedAt: "2026-11-23T08:00:00Z", submittedBy: "p", device: "Mac" });
+  const snapshot: ImageReviewsSnapshot = {
+    images: { a: image("a"), b: image("b"), c: image("c") },
+    decisions: {
+      // a: approved first, returned later -- the approval counts; the later return says "Counts: no".
+      a1: { id: "a1", imageId: "a", kind: "approved", by: "owner", comment: null, device: "Mac", at: "2026-11-23T09:00:00Z" },
+      a2: { id: "a2", imageId: "a", kind: "returned", by: "owner", comment: "x", device: "Win", at: "2026-11-23T09:05:00Z" },
+      // b: an approval with a note first, a plain approval later -- still approved.
+      b1: { id: "b1", imageId: "b", kind: "approved_with_note", by: "owner", comment: "убрать прохожего", device: "Win", at: "2026-11-23T09:00:00Z" },
+      b2: { id: "b2", imageId: "b", kind: "approved", by: "owner", comment: null, device: "Mac", at: "2026-11-23T09:05:00Z" },
+      // c: the Producer withdrew it, then the owner approved: the owner's decision counts, nothing is overturned.
+      c1: { id: "c1", imageId: "c", kind: "withdrawn", by: "producer", comment: null, device: "Mac", at: "2026-11-23T09:00:00Z" },
+      c2: { id: "c2", imageId: "c", kind: "approved", by: "owner", comment: null, device: "Mac", at: "2026-11-23T09:05:00Z" },
+    },
+  };
+  const notices = imageNoticesOf(CH, snapshot, Date.parse("2026-11-23T00:00:00Z"));
+  assert.deepEqual(notices.map((n) => [n.decisionId, n.status]).sort(), [
+    ["a1", "approved"],
+    ["a2", "returned"],
+    ["b1", "approved_with_note"],
+    ["b2", "approved"],
+    ["c2", "approved"],
+  ]);
+  assert.deepEqual(notices.find((n) => n.decisionId === "a2")!.context.at(-1), { label: "Counts", value: "no: an earlier owner decision (a1) decides this image" });
+  assert.equal(notices.some((n) => n.context.some((c) => c.label === "Overturns")), false);
+});
+
+test("BL-272 (review): the overturn notice is dated as the approval -- outside the window when the approval is, inside when it is", () => {
+  const image = { imageId: "i", channelId: CH.channelId, sceneId: "P1", imagePath: "03 Images/i.png", note: "", batchId: null, requestId: null, width: 1920, height: 1080, sizeBytes: 5, sha256: "e".repeat(64), submittedAt: "2026-11-23T08:00:00Z", submittedBy: "p", device: "Mac" };
+  const snapshot: ImageReviewsSnapshot = {
+    images: { i: image },
+    decisions: {
+      r: { id: "r", imageId: "i", kind: "returned", by: "owner", comment: "темно", device: "Win", at: "2026-11-23T09:00:00Z" },
+      ok: { id: "ok", imageId: "i", kind: "approved", by: "owner", comment: null, device: "Mac", at: "2026-11-23T09:10:00Z" },
+    },
+  };
+  const inside = imageNoticesOf(CH, snapshot, Date.parse("2026-11-23T09:05:00Z"));
+  assert.deepEqual(inside.map((n) => [n.decisionId, n.status, n.decidedAt]).sort(), [
+    ["ok", "approved", "2026-11-23T09:10:00Z"],
+    ["ok-overturned-by-r", "approval_overturned", "2026-11-23T09:10:00Z"],
+  ]);
+  assert.deepEqual(imageNoticesOf(CH, snapshot, Date.parse("2026-11-23T09:30:00Z")), []);
+});
+
