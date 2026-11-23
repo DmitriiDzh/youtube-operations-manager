@@ -88,3 +88,28 @@ test("the re-check still refuses a slot the plan no longer approves (any age): n
   assert.equal(w.jobs.get(id)!.errorCode, "social_approval_stale");
   assert.ok(!w.calls.includes("ig.publish"));
 });
+
+// The owner may click «Повторить» while a pass is reading the plan: that pass could not list the old slot yet, so it must not drop the
+// fresh mark as `retry_slot_not_approved` -- the next pass lists the slot and posts it.
+test("a retry marked while the pass reads the plan is kept for the next pass, then posted", async () => {
+  let clock = () => 0;
+  let onRead: (() => void) | null = null;
+  const base = lookbackRead(() => clock());
+  const w = world(async (c, o) => {
+    const out = await base(c, o);
+    onRead?.();
+    onRead = null;
+    return out;
+  });
+  clock = w.nowMs;
+  const id = jobIdOf("UC1", "s6", "instagram");
+  w.jobs.set(id, { jobId: id, channelId: "UC1", slotId: "s6", video: "S6", network: "instagram", manifestSha256: "m-s6", plannedAt: T0, status: "failed", remoteId: null, uploadUrl: null, remotePostId: null, permalink: null, publishAttempted: false, errorCode: "missed_window", errorMessage: "late", createdAt: T0, updatedAt: T0, ownerRetryAt: null });
+  onRead = () => w.jobs.set(id, { ...w.jobs.get(id)!, ownerRetryAt: w.nowMs() });
+  await w.runner.tick();
+  assert.equal(w.jobs.get(id)!.ownerRetryAt, T0 + 3 * DAY, "the fresh mark is not dropped");
+  assert.equal(w.jobs.get(id)!.errorCode, "missed_window");
+  w.at(T0 + 3 * DAY + 60_000);
+  await w.runner.tick(); // the slot is listed now: container + upload
+  await w.runner.tick(); // FINISHED -> publish
+  assert.equal(w.jobs.get(id)!.status, "published");
+});

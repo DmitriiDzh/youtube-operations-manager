@@ -541,6 +541,7 @@ test("retry: the slot no longer in the approved plan -> the mark is cleared (ret
   w.at(T0 + 3 * DAY);
   await w.core.retryJob({ jobId: id });
   const kept = w.entries.splice(0);
+  w.at(T0 + 3 * DAY + 60_000); // the next pass after the click (a mark set during a pass's own plan read waits one more pass)
   await w.run();
   assert.equal(w.job("s6", "facebook")!.status, "failed");
   assert.equal(w.job("s6", "facebook")!.errorCode, "retry_slot_not_approved");

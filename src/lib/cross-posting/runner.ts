@@ -350,7 +350,7 @@ export function createCrossPostRunner(deps: RunnerDeps) {
   }
 
   /** One network's pass: its slots in order, then its active jobs no slot lists any more. Never rejects; one step's throw skips only that step. */
-  async function runLane(network: SocialNetwork, items: LaneItem[], entries: PlannedCrossPost[], report: TickReport) {
+  async function runLane(network: SocialNetwork, items: LaneItem[], entries: PlannedCrossPost[], readAt: number, report: TickReport) {
     const visited = new Set<string>();
     for (const { entry, target, blocked } of items) {
       const jobId = jobIdOf(entry.channelId, entry.slotId, network);
@@ -388,10 +388,11 @@ export function createCrossPostRunner(deps: RunnerDeps) {
     }
     // A pending owner retry whose slot this pass does not list for the network (no longer approved, its package or block changed,
     // the network dropped from it -- or the plan read failed, which is treated the same: fail closed) is never left to post later
-    // without a fresh click: the mark is cleared with its own code.
+    // without a fresh click: the mark is cleared with its own code. Only a mark older than this pass's plan read (`readAt`): one the
+    // owner set while the plan was being read had no chance to be listed and waits for the next pass.
     let retries: SocialJob[] = [];
     try {
-      retries = (await deps.jobs.listRetries()).filter((j) => j.network === network && !visited.has(j.jobId) && ownerRetryPending(j));
+      retries = (await deps.jobs.listRetries()).filter((j) => j.network === network && !visited.has(j.jobId) && ownerRetryPending(j) && (j.ownerRetryAt as number) < readAt);
     } catch {
       report.errors.push(`${network}:listRetries`);
     }
@@ -408,6 +409,7 @@ export function createCrossPostRunner(deps: RunnerDeps) {
   async function tickOnce(): Promise<TickReport> {
     const report: TickReport = { started: [], advanced: [], failed: [], busy: [], errors: [] };
     if (!(await deps.enabled())) return { ...report, skipped: "disabled" };
+    const readAt = deps.now();
     const entries = await deps.plan.entries();
     const work = new Map<SocialNetwork, LaneItem[]>(SOCIAL_NETWORKS.map((n) => [n, []]));
     for (const entry of entries) {
@@ -425,7 +427,7 @@ export function createCrossPostRunner(deps: RunnerDeps) {
         report.busy.push(network);
         continue;
       }
-      const pass = runLane(network, work.get(network) ?? [], entries, report)
+      const pass = runLane(network, work.get(network) ?? [], entries, readAt, report)
         .catch(() => void report.errors.push(network))
         .finally(() => lanes.delete(network));
       lanes.set(network, pass);
