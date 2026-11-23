@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
-import { decidingImageRecordOf } from "@/lib/image-reviews";
 import { isDomainError } from "@/lib/shared-domain";
+import { createAutomergeCore, type DiscardedDocumentBackupStore, type DocumentByteStore } from "@/lib/sync-gateway/automerge-core";
+import { createImageReviewsCore, emptyDocument, type ImageReviewsDocument } from "@/lib/sync-gateway/image-reviews";
 import type { ClipReviewsSnapshot, ImageReviewDecision, ImageReviewImage, ImageReviewsSnapshot } from "@/lib/sync-gateway";
+import { createClipSourceImageLookup } from "./adapters/source-image";
 import type { ClipReviewsPorts } from "./contracts";
 import { createClipReviewsService } from "./services";
 
@@ -57,14 +59,26 @@ const imageDocs: Record<string, ImageReviewsSnapshot> = {
   [B]: { images: { img_b: image("img_b", B) }, decisions: { d5: decision("d5", "img_b", "approved") } },
 };
 
-/** The port as the module's index wires it: the channel's own document and the derived status. */
-async function imageOf(channelId: string, imageId: string) {
-  const doc = imageDocs[channelId] ?? { images: {}, decisions: {} };
-  const found = Object.hasOwn(doc.images, imageId) ? doc.images[imageId] : undefined;
-  if (!found || found.channelId !== channelId) return null;
-  const record = decidingImageRecordOf(imageId, Object.values(doc.decisions));
-  return { imageId, sceneId: found.sceneId, imagePath: found.imagePath, status: record ? record.kind : "pending" };
+/** The real image-reviews family core (Automerge) over an in-memory byte store -- what production reads, minus the disk. */
+function memoryImageCore() {
+  const bytes = new Map<string, Uint8Array>();
+  const store: DocumentByteStore = { loadDocumentBytes: async (k) => bytes.get(k) ?? null, saveDocumentBytes: async (k, b) => void bytes.set(k, b) };
+  const backups = { backup: async () => ({ path: "/backup", capturedAt: "" }) } as DiscardedDocumentBackupStore;
+  return createImageReviewsCore({ core: createAutomergeCore<ImageReviewsDocument>({ store, discardedBackupStore: backups, emptyDocument }), store });
 }
+
+async function coreWith(docs: Record<string, ImageReviewsSnapshot>) {
+  const core = memoryImageCore();
+  for (const [channelId, doc] of Object.entries(docs)) {
+    for (const i of Object.values(doc.images)) await core.addImage(channelId, i);
+    for (const d of Object.values(doc.decisions)) await core.addDecision(channelId, d);
+  }
+  return core;
+}
+
+/** The production port (`createClipSourceImageLookup`, wired in clip-reviews' index.ts) over the in-memory family core. */
+const imageCore = coreWith(imageDocs);
+const imageOf: NonNullable<ClipReviewsPorts["imageOf"]> = async (channelId, imageId) => createClipSourceImageLookup(await imageCore)(channelId, imageId);
 
 function setup(withPort = true) {
   const docs = new Map<string, ClipReviewsSnapshot>();
@@ -138,3 +152,40 @@ test("BL-272: a clip without approvedImageId carries no such key, for the Produc
   assert.equal("approvedImageId" in clip, false);
   assert.equal("approvedImage" in (await service.ownerList(A)).clips[0], false);
 });
+
+// Review (item 3): the clips' link and the image-reviews module share one status rule (`review-items.imageReviewStateOf`). Through the
+// production port and the real family core: the channel check and the owner kinds, by hand.
+test("BL-272 (review): the production imageOf port -- another channel's image is null; the earliest owner decision decides; a withdrawal only without one", async () => {
+  const at = (d: ImageReviewDecision, iso: string): ImageReviewDecision => ({ ...d, at: iso });
+  const core = await coreWith({
+    [A]: {
+      images: { i_ret_first: image("i_ret_first", A), i_app_first: image("i_app_first", A), i_wd_then_owner: image("i_wd_then_owner", A), i_wd: image("i_wd", A), i_none: image("i_none", A), i_foreign: image("i_foreign", B) },
+      decisions: {
+        // A return made earlier on the other computer and an approval made later here: the return decides.
+        e1: at(decision("e1", "i_ret_first", "approved"), "2026-11-23T10:00:05.000Z"),
+        e2: at(decision("e2", "i_ret_first", "returned", "темно"), "2026-11-23T10:00:00.000Z"),
+        // An approval with a note first, a plain approval later: the note-approval decides.
+        e3: at(decision("e3", "i_app_first", "approved_with_note", "убрать прохожего"), "2026-11-23T10:00:00.000Z"),
+        e4: at(decision("e4", "i_app_first", "approved"), "2026-11-23T10:00:09.000Z"),
+        // A withdrawal before an owner decision: the owner's decision still decides.
+        e5: at(decision("e5", "i_wd_then_owner", "withdrawn"), "2026-11-23T09:00:00.000Z"),
+        e6: at(decision("e6", "i_wd_then_owner", "approved"), "2026-11-23T10:00:00.000Z"),
+        e7: decision("e7", "i_wd", "withdrawn"),
+        e8: decision("e8", "i_foreign", "approved"),
+      },
+    },
+  });
+  const lookup = createClipSourceImageLookup(core);
+  const statusOf = async (imageId: string) => (await lookup(A, imageId))?.status ?? null;
+  assert.equal(await statusOf("i_ret_first"), "returned");
+  assert.equal(await statusOf("i_app_first"), "approved_with_note");
+  assert.equal(await statusOf("i_wd_then_owner"), "approved");
+  assert.equal(await statusOf("i_wd"), "withdrawn");
+  assert.equal(await statusOf("i_none"), "pending");
+  assert.deepEqual(await lookup(A, "i_none"), { imageId: "i_none", sceneId: "P46", imagePath: "03 Images/Scenes/P46/master.png", status: "pending" });
+  // A record naming channel B inside A's document, an unknown id, and A's image asked as channel B: none is a source.
+  assert.equal(await lookup(A, "i_foreign"), null);
+  assert.equal(await lookup(A, "i_missing"), null);
+  assert.equal(await lookup(B, "i_none"), null);
+});
+

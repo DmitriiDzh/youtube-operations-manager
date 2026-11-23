@@ -1,21 +1,17 @@
 import path from "node:path";
-import { earliestDecidingRecord } from "@/lib/review-items";
-import { IMAGE_REVIEW_OWNER_KINDS } from "@/lib/sync-gateway";
+import { decidingImageRecord, imageStatusFrom } from "@/lib/review-items";
 import { IMAGE_FILE_TYPES, type ImageReviewDecision, type ImageReviewImage, type ImageReviewStatus, type ImageReviewView } from "./contracts";
 
 // BL-272 (ADR 0076): pure rules. The status is derived from the decisions, never stored (ADR 0061 §5): the earliest owner decision
-// counts, a Producer withdrawal only without one -- the shared `review-items` rule.
+// counts, a Producer withdrawal only without one -- the shared `review-items` image status rule (one owner: the clips' link uses it too).
 
 export function decidingImageRecordOf(imageId: string, decisions: readonly ImageReviewDecision[]): ImageReviewDecision | null {
-  return earliestDecidingRecord(
-    decisions.filter((d) => d.imageId === imageId),
-    IMAGE_REVIEW_OWNER_KINDS
-  );
+  return decidingImageRecord(imageId, decisions);
 }
 
 export function imageViewOf(image: ImageReviewImage, decisions: readonly ImageReviewDecision[]): ImageReviewView {
   const record = decidingImageRecordOf(image.imageId, decisions);
-  const status: ImageReviewStatus = record ? record.kind : "pending";
+  const status: ImageReviewStatus = imageStatusFrom(record);
   return {
     imageId: image.imageId,
     channelId: image.channelId,

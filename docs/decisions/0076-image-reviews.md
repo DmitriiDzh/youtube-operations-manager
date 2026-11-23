@@ -22,6 +22,8 @@ Scenes (Tropico now, Japan and WWE later) are made in two steps: a master still 
 2. **Shared logic in `src/lib/review-items/`** (single owner of shared logic): the deciding rule (`earliestDecidingRecord`) and the
    workspace file adapter (`resolveReviewFile` -- the shared `workspace-exchange` rule --, `hashReviewFile` with its cache) move there
    from clip-reviews, which keeps its exports and behaviour (its tests are unchanged). Neither review module imports the other.
+   The image status rule itself has one owner there too (`imageReviewStateOf` / `decidingImageRecord`, review fix): image-reviews'
+   views and the clips' source-image port both call it.
 3. **The Producer** gets four `producer-only` tools (Producer API 1.28.0): `producer_image_review_submit` and `_withdraw` (DRAFT),
    `_list` and `_get` (READ). Channel workers and the factory get none.
    - The image is a file already in the channel's folder, resolved by the shared rule at submit and whenever it is served (no `..`,
@@ -47,8 +49,8 @@ Scenes (Tropico now, Japan and WWE later) are made in two steps: a master still 
 6. **Link to clips:** `producer_clip_review_submit` takes an optional `approvedImageId`, stored on the clip (an additive field in the
    `clip_reviews` document). It must name an image of the same channel's image reviews whose status is `approved` or
    `approved_with_note`; anything else is refused (`clip_review_image_not_found`, `clip_review_image_not_approved`). clip-reviews reads
-   it through an optional port wired in its own `index.ts` from the sync-gateway family and `review-items` -- never the image-reviews
-   module. The owner's clip row shows the image it came from.
+   it through an optional port (`createClipSourceImageLookup`, `clip-reviews/adapters/source-image.ts`) wired in its own `index.ts`
+   over the sync-gateway family core with `review-items.imageReviewStateOf` -- never the image-reviews module. The owner's clip row shows the image it came from.
 7. **Showing:** the full image and a large JPEG preview (shared `media-preview`, 960 px) go to the owner's browser only (this computer,
    or a remote owner session through the proxy's gate, as the clips since BL-251 amendment 2), from this computer's copy; a missing or
    changed copy is shown, never fetched elsewhere. The owner's list checks this computer's copy (resolve + SHA-256) only for a
