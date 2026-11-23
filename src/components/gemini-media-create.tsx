@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { UiTextKey } from "@/lib/ui-text";
+import type { UiTextKey, UiTextParams } from "@/lib/ui-text";
 import { ActionButton, BusyOverlay, StatusNotice, useBusyAction } from "./busy-feedback";
 import { ConfirmDialog } from "./confirm-dialog";
 import {
@@ -133,7 +133,7 @@ export function GeminiCreateCard({ activeChannelId, kind }: { activeChannelId: s
   const durationProblem = durationRange && form ? geminiDurationProblem(durationRange, form.durationSeconds, withLastFrame) : null;
   const durationOptions = form && durationRange && !durationChoices.includes(form.durationSeconds) ? [...durationChoices, form.durationSeconds] : durationChoices;
 
-  function problemParams(problem: GeminiFormProblem) {
+  function problemParams(problem: GeminiFormProblem): UiTextParams | undefined {
     if (problem === "duration" && durationRange) return { min: durationRange.min, max: durationRange.max };
     if (problem === "durationLastFrame" && durationRange) return { max: durationRange.maxWithLastFrame };
     return undefined;
