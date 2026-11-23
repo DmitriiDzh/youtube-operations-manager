@@ -325,13 +325,20 @@ FO-REQ-0040; owner msgs 3511/3534; plan `docs/roadmap/plans/WEEKLY_PUBLISHING_PL
   неделю»; «По одному» gives «Одобрить» / «Отозвать» per slot. The tab's badge reads `waiting`.
   Owner TG 4784 (2026-11-23): the tab opens on the current week every time it is shown (`currentWeekStart` in the channel's zone =
   the newest plan's `timeZone`, `channelZoneOf`; before the list arrives the owner's zone, else the browser's), unless the address
-  carries a deliberate `?week=<Monday>` (`weekFromSearch`); the week is known at once, so its read runs beside the list's. Week
-  reads go through `createWeekLoader` (a read of another week aborts the one before, the minute's poll of the same week joins the
-  read under way, `fresh` after a move or a refusal; only the newest read's answer applied; the state keeps the week it belongs to, a
-  skeleton until the selected week is read; a decision's answer applies only while its week is shown). From a list container
-  (`@container`) of 44rem the rows share the list's columns through CSS subgrid: the chain's track and, from 90rem, the buttons'
-  track are sized by an invisible first row (`ColumnSizer`) holding the full chain and every button combination in the current
-  language; between 44 and 90rem the buttons take a second line under title and chain; under 44rem the stacked card.
+  carries a deliberate `?week=<Monday>` (`weekFromSearch`). Away from the Sunday/Monday boundary (`weekIsZoneIndependent`: the same
+  Monday at UTC-12 and UTC+14) the week is set at once and its read runs beside the list's; near it the screen waits for the owner's
+  zone (`useUserTimezoneStatus`) and the list, at most 1.5 s, so it does not jump. Week reads go through `createWeekLoader` (a read
+  of another week aborts the one before, the minute's poll of the same week joins the read under way, `fresh` after a move or a
+  refusal; only the newest read's answer applied). Every kept answer names its channel (`Scoped`, `LoadedWeek`; `weekScreenOf`
+  derives what is shown): another channel's rows, zone or template never show, a skeleton until the selected channel's week is read;
+  answers and decisions arriving after a channel change are dropped (`applyDecisionAnswer`: applied, and the read in flight
+  cancelled, only for the current channel and shown week). The list read and the week read have separate error lines. From a list
+  container (`@container`) of 44rem the rows share the list's columns through CSS subgrid -- day, thumbnail, title, chain, buttons
+  (44-64rem: narrower day and thumbnail, chain without arrows). A row shows at most one primary action («Вернуть» for a pulled
+  slot, «Дать дату» for a slot off the template) and «⋯» (`Popover` with `menu`: arrow keys, Home/End, Escape back to the trigger)
+  with the thumbnail, the new time, «Отозвать» and «Снять слот». The chain's and the buttons' tracks are sized by an invisible first
+  row (`ColumnSizer`) holding the full chain and every compact button set in every interface language, so nothing moves on a
+  language switch; under 44rem the stacked card with the buttons at the end of the chain's line.
 - **BL-240 (ADR 0060) -- pulled and replaced slots.** The screen lists vetoed slots under one closed row (`splitVetoed`, numbers
   kept). `save` lets an agent remove a vetoed slot without an upload (also one approved before the veto) and audits it; the veto
   outlives the slot (`standingVetoOf`: `slotDecisions` still answers `vetoed` for its id, and a new slot with that id is refused
@@ -382,7 +389,9 @@ FO-REQ-0040; owner msgs 3511/3534; plan `docs/roadmap/plans/WEEKLY_PUBLISHING_PL
   minute, and this computer's upload rows -> `built` / `packaged` / `uploading` / `failed (code)` / `scheduled` / `published`,
   `videoId`, the package's facts), passed by `factory-channel-deps.ts` and the owner's routes. The agents' list takes `limit`.
   Owner TG 4784: concurrent callers of one channel share the scan under way (`createPackagesReader`'s in-flight map, kept on the
-  cache object); `invalidatePackagesEntry` also forgets a read under way, and a read that began before it is not kept.
+  cache object); `invalidatePackagesEntry` also forgets a read under way, and a read that began before it is not kept. The shared
+  read is bounded (`PACKAGES_SCAN_TIMEOUT_MS`, 120 s): past it every caller waiting gets `PackagesScanTimeoutError`, the read is
+  forgotten (the next caller scans afresh) and the hung scan's answer is not kept.
 - **Stage 3 -- uploads of approved slots** (ADR 0051 §7/§8/§10, `docs/WRITE_AUTHORIZATIONS.md` «Upload localizations»):
   - `auto-upload.ts` gets `slotDecisions` (from `src/composition/publishing-plan-slots.ts` -> the plan's `createPublishingPlansUploadCore`):
     vetoed -> skipped (`slot_vetoed`, not hashed); approved and > 15 min ahead -> `queueAutomatic({ slotPublishAt })`; else dateless.

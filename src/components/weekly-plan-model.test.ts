@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { canApprove, changedField, channelZoneOf, createWeekLoader, currentWeekStart, deletedOnYoutube, duplicateWarningOf, stageOf, strayDateOf, lengthLabel, mondayOf, pipelineOf, replacedToPull, shiftWeek, slotsToApprove, splitVetoed, ownerReviewOf, tileCounts, wallParts, weekCoverageLine, weekFromSearch, zonedParts, type PlanSlotDto } from "./weekly-plan-model";
+import { applyDecisionAnswer, canApprove, changedField, channelZoneOf, createWeekLoader, scopedValue, weekIsZoneIndependent, weekScreenOf, type LoadedWeek, type PlanDto, currentWeekStart, deletedOnYoutube, duplicateWarningOf, stageOf, strayDateOf, lengthLabel, mondayOf, pipelineOf, replacedToPull, shiftWeek, slotsToApprove, splitVetoed, ownerReviewOf, tileCounts, wallParts, weekCoverageLine, weekFromSearch, zonedParts, type PlanSlotDto } from "./weekly-plan-model";
 
 // BL-225 (WEEKLY_PUBLISHING_PLAN.md stage 1 item 6, AC-WP-15): the screen's pure rules. Values by hand: 2026-10-26 is a Monday,
 // 2026-11-01 its Sunday; 18:00 in Tokyo is 09:00Z, which is 10:00 in Berlin (CET, UTC+1, after 25.10); 23:30Z on 31.10 is 08:30 on Sunday 1.11 in Tokyo.
@@ -382,4 +382,108 @@ test("BL-256 review 1: canRetime counts the date on YouTube and the approved tim
   const changed = { previous: { date: "2026-10-26", publishAt: "2026-10-26T15:00", lengthHint: null, note: null, timeZone: "Asia/Tokyo" }, approvedAt: "2026-10-25T00:00:00Z", changedAt: "2026-10-25T01:00:00Z", changedBy: "worker" as const };
   assert.equal(canRetime({ ...base, changedAfterApproval: changed }, now), false);
   assert.equal(canRetime({ ...base, changedAfterApproval: { ...changed, previous: { ...changed.previous, publishAt: "2026-10-26T16:00" } } }, now), true);
+});
+
+// Owner TG 4784, independent review of the branch (items 1, 4, 5): the week view is tied to the channel, the two reads fail
+// separately, and the opening week waits only where the zone decides it. Hand values: A and B are two channels' plans routes; both
+// plans are for the Monday 2026-11-23.
+const A = "/api/channels/UC_A/publishing-plans";
+const B = "/api/channels/UC_B/publishing-plans";
+const planFor = (weekStart: string, slotId: string): PlanDto => ({
+  weekStart,
+  weekEnd: "2026-11-29",
+  timeZone: "UTC",
+  state: "planned",
+  counts: { slots: 1, approved: 0, needsApproval: 1, vetoed: 0 },
+  firstRelease: null,
+  createdAt: "2026-11-20T00:00:00Z",
+  createdBy: "factory",
+  updatedAt: "2026-11-20T00:00:00Z",
+  updatedBy: "factory",
+  slots: [slot({ slotId, date: weekStart })],
+});
+
+test("review 1: switching channels on the same Monday shows none of channel A's rows -- a skeleton until B's read lands", () => {
+  const loadedA: LoadedWeek = { base: A, week: "2026-11-23", plan: planFor("2026-11-23", "a-slot"), coverage: null };
+  const onA = weekScreenOf({ base: A, week: "2026-11-23", loaded: loadedA, weekError: null, listError: null });
+  assert.equal(onA.shown?.slots[0].slotId, "a-slot");
+  const onB = weekScreenOf({ base: B, week: "2026-11-23", loaded: loadedA, weekError: null, listError: null });
+  assert.equal(onB.shown, null, "A's plan is not shown under B");
+  assert.equal(onB.noPlan, false, "nor A's «no plan»");
+  assert.equal(onB.loading, true, "the skeleton until B's read lands");
+  const noneA: LoadedWeek = { base: A, week: "2026-11-23", plan: "none", coverage: null };
+  assert.equal(weekScreenOf({ base: B, week: "2026-11-23", loaded: noneA, weekError: null, listError: null }).noPlan, false);
+  const loadedB: LoadedWeek = { base: B, week: "2026-11-23", plan: planFor("2026-11-23", "b-slot"), coverage: null };
+  const landed = weekScreenOf({ base: B, week: "2026-11-23", loaded: loadedB, weekError: null, listError: null });
+  assert.equal(landed.shown?.slots[0].slotId, "b-slot");
+  assert.equal(landed.loading, false);
+  // The list, the zone and the template kept for A are not B's either.
+  assert.equal(scopedValue({ base: A, value: "Asia/Tokyo" }, B), null);
+  assert.equal(scopedValue({ base: B, value: "Asia/Tokyo" }, B), "Asia/Tokyo");
+  assert.equal(scopedValue({ base: B, value: "x" }, null), null);
+});
+
+test("review 1: a late decision answer from channel A neither cancels B's read nor replaces B's plan", async () => {
+  const pending: Array<ReturnType<typeof deferred<string>>> = [];
+  const applied: string[] = [];
+  const loaderB = createWeekLoader<string>({
+    fetchWeek: () => {
+      const d = deferred<string>();
+      pending.push(d);
+      return d.promise;
+    },
+    apply: (week, answer) => applied.push(`${week}=${answer}`),
+    fail: () => undefined,
+  });
+  const readB = loaderB.load("2026-11-23");
+  const decided: string[] = [];
+  const answerFromA = planFor("2026-11-23", "a-slot");
+  const took = applyDecisionAnswer({
+    sentFor: A,
+    current: { base: B, week: "2026-11-23" },
+    plan: answerFromA,
+    cancelReads: () => loaderB.cancel(),
+    apply: (plan) => decided.push(plan.slots[0].slotId),
+  });
+  assert.equal(took, false);
+  assert.equal(decided.length, 0, "A's plan is not applied under B");
+  pending[0].resolve("plan-B");
+  await readB;
+  assert.deepEqual(applied, ["2026-11-23=plan-B"], "B's read was not cancelled and lands");
+  // The same channel and the shown week: applied, and the read in flight is dropped for it.
+  const readAgain = loaderB.load("2026-11-23", { fresh: true });
+  assert.equal(applyDecisionAnswer({ sentFor: B, current: { base: B, week: "2026-11-23" }, plan: planFor("2026-11-23", "b-decided"), cancelReads: () => loaderB.cancel(), apply: (plan) => decided.push(plan.slots[0].slotId) }), true);
+  pending[1].resolve("older-read");
+  await readAgain;
+  assert.deepEqual(decided, ["b-decided"]);
+  assert.deepEqual(applied, ["2026-11-23=plan-B"], "the read the decision superseded is not applied");
+  // The owner left the week before the answer came: nothing.
+  assert.equal(applyDecisionAnswer({ sentFor: B, current: { base: B, week: "2026-11-30" }, plan: planFor("2026-11-23", "x"), cancelReads: () => assert.fail("no cancel"), apply: () => assert.fail("no apply") }), false);
+});
+
+test("review 4: the week read's failure and the list read's failure are separate -- neither read's success hides the other's failure", () => {
+  const loaded: LoadedWeek = { base: A, week: "2026-11-23", plan: planFor("2026-11-23", "a-slot"), coverage: null };
+  // The list read succeeded (no list error), the week read failed: the week's failure shows, no endless skeleton.
+  const weekFailed = weekScreenOf({ base: A, week: "2026-11-30", loaded, weekError: { base: A, week: "2026-11-30", message: "week failed" }, listError: null });
+  assert.equal(weekFailed.weekError, "week failed");
+  assert.equal(weekFailed.listError, null);
+  assert.equal(weekFailed.loading, false);
+  // The week read succeeded, the list read failed: the plan shows and so does the list's failure.
+  const listFailed = weekScreenOf({ base: A, week: "2026-11-23", loaded, weekError: null, listError: { base: A, value: "list failed" } });
+  assert.equal(listFailed.shown?.slots[0].slotId, "a-slot");
+  assert.equal(listFailed.listError, "list failed");
+  assert.equal(listFailed.weekError, null);
+  // A failure of another week or another channel is not this week's.
+  assert.equal(weekScreenOf({ base: A, week: "2026-11-23", loaded, weekError: { base: A, week: "2026-11-30", message: "w" }, listError: null }).weekError, null);
+  assert.equal(weekScreenOf({ base: B, week: "2026-11-30", loaded, weekError: { base: A, week: "2026-11-30", message: "w" }, listError: { base: A, value: "l" } }).weekError, null);
+  assert.equal(weekScreenOf({ base: B, week: "2026-11-30", loaded, weekError: null, listError: { base: A, value: "l" } }).listError, null);
+});
+
+test("review 5: the opening week is the same Monday in every zone except near the Sunday/Monday boundary", () => {
+  assert.equal(weekIsZoneIndependent("2026-11-25T12:00:00.000Z"), true); // Wednesday
+  assert.equal(weekIsZoneIndependent("2026-11-29T09:59:00.000Z"), true); // 23:59 Sunday at UTC+14
+  assert.equal(weekIsZoneIndependent("2026-11-29T10:00:00.000Z"), false); // 00:00 Monday at UTC+14, Saturday at UTC-12
+  assert.equal(weekIsZoneIndependent("2026-11-29T23:00:00.000Z"), false);
+  assert.equal(weekIsZoneIndependent("2026-11-30T11:59:00.000Z"), false); // 23:59 Sunday at UTC-12
+  assert.equal(weekIsZoneIndependent("2026-11-30T12:00:00.000Z"), true); // 00:00 Monday at UTC-12
 });

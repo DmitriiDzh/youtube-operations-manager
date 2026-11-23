@@ -44,7 +44,8 @@ export function ThumbnailReplaceButton(props: { channelId: string; videoId: stri
   );
 }
 
-function ThumbnailReplaceDialog(props: { channelId: string; videoId: string; videoNumber?: string | null; currentUrl: string | null; onClose: () => void; onReplaced?: () => void }) {
+/** The replace dialog itself -- also opened from a menu item that is gone once the dialog shows (owner TG 4784 review: the plan rows' «⋯»). */
+export function ThumbnailReplaceDialog(props: { channelId: string; videoId: string; videoNumber?: string | null; currentUrl: string | null; onClose: () => void; onReplaced?: () => void }) {
   const { t, formatNumber, language } = useUiText();
   const base = `/api/channels/${encodeURIComponent(props.channelId)}/videos/${encodeURIComponent(props.videoId)}/thumbnail`;
   const [folders, setFolders] = useState<CandidateFolder[] | null>(null);

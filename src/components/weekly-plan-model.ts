@@ -152,7 +152,11 @@ export function createWeekLoader<T>(deps: { fetchWeek(week: string, signal: Abor
       running = { week, done };
       return done;
     },
-    /** The panel is hidden or gone, or a decision's own answer is newer: nothing still in flight is applied. */
+    /**
+     * The loader's channel is left (the panel's effect cleanup: another channel, or the panel unmounts) or a decision's own answer
+     * is newer than the read under way: that read is aborted, neither its answer nor its failure is applied, and the next `load`
+     * starts a new read. Hiding the panel does not call it (the polls just stop).
+     */
     cancel(): void {
       newest += 1;
       controller?.abort();
@@ -160,6 +164,72 @@ export function createWeekLoader<T>(deps: { fetchWeek(week: string, signal: Abor
       running = null;
     },
   };
+}
+
+/**
+ * Owner TG 4784 review (item 1): every answer the screen keeps names the channel it was read for -- the plans route `base`
+ * (`/api/channels/<id>/publishing-plans`) -- and is shown only while that channel is the current one, so channel A's rows, zone or
+ * template never appear under channel B before B's own read lands.
+ */
+export type Scoped<T> = { base: string; value: T };
+export function scopedValue<T>(kept: Scoped<T> | null, base: string | null): T | null {
+  return kept !== null && base !== null && kept.base === base ? kept.value : null;
+}
+
+/** The read week: a plan (with BL-235's coverage) or «none» (404), for one channel and one week. */
+export type LoadedWeek = { base: string; week: string; plan: PlanDto | "none"; coverage: WeekCoverageDto | null };
+
+/**
+ * Owner TG 4784 review (items 1 and 4): what the week view shows. The week's plan only for the selected channel and week; a
+ * skeleton while that week of that channel is neither read nor failed; the week read's failure and the list read's failure are
+ * separate -- one read succeeding never hides the other's failure.
+ */
+export function weekScreenOf(input: {
+  base: string | null;
+  week: string | null;
+  loaded: LoadedWeek | null;
+  weekError: { base: string; week: string; message: string } | null;
+  listError: Scoped<string> | null;
+}): { shown: PlanDto | null; coverage: WeekCoverageDto | null; noPlan: boolean; loading: boolean; weekError: string | null; listError: string | null } {
+  const { base, week, loaded } = input;
+  const current = base !== null && week !== null && loaded !== null && loaded.base === base && loaded.week === week ? loaded : null;
+  const shown = current && current.plan !== "none" && current.plan.weekStart === week ? current.plan : null;
+  const weekError = base !== null && week !== null && input.weekError?.base === base && input.weekError.week === week ? input.weekError.message : null;
+  return {
+    shown,
+    coverage: shown ? (current?.coverage ?? null) : null,
+    noPlan: current?.plan === "none",
+    loading: base !== null && week !== null && current === null && weekError === null,
+    weekError,
+    listError: scopedValue(input.listError, base),
+  };
+}
+
+/**
+ * Owner TG 4784 review (item 1): a decision's answer (the saved plan) is applied -- and the week read in flight dropped for it --
+ * only while the channel it was sent for is still the current one and its week is the shown week. A late answer from another
+ * channel, or for a week the owner left, touches nothing.
+ */
+export function applyDecisionAnswer<P extends Pick<PlanDto, "weekStart">>(input: {
+  sentFor: string;
+  current: { base: string | null; week: string | null };
+  plan: P | undefined;
+  cancelReads(): void;
+  apply(plan: P): void;
+}): boolean {
+  if (input.current.base !== input.sentFor || !input.plan || input.plan.weekStart !== input.current.week) return false;
+  input.cancelReads();
+  input.apply(input.plan);
+  return true;
+}
+
+/**
+ * Owner TG 4784 review (item 5): the current week is the same Monday in every zone (UTC-12 .. UTC+14) -- then the screen opens on
+ * it at once; near the Sunday/Monday boundary it waits for the owner's and the channel's zone (or a short timeout) instead of
+ * jumping from week to week as they arrive.
+ */
+export function weekIsZoneIndependent(nowIso: string): boolean {
+  return currentWeekStart(nowIso, "Etc/GMT+12") === currentWeekStart(nowIso, "Etc/GMT-14");
 }
 
 /** A slot the owner can approve now: not vetoed, not released, needing approval (BL-242: never one waiting for its package). */

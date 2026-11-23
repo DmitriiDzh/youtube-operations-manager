@@ -589,6 +589,7 @@ export const content = {
   "videoCostsBackfill.linked": "«{title}»: {runs} runs here are now counted for {video}.",
   // BL-225 (WEEKLY_PUBLISHING_PLAN.md stage 1 item 6): Контент → «План недели».
   "weekPlan.loadFailed": "Could not load the weekly plan.",
+  "weekPlan.listLoadFailed": "Could not read the channel's list of weeks.",
   "weekPlan.prevWeek": "Previous week",
   "weekPlan.nextWeek": "Next week",
   "weekPlan.range": "{from} – {to}",
@@ -676,6 +677,7 @@ export const content = {
   "weekPlan.action.veto": "Pull slot",
   "weekPlan.action.vetoShort": "Pull",
   "weekPlan.action.restore": "Restore",
+  "weekPlan.action.more": "More actions for this slot",
   "weekPlan.action.approve": "Approve",
   "weekPlan.action.revoke": "Revoke",
   "weekPlan.action.approveWeek": "Approve week",
