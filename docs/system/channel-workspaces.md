@@ -6,6 +6,7 @@
 - **Модули.**
   - `src/lib/local-path-validation/` — общий модуль (`AGENTS.md` §M). В него без изменений перенесена проверка пути из слайса I: абсолютный, существует, это директория, не пересекается с app-data. `operations-instructions` реэкспортирует те же имена.
   - `src/lib/channel-workspaces/` — contracts/schemas/services/adapters/index.
+- **Папки каналов не вложены друг в друга** (BL-272, ADR 0076 §3): при сохранении путь сравнивается (по `realpath`; недоступная сейчас папка — как записана) с папками других подключённых каналов этого устройства; внутри чужой, вокруг неё или та же папка — `CHANNEL_WORKSPACE_NESTED` (409), ничего не сохраняется. Строки отключённых каналов не сравниваются (их нельзя очистить в Settings). Уже сохранённые пути при чтении не проверяются.
 - **Хранение.** Таблица `channel_workspaces` (SCHEMA_MIGRATIONS v33), ключ `(device_id, channel_id)` по `deviceId` из bootstrap-config. Все чтения фильтруются по текущему устройству. Таблица намеренно не входит в `SNAPSHOT_TRANSFERRED_TABLES` и в sync-gateway; причина записана в комментарии `snapshot/contracts.ts` и проверена тестом.
 - **Интерфейсы.**
   - Оператор задаёт путь через `GET/PUT /api/channel-workspaces` и поле в каждой строке Settings → Channels (`channel-workspace-field.tsx`, в собственном `FeatureErrorBoundary`).

@@ -1013,8 +1013,8 @@ Key MCP tools:
     anything at or under that path. It only reads the app's own bootstrap config, for the
     `deviceId`, and never creates it. No MCP tool can set or clear it: `PUT /api/channel-workspaces` (Web UI
     only) is the sole setter. Device-local, never synced or handed off. Error codes
-    (setter only): `CHANNEL_WORKSPACE_PATH_INVALID` (400) and
-    `CHANNEL_WORKSPACE_CHANNEL_NOT_CONNECTED` (404).
+    (setter only): `CHANNEL_WORKSPACE_PATH_INVALID` (400),
+    `CHANNEL_WORKSPACE_CHANNEL_NOT_CONNECTED` (404) and `CHANNEL_WORKSPACE_NESTED` (409).
   - **There is no MCP tool or CLI command to create a hypothesis from scratch, transition an
     experiment's status, or record an outcome** — all Web-UI-only, verified mechanically by
     `decision-engine-agent-approval-inventory.test.ts` (`PHASE10-INV-02`, same scan technique as
@@ -1920,6 +1920,8 @@ Both are operator-only and require a NextAuth session. The mutating methods are 
   - The channel must be connected (`CHANNEL_WORKSPACE_CHANNEL_NOT_CONNECTED`, 404).
   - The path must be absolute, exist, be a directory, and not overlap app-data
     (`CHANNEL_WORKSPACE_PATH_INVALID`, 400).
+  - It must not be inside, equal to or around another connected channel's folder on this device
+    (`CHANNEL_WORKSPACE_NESTED`, 409; BL-272, ADR 0076 §3).
   - Gated by the `proxy.ts` mutation gate.
 - Both require a NextAuth session. They are not active-channel-scoped: the Settings → Channels
   card manages every connected channel.

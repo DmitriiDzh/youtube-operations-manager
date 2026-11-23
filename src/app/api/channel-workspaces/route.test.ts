@@ -43,10 +43,11 @@ test("PUT: malformed JSON is a 400 validation_failed, never reaching the core", 
   assert.equal((await response.json()).error, "validation_failed");
 });
 
-test("PUT: an invalid path maps to 400 and a non-connected channel to 404, with the error code in the body", async () => {
+test("PUT: an invalid path maps to 400 a non-connected channel to 404 and a nested folder to 409, with the error code in the body", async () => {
   for (const [code, status] of [
     ["CHANNEL_WORKSPACE_PATH_INVALID", 400],
     ["CHANNEL_WORKSPACE_CHANNEL_NOT_CONNECTED", 404],
+    ["CHANNEL_WORKSPACE_NESTED", 409],
   ] as const) {
     const response = await createChannelWorkspacesPutHandler({
       getSession: async () => ({ user: { id: "user-1" } }),

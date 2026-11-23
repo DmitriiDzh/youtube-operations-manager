@@ -137,6 +137,7 @@ const DOMAIN_ERROR_STATUS = {
   OPERATIONS_FILE_NOT_AVAILABLE: 404,
   CHANNEL_WORKSPACE_PATH_INVALID: 400,
   CHANNEL_WORKSPACE_CHANNEL_NOT_CONNECTED: 404,
+  CHANNEL_WORKSPACE_NESTED: 409,
   // Phase 14 -- remote media generation.
   media_generation_not_configured: 503,
   media_gateway_disabled: 503,

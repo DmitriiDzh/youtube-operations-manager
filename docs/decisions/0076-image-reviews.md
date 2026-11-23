@@ -25,9 +25,13 @@ Scenes (Tropico now, Japan and WWE later) are made in two steps: a master still 
 3. **The Producer** gets four `producer-only` tools (Producer API 1.28.0): `producer_image_review_submit` and `_withdraw` (DRAFT),
    `_list` and `_get` (READ). Channel workers and the factory get none.
    - The image is a file already in the channel's folder, resolved by the shared rule at submit and whenever it is served (no `..`,
-     no absolute path, the real path strictly inside that channel's workspace -- another channel's folder is outside it); `.png`,
+     no absolute path, the real path strictly inside that channel's workspace); `.png`,
      `.jpg`, `.jpeg` whose header (read by `sharp`) is that format, 16–16384 px a side, at most 50 MiB. Size and SHA-256 are stored:
      the owner approves exactly that file.
+   - Another channel's file is outside the workspace because channel folders never nest: `channel-workspaces` refuses, when the
+     owner sets a folder, one inside, equal to or around another connected channel's folder on this device
+     (`CHANNEL_WORKSPACE_NESTED`, 409; review fix). This protects the clips for review too. Stored paths are not re-checked on
+     load (the owner's configuration had no nested folders when this was added).
    - `requestId` (optional) makes a submit idempotent per channel: the same request again answers the stored image (`replayed:
      true`), even after the file changed or the owner answered; the same id with a different request is `image_review_request_conflict`.
    - `batchId` (optional) groups submits into one batch, the owner's grid; at most 40 images per batch, 200 pending per channel, the

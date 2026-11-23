@@ -180,6 +180,8 @@ export type DomainErrorCode =
   // one of this installation's connected channels (never "does not exist" vs. "not connected").
   | "CHANNEL_WORKSPACE_PATH_INVALID"
   | "CHANNEL_WORKSPACE_CHANNEL_NOT_CONNECTED"
+  // BL-272 (review): the path is inside, equal to or around another connected channel's workspace folder on this device.
+  | "CHANNEL_WORKSPACE_NESTED"
   // Phase 14 (docs/roadmap/plans/PHASE_14_PLAN.md) -- remote media generation on RunPod/ComfyUI.
   // NOT_CONFIGURED: no credentials/settings on this device (the feature is simply off, AC-P14-01).
   // GATEWAY_DISABLED: the operator's "Media gateway" toggle is off. CREDENTIALS_INVALID: RunPod or
