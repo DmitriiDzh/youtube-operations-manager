@@ -240,7 +240,9 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
   agent_channel_tokens: notApiData("agent credentials (hashes)"),
   factory_agent_tokens: notApiData("agent credentials (hashes)"),
   producer_agent_tokens: notApiData("agent credentials (hashes)"),
-  producer_call_log: notApiData("which Producer tool was called for which channel, and when"),
+  // v123 (owner TG 4782 review): a playlist write's row also names the playlist and the video ids it sent -- our own channels' ids, as
+  // in worker_action_log.
+  producer_call_log: authorized("which Producer tool was called for which channel, when, and for a playlist write which of our own playlists and videos it wrote to"),
   worker_action_log: authorized("which of our own videos/playlists a channel agent wrote to, when, and the outcome (BL-215)"),
   restart_requests: notApiData("server restart requests and the versions before and after (BL-220)"),
   restart_holds: notApiData("who holds the server restart, why and until when (BL-220)"),

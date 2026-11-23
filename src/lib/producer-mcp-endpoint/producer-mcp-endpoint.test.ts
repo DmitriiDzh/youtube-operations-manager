@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { eq } from "drizzle-orm";
 import { listAgentCapabilityDescriptors } from "@/lib/agent-operations/services";
 import { createProducerTokenServices } from "@/lib/producer-agent-tokens/services";
 import type { RoleTokenStore } from "@/lib/role-agent-tokens";
@@ -17,8 +18,11 @@ import {
   saveCollectedVideoMilestone,
   saveCollectedVideoSearchTerms,
   saveVideoCommentsRead,
+  db,
   getLiveWritesEnabled,
   setLiveWritesEnabled,
+  setSelectedChannelId,
+  users,
   upsertChannel,
   upsertVideos,
 } from "@/lib/db";
@@ -89,7 +93,7 @@ function setup(initial: { enabled?: boolean; core?: Parameters<typeof createMcpS
   let n = 0;
   const tokens = createProducerTokenServices({ store: memoryTokenStore(), generateSecret: () => String(++n).padStart(43, "s") });
   const state = { enabled: initial.enabled ?? true, createdServers: 0 };
-  const calls: Array<{ tool: string; channelId: string | null; outcome: string; errorCode: string | null }> = [];
+  const calls: Array<{ tool: string; channelId: string | null; outcome: string; errorCode: string | null; target?: string | null; details?: string | null }> = [];
   const refused: ProducerRefusedCall[] = [];
   const proposalCalls: Array<[string, Record<string, unknown>]> = [];
   const queueCalls: Array<[string, Record<string, unknown>]> = [];
@@ -1291,7 +1295,7 @@ test("BL-267 AC-WT-40: producer plan tools reach the session's plans only; stric
 // off refuses; there is no playlist delete; every call is in the Producer's call log. The real MCP server and the real playlist core
 // (`createPlaylistManagementServices` with the real agent-scope check) run; only YouTube is a fake that records reads and writes and
 // checks the real Live writes switch first, as the real adapter does.
-function producerPlaylistCore() {
+function producerPlaylistCore(options: { persistSelection?: boolean } = {}) {
   const youtube: string[] = [];
   const playlists: Record<string, { id: string; title: string; description: string; privacyStatus: "private" | "public" | "unlisted"; channelId: string }> = {
     PL_X: { id: "PL_X", title: "X list", description: "", privacyStatus: "private", channelId: "UC_PR_X" },
@@ -1342,14 +1346,16 @@ function producerPlaylistCore() {
         const userId = (credentialRef as { userId: string }).userId;
         const active = Object.entries(CONNECTED).find(([, connectedUser]) => connectedUser === userId)?.[0] ?? "";
         if ((expectedChannelId ?? active) !== active) throw new DomainError({ code: "WRITE_CHANNEL_MISMATCH", message: "mismatch" });
-        return { expectedChannelId: active, activeWriteChannel: { id: active, title: null }, shouldPersistSelection: false, userId };
+        // The real guardrail asks to persist the selection whenever the credential names a user (write-context services).
+        return { expectedChannelId: active, activeWriteChannel: { id: active, title: null }, shouldPersistSelection: options.persistSelection ?? false, userId };
       },
     },
-    channelSelectionStore: { setSelectedChannelId: async () => undefined },
+    // With persistSelection: the real store, which must leave the owner's selection alone inside an agent scope.
+    channelSelectionStore: options.persistSelection ? { setSelectedChannelId } : { setSelectedChannelId: async () => undefined },
     assertScopeChannel: assertAgentScopeWriteChannel,
   });
   const core = { ...createVideoMetadataCore(), ...services } as unknown as Parameters<typeof createMcpServer>[0];
-  return { core, youtube, playlists };
+  return { core, youtube, playlists, services };
 }
 
 async function withLiveWrites<T>(enabled: boolean, fn: () => Promise<T>): Promise<T> {
@@ -1495,4 +1501,81 @@ test("msg 4782: neither the Producer nor a channel worker gets playlist_delete; 
   const workerTools = Object.keys((worker as unknown as { _registeredTools: Record<string, unknown> })._registeredTools);
   assert.equal(workerTools.includes("playlist_delete"), false);
   assert.ok(workerTools.includes("playlist_update") && workerTools.includes("agent_set_privacy"));
+});
+
+// Owner TG 4782, independent review: a Producer playlist write's log row says what it wrote -- the playlist (target), the privacy and
+// the video ids it sent, and the counts YouTube's answer gave -- refused calls included, with their error code and target. The
+// expected details are written by hand from that requirement (the same description the worker log stores for the same tool).
+test("msg 4782 review: the Producer's playlist_update to public and an add of 2 videos log the playlist, privacy, video ids and counts", async () => {
+  await seedTwoChannels();
+  const { core } = producerPlaylistCore();
+  const { endpoint, tokens, calls } = setup({ core });
+  const token = (await tokens.issueToken({})).token;
+  const run = async (name: string, args: Record<string, unknown>) => toolResult(await endpoint.handle(rpc(call(name, args), bearer(token))));
+  await withLiveWrites(true, async () => {
+    const listed = await run("playlist_list", { channelId: "UC_PR_X" });
+    assert.equal(listed.isError, false, listed.text);
+    const madePublic = await run("playlist_update", { channelId: "UC_PR_X", playlistId: "PL_X", expectedChannelId: "UC_PR_X", privacyStatus: "public" });
+    assert.equal(madePublic.isError, false, madePublic.text);
+    const added = await run("playlist_add_videos", { channelId: "UC_PR_X", playlistId: "PL_X", expectedChannelId: "UC_PR_X", videoIds: ["vid-x-1", "vid-x-2"] });
+    assert.equal(added.isError, false, added.text);
+  });
+  const rows = calls.map((entry) => ({ tool: entry.tool, outcome: entry.outcome, target: entry.target ?? null, details: entry.details ? JSON.parse(entry.details) : null }));
+  assert.deepEqual(rows, [
+    // A read carries no target or details.
+    { tool: "playlist_list", outcome: "ok", target: null, details: null },
+    { tool: "playlist_update", outcome: "ok", target: "PL_X", details: { fields: ["privacyStatus"], privacyStatus: "public" } },
+    { tool: "playlist_add_videos", outcome: "ok", target: "PL_X", details: { attempted: 2, added: 2, videoIds: ["vid-x-1", "vid-x-2"], failedVideos: 0 } },
+  ]);
+});
+
+test("msg 4782 review: a refused Producer playlist write logs its error code and its target", async () => {
+  await seedTwoChannels();
+  const { core, youtube } = producerPlaylistCore();
+  const { endpoint, tokens, calls } = setup({ core });
+  const token = (await tokens.issueToken({})).token;
+  const run = async (name: string, args: Record<string, unknown>) => toolResult(await endpoint.handle(rpc(call(name, args), bearer(token))));
+  await withLiveWrites(true, async () => {
+    await run("playlist_update", { channelId: "UC_PR_X", playlistId: "PL_Y", expectedChannelId: "UC_PR_Y", privacyStatus: "public" });
+    await run("playlist_add_videos", { channelId: "UC_PR_X", playlistId: "PL_X", expectedChannelId: "UC_PR_X", videoIds: ["vid-y-1"] });
+    await run("playlist_remove_videos", { channelId: "UC_PR_ELSEWHERE", playlistId: "PL_Z", expectedChannelId: "UC_PR_ELSEWHERE", videoIds: ["v9"] });
+  });
+  assert.deepEqual(youtube.filter((entry) => !entry.startsWith("auth:") && !entry.startsWith("read:")), [], "nothing was written");
+  assert.deepEqual(
+    calls.map((entry) => [entry.tool, entry.outcome, entry.errorCode, entry.target ?? null, entry.details ? JSON.parse(entry.details) : null]),
+    [
+      ["playlist_update", "error", "WRITE_CHANNEL_MISMATCH", "PL_Y", { fields: ["privacyStatus"], privacyStatus: "public" }],
+      ["playlist_add_videos", "error", "not_found", "PL_X", { videoIds: ["vid-y-1"] }],
+      // Refused before the channel's scope is entered (not connected here): still its target and what it asked for.
+      ["playlist_remove_videos", "error", "CHANNEL_NOT_ACTIVE", "PL_Z", { videoIds: ["v9"] }],
+    ]
+  );
+});
+
+// Phase 12 (AC-P12-04/06): an agent never changes the owner's saved channel selection. The real write-context guardrail asks to persist
+// the selection whenever the credential names a user, which in the Producer's channel scope is that channel's connected account --
+// so the owner's `users.selectedChannelId` must stay as it was after a Producer playlist write; outside a scope the same write does
+// persist it (the control that shows the check is not vacuous).
+test("msg 4782 review: a Producer playlist write leaves the owner's saved channel selection unchanged", async () => {
+  await seedTwoChannels();
+  const selectedOf = async (id: string) => (await db.select({ selected: users.selectedChannelId }).from(users).where(eq(users.id, id)))[0]?.selected ?? null;
+  await db
+    .insert(users)
+    .values({ id: "user-pr-x", email: "user-pr-x@example.com", selectedChannelId: "UC_OWNER_CHOICE" })
+    .onConflictDoUpdate({ target: users.id, set: { selectedChannelId: "UC_OWNER_CHOICE" } });
+  const { core, youtube, services } = producerPlaylistCore({ persistSelection: true });
+  const { endpoint, tokens } = setup({ core });
+  const token = (await tokens.issueToken({})).token;
+  const run = async (name: string, args: Record<string, unknown>) => toolResult(await endpoint.handle(rpc(call(name, args), bearer(token))));
+  await withLiveWrites(true, async () => {
+    const madePublic = await run("playlist_update", { channelId: "UC_PR_X", playlistId: "PL_X", expectedChannelId: "UC_PR_X", privacyStatus: "public" });
+    assert.equal(madePublic.isError, false, madePublic.text);
+    const added = await run("playlist_add_videos", { channelId: "UC_PR_X", playlistId: "PL_X", expectedChannelId: "UC_PR_X", videoIds: ["vid-x-1"] });
+    assert.equal(added.isError, false, added.text);
+    assert.ok(youtube.includes("update:PL_X:public") && youtube.includes("add:PL_X:vid-x-1"), "the writes reached YouTube");
+    assert.equal(await selectedOf("user-pr-x"), "UC_OWNER_CHOICE");
+    // Control: the owner's own write (no agent scope) through the same core persists the selection.
+    await services.updatePlaylist({ credentialRef: { userId: "user-pr-x" }, playlistId: "PL_X", expectedChannelId: "UC_PR_X", privacyStatus: "private" });
+    assert.equal(await selectedOf("user-pr-x"), "UC_PR_X");
+  });
 });

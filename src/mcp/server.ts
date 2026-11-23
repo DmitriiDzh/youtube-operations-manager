@@ -9,7 +9,7 @@ import { calendarDateSchema, DomainError, isDomainError } from "@/lib/shared-dom
 import type { VideoMetadataCore } from "@/lib/video-metadata";
 import { createCliAuthService, type CliAuthService } from "@/lib/cli-auth";
 import { getStoredVideo, insertWorkerActionLogEntry, listWorkerActionLogEntries, recordGatewayCallOutcome } from "@/lib/db";
-import { describeWorkerWrite, fromToolResult, serializeWorkerDetail } from "./worker-actions";
+import { describeWorkerWrite, describeWriteOutcome, serializeWorkerDetail } from "./worker-actions";
 import { createWorkerPrivacyCore, setPrivacyInputSchema } from "@/lib/worker-privacy";
 import { createRestartWhenIdleCore } from "@/lib/restart-when-idle";
 import { createFactoryChannelDeps } from "./factory-channel-deps";
@@ -500,7 +500,18 @@ export type ProducerSession = {
   reverify(): Promise<void>;
   /** The Google account the channel is connected under on THIS device, or null when it is not connected here. */
   resolveChannelUser(channelId: string): Promise<string | null>;
-  recordCall(entry: { tool: string; channelId: string | null; outcome: "ok" | "error"; errorCode: string | null }): Promise<void>;
+  /**
+   * One call-log row. `target` / `details` (a JSON string, at most 500 characters) are set only for the Producer's playlist writes:
+   * which playlist, what was sent, and the counts YouTube's answer gave (owner TG 4782 review).
+   */
+  recordCall(entry: {
+    tool: string;
+    channelId: string | null;
+    outcome: "ok" | "error";
+    errorCode: string | null;
+    target?: string | null;
+    details?: string | null;
+  }): Promise<void>;
   listChannels(): Promise<Array<{ channelId: string; title: string; workspace: string | null }>>;
   portfolioOverview(input: { startDate: string; endDate: string }): Promise<Record<string, unknown>>;
   /** BL-166: every connected channel's uploads in the range with their day-7 / day-28 milestones and Reach (stored data only). */
@@ -714,6 +725,16 @@ function toolErrorCode(result: ToolResponse): string | null {
   } catch {
     return null;
   }
+}
+
+/** Owner TG 4782 review: the counts a playlist add / remove answered with (attempted, added; requested, removed), for its log row. */
+function playlistWriteCounts(result: ToolResponse): Record<string, number> {
+  const answer = result.isError ? undefined : (result.structuredContent as Record<string, unknown> | undefined);
+  const counts: Record<string, number> = {};
+  for (const key of ["attempted", "added", "requested", "removed"]) {
+    if (typeof answer?.[key] === "number") counts[key] = answer[key] as number;
+  }
+  return counts;
 }
 
 /** BL-161 (AC-PR-06): every Producer answer names the channel it is for, as `forChannelId` (a tool's own `channelId` may mean
@@ -3058,20 +3079,14 @@ export function createMcpServer(
     write: NonNullable<ReturnType<typeof describeWorkerWrite>>,
     result: ToolResponse
   ): Promise<void> {
-    const answered = fromToolResult(name, result.structuredContent);
-    const detail = serializeWorkerDetail({
-      ...write.detail,
-      ...(answered.failedVideos === null ? {} : { failedVideos: answered.failedVideos }),
-      ...(answered.previousPrivacyStatus === null ? {} : { previousPrivacyStatus: answered.previousPrivacyStatus }),
-      ...(answered.changed === null ? {} : { changed: answered.changed }),
-    });
+    const outcome = describeWriteOutcome(name, write, result.structuredContent);
     await insertWorkerActionLogEntry({
       at: new Date(),
       channelId: session.channelId,
       tokenId: session.tokenId,
       tool: name,
-      target: write.target ?? answered.target,
-      detail,
+      target: outcome.target,
+      detail: serializeWorkerDetail(outcome.fields),
       outcome: result.isError ? "error" : "ok",
       errorCode: result.isError ? toolErrorCode(result) : null,
     }).catch((error: unknown) => {
@@ -3090,9 +3105,20 @@ export function createMcpServer(
     config: { description: string; inputSchema: z.ZodTypeAny },
     handler: (args: never) => Promise<ToolResponse> | ToolResponse | ReturnType<typeof handlers.whoami>
   ): { config: { description: string; inputSchema: z.ZodTypeAny }; handler: (args: never) => Promise<ToolResponse> } | null {
-    const record = async (entry: { channelId: string | null; result: ToolResponse }) => {
+    // Owner TG 4782 review: a playlist write's row also says what it wrote -- the worker log's own description of the call (playlistId,
+    // privacy, video ids) and the counts of the answer; refused calls keep their target. Every other call: tool, channel, outcome.
+    const describesWrite = (PRODUCER_PLAYLIST_WRITE_TOOLS as readonly string[]).includes(name);
+    const record = async (entry: { channelId: string | null; result: ToolResponse; args?: unknown }) => {
+      const write = describesWrite ? describeWorkerWrite(name, entry.args) : null;
+      const outcome = write ? describeWriteOutcome(name, write, entry.result.structuredContent) : null;
       await session
-        .recordCall({ tool: name, channelId: entry.channelId, outcome: entry.result.isError ? "error" : "ok", errorCode: entry.result.isError ? toolErrorCode(entry.result) : null })
+        .recordCall({
+          tool: name,
+          channelId: entry.channelId,
+          outcome: entry.result.isError ? "error" : "ok",
+          errorCode: entry.result.isError ? toolErrorCode(entry.result) : null,
+          ...(outcome ? { target: outcome.target, details: serializeWorkerDetail({ ...playlistWriteCounts(entry.result), ...outcome.fields }) } : {}),
+        })
         .catch(() => undefined);
     };
     if (toolClass === "producer-only") {
@@ -3151,7 +3177,7 @@ export function createMcpServer(
       const refuse = async (error: unknown) => {
         await recordGatewayCallOutcome("mcp_tool_calls", "blocked");
         const result = toolErrorResult(error);
-        await record({ channelId, result });
+        await record({ channelId, result, args });
         return withForChannel(result, channelId);
       };
       let userId: string | null;
@@ -3191,7 +3217,7 @@ export function createMcpServer(
       } catch (error) {
         result = toolErrorResult(error);
       }
-      await record({ channelId, result });
+      await record({ channelId, result, args });
       return withForChannel(result, channelId);
     };
     return { config: { description, inputSchema }, handler: wrapped as (args: never) => Promise<ToolResponse> };

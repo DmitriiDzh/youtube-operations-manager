@@ -177,7 +177,9 @@ Plan: `docs/roadmap/plans/PRODUCER_ROLE_PLAN.md`. Status: on `feature/producer-r
 - `src/lib/portfolio-overview` adds up stored data per channel (`channel_metrics_daily`, Reach totals read in the channel's scope, synced
   videos' `publishedAt`, freshness); a source with nothing stored is `null`, not zero.
 - `producer_call_log` (v72) records every call with tool, channel, outcome and error code; pruned to 90 days on insert; shown on the Producer
-  card (`GET /api/producer-agent-token/calls`).
+  card (`GET /api/producer-agent-token/calls`). Since v123 (owner TG 4782 review) a playlist write's row also has `target` (the playlist) and
+  `details_json` -- `worker-actions.describeWriteOutcome`, the worker log's own recipe, plus the answer's counts; refused calls keep their
+  target. The card renders both through the shared `write-log-detail` component (also used by the worker log).
 
 ## BL-228 — one-time paid approvals through the HUB "System" topic (ADR 0053 + Amendment 1)
 
