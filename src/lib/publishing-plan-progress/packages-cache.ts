@@ -15,6 +15,21 @@ export const PACKAGES_CACHE_MS = 60_000;
  * answer at once (`invalidatePackagesEntry`).
  */
 export const PACKAGES_CACHE_MAX_MS = 5 * 60_000;
+/**
+ * Owner TG 4784 review (item 6): the longest a shared package read may take. A scan that never settles (a hung disk, a stuck
+ * port) would otherwise hold every later caller of the channel forever; past this the callers waiting on it get
+ * `PackagesScanTimeoutError`, the read is forgotten, and the next caller scans afresh.
+ */
+export const PACKAGES_SCAN_TIMEOUT_MS = 120_000;
+
+/** The shared package read of a channel did not settle within `PACKAGES_SCAN_TIMEOUT_MS`. */
+export class PackagesScanTimeoutError extends Error {
+  constructor(readonly channelId: string, readonly timeoutMs: number) {
+    super(`The package scan of channel ${channelId} did not finish within ${timeoutMs} ms.`);
+    this.name = "PackagesScanTimeoutError";
+  }
+}
+
 /** BL-270 review: how much earlier than the scan's start a resolved file must have last changed for the result to be reused late. */
 const FILE_CLOCK_SLACK_MS = 2_000;
 
@@ -43,7 +58,17 @@ export type PackagesCacheDeps = {
   filesSignature?(channelId: string, packages: readonly ScannedPackage[]): Promise<{ key: string; newestMtimeMs: number } | null>;
   now(): number;
   cache: Map<string, PackagesEntry>;
+  /** Owner TG 4784 review (item 6): the shared read's time limit (default `PACKAGES_SCAN_TIMEOUT_MS`). */
+  timeoutMs?: number;
+  /** Starts the time limit's timer and returns its cancel (default: an unref'd `setTimeout`). Injected by tests. */
+  startTimer?(onTimeout: () => void, ms: number): () => void;
 };
+
+function defaultTimer(onTimeout: () => void, ms: number): () => void {
+  const id = setTimeout(onTimeout, ms);
+  (id as { unref?: () => void }).unref?.();
+  return () => clearTimeout(id);
+}
 
 /**
  * ONE removed-list read, one answer for the packages and the rows -- handed to the one scan; that read failing, both get "none
@@ -57,14 +82,40 @@ export function createPackagesReader(deps: PackagesCacheDeps) {
    * read; `invalidatePackagesEntry` forgets it (a caller after the invalidation reads again, and the older read is not kept).
    */
   const inflight = inflightOf(deps.cache);
+  const timeoutMs = deps.timeoutMs ?? PACKAGES_SCAN_TIMEOUT_MS;
+  const startTimer = deps.startTimer ?? defaultTimer;
   return function packagesOf(channelId: string): Promise<PackagesEntry> {
     const running = inflight.get(channelId);
     if (running) return running;
-    const read = readPackages(channelId).finally(() => {
-      if (inflight.get(channelId) === read) inflight.delete(channelId);
+    const scan = readPackages(channelId);
+    // Review item 6: the shared read is bounded. On the time limit every caller waiting on it (the first one too) gets the error,
+    // the read is forgotten (the next caller scans afresh) and the channel's generation moves on, so the abandoned scan's answer,
+    // should it ever land, is not kept.
+    // The read is forgotten before its callers resume, so a caller asking again right after it ended starts a new read.
+    const forget = () => {
+      if (inflight.get(channelId) === shared) inflight.delete(channelId);
+    };
+    const shared: Promise<PackagesEntry> = new Promise<PackagesEntry>((resolve, reject) => {
+      const stop = startTimer(() => {
+        forget();
+        bumpGeneration(deps.cache, channelId);
+        reject(new PackagesScanTimeoutError(channelId, timeoutMs));
+      }, timeoutMs);
+      scan.then(
+        (entry) => {
+          stop();
+          forget();
+          resolve(entry);
+        },
+        (error: unknown) => {
+          stop();
+          forget();
+          reject(error);
+        }
+      );
     });
-    inflight.set(channelId, read);
-    return read;
+    inflight.set(channelId, shared);
+    return shared;
   };
 
   async function readPackages(channelId: string): Promise<PackagesEntry> {
@@ -129,6 +180,10 @@ function stateOf(cache: Map<string, PackagesEntry>): SharedState {
 }
 const inflightOf = (cache: Map<string, PackagesEntry>) => stateOf(cache).inflight;
 const generationOf = (cache: Map<string, PackagesEntry>, channelId: string) => stateOf(cache).generations.get(channelId) ?? 0;
+function bumpGeneration(cache: Map<string, PackagesEntry>, channelId: string): void {
+  const state = stateOf(cache);
+  state.generations.set(channelId, (state.generations.get(channelId) ?? 0) + 1);
+}
 
 /**
  * BL-257 (ADR 0070, PACKAGE_REVIEW_PLAN.md AC-PR-10): the owner's package-review decision (or switch) changes what the scan says, so
@@ -137,7 +192,6 @@ const generationOf = (cache: Map<string, PackagesEntry>, channelId: string) => s
  */
 export function invalidatePackagesEntry(cache: Map<string, PackagesEntry>, channelId: string): void {
   cache.delete(channelId);
-  const state = stateOf(cache);
-  state.inflight.delete(channelId);
-  state.generations.set(channelId, (state.generations.get(channelId) ?? 0) + 1);
+  stateOf(cache).inflight.delete(channelId);
+  bumpGeneration(cache, channelId);
 }

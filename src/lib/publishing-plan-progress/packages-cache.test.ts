@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createPackagesReader, invalidatePackagesEntry, PACKAGES_CACHE_MAX_MS, PACKAGES_CACHE_MS, type PackagesEntry } from "./packages-cache";
+import { createPackagesReader, invalidatePackagesEntry, PACKAGES_CACHE_MAX_MS, PACKAGES_CACHE_MS, PACKAGES_SCAN_TIMEOUT_MS, PackagesScanTimeoutError, type PackagesEntry } from "./packages-cache";
 
 // BL-243 final triage: a progress answer built while the removed-list read failed ("none known") is not kept for the minute -- the
 // next call reads the list again; a good answer is kept.
@@ -267,4 +267,71 @@ test("owner 4784 (negative): an invalidation during a read -- the next caller sc
   gates[1]();
   await after;
   assert.equal(cache.has("UC1"), true, "the read after it is kept");
+});
+
+// Owner TG 4784, independent review item 6: a shared scan that never settles must not hold every later caller. Past the time limit
+// the callers waiting on it (the first included) get an error, the next caller scans afresh, and the hung scan's answer, should it
+// land after all, is not kept. The timer is injected (fired by hand), so nothing waits for real time.
+test("review 6: a scan that never settles -- joiners get a timeout error after the limit, the next caller scans afresh", async () => {
+  const cache = new Map<string, PackagesEntry>();
+  const gates: Array<() => void> = [];
+  const timers: Array<{ fire: () => void; ms: number; cancelled: boolean }> = [];
+  let scans = 0;
+  const packagesOf = createPackagesReader({
+    removedVideos: async () => [],
+    scan: async () => {
+      scans += 1;
+      await new Promise<void>((resolve) => gates.push(resolve)); // the first scan is released only at the very end
+      return { status: "ok", packages: [] };
+    },
+    synthetic: async () => false,
+    now: () => 1_000_000,
+    cache,
+    startTimer: (fire, ms) => {
+      const timer = { fire, ms, cancelled: false };
+      timers.push(timer);
+      return () => {
+        timer.cancelled = true;
+      };
+    },
+  });
+  const first = packagesOf("UC1");
+  const joiner = packagesOf("UC1");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(scans, 1, "one shared scan");
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].ms, PACKAGES_SCAN_TIMEOUT_MS, "the default limit");
+  timers[0].fire(); // the limit passes, the scan still hangs
+  await assert.rejects(first, PackagesScanTimeoutError);
+  await assert.rejects(joiner, PackagesScanTimeoutError);
+  const next = packagesOf("UC1");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(scans, 2, "the next caller does not join the hung scan");
+  gates[1]();
+  assert.deepEqual((await next).packages, []);
+  assert.equal(timers[1].cancelled, true, "a scan that settles cancels its timer");
+  assert.equal(cache.has("UC1"), true, "the fresh scan is kept");
+  cache.delete("UC1");
+  gates[0](); // the hung scan lands after all
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(cache.has("UC1"), false, "the abandoned scan's answer is not kept");
+});
+
+test("review 6: the time limit is configurable; a scan within it is not affected", async () => {
+  const limits: number[] = [];
+  const packagesOf = createPackagesReader({
+    removedVideos: async () => [],
+    scan: async () => ({ status: "ok", packages: [] }),
+    synthetic: async () => false,
+    now: () => 1_000_000,
+    cache: new Map<string, PackagesEntry>(),
+    timeoutMs: 5_000,
+    startTimer: (_fire, ms) => {
+      limits.push(ms);
+      return () => undefined;
+    },
+  });
+  assert.deepEqual((await packagesOf("UC1")).packages, []);
+  assert.deepEqual(limits, [5_000]);
 });
