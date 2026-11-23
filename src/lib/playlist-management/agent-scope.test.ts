@@ -34,7 +34,7 @@ function fixture() {
       },
       getPlaylistForUpdate: async ({ playlistId }) => {
         calls.push("read-playlist");
-        return { id: playlistId, title: "T", description: "D", privacyStatus: "private", channelId: "UC_ACTIVE" };
+        return { id: playlistId, title: "T", description: "D", privacyStatus: "private", channelId: playlistId === "p-foreign" ? "UC_OTHER" : "UC_ACTIVE" };
       },
       updatePlaylist: async ({ playlistId, title, description, privacyStatus }) => {
         calls.push(`update:${privacyStatus}`);
@@ -100,6 +100,20 @@ test("msg 4782: in an agent scope another channel's expectedChannelId is refused
     await assert.rejects(services.deletePlaylist({ ...other, playlistId: "p1" }), codeIs("WRITE_CHANNEL_MISMATCH"));
   });
   assert.deepEqual(calls, []);
+});
+
+test("msg 4782: in an agent scope another channel's playlist under the bound channel's own id is refused, nothing written", async () => {
+  const { services, calls } = fixture();
+  const own = { credentialRef: REF, expectedChannelId: "UC_ACTIVE", playlistId: "p-foreign" };
+  await withAgentSessionForTests(BOUND, async () => {
+    await assert.rejects(services.updatePlaylist({ ...own, privacyStatus: "public" }), codeIs("WRITE_CHANNEL_MISMATCH"));
+    await assert.rejects(services.addVideosToPlaylist({ ...own, videoIds: ["v-own-1"] }), codeIs("WRITE_CHANNEL_MISMATCH"));
+    await assert.rejects(services.removeVideosFromPlaylist({ ...own, videoIds: ["v-own-1"] }), codeIs("WRITE_CHANNEL_MISMATCH"));
+  });
+  assert.deepEqual(
+    calls.filter((call) => !["auth", "read-playlist"].includes(call)),
+    []
+  );
 });
 
 test("msg 4782: in an agent scope the channel's own videos are added and removed", async () => {

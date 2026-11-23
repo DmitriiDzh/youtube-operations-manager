@@ -2,7 +2,7 @@
  * BL-161 (FO-REQ-0012, `docs/roadmap/plans/PRODUCER_ROLE_PLAN.md` §3, ADR 0034) -- what the Producer role may call on its own
  * endpoint (`/api/mcp/producer`). A closed list: a channel tool reaches the Producer only by being named here, and every entry
  * names the capability (`src/lib/agent-operations` registry) whose permission class must be READ -- the inventory test fails the
- * suite otherwise, so no DRAFT or WRITE channel tool can be added by accident. Its DRAFT tools are its own proposal tools (BL-163) and
+ * suite otherwise, so no DRAFT or WRITE channel tool can be added by accident (the DRAFT and playlist lists below are pinned by name). Its DRAFT tools are its own proposal tools (BL-163) and
  * one channel tool the owner allowed by name (BL-170, `PRODUCER_DRAFT_CHANNEL_TOOLS`), all listed in `PRODUCER_DRAFT_TOOLS`: each only
  * proposes, and nothing changes until the owner approves it in the Web UI.
  *
@@ -70,8 +70,8 @@
 // (timeoutSeconds default 50, clamped 1-240); not counted as MCP activity; any other target is invalid_request. Additive.
 // 1.28.0 (owner TG 4782, 2026-11-23; ADR 0048 amendment 2026-11-23): the channel playlist tools playlist_list, playlist_create,
 // playlist_update (title / description / privacy, public included), playlist_add_videos (only the channel's own synced videos) and
-// playlist_remove_videos, each run for the named channel as its own agent would (`expectedChannelId` required for the writes and
-// equal to `channelId`); permission PLAYLIST_WRITE and playlistTools in producer_get_capabilities. No playlist delete. Additive.
+// playlist_remove_videos, each run for the named channel as its own agent would (`expectedChannelId`, required except on
+// playlist_create, must equal `channelId`); permission PLAYLIST_WRITE and playlistTools in producer_get_capabilities. No playlist delete. Additive.
 export const PRODUCER_API_VERSION = "1.28.0";
 
 /** The channel agent's READ tools the Producer gets; each call names its channel and runs in that channel's agent scope. */
