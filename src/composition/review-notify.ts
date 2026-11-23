@@ -1,6 +1,7 @@
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { decidingRecordOf, wellFormedAttachments } from "@/lib/clip-reviews";
+import { decidingImageRecordOf } from "@/lib/image-reviews";
 import { ownerReviewStateOf, standingDecision } from "@/lib/package-reviews";
 import {
   deleteReviewNotifyLedgerBefore,
@@ -37,6 +38,9 @@ import { latestVersion } from "@/lib/storyboards";
 import {
   createClipReviewsCoreForProduction,
   createGenerationPlansShareCoreForProduction,
+  createImageReviewsCoreForProduction,
+  IMAGE_REVIEW_OWNER_KINDS,
+  type ImageReviewsSnapshot,
   createPackageReviewsCoreForProduction,
   createPublishingPlansCoreForProduction,
   createStoryboardsCoreForProduction,
@@ -92,6 +96,54 @@ export function clipNoticesOf(channel: Channel, snapshot: ClipReviewsSnapshot, s
       attachments: wellFormedAttachments(decision.attachments).map((a) => a.path),
       ytmPlace: "Медиа → «Клипы»",
       readTool: `producer_clip_review_get ${json({ channelId: channel.channelId, clipId: decision.clipId })}`,
+    });
+  }
+  return out;
+}
+
+// --- master still images (BL-272, ADR 0076) ---------------------------------------------------------------------------------
+
+const IMAGE_NEXT: Record<string, string> = {
+  approved: "the image is approved: make the clip from exactly this file (producer_clip_review_submit with approvedImageId)",
+  approved_with_note: "the image is approved WITH this note: apply the note, then make the clip (approvedImageId may name this image)",
+  returned: "the image is returned: rework it as the comment says and submit the new file (same sceneId)",
+};
+
+/** An owner `approved` / `approved_with_note` / `returned` record of an image; never the Producer's withdrawal or a submit. */
+export function imageNoticesOf(channel: Channel, snapshot: ImageReviewsSnapshot, sinceMs: number): ReviewDecisionNotice[] {
+  const all = Object.values(snapshot.decisions);
+  const out: ReviewDecisionNotice[] = [];
+  for (const decision of all) {
+    if (decision.by !== "owner" || !IMAGE_REVIEW_OWNER_KINDS.includes(decision.kind) || !after(decision.at, sinceMs)) continue;
+    const image = Object.hasOwn(snapshot.images, decision.imageId) ? snapshot.images[decision.imageId] : undefined;
+    const deciding = decidingImageRecordOf(decision.imageId, all);
+    const context = [
+      ...(image
+        ? [
+            { label: "Scene", value: image.sceneId },
+            { label: "Image file", value: image.imagePath },
+            { label: "Image sha256", value: `${image.sha256} (${image.width}×${image.height}, ${image.sizeBytes} bytes)` },
+            ...(image.batchId ? [{ label: "Batch", value: image.batchId }] : []),
+            ...(image.note ? [{ label: "Producer's note", value: image.note }] : []),
+          ]
+        : []),
+      ...(IMAGE_NEXT[decision.kind] ? [{ label: "Next", value: IMAGE_NEXT[decision.kind] }] : []),
+      ...(deciding && deciding.id !== decision.id ? [{ label: "Counts", value: `no: an earlier owner decision (${deciding.id}) decides this image` }] : []),
+    ];
+    out.push({
+      kind: "image",
+      channelId: channel.channelId,
+      channelName: channel.name,
+      itemId: decision.imageId,
+      decisionId: decision.id,
+      status: decision.kind,
+      comment: decision.comment,
+      decidedAt: decision.at,
+      decidedOn: decision.device,
+      context,
+      attachments: [],
+      ytmPlace: "Медиа → «Кадры»",
+      readTool: `producer_image_review_get ${json({ channelId: channel.channelId, imageId: decision.imageId })}`,
     });
   }
   return out;
@@ -533,6 +585,10 @@ function createProductionReviewNotify(): ReviewNotify {
       {
         name: "clips",
         list: (since) => perChannel(async (ch) => clipNoticesOf(ch, await readDocument(paths.clipReviewsDocDir, ch.channelId, () => createClipReviewsCoreForProduction().read(ch.channelId)), Date.parse(since))),
+      },
+      {
+        name: "images",
+        list: (since) => perChannel(async (ch) => imageNoticesOf(ch, await readDocument(paths.imageReviewsDocDir, ch.channelId, () => createImageReviewsCoreForProduction().read(ch.channelId)), Date.parse(since))),
       },
       {
         name: "storyboards",

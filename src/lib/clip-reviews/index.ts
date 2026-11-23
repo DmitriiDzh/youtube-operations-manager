@@ -7,7 +7,8 @@ import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 import { getProductionAppPaths } from "@/lib/platform-paths/runtime";
 import { nudgeReviewNotify } from "@/lib/review-notify";
 import { createDefaultLogger } from "@/lib/shared-logger";
-import { createClipReviewsCoreForProduction } from "@/lib/sync-gateway";
+import { earliestDecidingRecord } from "@/lib/review-items";
+import { createClipReviewsCoreForProduction, createImageReviewsCoreForProduction, IMAGE_REVIEW_OWNER_KINDS } from "@/lib/sync-gateway";
 import { createAttachmentFiles, createAttachmentStaging } from "./adapters/attachments";
 import { hashClipFile, probeClipDurationSeconds, resolveClipFile } from "./adapters/files";
 import { createClipReviewsService, ownerSurface, producerSurface, type ClipReviewsOwnerSurface, type ClipReviewsProducerSurface, type ClipReviewsService } from "./services";
@@ -55,6 +56,18 @@ function service(): ClipReviewsService {
     attachmentFiles: createAttachmentFiles(),
     // BL-248 (ADR 0066): an owner decision nudges the Producer's Inbox writer (the shared review-notify module).
     notifyOwnerDecision: () => nudgeReviewNotify(),
+    // BL-272 (ADR 0076): a clip's approved source image, read from the image reviews' synced document with the shared deciding rule
+    // (`review-items`) -- never through the image-reviews feature module (AGENTS.md §M).
+    async imageOf(channelId, imageId) {
+      const snapshot = await createImageReviewsCoreForProduction().read(channelId);
+      const image = Object.hasOwn(snapshot.images, imageId) ? snapshot.images[imageId] : undefined;
+      if (!image || image.channelId !== channelId) return null;
+      const record = earliestDecidingRecord(
+        Object.values(snapshot.decisions).filter((d) => d.imageId === imageId),
+        IMAGE_REVIEW_OWNER_KINDS
+      );
+      return { imageId, sceneId: image.sceneId, imagePath: image.imagePath, status: record ? record.kind : "pending" };
+    },
   });
 }
 
