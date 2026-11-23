@@ -339,4 +339,3 @@ On branch `feature/bl-229-music-library`. No schema change; no YouTube call; not
   (`MEDIA_TABS` value `stills`, before `clips`), own error boundary in `production-panel.tsx`. The full-size viewer is an in-page layer
   with `useDialogFocus` (no browser dialog).
 - **Wake:** review-notify kind `image` (`composition/review-notify.ts` `imageNoticesOf`, source "images").
-
