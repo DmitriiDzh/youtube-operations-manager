@@ -3,6 +3,7 @@ import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
 import { createExchangeFs, resolveWorkspaceFile } from "@/lib/workspace-exchange";
+import { createLruCache, type LruCache } from "./lru";
 
 // BL-272 (ADR 0076; moved from clip-reviews' files adapter, ADR 0061 §3): a review item's file on this computer -- the shared
 // workspace rule (`workspace-exchange`) and a SHA-256 of the file, remembered per path, size and modification time so an owner's
@@ -38,15 +39,18 @@ export async function resolveReviewFile(workspace: string, relativePath: string)
   }
 }
 
-const HASH_KEY = Symbol.for("ytom.reviewItems.hashes");
-type Holder = typeof globalThis & { [HASH_KEY]?: Map<string, string> };
+/** How many file hashes the process remembers (least recently used dropped first). */
+export const REVIEW_HASH_CACHE_MAX = 500;
+// The key changed from the earlier clear-all Map so a process still holding one (dev hot reload) starts a fresh cache.
+const HASH_KEY = Symbol.for("ytom.reviewItems.hashesLru");
+type Holder = typeof globalThis & { [HASH_KEY]?: LruCache<string> };
 const holder = globalThis as Holder;
 
-/** The file's SHA-256 (hex), cached per path, size and modification time. */
+/** The file's SHA-256 (hex), cached per path, size and modification time (LRU, `REVIEW_HASH_CACHE_MAX` entries). */
 export async function hashReviewFile(absolutePath: string): Promise<string> {
   const info = await stat(absolutePath);
   const key = `${absolutePath}\u0000${info.size}\u0000${info.mtimeMs}`;
-  const cache = (holder[HASH_KEY] ??= new Map());
+  const cache = (holder[HASH_KEY] ??= createLruCache<string>(REVIEW_HASH_CACHE_MAX));
   const known = cache.get(key);
   if (known) return known;
   const hash = createHash("sha256");
@@ -57,7 +61,6 @@ export async function hashReviewFile(absolutePath: string): Promise<string> {
       .on("error", reject);
   });
   const sha = hash.digest("hex");
-  if (cache.size > 500) cache.clear();
   cache.set(key, sha);
   return sha;
 }

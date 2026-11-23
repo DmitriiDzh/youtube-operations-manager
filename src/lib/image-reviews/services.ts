@@ -164,13 +164,21 @@ export function createImageReviewsService(ports: ImageReviewsPorts) {
     return { images: all.filter((v) => !status || v.status === status).slice(0, limit ?? IMAGE_REVIEW_LIMITS.listDefault), pending };
   }
 
-  /** The owner's list: every image of the channel with this computer's copy, and how many wait for him. */
+  /**
+   * The owner's list: every image of the channel and how many wait for him. This computer's copy (resolved, size, SHA-256) is checked
+   * only for a pending image -- the only one he can approve; the rest are `file: null` (review: no file work for the history).
+   */
   async function ownerList(channelId: string): Promise<{ images: OwnerImageView[]; waiting: number }> {
     const snapshot = await ports.store.read(channelId);
     const all = await views(channelId);
     const images: OwnerImageView[] = [];
-    for (const view of all) images.push({ ...view, file: await fileStateOf(snapshot.images[view.imageId]) });
+    for (const view of all) images.push({ ...view, file: view.status === "pending" ? await fileStateOf(snapshot.images[view.imageId]) : null });
     return { images, waiting: all.filter((v) => v.status === "pending").length };
+  }
+
+  /** The badge: how many images wait for the owner -- the document only, no file work. */
+  async function ownerWaiting(channelId: string): Promise<{ waiting: number }> {
+    return { waiting: (await views(channelId)).filter((v) => v.status === "pending").length };
   }
 
   /**
@@ -223,7 +231,7 @@ export function createImageReviewsService(ports: ImageReviewsPorts) {
     return body ? { body, type: "image/jpeg" } : { file, type: file.type };
   }
 
-  return { submit, withdraw, get, list, ownerList, decide, imageFile, previewFile };
+  return { submit, withdraw, get, list, ownerList, ownerWaiting, decide, imageFile, previewFile };
 }
 
 export type ImageReviewsService = ReturnType<typeof createImageReviewsService>;
@@ -234,11 +242,12 @@ export function producerSurface(service: ImageReviewsProducerSurface): ImageRevi
   return { submit: (input, producer) => service.submit(input, producer), withdraw: (input) => service.withdraw(input), list: (input) => service.list(input), get: (input) => service.get(input) };
 }
 
-/** What the owner's Web UI routes get: the list, the decision, the file and its preview. */
-export type ImageReviewsOwnerSurface = Pick<ImageReviewsService, "ownerList" | "decide" | "imageFile" | "previewFile">;
+/** What the owner's Web UI routes get: the list, the waiting count (the badge), the decision, the file and its preview. */
+export type ImageReviewsOwnerSurface = Pick<ImageReviewsService, "ownerList" | "ownerWaiting" | "decide" | "imageFile" | "previewFile">;
 export function ownerSurface(service: ImageReviewsOwnerSurface): ImageReviewsOwnerSurface {
   return {
     ownerList: (channelId) => service.ownerList(channelId),
+    ownerWaiting: (channelId) => service.ownerWaiting(channelId),
     decide: (channelId, imageId, input, userId) => service.decide(channelId, imageId, input, userId),
     imageFile: (channelId, imageId) => service.imageFile(channelId, imageId),
     previewFile: (channelId, imageId) => service.previewFile(channelId, imageId),

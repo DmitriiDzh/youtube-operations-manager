@@ -65,7 +65,11 @@ export type ImageReviewView = {
 /** This computer's copy of the image: the submitted file, missing here, or a different file now. */
 export type ImageFileState = "ok" | "missing" | "changed";
 
-export type OwnerImageView = ImageReviewView & { file: ImageFileState };
+/**
+ * The owner's list entry. `file` is checked (resolved and hashed) only for a pending image -- the only kind he can approve; an
+ * answered or withdrawn image is `null` (not checked: the list never re-hashes the channel's whole history).
+ */
+export type OwnerImageView = ImageReviewView & { file: ImageFileState | null };
 
 /** A file the ports resolved inside the channel workspace (absolute: never sent to the browser or an agent). */
 export type ResolvedImageFile = { path: string; bytes: number };

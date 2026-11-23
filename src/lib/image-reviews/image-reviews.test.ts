@@ -305,3 +305,48 @@ test("BL-272 (ADR 0061 §5): two computers' answers merge by rule -- the earlies
   assert.equal(imageViewOf(image, [decisions[2]]).status, "withdrawn");
   assert.equal(imageViewOf(image, []).status, "pending");
 });
+
+// Review (item 1): the owner's list checks this computer's copy only for a pending image -- the only one he can approve -- and the
+// badge's count does no file work at all, however long the channel's history is.
+test("BL-272 (review): listing 600 answered images resolves and hashes nothing; each pending image is checked once; the count does no file work", async () => {
+  const snapshot: ImageReviewsSnapshot = { images: {}, decisions: {} };
+  const kinds = ["approved", "approved_with_note", "returned", "withdrawn"] as const;
+  for (let i = 0; i < 600; i++) {
+    const imageId = `img_d${i}`;
+    snapshot.images[imageId] = { imageId, channelId: A, sceneId: `S${i}`, imagePath: `03 Images/d${i}.png`, note: "", batchId: "old", requestId: null, width: 1920, height: 1080, sizeBytes: 10, sha256: "a".repeat(64), submittedAt: "2026-11-01T00:00:00.000Z", submittedBy: "t", device: "Mac" };
+    const kind = kinds[i % kinds.length];
+    snapshot.decisions[`dec_${i}`] = { id: `dec_${i}`, imageId, kind, by: kind === "withdrawn" ? "producer" : "owner", comment: kind === "approved" || kind === "withdrawn" ? null : "x", device: "Mac", at: "2026-11-02T00:00:00.000Z" };
+  }
+  for (const n of [1, 2]) {
+    const imageId = `img_p${n}`;
+    snapshot.images[imageId] = { imageId, channelId: A, sceneId: `P${n}`, imagePath: `03 Images/p${n}.png`, note: "", batchId: "new", requestId: null, width: 1920, height: 1080, sizeBytes: 10, sha256: "b".repeat(64), submittedAt: "2026-11-23T00:00:00.000Z", submittedBy: "t", device: "Mac" };
+  }
+  const calls = { resolve: [] as string[], hash: [] as string[], workspace: 0 };
+  const service = createImageReviewsService({
+    store: { read: async () => JSON.parse(JSON.stringify(snapshot)), addImage: async () => undefined, addDecision: async () => undefined },
+    isChannelConnected: async () => true,
+    workspace: async () => (calls.workspace++, "/ws"),
+    resolveFile: async (_ws, rel) => (calls.resolve.push(rel), { ok: true, path: `/ws/${rel}`, bytes: 10 }),
+    probeImage: async () => null,
+    hashFile: async (p) => (calls.hash.push(p), "b".repeat(64)),
+    preview: async () => null,
+    assertDeviceAvailable: async () => undefined,
+    deviceLabel: async () => "Mac",
+    now: () => new Date("2026-11-23T10:00:00.000Z"),
+    randomId: () => "r",
+    withLock: (fn) => fn(),
+    audit: async () => undefined,
+  });
+
+  assert.deepEqual(await service.ownerWaiting(A), { waiting: 2 });
+  assert.deepEqual([calls.resolve, calls.hash, calls.workspace], [[], [], 0]);
+
+  const listed = await service.ownerList(A);
+  assert.equal(listed.waiting, 2);
+  assert.equal(listed.images.length, 602);
+  assert.deepEqual(listed.images.slice(0, 2).map((i) => [i.imageId, i.file]), [["img_p1", "ok"], ["img_p2", "ok"]]);
+  assert.equal(listed.images.slice(2).every((i) => i.status !== "pending" && i.file === null), true);
+  assert.deepEqual(calls.resolve.sort(), ["03 Images/p1.png", "03 Images/p2.png"]);
+  assert.deepEqual(calls.hash.sort(), ["/ws/03 Images/p1.png", "/ws/03 Images/p2.png"]);
+});
+

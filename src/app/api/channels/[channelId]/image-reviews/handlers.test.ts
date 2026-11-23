@@ -23,6 +23,7 @@ function make(options: { session?: { user: { id: string } } | null; refuse?: Dom
     },
     service: () => ({
       ownerList: async (...args) => (calls.push(["list", ...args]), { images: [], waiting: 2 }),
+      ownerWaiting: async (...args) => (calls.push(["waiting", ...args]), { waiting: 2 }),
       decide: async (...args) => {
         calls.push(["decide", ...args]);
         if (options.refuse) throw options.refuse;
@@ -60,6 +61,7 @@ test("BL-272: no session -> 401, another channel -> 403, not the owner's browser
 test("BL-272: the list answers the module's waiting count; a decision reaches the module with the session's user; refusals keep their status", async () => {
   const ok = make();
   assert.deepEqual(await (await ok.handlers.list(get(), ctx({ channelId: "UC_active" }))).json(), { images: [], waiting: 2 });
+  ok.calls.length = 0;
   const body = { action: "approve_with_note", comment: "убрать прохожего" };
   assert.equal((await ok.handlers.decide(post(body), ctx({ channelId: "UC_active", imageId: "img_1" }))).status, 200);
   assert.deepEqual(ok.calls[1], ["decide", "UC_active", "img_1", body, "u1"]);
@@ -90,4 +92,14 @@ test("BL-272: the image is served from this computer's copy with its type; the p
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("BL-272 (review): ?view=count answers only the waiting count through the count-only path -- never the list with its file work", async () => {
+  const ok = make();
+  const res = await ok.handlers.list(new Request("http://127.0.0.1:3000/x?view=count", { headers: { host: "127.0.0.1:3000" } }), ctx({ channelId: "UC_active" }));
+  assert.deepEqual(await res.json(), { waiting: 2 });
+  assert.deepEqual(ok.calls, [["waiting", "UC_active"]]);
+  const other = make();
+  assert.equal((await other.handlers.list(new Request("http://127.0.0.1:3000/x?view=count", { headers: { host: "127.0.0.1:3000" } }), ctx({ channelId: "UC_other" }))).status, 403);
+  assert.deepEqual(other.calls, []);
 });

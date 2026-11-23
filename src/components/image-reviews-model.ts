@@ -24,7 +24,8 @@ export type ImageDto = {
   comment: string | null;
   decidedAt: string | null;
   decidedOn: string | null;
-  file: ImageFileState;
+  /** This computer's copy -- checked only while the image is pending (the only one the owner can approve); null otherwise. */
+  file: ImageFileState | null;
 };
 
 export type ImageBatch = {

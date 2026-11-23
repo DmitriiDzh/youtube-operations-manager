@@ -51,7 +51,9 @@ Scenes (Tropico now, Japan and WWE later) are made in two steps: a master still 
    module. The owner's clip row shows the image it came from.
 7. **Showing:** the full image and a large JPEG preview (shared `media-preview`, 960 px) go to the owner's browser only (this computer,
    or a remote owner session through the proxy's gate, as the clips since BL-251 amendment 2), from this computer's copy; a missing or
-   changed copy is shown, never fetched elsewhere.
+   changed copy is shown, never fetched elsewhere. The owner's list checks this computer's copy (resolve + SHA-256) only for a
+   pending image, the only one he can approve; an answered one is `file: null`. The tab's badge reads `?view=count` (the document
+   only, no file work). The shared SHA-256 cache (`review-items`, clips too) evicts the least recently used entry (500), never all.
 
 ## Consequences
 

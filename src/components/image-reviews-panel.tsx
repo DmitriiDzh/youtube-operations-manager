@@ -237,8 +237,9 @@ export function ImageReviewsPanel({ channelId, visible }: { channelId: string | 
     ) : null;
 
   const statusPill = (image: ImageDto) => <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ${STATUS_STYLES[image.status]}`}>{t(STATUS_KEYS[image.status])}</span>;
+  // Only a checked copy (a pending image) has a badge; an answered one is not checked (`file: null`).
   const fileBadge = (image: ImageDto) =>
-    image.file !== "ok" ? (
+    image.file === "missing" || image.file === "changed" ? (
       <span className="shrink-0 rounded-full bg-orange-500/15 px-2 py-0.5 text-[11px] text-orange-300 ring-1 ring-orange-500/30">{t(image.file === "missing" ? "imageReviews.file.missing" : "imageReviews.file.changed")}</span>
     ) : null;
   const versionBadge = (image: ImageDto) => {
@@ -257,8 +258,7 @@ export function ImageReviewsPanel({ channelId, visible }: { channelId: string | 
         {image.file === "missing" ? (
           <span className="flex h-full w-full items-center justify-center px-3 text-center text-xs text-zinc-500">{t("imageReviews.file.missing")}</span>
         ) : (
-          // eslint-disable-next-line @next/next/no-img-element -- a local file streamed by the route, not an optimisable asset
-          <img src={previewSrcOf(base!, image)} alt="" loading="lazy" className="h-full w-full object-cover transition group-hover:opacity-90" />
+          <StillImage key={previewSrcOf(base!, image)} src={previewSrcOf(base!, image)} alt="" lazy className="h-full w-full object-cover transition group-hover:opacity-90" fallback={<span className="flex h-full w-full items-center justify-center px-3 text-center text-xs text-zinc-500">{t("imageReviews.noPreview")}</span>} />
         )}
       </button>
       <div className="flex min-w-0 flex-1 flex-col gap-2 p-3">
@@ -418,8 +418,7 @@ function ImageViewer({ image, src, index, total, onMove, onClose, header, footer
           {image.file === "missing" ? (
             <p className="p-6 text-center text-sm text-zinc-400">{t("imageReviews.file.missingHelp")}</p>
           ) : (
-            // eslint-disable-next-line @next/next/no-img-element -- a local file streamed by the route, not an optimisable asset
-            <img key={src} src={src} alt={image.sceneId} className={actual ? "max-w-none" : "max-h-full max-w-full object-contain"} />
+            <StillImage key={src} src={src} alt={image.sceneId} className={actual ? "max-w-none" : "max-h-full max-w-full object-contain"} fallback={<p className="p-6 text-center text-sm text-zinc-400">{t("imageReviews.file.missingHelp")}</p>} />
           )}
         </div>
         <button type="button" disabled={index === 0} onClick={() => onMove(-1)} aria-label={t("imageReviews.viewer.previous")} className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-zinc-900/80 px-3 py-2 text-lg text-zinc-100 hover:bg-zinc-800 disabled:hidden">
@@ -432,4 +431,15 @@ function ImageViewer({ image, src, index, total, onMove, onClose, header, footer
       <div className="max-h-[45vh] overflow-y-auto border-t border-zinc-800 bg-zinc-950 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">{footer}</div>
     </div>
   );
+}
+
+/**
+ * A still from this computer's copy; when it cannot be loaded (an answered still is not checked, so its file may be gone here) the
+ * fallback shows instead of a broken image.
+ */
+function StillImage({ src, alt, className, lazy, fallback }: { src: string; alt: string; className: string; lazy?: boolean; fallback: ReactNode }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return <>{fallback}</>;
+  // eslint-disable-next-line @next/next/no-img-element -- a local file streamed by the route, not an optimisable asset
+  return <img src={src} alt={alt} loading={lazy ? "lazy" : undefined} onError={() => setFailed(true)} className={className} />;
 }

@@ -59,8 +59,15 @@ export function createImageReviewRouteHandlers(deps: ImageReviewRouteDeps = defa
   }
 
   return {
-    /** The channel's images (pending first, each with this computer's copy: ok | missing | changed) and how many wait (the badge). */
-    list: (_request: Request, context: Params<Base>) => guarded(context, async ({ channelId }) => NextResponse.json(await deps.service().ownerList(channelId))),
+    /**
+     * The channel's images (pending first; a pending one with this computer's copy: ok | missing | changed, the rest `file: null`) and
+     * how many wait. `?view=count` answers only `{ waiting }` from the document, with no file work (the tab's badge, every minute).
+     */
+    list: (request: Request, context: Params<Base>) =>
+      guarded(context, async ({ channelId }) => {
+        const countOnly = new URL(request.url).searchParams.get("view") === "count";
+        return NextResponse.json(countOnly ? await deps.service().ownerWaiting(channelId) : await deps.service().ownerList(channelId));
+      }),
 
     /** POST `{ action: approve | approve_with_note | return, comment? }` (a note-approval and a return need a comment). */
     decide: (request: Request, context: Params<Base & { imageId: string }>) =>
