@@ -1,4 +1,4 @@
-import { createCrossPostingCore, createCrossPostRunner, createSocialJobStore, ownerRetryPending, postingEnabled, type CrossPostRunner, type PlannedCrossPost } from "@/lib/cross-posting";
+import { createCrossPostingCore, createCrossPostRunner, createSocialJobStore, postingEnabled, slotsBeyondLookback, type CrossPostRunner, type PlannedCrossPost } from "@/lib/cross-posting";
 import { listSocialAccounts } from "@/lib/db";
 import { createMetaClient } from "@/lib/social-gateway";
 import { plannedCrossPostsOf, sha256OfFile, uploadBodyOf } from "./cross-posting-plan";
@@ -11,16 +11,15 @@ const RUNNER_KEY = Symbol.for("ytom.crossPosting.runner");
 const holder = globalThis as unknown as Record<symbol, CrossPostRunner | undefined>;
 
 /**
- * The slots around now, plus (owner TG 4780) the slots of failed jobs the owner asked to retry, however long ago -- those are read
- * with the same approval rules; only their age no longer hides them.
+ * The slots around now, plus (owner TG 4780) `slotsBeyondLookback`: those of a pending owner retry or a job still in flight, however
+ * long ago -- read with the same approval rules; only their age no longer hides them.
  */
 async function allEntries(jobs: ReturnType<typeof createSocialJobStore>): Promise<PlannedCrossPost[]> {
   const channels = [...new Set((await listSocialAccounts(null)).map((a) => a.channelId))];
-  const retried = (await jobs.list(null).catch(() => [])).filter(ownerRetryPending);
+  const known = await jobs.list(null).catch(() => []);
   const out: PlannedCrossPost[] = [];
   for (const channelId of channels) {
-    const alsoSlotIds = [...new Set(retried.filter((j) => j.channelId === channelId).map((j) => j.slotId))];
-    out.push(...(await plannedCrossPostsOf(channelId, { alsoSlotIds }).catch(() => [])));
+    out.push(...(await plannedCrossPostsOf(channelId, { alsoSlotIds: slotsBeyondLookback(known, channelId) }).catch(() => [])));
   }
   return out;
 }

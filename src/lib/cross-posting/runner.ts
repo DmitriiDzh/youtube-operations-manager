@@ -65,6 +65,15 @@ export type SocialJob = {
   ownerRetryAt?: number | null;
 };
 
+/**
+ * The slots of one channel the plan read must include whatever their age (owner TG 4780): those of a pending owner retry, and those
+ * of a job still uploading / processing (a retried Instagram container publishes on a later pass and needs its slot then). They are
+ * read with the same approval rules; only their age no longer hides them.
+ */
+export function slotsBeyondLookback(jobs: readonly SocialJob[], channelId: string): string[] {
+  return [...new Set(jobs.filter((j) => j.channelId === channelId && (ownerRetryPending(j) || j.status === "uploading" || j.status === "processing")).map((j) => j.slotId))];
+}
+
 /** A failed job the owner asked to retry, that never sent a publishing call (only those may ever be posted again). */
 export function ownerRetryPending(job: SocialJob): boolean {
   return job.status === "failed" && typeof job.ownerRetryAt === "number" && !job.publishAttempted && !job.remotePostId;

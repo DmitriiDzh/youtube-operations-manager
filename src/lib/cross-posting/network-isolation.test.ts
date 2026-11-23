@@ -3,7 +3,10 @@ import test from "node:test";
 import { DomainError } from "@/lib/shared-domain";
 import type { MetaPage, MetaTokenInspection } from "@/lib/social-gateway";
 import { createCrossPostingServices, createCrossPostRunner, type CrossPostingStore, type PlannedCrossPost, type SocialAccountRow, type SocialJob } from "./index";
-import { jobIdOf, MAX_LATE_MS, type RunnerDeps } from "./runner";
+import { jobIdOf, MAX_LATE_MS, slotsBeyondLookback, type RunnerDeps } from "./runner";
+
+/** publishing-plans' `SOCIAL_LOOKBACK_MS`: the plan's social read shows slots up to 36 h past. */
+const LOOKBACK_MS = 36 * 60 * 60_000;
 
 // 2026-11-23, owner TG 4779 (approved): «перестроить эту систему так чтобы даже если одна из соц сетей отваливалась — оставшиеся
 // продолжали обновляться и получать свои публикации». Acceptance criteria (the coordinator's, from that requirement), with the
@@ -118,7 +121,15 @@ async function world(opts: { entries?: PlannedCrossPost[]; igUsage?: () => Promi
   };
   const entries = opts.entries ?? [slot("s6", T0)];
   const runner = createCrossPostRunner({
-    plan: { entries: async () => entries, stillApproved: async () => true },
+    // As the composition reads the plan: the slots of the last 36 h (publishing-plans' look-back), plus `slotsBeyondLookback`;
+    // the approval re-check reads the entry's own slot whatever its age.
+    plan: {
+      entries: async () => {
+        const extra = slotsBeyondLookback([...jobs.values()], "UC1");
+        return entries.filter((e) => now - e.publishAt <= LOOKBACK_MS || extra.includes(e.slotId));
+      },
+      stillApproved: async (entry) => entries.some((e) => e.slotId === entry.slotId && e.manifestSha256 === entry.manifestSha256),
+    },
     jobs: {
       get: async (id) => (jobs.has(id) ? { ...jobs.get(id)! } : null),
       listActive: async () => [...jobs.values()].filter((j) => j.status === "uploading" || j.status === "processing").map((j) => ({ ...j })),
@@ -410,12 +421,18 @@ test("retry: a failed Facebook job 3 days late, retried by the owner, is posted"
   assert.deepEqual(w.calls.filter((c) => c.startsWith("fb.") && c !== "fb.status"), ["fb.start 111", "fb.upload", "fb.finish 111"]);
 });
 
-test("retry: without the owner's retry a 3-day-late post is never sent (missed_window; a failed job stays as it is)", async () => {
+test("retry: without the owner's retry a late post is never sent (missed_window; past the look-back nothing; a failed job stays)", async () => {
   const fresh = await world({ entries: [slot("s6", T0, { crossPost: FB_ONLY })] });
-  fresh.at(T0 + 3 * DAY);
+  fresh.at(T0 + 20 * 60 * 60_000); // 20 h late: still in the plan's read, past the 12 h window
   await fresh.run();
   assert.equal(fresh.job("s6", "facebook")!.errorCode, "missed_window");
   assert.deepEqual(fresh.calls, []);
+
+  const old = await world({ entries: [slot("s6", T0, { crossPost: FB_ONLY })] });
+  old.at(T0 + 3 * DAY);
+  await old.run();
+  assert.equal(old.job("s6", "facebook"), undefined);
+  assert.deepEqual(old.calls, []);
 
   const failed = await world({ entries: [slot("s6", T0, { crossPost: FB_ONLY })] });
   failed.jobs.set(jobIdOf("UC1", "s6", "facebook"), failedFacebookJob("s6", T0));
@@ -464,4 +481,17 @@ test("retry: refused again by Facebook's identity read -> failed with its own co
   assert.equal(job.errorCode, "page_mismatch");
   assert.equal(job.ownerRetryAt, null);
   assert.deepEqual(w.calls, []);
+});
+
+test("retry: an Instagram job 3 days late, retried by the owner, reaches its publish on a later pass (its slot stays read)", async () => {
+  const w = await world({ entries: [slot("s6", T0, { crossPost: { instagram: { caption: "IG" } } })] });
+  const id = jobIdOf("UC1", "s6", "instagram");
+  w.jobs.set(id, { ...failedFacebookJob("s6", T0), jobId: id, network: "instagram", errorCode: "missed_window" });
+  w.at(T0 + 3 * DAY);
+  await w.core.retryJob({ jobId: id });
+  await w.runner.tick(); // container + upload -> processing; the retry mark is cleared
+  assert.equal(w.job("s6", "instagram")!.status, "processing");
+  await w.runner.tick(); // FINISHED -> publish: needs the slot's entry on this later pass
+  assert.equal(w.job("s6", "instagram")!.status, "published");
+  assert.ok(w.calls.includes("ig.publish 1784"));
 });
