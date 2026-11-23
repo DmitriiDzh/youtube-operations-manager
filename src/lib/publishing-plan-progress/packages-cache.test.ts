@@ -335,3 +335,33 @@ test("review 6: the time limit is configurable; a scan within it is not affected
   assert.deepEqual((await packagesOf("UC1")).packages, []);
   assert.deepEqual(limits, [5_000]);
 });
+
+test("review 6: a hung scan already forgotten by an invalidation times out without spoiling the newer scan's answer", async () => {
+  const cache = new Map<string, PackagesEntry>();
+  const gates: Array<() => void> = [];
+  const timers: Array<() => void> = [];
+  const packagesOf = createPackagesReader({
+    removedVideos: async () => [],
+    scan: async () => {
+      await new Promise<void>((resolve) => gates.push(resolve));
+      return { status: "ok", packages: [] };
+    },
+    synthetic: async () => false,
+    now: () => 1_000_000,
+    cache,
+    startTimer: (fire) => {
+      timers.push(fire);
+      return () => undefined;
+    },
+  });
+  const hung = packagesOf("UC1");
+  await new Promise((resolve) => setImmediate(resolve));
+  invalidatePackagesEntry(cache, "UC1"); // the owner's review decision: the hung read is forgotten
+  const newer = packagesOf("UC1");
+  await new Promise((resolve) => setImmediate(resolve));
+  timers[0](); // the forgotten read's limit passes while the newer scan runs
+  await assert.rejects(hung, PackagesScanTimeoutError);
+  gates[1]();
+  await newer;
+  assert.equal(cache.has("UC1"), true, "the newer scan's answer is kept");
+});

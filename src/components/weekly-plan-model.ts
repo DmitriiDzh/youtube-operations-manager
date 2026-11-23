@@ -199,7 +199,8 @@ export function weekScreenOf(input: {
     shown,
     coverage: shown ? (current?.coverage ?? null) : null,
     noPlan: current?.plan === "none",
-    loading: base !== null && week !== null && current === null && weekError === null,
+    // The opening week not chosen yet (near the Sunday/Monday boundary it waits for the zones) is loading too.
+    loading: base !== null && (week === null || (current === null && weekError === null)),
     weekError,
     listError: scopedValue(input.listError, base),
   };

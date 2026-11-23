@@ -97,8 +97,11 @@ export function createPackagesReader(deps: PackagesCacheDeps) {
     };
     const shared: Promise<PackagesEntry> = new Promise<PackagesEntry>((resolve, reject) => {
       const stop = startTimer(() => {
-        forget();
-        bumpGeneration(deps.cache, channelId);
+        // Only a read still current: one an invalidation already forgot has had its generation moved (a newer scan stays keepable).
+        if (inflight.get(channelId) === shared) {
+          inflight.delete(channelId);
+          bumpGeneration(deps.cache, channelId);
+        }
         reject(new PackagesScanTimeoutError(channelId, timeoutMs));
       }, timeoutMs);
       scan.then(

@@ -417,6 +417,10 @@ test("review 1: switching channels on the same Monday shows none of channel A's 
   const landed = weekScreenOf({ base: B, week: "2026-11-23", loaded: loadedB, weekError: null, listError: null });
   assert.equal(landed.shown?.slots[0].slotId, "b-slot");
   assert.equal(landed.loading, false);
+  // The opening week not chosen yet (waiting for the zones): a skeleton, nothing else.
+  const opening = weekScreenOf({ base: B, week: null, loaded: loadedB, weekError: null, listError: null });
+  assert.equal(opening.loading, true);
+  assert.equal(opening.shown, null);
   // The list, the zone and the template kept for A are not B's either.
   assert.equal(scopedValue({ base: A, value: "Asia/Tokyo" }, B), null);
   assert.equal(scopedValue({ base: B, value: "Asia/Tokyo" }, B), "Asia/Tokyo");
