@@ -9,8 +9,9 @@ import {
   GEMINI_SPEECH,
   GEMINI_SPEECH_MODELS,
   GEMINI_VIDEO_ASPECT_RATIOS,
-  GEMINI_VIDEO_DURATIONS,
+  GEMINI_VIDEO_MODEL_ALIASES,
   GEMINI_VIDEO_MODELS,
+  geminiVideoModelSpec,
   GEMINI_VIDEO_RESOLUTIONS,
   geminiInvalidParams,
   ownEntry,
@@ -151,8 +152,12 @@ export function checkJobRules(input: CreateJobInput): void {
     }
     return;
   }
-  const spec = ownEntry(GEMINI_VIDEO_MODELS, input.model);
-  if (!spec) throw geminiInvalidParams("model", `${input.model} is not a video model here (${Object.keys(GEMINI_VIDEO_MODELS).join(", ")}).`);
+  // Owner TG 3700: a deprecated id (gemini-omni-1.1-flash) is checked as the model it stands for.
+  const spec = geminiVideoModelSpec(input.model);
+  if (!spec) {
+    const aliases = Object.entries(GEMINI_VIDEO_MODEL_ALIASES).map(([alias, target]) => `${alias} = ${target}`);
+    throw geminiInvalidParams("model", `${input.model} is not a video model here (${Object.keys(GEMINI_VIDEO_MODELS).join(", ")}${aliases.length > 0 ? `; deprecated: ${aliases.join(", ")}` : ""}).`);
+  }
   if (input.image) throw geminiInvalidParams("image", "A video job takes `video`, not `image`.");
   if (!input.video) throw geminiInvalidParams("video", "A video job needs `video` { resolution, aspectRatio, durationSeconds }.");
   const video = input.video;
@@ -161,9 +166,16 @@ export function checkJobRules(input: CreateJobInput): void {
   if (!(GEMINI_VIDEO_RESOLUTIONS as readonly string[]).includes(video.resolution) || ownEntry(spec.perSecond, video.resolution) === undefined) {
     throw geminiInvalidParams("video.resolution", `${input.model} offers ${Object.keys(spec.perSecond).join(", ")}.`);
   }
-  if (!(GEMINI_VIDEO_DURATIONS as readonly number[]).includes(video.durationSeconds)) throw geminiInvalidParams("video.durationSeconds", "Duration is 4, 6 or 8 seconds.");
+  const durations = spec.durationSeconds;
+  if (!Number.isInteger(video.durationSeconds) || video.durationSeconds < durations.min || video.durationSeconds > durations.max) {
+    throw geminiInvalidParams("video.durationSeconds", `Duration is a whole number of seconds from ${durations.min} to ${durations.max}.`);
+  }
   const inputs = video.inputs ?? {};
   if (inputs.lastFrame && !inputs.firstFrame) throw geminiInvalidParams("video.inputs.lastFrame", "A last frame needs a first frame.");
+  // Google: first + last frame interpolation is 3-10 s; longer is an invalid argument (refused here, before any call).
+  if (inputs.lastFrame && video.durationSeconds > durations.maxWithLastFrame) {
+    throw geminiInvalidParams("video.durationSeconds", `With a last frame the duration is at most ${durations.maxWithLastFrame} seconds.`);
+  }
   if (video.personGeneration) {
     throw geminiInvalidParams("video.personGeneration", `${input.model} has no personGeneration setting (describe people in the prompt).`);
   }

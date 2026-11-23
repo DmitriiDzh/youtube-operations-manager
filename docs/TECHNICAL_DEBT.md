@@ -1980,6 +1980,12 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
   - the `duration` format (`"8s"`, sent in `response_format`);
   - whether the answer is the inline video (we ask for `delivery: "inline"`);
   - the token count of 1080p (estimated at 2.25 x 720p).
+- **Update 2026-11-23 (owner TG 3700, Omni 1.2):** Google's pages now settle two of the three. The Omni page shows
+  `"response_format": { "type": "video", "duration": "15s" }`, and the pricing page gives 1080p as 8,688 tokens per second (now
+  the estimate). Still open: the page names only `delivery="uri"` ("to retrieve generated videos that are larger than 4MB") and
+  never `"inline"`, which we send. A 15 s or 1080p clip is surely over 4 MB, so the first paid long clip must show whether
+  Google answers inline, answers with a URI (collected by the poll) or refuses the request. The page also shows no usage block in
+  its response example, so the token-count field names stay as BL-179 read them.
 - **Bounds:** a wrong field is a 400, which is not charged and keeps Google's message in the job's `error`. A URI answer is
   collected by the poll. The cost always comes from Google's own counts when they are present. A lost answer counts its
   estimate (`unknown_outcome`), as before.

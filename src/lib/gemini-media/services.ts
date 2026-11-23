@@ -13,6 +13,7 @@ import {
   isDomainError,
   geminiJobNotFound,
   ownEntry,
+  resolveGeminiVideoModel,
   type GeminiCostBasis,
   type GeminiImageParams,
   type GeminiInputRole,
@@ -504,13 +505,18 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
      * (AC-GM-11), before any other check, so a retry after a lost answer never creates a second paid job.
      */
     async createJob(raw: unknown, actor: string) {
-      const input = parseWithSchema(createJobInputSchema, raw, "Gemini job");
+      const given = parseWithSchema(createJobInputSchema, raw, "Gemini job");
+      // Owner TG 3700: a deprecated video id (gemini-omni-1.1-flash) is the model it stands for from here on: checked, estimated,
+      // stored and sent as that model. A replay matches either the given or the resolved content, so a job created before the
+      // alias (its hash names 1.1) is still returned for the same request.
+      const input: CreateJobInput = given.kind === "video" ? { ...given, model: resolveGeminiVideoModel(given.model) } : given;
       const hash = requestHash(input);
+      const givenHash = requestHash(given);
       return deps.withCreateLock(async () => {
         if (input.requestId && !input.dryRun) {
           const existing = await deps.store.getJobByRequest(actor, input.requestId);
           if (existing) {
-            if (existing.requestHash !== hash) {
+            if (existing.requestHash !== hash && existing.requestHash !== givenHash) {
               throw new DomainError({ code: "gemini_request_exists", message: `Request id ${input.requestId} was already used for a different job (${existing.jobId}).`, details: { requestId: input.requestId, jobId: existing.jobId } });
             }
             return { job: jobView(existing), replayed: true };

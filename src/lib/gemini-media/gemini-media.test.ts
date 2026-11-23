@@ -303,12 +303,17 @@ const imageJob = (overrides: Record<string, unknown> = {}) => ({
 // the Veo previews down on 2026-10-22 and the owner had them removed (msg 2902), so the default is the one video model left:
 // Omni 1080p 4 s, "waves" -- 13,032 x 4 = 52,128 tokens x $17.50/1M = $0.91224 + 2 input tokens x $1.50/1M + 2,000 thinking
 // tokens x $9/1M = $0.930243 -> $0.9303 (the BL-179 review figure below). Each limit test keeps its own meaning with it.
+// Changed 2026-11-23 (owner TG 3700), with justification (AGENTS.md §L): the requirement changed -- Google replaces Omni 1.1 with
+// 1.2 at new prices (https://aistudio.google.com/docs/pricing: video output $12/1M, 8,688 tokens per second of 1080p). The
+// default is now Omni 1.2 1080p 8 s, "waves": 8,688 x 8 = 69,504 tokens x $12/1M = $0.834048 + 2 input tokens x $1.50/1M
+// ($0.000003) + 2,000 thinking tokens x $9/1M ($0.018) = $0.852051 -> $0.8521: still over a $0.50 per-job limit, two of them
+// still over $1.50 a day, and $4.50 + it still over $5 a day -- each limit test keeps its meaning.
 const videoJob = (overrides: Record<string, unknown> = {}) => ({
   channelId: "UC1",
   kind: "video",
-  model: "gemini-omni-1.1-flash",
+  model: "gemini-omni-1.2-flash",
   prompt: "waves",
-  video: { resolution: "1080p", aspectRatio: "16:9", durationSeconds: 4 },
+  video: { resolution: "1080p", aspectRatio: "16:9", durationSeconds: 8 },
   ...overrides,
 });
 
@@ -356,10 +361,11 @@ test("AC-GM-03: estimates from the price table (hand-computed)", () => {
   assert.equal(estimateImageUsd({ model: "gemini-3.1-flash-lite-image", size: "1K", promptChars: 30, inputImages: 1 }), 0.0369);
   // 2000×120e-6 + 10×2e-6 + 2000×12e-6 = 0.24 + 0.00002 + 0.024 = 0.26402 → 0.2641
   assert.equal(estimateImageUsd({ model: "gemini-3-pro-image", size: "4K", promptChars: 30, inputImages: 0 }), 0.2641);
-  // BL-180: the Veo table lines went with the Veo previews. Omni 720p 4 s: 5,792 x 4 = 23,168 x $17.50/1M = $0.40544 + 2 input
-  // tokens x $1.50/1M + 2,000 x $9/1M = $0.423443 -> $0.4235; 6 s: 34,752 x $17.50/1M = $0.60816 + $0.018003 = $0.626163 -> $0.6262.
-  assert.equal(estimateVideoUsd({ model: "gemini-omni-1.1-flash", resolution: "720p", durationSeconds: 4, promptChars: 5, inputImages: 0 }), 0.4235);
-  assert.equal(estimateVideoUsd({ model: "gemini-omni-1.1-flash", resolution: "720p", durationSeconds: 6, promptChars: 5, inputImages: 0 }), 0.6262);
+  // BL-180: the Veo table lines went with the Veo previews. Changed 2026-11-23 (owner TG 3700, AGENTS.md §L): Google's Omni 1.2
+  // prices replace 1.1's ($17.50 -> $12 per 1M video tokens). Omni 1.2 720p 4 s: 5,792 x 4 = 23,168 x $12/1M = $0.278016 + 2 input
+  // tokens x $1.50/1M + 2,000 x $9/1M = $0.296019 -> $0.2961; 6 s: 34,752 x $12/1M = $0.417024 + $0.018003 = $0.435027 -> $0.4351.
+  assert.equal(estimateVideoUsd({ model: "gemini-omni-1.2-flash", resolution: "720p", durationSeconds: 4, promptChars: 5, inputImages: 0 }), 0.2961);
+  assert.equal(estimateVideoUsd({ model: "gemini-omni-1.2-flash", resolution: "720p", durationSeconds: 6, promptChars: 5, inputImages: 0 }), 0.4351);
   // AC-GM-07's usage: 1000×1.5e-6 + 1680×30e-6 + 300×7.5e-6 = 0.0015 + 0.0504 + 0.00225 = 0.05415 → 0.0542
   assert.equal(imageCostFromUsage("gemini-nano-banana-2.1", { inputTokens: 1000, outputTokens: 1680, thoughtTokens: 300, outputByModality: { image: 1680 } }), 0.0542);
 });
@@ -435,11 +441,11 @@ test("AC-GM-04: a request over the day's limit is refused naming it; a dry-run a
     seedJob(h.store, "gm_today", { costUsd: 4.5 });
     seedJob(h.store, "gm_yesterday", { createdAt: new Date(2026, 9, 9, 23, 0, 0), costUsd: 4.5 });
     const dry = (await h.services.createJob({ ...videoJob(), dryRun: true }, "factory")) as Record<string, unknown>;
-    assert.deepEqual([dry.estimateUsd, dry.allowed], [0.9303, false]);
-    assert.deepEqual((dry.refusal as { details: unknown }).details, { limit: "per_day", limitUsd: 5, spentUsd: 4.5, estimateUsd: 0.9303 });
+    assert.deepEqual([dry.estimateUsd, dry.allowed], [0.8521, false]);
+    assert.deepEqual((dry.refusal as { details: unknown }).details, { limit: "per_day", limitUsd: 5, spentUsd: 4.5, estimateUsd: 0.8521 });
     assert.equal(h.store.jobs.size, 2, "a dry-run stores nothing");
     const details = await expectCode(h.services.createJob(videoJob(), "factory"), "gemini_limit_exceeded");
-    assert.deepEqual(details, { limit: "per_day", limitUsd: 5, spentUsd: 4.5, estimateUsd: 0.9303 });
+    assert.deepEqual(details, { limit: "per_day", limitUsd: 5, spentUsd: 4.5, estimateUsd: 0.8521 });
     const spend = await h.services.spend();
     assert.deepEqual([spend.todayUsd, spend.monthUsd], [4.5, 9], "yesterday's job counts toward the month only");
     assert.deepEqual(h.calls, []);
@@ -588,7 +594,10 @@ test("AC-GM-05: per-model rules refuse with gemini_invalid_params naming the fie
       [videoJob({ model: "veo-3.1-fast-generate-preview" }), "model"],
       [videoJob({ video: { resolution: "4k", aspectRatio: "16:9", durationSeconds: 8 } }), "video.resolution"],
       [videoJob({ video: { resolution: "720p", aspectRatio: "1:1", durationSeconds: 4 } }), "video.aspectRatio"],
-      [videoJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 5 } }), "video.durationSeconds"],
+      // Changed 2026-11-23 (owner TG 3700, AGENTS.md §L): Omni 1.2 takes any whole second 3-15 (Google's Omni page), so 5 s is
+      // valid now; the values just outside the bounds are refused.
+      [videoJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 2 } }), "video.durationSeconds"],
+      [videoJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 16 } }), "video.durationSeconds"],
       [videoJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8, inputs: { lastFrame: "a.png" } } }), "video.inputs.lastFrame"],
       [videoJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8, inputs: { referenceImages: ["a.png"] } } }), "video.inputs.referenceImages"],
       [videoJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8, inputs: { firstFrame: "a.png", referenceImages: ["b.png"] } } }), "video.inputs.referenceImages"],
@@ -1057,30 +1066,33 @@ test("review 2: an abandoned `submitting` job is only swept well after the longe
 //   input $1.50 / 1M tokens, video output $17.50 / 1M, text and thinking output $9.00 / 1M, and 5,792 tokens per second of 720p;
 // - the Veo 3.1 previews reject first/last frames on `predictLongRunning` (HTTP 400, job gm_7d1d80b2) and shut down 2026-10-22;
 // - the Operator's acceptance case: 8 s, 720p, 16:9, first frame = last frame = pick_still01.jpg, about $0.80.
+// Changed 2026-11-23 (owner TG 3700, AGENTS.md §L): the requirement changed -- Google replaces 1.1 with `gemini-omni-1.2-flash`
+// (https://aistudio.google.com/docs/pricing): video output $12.00 / 1M (was $17.50), input and text unchanged, 5,792 tokens per
+// second of 720p. Every figure below is recomputed by hand at the 1.2 rate; what each test checks is unchanged.
 const omniJob = (overrides: Record<string, unknown> = {}) =>
-  videoJob({ model: "gemini-omni-1.1-flash", video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8, inputs: { firstFrame: "pick_still01.jpg", lastFrame: "pick_still01.jpg" } }, ...overrides });
+  videoJob({ model: "gemini-omni-1.2-flash", video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8, inputs: { firstFrame: "pick_still01.jpg", lastFrame: "pick_still01.jpg" } }, ...overrides });
 
 test("BL-179: the acceptance case -- Omni 8 s 720p with first = last frame is estimated, sent with both frames in order, saved and priced by Google's counts", async () => {
   const h = await harness();
   try {
     await writeFile(path.join(h.sent, "pick_still01.jpg"), "STILL");
-    // Estimate by hand: video 5,792 x 8 = 46,336 tokens x $17.50/1M = $0.81088; input ceil(5/3) = 2 + 2 frames x 1,120 = 2,242
-    // tokens x $1.50/1M = $0.003363; thinking allowance 2,000 x $9/1M = $0.018 -> $0.832243 -> $0.8323 (rounded up).
+    // Estimate by hand: video 5,792 x 8 = 46,336 tokens x $12/1M = $0.556032; input ceil(5/3) = 2 + 2 frames x 1,120 = 2,242
+    // tokens x $1.50/1M = $0.003363; thinking allowance 2,000 x $9/1M = $0.018 -> $0.577395 -> $0.5774 (rounded up).
     const dry = (await h.services.createJob(omniJob({ dryRun: true }), "factory")) as { estimateUsd: number };
-    assert.equal(dry.estimateUsd, 0.8323);
+    assert.equal(dry.estimateUsd, 0.5774);
     const { job } = (await h.services.createJob(omniJob(), "factory")) as { job: { jobId: string } };
     await h.runTick();
     assert.deepEqual(h.calls.map((c) => c.method), ["generateVideo"], "one synchronous call, no operation to poll");
     const sentRequest = h.calls[0].request as GeminiInteractionsVideoRequest;
     const still = { mimeType: "image/jpeg", dataBase64: Buffer.from("STILL").toString("base64") };
-    assert.deepEqual(sentRequest, { model: "gemini-omni-1.1-flash", prompt: "waves", frames: [still, still], aspectRatio: "16:9", resolution: "720p", durationSeconds: 8 });
+    assert.deepEqual(sentRequest, { model: "gemini-omni-1.2-flash", prompt: "waves", frames: [still, still], aspectRatio: "16:9", resolution: "720p", durationSeconds: 8 });
     const row = h.store.jobs.get(job.jobId)!;
-    // Cost by hand from the fake's counts: 3,000 x $1.50/1M + 46,336 x $17.50/1M + 500 x $9/1M = $0.81988 -> $0.8199.
-    assert.deepEqual([row.status, row.costUsd, row.costBasis], ["done", 0.8199, "usage"]);
+    // Cost by hand from the fake's counts: 3,000 x $1.50/1M + 46,336 x $12/1M + 500 x $9/1M = $0.565032 -> $0.5651.
+    assert.deepEqual([row.status, row.costUsd, row.costBasis], ["done", 0.5651, "usage"]);
     const dir = path.join(h.fromYtm, "gemini", job.jobId);
     assert.deepEqual(await readFile(path.join(dir, "video-1.mp4")), Buffer.from("OMNI-MP4"));
     const manifest = JSON.parse(await readFile(path.join(dir, "manifest.json"), "utf8"));
-    assert.deepEqual([manifest.status, manifest.costUsd, manifest.costBasis, manifest.outputs[0].path], ["done", 0.8199, "usage", `gemini/${job.jobId}/video-1.mp4`]);
+    assert.deepEqual([manifest.status, manifest.costUsd, manifest.costBasis, manifest.outputs[0].path], ["done", 0.5651, "usage", `gemini/${job.jobId}/video-1.mp4`]);
     // FO-MSG-0016: the manifest carries the submission time `factory_gemini_get_job` shows (it was null for an inline answer).
     assert.equal(manifest.submittedAt, h.clock.at.toISOString());
     assert.equal(manifest.submittedAt, row.submittedAt?.toISOString());
@@ -1106,7 +1118,8 @@ test("BL-180: a Veo id is refused as a model before anything is stored or sent; 
     assert.equal(h.store.jobs.size, 0);
     assert.deepEqual(h.calls, []);
     const status = (await h.services.getStatus()) as { models: Array<{ model: string; kind: string }> };
-    assert.deepEqual(status.models.filter((m) => m.kind === "video").map((m) => m.model), ["gemini-omni-1.1-flash"]);
+    // Changed 2026-11-23 (owner TG 3700): the one video model is now 1.2; 1.1 is only an alias, never listed on its own.
+    assert.deepEqual(status.models.filter((m) => m.kind === "video").map((m) => m.model), ["gemini-omni-1.2-flash"]);
   } finally {
     await h.cleanup();
   }
@@ -1174,11 +1187,11 @@ test("BL-179: an Omni video delivered as a URI is collected by the next poll and
     const { job } = (await h.services.createJob(omniJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8 } }), "factory")) as { job: { jobId: string } };
     await h.runTick();
     let row = h.store.jobs.get(job.jobId)!;
-    assert.deepEqual([row.status, row.remoteName, row.costUsd, row.costBasis], ["running", uri, 0.8199, "usage"]);
+    assert.deepEqual([row.status, row.remoteName, row.costUsd, row.costBasis], ["running", uri, 0.5651, "usage"]);
     await h.runTick();
     assert.deepEqual(h.calls.map((c) => c.method), ["generateVideo", "downloadVideo"], "no Veo operation is polled");
     row = h.store.jobs.get(job.jobId)!;
-    assert.deepEqual([row.status, row.costUsd, row.costBasis], ["done", 0.8199, "usage"]);
+    assert.deepEqual([row.status, row.costUsd, row.costBasis], ["done", 0.5651, "usage"]);
   } finally {
     await h.cleanup();
   }
@@ -1202,8 +1215,8 @@ test("BL-179: Omni with no video -- a block is gemini_blocked at Google's counte
     const { job } = (await pending.services.createJob(omniJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 4 } }), "factory")) as { job: { jobId: string } };
     await pending.runTick();
     const row = pending.store.jobs.get(job.jobId)!;
-    // Its estimate by hand: 5,792 x 4 x $17.50/1M = $0.40544 + 2 input tokens x $1.50/1M + 2,000 x $9/1M = $0.423443 -> $0.4235.
-    assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", "gemini_unavailable", 0.4235, "unknown_outcome"]);
+    // Its estimate by hand: 5,792 x 4 x $12/1M = $0.278016 + 2 input tokens x $1.50/1M + 2,000 x $9/1M = $0.296019 -> $0.2961.
+    assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", "gemini_unavailable", 0.2961, "unknown_outcome"]);
   } finally {
     await pending.cleanup();
   }
@@ -1217,9 +1230,9 @@ test("BL-179 review: a saved video costs at least its table price even when Goog
     h.behaviour.generateVideo = async () => ({ video: { mimeType: "video/mp4", data: Buffer.from("V") }, usage: { inputTokens: 3000, outputTokens: 0, thoughtTokens: 0, outputByModality: {} }, status: "completed", blockReason: null });
     const { job } = (await h.services.createJob(omniJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8 } }), "factory")) as { job: { jobId: string } };
     await h.runTick();
-    // Floor by hand: 5,792 x 8 = 46,336 video tokens x $17.50/1M = $0.81088 -> $0.8109 (the counts alone said $0.0045).
+    // Floor by hand: 5,792 x 8 = 46,336 video tokens x $12/1M = $0.556032 -> $0.5561 (the counts alone said $0.0045).
     const row = h.store.jobs.get(job.jobId)!;
-    assert.deepEqual([row.status, row.costUsd, row.costBasis], ["done", 0.8109, "usage"]);
+    assert.deepEqual([row.status, row.costUsd, row.costBasis], ["done", 0.5561, "usage"]);
   } finally {
     await h.cleanup();
   }
@@ -1236,8 +1249,8 @@ test("BL-179 review: audio and other non-text output are priced at the video rat
     });
     const { job } = (await h.services.createJob(omniJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8 } }), "factory")) as { job: { jobId: string } };
     await h.runTick();
-    // (46,336 + 3,000) x $17.50/1M + 664 x $9/1M = $0.86338 + $0.005976 = $0.869356 -> $0.8694.
-    assert.equal(h.store.jobs.get(job.jobId)!.costUsd, 0.8694);
+    // (46,336 + 3,000) x $12/1M + 664 x $9/1M = $0.592032 + $0.005976 = $0.598008 -> $0.5981.
+    assert.equal(h.store.jobs.get(job.jobId)!.costUsd, 0.5981);
   } finally {
     await h.cleanup();
   }
@@ -1254,7 +1267,7 @@ test("BL-179 review: a lost Omni answer counts its estimate and is not re-sent; 
     lost.clock.at = new Date(lost.clock.at.getTime() + 10 * 60_000);
     await lost.runTick();
     const row = lost.store.jobs.get(job.jobId)!;
-    assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", "gemini_timeout", 0.4235, "unknown_outcome"]);
+    assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", "gemini_timeout", 0.2961, "unknown_outcome"]);
     assert.equal(lost.calls.filter((c) => c.method === "generateVideo").length, 1, "never re-sent");
   } finally {
     await lost.cleanup();
@@ -1280,7 +1293,7 @@ test("BL-179 review: a video that cannot be written keeps its cost", async () =>
     h.failWrites.value = true;
     await h.runTick();
     const row = h.store.jobs.get(job.jobId)!;
-    assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", "gemini_output_failed", 0.8199, "usage"]);
+    assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", "gemini_output_failed", 0.5651, "usage"]);
   } finally {
     await h.cleanup();
   }
@@ -1298,7 +1311,7 @@ test("BL-179 review: a link-delivered video Google no longer has, or one never c
     await gone.runTick();
     await gone.runTick();
     const row = gone.store.jobs.get(job.jobId)!;
-    assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", "gemini_expired", 0.8199, "usage"]);
+    assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", "gemini_expired", 0.5651, "usage"]);
   } finally {
     await gone.cleanup();
   }
@@ -1309,15 +1322,15 @@ test("BL-179 review: a link-delivered video Google no longer has, or one never c
       model: "gemini-omni-1.1-flash",
       status: "running",
       remoteName: "https://generativelanguage.googleapis.com/v1beta/files/y:download?alt=media",
-      estimateUsd: 0.8323,
-      costUsd: 0.8199,
+      estimateUsd: 0.5774,
+      costUsd: 0.5651,
       costBasis: "usage",
       submittedAt: new Date(late.clock.at.getTime() - 48 * 3600_000),
       paramsJson: JSON.stringify({ resolution: "720p", aspectRatio: "16:9", durationSeconds: 8 }),
     });
     await late.runTick();
     const row = late.store.jobs.get("gm_late")!;
-    assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", "gemini_expired", 0.8199, "usage"]);
+    assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", "gemini_expired", 0.5651, "usage"]);
   } finally {
     await late.cleanup();
   }
@@ -1331,7 +1344,7 @@ test("BL-179 review: a link-delivered video Google no longer has, or one never c
     await notVideo.runTick();
     await notVideo.runTick();
     const row = notVideo.store.jobs.get(job.jobId)!;
-    assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", "gemini_output_failed", 0.8199, "usage"], "a link that gives no video is not retried for 47 h");
+    assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", "gemini_output_failed", 0.5651, "usage"], "a link that gives no video is not retried for 47 h");
   } finally {
     await notVideo.cleanup();
   }
@@ -1341,18 +1354,144 @@ test("BL-179 review: a link-delivered video Google no longer has, or one never c
     const { job } = (await odd.services.createJob(omniJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8 } }), "factory")) as { job: { jobId: string } };
     await odd.runTick();
     const row = odd.store.jobs.get(job.jobId)!;
-    assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", "gemini_output_failed", 0.8199, "usage"]);
+    assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", "gemini_output_failed", 0.5651, "usage"]);
     assert.deepEqual(odd.calls.map((c) => c.method), ["generateVideo"]);
   } finally {
     await odd.cleanup();
   }
 });
 
-test("BL-179 review: the 1080p estimate (2.25 x 720p tokens) -- 8 s is over the default $1 per-job limit, 4 s fits", () => {
-  // 8 s: 13,032 x 8 = 104,256 x $17.50/1M = $1.82448 + 2 input tokens x $1.50/1M + 2,000 x $9/1M = $1.842483 -> $1.8425.
-  assert.equal(estimateVideoUsd({ model: "gemini-omni-1.1-flash", resolution: "1080p", durationSeconds: 8, promptChars: 5, inputImages: 0 }), 1.8425);
-  // 4 s: 52,128 x $17.50/1M = $0.91224 + $0.000003 + $0.018 = $0.930243 -> $0.9303.
-  assert.equal(estimateVideoUsd({ model: "gemini-omni-1.1-flash", resolution: "1080p", durationSeconds: 4, promptChars: 5, inputImages: 0 }), 0.9303);
+// ---------------------------------------------------------------------------------------------------------- Omni 1.2
+// Owner TG 3700. Facts the expectations come from (read 2026-11-23), not from the code:
+// - https://aistudio.google.com/docs/pricing, Gemini Omni 1.2 Flash: input $1.50, text and thinking output $9.00, video output
+//   $12.00 per 1M tokens; "5,792 tokens per second of 720p video" (~$0.07/s), 1080p (upsampled) "8,688 tokens/s" ($0.104/s);
+// - https://aistudio.google.com/docs/deprecations: gemini-omni-1.1-flash is routed to gemini-omni-1.2-flash from 2026-12-03;
+// - https://aistudio.google.com/docs/omni: "any whole second from 3 to 15 seconds"; first and last frame interpolation 3-10 s;
+// - the task: 1.1 stays accepted as a deprecated alias, sent and recorded as 1.2; the status lists only 1.2.
+// Every estimate adds the documented allowance of 2,000 thinking tokens at the text rate ($0.018) and the prompt at 3 characters
+// a token ("waves" = 2 tokens x $1.50/1M = $0.000003), and is rounded up to 4 decimals.
+
+test("Omni 1.2: estimates at 720p and 1080p for the shortest (3 s) and longest (15 s) clip (hand-computed)", () => {
+  // 720p 3 s: 5,792 x 3 = 17,376 x $12/1M = $0.208512 + $0.018003 = $0.226515 -> $0.2266.
+  assert.equal(estimateVideoUsd({ model: "gemini-omni-1.2-flash", resolution: "720p", durationSeconds: 3, promptChars: 5, inputImages: 0 }), 0.2266);
+  // 720p 15 s: 86,880 x $12/1M = $1.04256 + $0.018003 = $1.060563 -> $1.0606.
+  assert.equal(estimateVideoUsd({ model: "gemini-omni-1.2-flash", resolution: "720p", durationSeconds: 15, promptChars: 5, inputImages: 0 }), 1.0606);
+  // 1080p 3 s: 8,688 x 3 = 26,064 x $12/1M = $0.312768 + $0.018003 = $0.330771 -> $0.3308.
+  assert.equal(estimateVideoUsd({ model: "gemini-omni-1.2-flash", resolution: "1080p", durationSeconds: 3, promptChars: 5, inputImages: 0 }), 0.3308);
+  // 1080p 15 s: 130,320 x $12/1M = $1.56384 + $0.018003 = $1.581843 -> $1.5819.
+  assert.equal(estimateVideoUsd({ model: "gemini-omni-1.2-flash", resolution: "1080p", durationSeconds: 15, promptChars: 5, inputImages: 0 }), 1.5819);
+  // The largest job: 1080p 15 s, a 4,000-character prompt (1,334 tokens) and a first frame (1,120): 2,454 x $1.50/1M = $0.003681
+  // + $1.56384 + $0.018 = $1.585521 -> $1.5856.
+  assert.equal(estimateVideoUsd({ model: "gemini-omni-1.2-flash", resolution: "1080p", durationSeconds: 15, promptChars: 4000, inputImages: 1 }), 1.5856);
+  // The deprecated id is priced as 1.2 (never at 1.1's $17.50, never refused).
+  assert.equal(estimateVideoUsd({ model: "gemini-omni-1.1-flash", resolution: "1080p", durationSeconds: 15, promptChars: 5, inputImages: 0 }), 1.5819);
+});
+
+test("Omni 1.2: the status lists only 1.2 with ~$0.07/s at 720p and ~$0.104/s at 1080p, 3-15 s, and 1.1 as its alias", async () => {
+  const h = await harness();
+  try {
+    const status = (await h.services.getStatus()) as { pricesAsOf: string; models: Array<Record<string, unknown>> };
+    const video = status.models.filter((m) => m.kind === "video");
+    assert.equal(video.length, 1);
+    // 5,792 x $12/1M = $0.069504 -> $0.0696; 8,688 x $12/1M = $0.104256 -> $0.1043 (rounded up, as every amount).
+    assert.deepEqual(
+      [video[0].model, video[0].usdPerSecond, video[0].usdPerMillionTokens, video[0].durationSeconds, video[0].aliases],
+      ["gemini-omni-1.2-flash", { "720p": 0.0696, "1080p": 0.1043 }, { input: 1.5, textAndThinkingOutput: 9, videoOutput: 12 }, { min: 3, max: 15, maxWithLastFrame: 10 }, ["gemini-omni-1.1-flash"]]
+    );
+    assert.equal(status.pricesAsOf, "2026-11-23");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("Omni 1.2: gemini-omni-1.1-flash is accepted, estimated, recorded and sent as gemini-omni-1.2-flash", async () => {
+  const h = await harness();
+  try {
+    const old = videoJob({ model: "gemini-omni-1.1-flash", requestId: "r-alias", video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 15 } });
+    const dry = (await h.services.createJob({ ...old, dryRun: true }, "factory")) as { estimateUsd: number; allowed: boolean };
+    assert.deepEqual([dry.estimateUsd, dry.allowed], [1.0606, true]);
+    const created = (await h.services.createJob(old, "factory")) as { job: { jobId: string; model: string; estimateUsd: number } };
+    assert.deepEqual([created.job.model, created.job.estimateUsd], ["gemini-omni-1.2-flash", 1.0606]);
+    // A retry names either id: the same job comes back, nothing new is created.
+    for (const model of ["gemini-omni-1.1-flash", "gemini-omni-1.2-flash"]) {
+      const again = (await h.services.createJob({ ...old, model }, "factory")) as { job: { jobId: string }; replayed?: boolean };
+      assert.deepEqual([again.job.jobId, again.replayed], [created.job.jobId, true], model);
+    }
+    assert.equal(h.store.jobs.size, 1);
+    await h.runTick();
+    assert.equal((h.calls[0].request as GeminiInteractionsVideoRequest).model, "gemini-omni-1.2-flash");
+    assert.equal((h.calls[0].request as GeminiInteractionsVideoRequest).durationSeconds, 15);
+    assert.equal(h.store.jobs.get(created.job.jobId)!.model, "gemini-omni-1.2-flash");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("Omni 1.2: a job stored as 1.1 before the change is replayed by its request, and one left queued is sent as 1.2 and priced at 1.2", async () => {
+  const h = await harness();
+  try {
+    // The documented idempotency content of a video create (AC-GM-11), as a job created before the change stored it.
+    const hash = createHash("sha256")
+      .update(JSON.stringify({ channelId: "UC1", kind: "video", model: "gemini-omni-1.1-flash", prompt: "waves", resolution: "720p", aspectRatio: "16:9", durationSeconds: 8, personGeneration: null, firstFrame: null, lastFrame: null, referenceImages: [] }))
+      .digest("hex");
+    seedJob(h.store, "gm_old_done", { kind: "video", model: "gemini-omni-1.1-flash", requestId: "r-old", requestHash: hash, status: "done", costUsd: 0.82, costBasis: "usage" });
+    const again = (await h.services.createJob(videoJob({ model: "gemini-omni-1.1-flash", requestId: "r-old", video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 8 } }), "factory")) as { job: { jobId: string }; replayed?: boolean };
+    assert.deepEqual([again.job.jobId, again.replayed], ["gm_old_done", true]);
+    seedJob(h.store, "gm_old_queued", { kind: "video", model: "gemini-omni-1.1-flash", status: "queued", estimateUsd: 0.4235, costUsd: null, costBasis: null, submittedAt: null, finishedAt: null, paramsJson: JSON.stringify({ resolution: "720p", aspectRatio: "16:9", durationSeconds: 8 }) });
+    await h.runTick();
+    assert.equal((h.calls[0].request as GeminiInteractionsVideoRequest).model, "gemini-omni-1.2-flash");
+    // The fake's counts at 1.2: 3,000 x $1.50/1M + 46,336 x $12/1M + 500 x $9/1M = $0.565032 -> $0.5651.
+    const row = h.store.jobs.get("gm_old_queued")!;
+    assert.deepEqual([row.status, row.costUsd, row.costBasis], ["done", 0.5651, "usage"]);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("Omni 1.2: whole seconds 3-15 are accepted (4/6/8 still); 2 and 16 are refused; with a last frame at most 10 s, a first frame alone 15 s", async () => {
+  const h = await harness();
+  try {
+    await writeFile(path.join(h.sent, "a.jpg"), "A");
+    await writeFile(path.join(h.sent, "b.jpg"), "B");
+    for (const durationSeconds of [3, 4, 5, 6, 8, 10, 11, 15]) {
+      const dry = (await h.services.createJob({ ...videoJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds } }), dryRun: true }, "factory")) as { allowed: boolean };
+      assert.equal(dry.allowed, true, `${durationSeconds} s`);
+    }
+    for (const durationSeconds of [2, 16, 0, -3]) {
+      const details = await expectCode(h.services.createJob(videoJob({ video: { resolution: "1080p", aspectRatio: "16:9", durationSeconds } }), "factory"), "gemini_invalid_params");
+      assert.equal(details.field, "video.durationSeconds", `${durationSeconds} s`);
+    }
+    const firstOnly = (await h.services.createJob({ ...videoJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 15, inputs: { firstFrame: "a.jpg" } } }), dryRun: true }, "factory")) as { allowed: boolean };
+    assert.equal(firstOnly.allowed, true, "a first frame alone may be 15 s");
+    const both10 = (await h.services.createJob({ ...videoJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 10, inputs: { firstFrame: "a.jpg", lastFrame: "a.jpg" } } }), dryRun: true }, "factory")) as { allowed: boolean };
+    assert.equal(both10.allowed, true, "first + last frame up to 10 s");
+    const details = await expectCode(h.services.createJob(videoJob({ video: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 11, inputs: { firstFrame: "a.jpg", lastFrame: "b.jpg" } } }), "factory"), "gemini_invalid_params");
+    assert.equal(details.field, "video.durationSeconds");
+    assert.equal(h.store.jobs.size, 0);
+    assert.deepEqual(h.calls, []);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("Omni 1.2: the per-job limit at the new maximum -- 1080p 15 s ($1.5819) is refused under $1.58 and fits $1.59", async () => {
+  const tight = await harness({ settings: { maxUsdPerJob: 1.58 } });
+  try {
+    const max = videoJob({ video: { resolution: "1080p", aspectRatio: "16:9", durationSeconds: 15 } });
+    const dry = (await tight.services.createJob({ ...max, dryRun: true }, "factory")) as { allowed: boolean; refusal: { code: string; details: Record<string, unknown> } };
+    assert.deepEqual([dry.allowed, dry.refusal.code, dry.refusal.details.limit, dry.refusal.details.limitUsd, dry.refusal.details.estimateUsd], [false, "gemini_limit_exceeded", "per_job", 1.58, 1.5819]);
+    await expectCode(tight.services.createJob(max, "factory"), "gemini_limit_exceeded");
+    assert.equal(tight.store.jobs.size, 0);
+  } finally {
+    await tight.cleanup();
+  }
+  const enough = await harness({ settings: { maxUsdPerJob: 1.59 } });
+  try {
+    const { job } = (await enough.services.createJob(videoJob({ video: { resolution: "1080p", aspectRatio: "16:9", durationSeconds: 15 } }), "factory")) as { job: { estimateUsd: number; status: string } };
+    assert.deepEqual([job.estimateUsd, job.status], [1.5819, "queued"]);
+  } finally {
+    await enough.cleanup();
+  }
 });
 
 // ---------------------------------------------------------------------------------------------------------------- BL-184

@@ -57,7 +57,7 @@ Plan: `docs/roadmap/plans/GEMINI_MEDIA_PLAN.md` (AC-GM-01..16). Schema v83, Fact
   - The worker runs it like an image job. Its cost is Google's token counts (`videoCostFromUsage`: input at the input rate, text
     output and thinking at the text rate, all other output, audio included, at the video rate), never below the saved video's
     table price (`videoCostFloor`), else the estimate. The estimate is 5,792 video tokens per second at 720p, 2.25 x for
-    1080p, plus input and the thinking allowance.
+    1080p, plus input and the thinking allowance (1080p: 8,688 a second since Omni 1.2, below).
   - A video delivered as a Files API URI (normalised to its download link) becomes `running` with the URI as `remoteName` and its
     known cost. The poll downloads it without a Veo operation; a 404 or the 47-h give-up keeps the known cost. A link that
     cannot be followed fails the job at its cost, and a JSON answer to a download is refused. The stale-`submitting` sweep is 20
@@ -72,6 +72,17 @@ Plan: `docs/roadmap/plans/GEMINI_MEDIA_PLAN.md` (AC-GM-01..16). Schema v83, Fact
   time (`gemini_invalid_params`, field `model`). A Veo job left `queued` is failed unsent (`gemini_invalid_request`, cost 0); one
   left `running` holds an operation name, not a link, so it is not polled and fails `gemini_expired` at its estimate. The
   operation-flow paragraph above is history.
+- **Omni 1.2 (owner TG 3700, 2026-11-23; Factory API 1.55.0, Agent API 4.26.0).** Google made `gemini-omni-1.2-flash` GA on
+  2026-11-05 and routes `gemini-omni-1.1-flash` to it from 2026-12-03 (aistudio.google.com/docs/deprecations). The model table's
+  one video entry is now 1.2 at the pricing page's figures: $1.50 input, $9 text and thinking, $12 video per 1M tokens; 5,792
+  video tokens per second at 720p and 8,688 at 1080p (the page's own count, replacing the 2.25 x guess). The request is unchanged
+  (the docs show the same `/v1beta/interactions` body; `response_format.duration` is `"<n>s"`).
+  - Each video model carries `durationSeconds { min, max, maxWithLastFrame }`: 3-15 whole seconds, at most 10 with a last frame
+    (Google's interpolation limit), checked in `checkJobRules` before any call (`gemini_invalid_params`).
+  - `GEMINI_VIDEO_MODEL_ALIASES` maps the deprecated 1.1 id to 1.2; `resolveGeminiVideoModel` / `geminiVideoModelSpec` are the one
+    lookup for create (the job is checked, estimated, stored and sent as 1.2), the worker (a 1.1 job left queued is sent as 1.2),
+    and pricing. The replay check accepts the request hash of the given or the resolved content, so a job stored as 1.1 is still
+    returned to a retry naming 1.1. The catalog lists only 1.2, with `durationSeconds` and `aliases`.
 - **Restarts.** `operation-lock media-idle` refuses `stop.sh` while a job is `submitting` (an image call takes up to 5 minutes, an Omni video up to 15); idle
   shutdown waits while any job is queued, submitting or running.
 - **Web.** Settings → Cloud APIs (`gemini-media-settings.tsx`; Settings → Gemini before BL-193) and `/api/gemini-media` (overview), `/settings`, `/key`, `/key/test`: the
