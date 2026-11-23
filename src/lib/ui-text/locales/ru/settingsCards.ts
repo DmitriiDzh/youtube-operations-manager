@@ -150,7 +150,7 @@ export const settingsCards: Record<keyof typeof en, string> = {
   "settingsCards.producerCalls.empty": "Вызовов пока не было.",
   "settingsCards.producerCalls.failed": "ошибка",
   "settingsCards.workerActions.title": "Действия воркера на этом компьютере",
-  "settingsCards.workerActions.info": "Каждый вызов агента этого канала, который что-то записывает: в YouTube (названия и описания, плейлисты, доступ) или в приложении (планы, раскадровки, номера видео, переводы), и каждый платный запуск (GPU-сессии и задачи, Gemini), включая отказы. Хранится 90 дней. Сделать что-то публичным или удалить плейлист агент не может.",
+  "settingsCards.workerActions.info": "Каждый вызов агента этого канала, который что-то записывает: в YouTube (названия и описания, плейлисты, доступ) или в приложении (планы, раскадровки, номера видео, переводы), и каждый платный запуск (GPU-сессии и задачи, Gemini), включая отказы. Хранится 90 дней. Агент может сделать публичным плейлист, но не видео, и не может удалить плейлист.",
   "settingsCards.workerActions.show": "Показать",
   "settingsCards.workerActions.hide": "Скрыть",
   "settingsCards.workerActions.refresh": "Обновить",

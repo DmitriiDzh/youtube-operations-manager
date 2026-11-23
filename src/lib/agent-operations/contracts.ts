@@ -135,7 +135,12 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // plan's packages gain `captions`. No caption tool for channel agents. Additive.
 // 4.25.0 (BL-271, owner TG 3617/3618, ADR 0075): agent_wait (READ, as factory_wait 1.54.0, this channel only -- another channel's id is
 // not_found) -- wait until one operation is final without polling; not counted as MCP activity. Additive.
-export const AGENT_API_VERSION = "4.25.0";
+// 4.26.0 (owner TG 4782, 2026-11-23, ADR 0048 amendment): a channel agent may make its channel's playlist public --
+// playlist_create / playlist_update accept privacyStatus "public", and agent_set_privacy accepts "public" for target playlist (a video
+// is still refused, AGENT_PUBLIC_NOT_ALLOWED, now as a service refusal that reaches the worker log instead of an input error). In a
+// channel session a playlist write's expectedChannelId must be the session's channel (WRITE_CHANNEL_MISMATCH, the same code the
+// guardrail gave, now before any YouTube call). playlist_delete stays owner-only. Additive.
+export const AGENT_API_VERSION = "4.26.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry

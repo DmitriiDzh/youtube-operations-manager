@@ -611,7 +611,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   },
   // BL-215 (ADR 0048, owner msg 3384): the pre-existing channel tools that had no entry, so a worker reading this list sees exactly
   // what its token may call. The `youtube_writes` entries are real YouTube writes (EXECUTE) on the bound channel only, each gated
-  // by the write-channel guardrail and Live writes, never `public`, and each logged (agent_list_worker_actions).
+  // by the write-channel guardrail and Live writes, never a video made `public` (a playlist may be, owner msg 4782), and each logged (agent_list_worker_actions).
   {
     id: "system.whoami",
     mcpTools: ["whoami", "write_context"],
@@ -725,7 +725,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     domain: "youtube_writes",
     permission: "EXECUTE",
     description:
-      "Create a playlist on the bound channel (`playlist_create`), private by default. A real YouTube write; `public` is refused (AGENT_PUBLIC_NOT_ALLOWED, ADR 0048); logged.",
+      "Create a playlist on the bound channel (`playlist_create`), private by default; unlisted or public too (owner msg 4782, ADR 0048 amendment). A real YouTube write; expectedChannelId, when given, must be the bound channel; logged.",
   },
   {
     id: "youtube_writes.update_playlist",
@@ -733,7 +733,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     domain: "youtube_writes",
     permission: "EXECUTE",
     description:
-      "Change a playlist's title, description or privacy (`playlist_update`) -- for example make it private or unlisted. A real YouTube write; `public` is refused (AGENT_PUBLIC_NOT_ALLOWED, ADR 0048); logged. Deleting a playlist is the owner's.",
+      "Change a playlist's title, description or privacy (`playlist_update`) -- private, unlisted or public (owner msg 4782, ADR 0048 amendment). A real YouTube write on a playlist of the bound channel; logged. Deleting a playlist is the owner's.",
   },
   {
     id: "youtube_writes.edit_playlist_items",
@@ -748,7 +748,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     domain: "youtube_writes",
     permission: "EXECUTE",
     description:
-      "BL-216: make one of the bound channel's videos or playlists private or unlisted (`agent_set_privacy`, dryRun by default). Never public; a scheduled video and the current live broadcast stay the owner's. A real YouTube write through the video-details / playlist writes (Live writes); logged with the previous status.",
+      "BL-216: make one of the bound channel's videos or playlists private or unlisted, or a playlist public (`agent_set_privacy`, dryRun by default; owner msg 4782). A video is never made public; a scheduled video and the current live broadcast stay the owner's. A real YouTube write through the video-details / playlist writes (Live writes); logged with the previous status.",
   },
   // BL-217 (WORKER_CAPABILITIES_PLAN.md stage 3): the Factory Operator's channel tools for the worker's own channel.
   {

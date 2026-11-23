@@ -44,15 +44,51 @@ function fixture(overrides: Partial<WorkerPrivacyDeps> = {}) {
   return { services: createWorkerPrivacyServices(deps), writes };
 }
 
-test("AC-WP-01: public, or any other status than private/unlisted, is invalid input; nothing is read or written", async () => {
+// AC-WP-01 changed by the owner, Telegram msg 4782 (2026-11-23, ADR 0048 amendment): a worker may make its channel's PLAYLIST public;
+// a VIDEO still never. The old test refused `public` for both targets as invalid input.
+test("AC-WP-01: any status other than private/unlisted/public is invalid input; nothing is read or written", async () => {
   const { services, writes } = fixture({
     readVideo: async () => {
       throw new Error("must not read");
     },
   });
-  for (const privacyStatus of ["public", "Public", "", "hidden"]) {
-    await assert.rejects(services.setPrivacy({ target: "video", id: "rec1", privacyStatus, dryRun: false }), code("validation_failed"));
+  for (const target of ["video", "playlist"]) {
+    for (const privacyStatus of ["Public", "", "hidden"]) {
+      await assert.rejects(services.setPrivacy({ target, id: target === "video" ? "rec1" : "PL_PRIV", privacyStatus, dryRun: false }), code("validation_failed"));
+    }
   }
+  assert.deepEqual(writes, []);
+});
+
+test("msg 4782: a video is never made public by a worker -- refused before any read, a dry run too", async () => {
+  const { services, writes } = fixture({
+    readVideo: async () => {
+      throw new Error("must not read");
+    },
+    findChannelVideo: async () => {
+      throw new Error("must not read");
+    },
+  });
+  await assert.rejects(services.setPrivacy({ target: "video", id: "rec1", privacyStatus: "public", dryRun: false }), code("AGENT_PUBLIC_NOT_ALLOWED"));
+  await assert.rejects(services.setPrivacy({ target: "video", id: "rec1", privacyStatus: "public" }), code("AGENT_PUBLIC_NOT_ALLOWED"));
+  assert.deepEqual(writes, []);
+});
+
+test("msg 4782: a worker makes its channel's playlist public (a preview first), and private again", async () => {
+  const { services, writes } = fixture();
+  const preview = await services.setPrivacy({ target: "playlist", id: "PL_PRIV", privacyStatus: "public" });
+  assert.deepEqual(preview, { target: "playlist", id: "PL_PRIV", dryRun: true, privacyStatus: "public", previousPrivacyStatus: "private", changed: true });
+  assert.deepEqual(writes, []);
+  const written = await services.setPrivacy({ target: "playlist", id: "PL_PRIV", privacyStatus: "public", dryRun: false });
+  assert.deepEqual(written, { target: "playlist", id: "PL_PRIV", dryRun: false, privacyStatus: "public", previousPrivacyStatus: "private", changed: true });
+  const hidden = await services.setPrivacy({ target: "playlist", id: "PL_PUB", privacyStatus: "private", dryRun: false });
+  assert.equal(hidden.changed, true);
+  assert.deepEqual(writes, ["playlist:PL_PRIV:public", "playlist:PL_PUB:private"]);
+});
+
+test("msg 4782: another channel's playlist stays not_found even for public; nothing written", async () => {
+  const { services, writes } = fixture();
+  await assert.rejects(services.setPrivacy({ target: "playlist", id: "PL_OTHER", privacyStatus: "public", dryRun: false }), code("not_found"));
   assert.deepEqual(writes, []);
 });
 

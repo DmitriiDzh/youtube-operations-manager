@@ -8,7 +8,7 @@ import { createVideoMetadataCore } from "@/lib/video-metadata";
 import { calendarDateSchema, DomainError, isDomainError } from "@/lib/shared-domain";
 import type { VideoMetadataCore } from "@/lib/video-metadata";
 import { createCliAuthService, type CliAuthService } from "@/lib/cli-auth";
-import { insertWorkerActionLogEntry, listWorkerActionLogEntries, recordGatewayCallOutcome } from "@/lib/db";
+import { getStoredVideo, insertWorkerActionLogEntry, listWorkerActionLogEntries, recordGatewayCallOutcome } from "@/lib/db";
 import { describeWorkerWrite, fromToolResult, serializeWorkerDetail } from "./worker-actions";
 import { createWorkerPrivacyCore, setPrivacyInputSchema } from "@/lib/worker-privacy";
 import { createRestartWhenIdleCore } from "@/lib/restart-when-idle";
@@ -29,7 +29,7 @@ import { createChangeSetCore, type ChangeSetCore } from "@/lib/changesets";
 import { getChangeSetInputSchema, listChangeSetsInputSchema, proposeLanguageMoveInputSchema } from "@/lib/changesets/schemas";
 import { createBatchCore, type BatchCore } from "@/lib/batches";
 import { createChannelSyncCore, type ChannelSyncCore } from "@/lib/channel-sync";
-import { createChannelAccessCore, type ChannelAccessCore } from "@/lib/channel-access";
+import { assertAgentScopeVideo, createChannelAccessCore, type ChannelAccessCore } from "@/lib/channel-access";
 import {
   listChannelsInputSchema,
   listSyncedVideosInputSchema,
@@ -89,6 +89,9 @@ import {
   PRODUCER_CHANNEL_TOOLS,
   PRODUCER_DRAFT_CHANNEL_TOOLS,
   PRODUCER_DRAFT_TOOLS,
+  PRODUCER_OWN_VIDEO_TOOLS,
+  PRODUCER_PLAYLIST_CHANNEL_TOOLS,
+  PRODUCER_PLAYLIST_WRITE_TOOLS,
   PRODUCER_RENAMED_CHANNEL_FIELD,
   PRODUCER_TOOL_NAMES,
   PRODUCER_UPLOAD_QUEUE_TOOLS,
@@ -3119,7 +3122,9 @@ export function createMcpServer(
       };
       return { config, handler: wrapped };
     }
-    if (toolClass !== "bound" || !(name in PRODUCER_CHANNEL_TOOLS || name in PRODUCER_DRAFT_CHANNEL_TOOLS)) return null;
+    if (toolClass !== "bound" || !(name in PRODUCER_CHANNEL_TOOLS || name in PRODUCER_DRAFT_CHANNEL_TOOLS || name in PRODUCER_PLAYLIST_CHANNEL_TOOLS)) {
+      return null;
+    }
     if (!(config.inputSchema instanceof z.ZodObject)) {
       throw new Error(`Producer tool "${name}" needs an object input schema`);
     }
@@ -3177,6 +3182,10 @@ export function createMcpServer(
       try {
         result = (await runInAgentSession({ tokenId: session.tokenId, channelId, userId }, async () => {
           assertAgentSession(session.tokenId);
+          // Owner msg 4782: the Producer adds only the named channel's own videos (its local synced list), before anything else runs.
+          if (PRODUCER_OWN_VIDEO_TOOLS.includes(name) && Array.isArray(forwarded.videoIds)) {
+            for (const videoId of forwarded.videoIds) await assertAgentScopeVideo(String(videoId), getStoredVideo);
+          }
           return handler(forwarded as never);
         })) as ToolResponse;
       } catch (error) {
@@ -3192,14 +3201,14 @@ export function createMcpServer(
     "producer_get_capabilities",
     {
       description:
-        "The Producer role's own report: its API version, its permissions (READ; DRAFT for its proposals only; UPLOAD_QUEUE for this computer's upload queue) and the tools it can call. Every channel tool needs `channelId` -- one of producer_list_channels -- and answers with `forChannelId`. No tool here writes to YouTube or spends money by itself: the DRAFT tools (draftTools) store a proposal or mark one read, and a proposal changes nothing until the owner approves it in YT Manager; the UPLOAD_QUEUE tools (uploadQueueTools) list, order, cancel and add rows of this computer's upload queue -- the app's own uploader then uploads a queued row as private, with its identity check, and only while the owner's Live writes switch is on; a date comes only from a weekly-plan slot the owner approved. The clip review tools (clipReviewTools) submit a clip already in a channel's folder for the owner to watch, and read his answer: only the owner approves or returns a clip, in YT Manager. THUMBNAIL_WRITE (thumbnailTools, since 1.20.0): producer_video_thumbnail_replace writes a video's custom thumbnail on YouTube (owner's decision, any video of a connected channel), with backup, identity check, Live writes, read-back and audit. METADATA_WRITE (metadataTools, since 1.24.0): producer_video_metadata_update writes an uploaded video's title / description / tags from its package's current manifest, refusing any conflict, with the same safety steps. PLAN_MOVE (planMoveTools, since 1.25.0): producer_publishing_plan_move_slot moves a weekly-plan slot anywhere at once and, for a video already dated, writes the new date on YouTube with the same safety steps. CAPTIONS_WRITE (captionsTools, since 1.26.0): producer_video_captions_add puts a package's English captions onto its uploaded video (overwrite: true replaces the video's one English standard track), with the same safety steps. These four are the only YouTube writes a Producer tool makes itself; producer_week_template_propose is a DRAFT the owner decides.",
+        "The Producer role's own report: its API version, its permissions (READ; DRAFT for its proposals only; UPLOAD_QUEUE for this computer's upload queue) and the tools it can call. Every channel tool needs `channelId` -- one of producer_list_channels -- and answers with `forChannelId`. No tool here writes to YouTube or spends money by itself: the DRAFT tools (draftTools) store a proposal or mark one read, and a proposal changes nothing until the owner approves it in YT Manager; the UPLOAD_QUEUE tools (uploadQueueTools) list, order, cancel and add rows of this computer's upload queue -- the app's own uploader then uploads a queued row as private, with its identity check, and only while the owner's Live writes switch is on; a date comes only from a weekly-plan slot the owner approved. The clip review tools (clipReviewTools) submit a clip already in a channel's folder for the owner to watch, and read his answer: only the owner approves or returns a clip, in YT Manager. THUMBNAIL_WRITE (thumbnailTools, since 1.20.0): producer_video_thumbnail_replace writes a video's custom thumbnail on YouTube (owner's decision, any video of a connected channel), with backup, identity check, Live writes, read-back and audit. METADATA_WRITE (metadataTools, since 1.24.0): producer_video_metadata_update writes an uploaded video's title / description / tags from its package's current manifest, refusing any conflict, with the same safety steps. PLAN_MOVE (planMoveTools, since 1.25.0): producer_publishing_plan_move_slot moves a weekly-plan slot anywhere at once and, for a video already dated, writes the new date on YouTube with the same safety steps. CAPTIONS_WRITE (captionsTools, since 1.26.0): producer_video_captions_add puts a package's English captions onto its uploaded video (overwrite: true replaces the video's one English standard track), with the same safety steps. PLAYLIST_WRITE (playlistTools / playlistWriteTools, since 1.28.0): the channel's own playlist tools -- playlist_list reads; playlist_create, playlist_update (title, description, privacy: public, unlisted or private), playlist_add_videos (only the channel's own synced videos) and playlist_remove_videos write to YouTube on that channel's playlists, with the write-channel guardrail (expectedChannelId = channelId), the playlist's owner check and Live writes; no playlist delete. These are the only YouTube writes a Producer tool makes itself; producer_week_template_propose is a DRAFT the owner decides.",
       inputSchema: z.object({}).strict(),
     },
     async () =>
       toolSuccessResult({
         role: "producer",
         producerApiVersion: PRODUCER_API_VERSION,
-        permissions: ["READ", "DRAFT", "UPLOAD_QUEUE", "THUMBNAIL_WRITE", "METADATA_WRITE", "PLAN_MOVE", "CAPTIONS_WRITE"],
+        permissions: ["READ", "DRAFT", "UPLOAD_QUEUE", "THUMBNAIL_WRITE", "METADATA_WRITE", "PLAN_MOVE", "CAPTIONS_WRITE", "PLAYLIST_WRITE"],
         channelRequired: true,
         tools: [...PRODUCER_TOOL_NAMES],
         draftTools: [...PRODUCER_DRAFT_TOOLS],
@@ -3210,6 +3219,8 @@ export function createMcpServer(
         captionsTools: [...PRODUCER_CAPTIONS_TOOLS],
         planTools: [...PRODUCER_PLAN_TOOLS],
         planMoveTools: [...PRODUCER_PLAN_MOVE_TOOLS],
+        playlistTools: Object.keys(PRODUCER_PLAYLIST_CHANNEL_TOOLS),
+        playlistWriteTools: [...PRODUCER_PLAYLIST_WRITE_TOOLS],
       })
   );
 
@@ -3590,7 +3601,7 @@ export function createMcpServer(
     "playlist_create",
     {
       description:
-        "Create a YouTube playlist. credentialRef is OPTIONAL and falls back to active local auth context.",
+        "Create a YouTube playlist (privacyStatus private by default; unlisted or public too -- a channel agent may create a public playlist since Agent API 4.26.0, owner msg 4782). In a channel session expectedChannelId, when given, must be the session's channel (WRITE_CHANNEL_MISMATCH). credentialRef is OPTIONAL and falls back to active local auth context.",
       inputSchema: playlistCreateInputSchema.partial({ credentialRef: true }),
     },
     (args) => handlers.playlistCreate(args)
@@ -3620,7 +3631,7 @@ export function createMcpServer(
     "playlist_update",
     {
       description:
-        "Update playlist metadata with strict patch validation and write-channel guardrails. credentialRef is OPTIONAL and falls back to active local auth context.",
+        "Update playlist metadata (title, description, privacyStatus private/unlisted/public) with strict patch validation and write-channel guardrails. A channel agent may make its channel's playlist public since Agent API 4.26.0 (owner msg 4782). In a channel session expectedChannelId must be the session's channel (WRITE_CHANNEL_MISMATCH, before any YouTube call). credentialRef is OPTIONAL and falls back to active local auth context.",
       inputSchema: playlistUpdateToolInputSchema,
     },
     (args) => handlers.playlistUpdate(args)
@@ -4368,7 +4379,7 @@ export function createMcpServer(
     "agent_set_privacy",
     {
       description:
-        "BL-216 (ADR 0048): hide one of THIS channel's videos or playlists: { target: video|playlist, id, privacyStatus: private|unlisted, dryRun? } -> { target, id, dryRun, previousPrivacyStatus, privacyStatus, changed }. dryRun defaults to true (shows the change, writes nothing); pass dryRun:false to write. Never public (not accepted). Refused: a scheduled video (AGENT_SCHEDULE_OWNER_ONLY -- its date is the owner's), the channel's current live broadcast (AGENT_LIVE_BROADCAST_OWNER_ONLY; finished recordings are fine), a video not in this channel's synced list or a playlist not of this channel (not_found). A video is written through the app's video-details write (identity check, backup, Live writes, read-back), a playlist through the playlist write (Live writes); a target already at that status is not written (changed:false). About 51 quota units for a video, about 51 for a playlist. Logged in the worker log.",
+        "BL-216 (ADR 0048): hide one of THIS channel's videos or playlists, or make a playlist public: { target: video|playlist, id, privacyStatus: private|unlisted|public, dryRun? } -> { target, id, dryRun, previousPrivacyStatus, privacyStatus, changed }. dryRun defaults to true (shows the change, writes nothing); pass dryRun:false to write. public only for a playlist (owner msg 4782, Agent API 4.26.0): a video is never made public by an agent (AGENT_PUBLIC_NOT_ALLOWED, before any read). Refused: a scheduled video (AGENT_SCHEDULE_OWNER_ONLY -- its date is the owner's), the channel's current live broadcast (AGENT_LIVE_BROADCAST_OWNER_ONLY; finished recordings are fine), a video not in this channel's synced list or a playlist not of this channel (not_found). A video is written through the app's video-details write (identity check, backup, Live writes, read-back), a playlist through the playlist write (Live writes); a target already at that status is not written (changed:false). About 51 quota units for a video, about 51 for a playlist. Logged in the worker log.",
       inputSchema: setPrivacyInputSchema,
     },
     async (args: z.infer<typeof setPrivacyInputSchema>) => {

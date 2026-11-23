@@ -108,7 +108,7 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   agent_release_media_session: "bound",
   // BL-215 (ADR 0048): the bound channel's worker log, read-only.
   agent_list_worker_actions: "bound",
-  // BL-216 (ADR 0048): private/unlisted on the bound channel's own videos and playlists, never public.
+  // BL-216 (ADR 0048): private/unlisted on the bound channel's own videos and playlists; public for a playlist only (owner msg 4782).
   agent_set_privacy: "bound",
   // BL-220 (RESTART_WHEN_IDLE_PLAN.md, ADR 0049): restart when idle -- the status, a worker's own hold and its release.
   agent_restart_status: "bound",

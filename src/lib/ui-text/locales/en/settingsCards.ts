@@ -149,7 +149,7 @@ export const settingsCards = {
   "settingsCards.producerCalls.empty": "No calls yet.",
   "settingsCards.producerCalls.failed": "failed",
   "settingsCards.workerActions.title": "Worker's actions on this computer",
-  "settingsCards.workerActions.info": "Every call of this channel's agent that writes something: to YouTube (titles and descriptions, playlists, privacy) or in the app (plans, storyboards, video numbers, translations), and every paid run (GPU sessions and jobs, Gemini), refused ones included. Kept 90 days. The agent can never make anything public or delete a playlist.",
+  "settingsCards.workerActions.info": "Every call of this channel's agent that writes something: to YouTube (titles and descriptions, playlists, privacy) or in the app (plans, storyboards, video numbers, translations), and every paid run (GPU sessions and jobs, Gemini), refused ones included. Kept 90 days. The agent can make a playlist public, but never a video, and never deletes a playlist.",
   "settingsCards.workerActions.show": "Show",
   "settingsCards.workerActions.hide": "Hide",
   "settingsCards.workerActions.refresh": "Refresh",

@@ -11,6 +11,9 @@
  * queued rows of any channel (since BL-244, ADR 0064, it also stops a row being sent before its last chunk), and adds a ready release package under the owner's automatic-upload switch -- private, a date only
  * from a weekly-plan slot the owner approved. Channel agents and the factory get none of them.
  *
+ * Owner msg 4782 (2026-11-23): the Producer edits the playlists of every channel connected here with the channel agent's own playlist
+ * tools (`PRODUCER_PLAYLIST_CHANNEL_TOOLS`, permission EXECUTE in the capability registry) -- never a playlist delete.
+ *
  * BL-241 (owner msgs 4010/4011, ADR 0061): the Producer submits clips for review with `PRODUCER_CLIP_REVIEW_TOOLS` -- a short clip
  * already in a channel's folder, which only the owner approves or returns in the Web UI. Submit and withdraw are DRAFT (a request the
  * owner decides), list and get READ. Channel agents and the factory get none of them.
@@ -65,7 +68,11 @@
 // problem codes captions_missing / captions_invalid (details.reason); uploads gain steps.captions. Additive.
 // 1.27.0 (BL-271, owner TG 3617/3618, ADR 0075): producer_wait (READ) -- wait until one upload of this computer or a restart is final
 // (timeoutSeconds default 50, clamped 1-240); not counted as MCP activity; any other target is invalid_request. Additive.
-export const PRODUCER_API_VERSION = "1.27.0";
+// 1.28.0 (owner TG 4782, 2026-11-23; ADR 0048 amendment 2026-11-23): the channel playlist tools playlist_list, playlist_create,
+// playlist_update (title / description / privacy, public included), playlist_add_videos (only the channel's own synced videos) and
+// playlist_remove_videos, each run for the named channel as its own agent would (`expectedChannelId` required for the writes and
+// equal to `channelId`); permission PLAYLIST_WRITE and playlistTools in producer_get_capabilities. No playlist delete. Additive.
+export const PRODUCER_API_VERSION = "1.28.0";
 
 /** The channel agent's READ tools the Producer gets; each call names its channel and runs in that channel's agent scope. */
 export const PRODUCER_CHANNEL_TOOLS: Readonly<Record<string, { capability: string }>> = Object.freeze({
@@ -115,6 +122,31 @@ export const PRODUCER_CHANNEL_TOOLS: Readonly<Record<string, { capability: strin
 export const PRODUCER_DRAFT_CHANNEL_TOOLS: Readonly<Record<string, { capability: string }>> = Object.freeze({
   create_experiment_proposal: { capability: "decision_engine.create_experiment_proposal" },
 });
+
+/**
+ * Owner, Telegram msg 4782 (2026-11-23; ADR 0048 amendment; `docs/WRITE_AUTHORIZATIONS.md`): the channel agent's playlist tools the
+ * Producer also gets, by name -- exactly these five, pinned by the test (never `playlist_delete`). Called like every channel tool: per
+ * call, in the named channel's agent scope, so the playlist core's checks apply unchanged (the write-channel guardrail with the required
+ * `expectedChannelId`, which must be the named channel; the playlist's owner channel; Live writes immediately before each gateway write).
+ * `playlist_add_videos` adds only the channel's own videos (`PRODUCER_OWN_VIDEO_TOOLS`). The four writes are real YouTube writes
+ * (permission PLAYLIST_WRITE); every call, refused or not, is in the Producer's call log.
+ */
+export const PRODUCER_PLAYLIST_CHANNEL_TOOLS: Readonly<Record<string, { capability: string }>> = Object.freeze({
+  playlist_list: { capability: "youtube_writes.list_playlists" },
+  playlist_create: { capability: "youtube_writes.create_playlist" },
+  playlist_update: { capability: "youtube_writes.update_playlist" },
+  playlist_add_videos: { capability: "youtube_writes.edit_playlist_items" },
+  playlist_remove_videos: { capability: "youtube_writes.edit_playlist_items" },
+});
+
+/** The Producer's playlist writes (permission PLAYLIST_WRITE): the playlist tools without the read. */
+export const PRODUCER_PLAYLIST_WRITE_TOOLS = ["playlist_create", "playlist_update", "playlist_add_videos", "playlist_remove_videos"] as const;
+
+/**
+ * Owner msg 4782 ("добавлять / удалять оттуда видео" -- the channel's videos): on the Producer endpoint each id in `videoIds` must be a
+ * video of the named channel in its local synced list (`not_found` otherwise, for the whole call, before any credential or YouTube call).
+ */
+export const PRODUCER_OWN_VIDEO_TOOLS: readonly string[] = Object.freeze(["playlist_add_videos"]);
 
 /**
  * A channel tool whose own `channelId` means something else gets it under another name on the Producer endpoint, so `channelId`
@@ -205,4 +237,5 @@ export const PRODUCER_TOOL_NAMES: readonly string[] = Object.freeze([
   ...PRODUCER_ONLY_TOOLS,
   ...Object.keys(PRODUCER_CHANNEL_TOOLS),
   ...Object.keys(PRODUCER_DRAFT_CHANNEL_TOOLS),
+  ...Object.keys(PRODUCER_PLAYLIST_CHANNEL_TOOLS),
 ]);

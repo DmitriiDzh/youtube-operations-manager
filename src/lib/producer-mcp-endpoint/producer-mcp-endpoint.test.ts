@@ -17,13 +17,19 @@ import {
   saveCollectedVideoMilestone,
   saveCollectedVideoSearchTerms,
   saveVideoCommentsRead,
+  getLiveWritesEnabled,
+  setLiveWritesEnabled,
   upsertChannel,
   upsertVideos,
 } from "@/lib/db";
+import { assertAgentScopeWriteChannel } from "@/lib/channel-access";
+import { createPlaylistManagementServices } from "@/lib/playlist-management/services";
+import { createVideoMetadataCore } from "@/lib/video-metadata";
+import { assertLiveWritesAuthorized } from "@/lib/youtube-write-gateway";
 import { createAgentTokenServices } from "@/lib/agent-tokens/services";
 import { DomainError } from "@/lib/shared-domain";
 import { createMcpServer, type ProducerSession } from "@/mcp/server";
-import { PRODUCER_API_VERSION, PRODUCER_CHANNEL_TOOLS, PRODUCER_CLIP_REVIEW_TOOLS, PRODUCER_DRAFT_CHANNEL_TOOLS, PRODUCER_DRAFT_TOOLS, PRODUCER_THUMBNAIL_TOOLS, PRODUCER_TOOL_NAMES, PRODUCER_UPLOAD_QUEUE_TOOLS } from "@/mcp/producer-tools";
+import { PRODUCER_API_VERSION, PRODUCER_CHANNEL_TOOLS, PRODUCER_CLIP_REVIEW_TOOLS, PRODUCER_DRAFT_CHANNEL_TOOLS, PRODUCER_DRAFT_TOOLS, PRODUCER_PLAYLIST_CHANNEL_TOOLS, PRODUCER_THUMBNAIL_TOOLS, PRODUCER_TOOL_NAMES, PRODUCER_UPLOAD_QUEUE_TOOLS } from "@/mcp/producer-tools";
 import { MCP_TOOL_CLASSIFICATION } from "@/mcp/tool-classification";
 import { createProducerMcpEndpoint, type ProducerRefusedCall } from "./index";
 
@@ -79,7 +85,7 @@ async function seedTwoChannels() {
   await upsertVideos([video("vid-x-1", "UC_PR_X"), video("vid-x-2", "UC_PR_X"), video("vid-y-1", "UC_PR_Y")], new Date("2026-10-09T10:00:00Z"));
 }
 
-function setup(initial: { enabled?: boolean } = {}) {
+function setup(initial: { enabled?: boolean; core?: Parameters<typeof createMcpServer>[0] } = {}) {
   let n = 0;
   const tokens = createProducerTokenServices({ store: memoryTokenStore(), generateSecret: () => String(++n).padStart(43, "s") });
   const state = { enabled: initial.enabled ?? true, createdServers: 0 };
@@ -179,7 +185,7 @@ function setup(initial: { enabled?: boolean } = {}) {
         },
         wait: { waitFor: async () => ({ target: "upload", id: "up1", final: true, outcome: "succeeded", status: "done", snapshot: {}, waitedSeconds: 0 }) },
       };
-      return createMcpServer(undefined, { connectionEnabled: true, producerSession });
+      return createMcpServer(initial.core, { connectionEnabled: true, producerSession });
     },
   });
   return { endpoint, tokens, state, calls, refused, proposalCalls, queueCalls, clipCalls, thumbnailCalls, metadataCalls, captionsCalls, planCalls };
@@ -252,6 +258,19 @@ test("AC-PR-03: tools/list is exactly the closed list, and every channel tool in
     assert.equal(descriptor.permission, "DRAFT", `${tool} must be a DRAFT capability`);
     assert.equal(MCP_TOOL_CLASSIFICATION[tool], "bound");
   }
+  // Owner TG 4782 (2026-11-23): exactly these five playlist tools, by name -- never playlist_delete. The list reads; the other four are
+  // the channel agent's EXECUTE (YouTube write) capabilities.
+  assert.deepEqual(Object.keys(PRODUCER_PLAYLIST_CHANNEL_TOOLS), ["playlist_list", "playlist_create", "playlist_update", "playlist_add_videos", "playlist_remove_videos"]);
+  for (const [tool, { capability }] of Object.entries(PRODUCER_PLAYLIST_CHANNEL_TOOLS)) {
+    const descriptor = capabilities.get(capability);
+    assert.ok(descriptor, `${tool}: capability ${capability} exists`);
+    assert.equal(descriptor.domain, "youtube_writes");
+    assert.equal(descriptor.permission, tool === "playlist_list" ? "READ" : "EXECUTE", `${tool}'s permission`);
+    assert.ok(descriptor.mcpTools?.includes(tool), `${capability} names ${tool}`);
+    assert.equal(MCP_TOOL_CLASSIFICATION[tool], "bound");
+  }
+  assert.equal(PRODUCER_TOOL_NAMES.includes("playlist_delete"), false);
+  assert.equal(PRODUCER_TOOL_NAMES.includes("agent_set_privacy"), false);
 });
 
 test("AC-PR-03: a channel agent's session never lists a producer tool", () => {
@@ -781,7 +800,9 @@ test("AC-PR-07 / AC-PR-10: the Producer's own tools -- its channels with their f
   // template and moves slots itself): 1.25.0 adds the five plan tools, PLAN_MOVE, planTools / planMoveTools; the propose is DRAFT.
   // BL-269 (owner TG 4590/4592/4660, ADR 0074 -- the requirement changed: the Producer adds or overwrites an uploaded video's English
   // captions from its package): 1.26.0 adds producer_video_captions_add, CAPTIONS_WRITE and captionsTools.
-  assert.equal(PRODUCER_API_VERSION, "1.27.0"); // 1.27.0 (BL-271, new requirement owner TG 3617/3618, ADR 0075): producer_wait; 1.26.0 (BL-269): producer_video_captions_add; 1.24.0 (BL-265, new requirement PRD-REQ-0195 B, ADR 0072): producer_video_metadata_update, METADATA_WRITE / metadataTools, calendar warnings, the media-keyed review gate; 1.23.0 (BL-263, new requirement PRD-REQ-0194, ADR 0071): S codes in the calendar, the queue tools and wake file names; 1.22.0 = PRD-REQ-0195 C (queue add after an approved, cancelled-before-approval version); 1.21.0 (BL-257, new requirement ADR 0070): calendar problem codes owner_review_pending / _returned; 1.20.0 (BL-255): producer_video_thumbnail_replace; 1.19.0 (BL-246): clip review answers carry the owner's attachments; 1.18.0 (BL-244): producer_upload_queue_cancel also stops a row being sent before its last chunk; 1.17.0 (BL-243): the calendar read's deleted_on_youtube / missingOnChannel, channel_video_list videoIds; 1.16.0 (BL-242): the add dates only the approved manifest in the packaged stage; 1.14.0 (BL-239): the upload queue tools; 1.13.0 (BL-235): the calendar read's due / gapDates from the daily coverage, published_pending; 1.12.0 (BL-221): a live sample without a count is 0 viewers; 1.10.0 (BL-209): the calendar read's uploads gain automatic / progressPercent / finishedAt; 1.8.0 (BL-182 stage 2): the calendar read lists packages and uploads
+  // Owner TG 4782 (2026-11-23, ADR 0048 amendment -- the requirement changed: the Producer edits the connected channels' playlists):
+  // 1.28.0 adds the five channel playlist tools, PLAYLIST_WRITE and playlistTools / playlistWriteTools.
+  assert.equal(PRODUCER_API_VERSION, "1.28.0"); // 1.27.0 (BL-271, new requirement owner TG 3617/3618, ADR 0075): producer_wait; 1.26.0 (BL-269): producer_video_captions_add; 1.24.0 (BL-265, new requirement PRD-REQ-0195 B, ADR 0072): producer_video_metadata_update, METADATA_WRITE / metadataTools, calendar warnings, the media-keyed review gate; 1.23.0 (BL-263, new requirement PRD-REQ-0194, ADR 0071): S codes in the calendar, the queue tools and wake file names; 1.22.0 = PRD-REQ-0195 C (queue add after an approved, cancelled-before-approval version); 1.21.0 (BL-257, new requirement ADR 0070): calendar problem codes owner_review_pending / _returned; 1.20.0 (BL-255): producer_video_thumbnail_replace; 1.19.0 (BL-246): clip review answers carry the owner's attachments; 1.18.0 (BL-244): producer_upload_queue_cancel also stops a row being sent before its last chunk; 1.17.0 (BL-243): the calendar read's deleted_on_youtube / missingOnChannel, channel_video_list videoIds; 1.16.0 (BL-242): the add dates only the approved manifest in the packaged stage; 1.14.0 (BL-239): the upload queue tools; 1.13.0 (BL-235): the calendar read's due / gapDates from the daily coverage, published_pending; 1.12.0 (BL-221): a live sample without a count is 0 viewers; 1.10.0 (BL-209): the calendar read's uploads gain automatic / progressPercent / finishedAt; 1.8.0 (BL-182 stage 2): the calendar read lists packages and uploads
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_stored_suggested_sources"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_publishing_calendar"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_video_comments"));
@@ -789,7 +810,9 @@ test("AC-PR-07 / AC-PR-10: the Producer's own tools -- its channels with their f
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_stored_breakdowns"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_stored_search_terms"));
   // BL-265 (ADR 0072 §8, owner TG 4578/4581): METADATA_WRITE for producer_video_metadata_update (1.24.0).
-  assert.deepEqual(capabilities.permissions, ["READ", "DRAFT", "UPLOAD_QUEUE", "THUMBNAIL_WRITE", "METADATA_WRITE", "PLAN_MOVE", "CAPTIONS_WRITE"]);
+  assert.deepEqual(capabilities.permissions, ["READ", "DRAFT", "UPLOAD_QUEUE", "THUMBNAIL_WRITE", "METADATA_WRITE", "PLAN_MOVE", "CAPTIONS_WRITE", "PLAYLIST_WRITE"]);
+  assert.deepEqual(capabilities.playlistTools, ["playlist_list", "playlist_create", "playlist_update", "playlist_add_videos", "playlist_remove_videos"]);
+  assert.deepEqual(capabilities.playlistWriteTools, ["playlist_create", "playlist_update", "playlist_add_videos", "playlist_remove_videos"]);
   assert.deepEqual(capabilities.captionsTools, ["producer_video_captions_add"]);
   assert.deepEqual(capabilities.planTools, ["producer_week_template_get", "producer_week_template_propose", "producer_publishing_plan_get", "producer_publishing_plan_list", "producer_publishing_plan_move_slot"]);
   assert.deepEqual(capabilities.planMoveTools, ["producer_publishing_plan_move_slot"]);
@@ -1259,4 +1282,217 @@ test("BL-267 AC-WT-40: producer plan tools reach the session's plans only; stric
   assert.deepEqual(planCalls.at(-1), ["templateGet", { channelId: "UC_PR_X" }]);
   assert.equal(planCalls.length, 2, "refused inputs never reach the session");
   assert.ok(calls.some((c) => c.tool === "producer_publishing_plan_move_slot" && c.outcome === "ok"));
+});
+
+// Owner, Telegram msg 4782 (2026-11-23): «нужно дать права продюсеру ... редактировать плей листы. Добавлять / удалять оттуда видео.
+// И делать их видимыми / приватными.» Expected behavior from that requirement and docs/WRITE_AUTHORIZATIONS.md, not from the code: the
+// Producer edits a connected channel's playlists (add / remove the channel's videos, public / private) through the channel agent's own
+// playlist tools, run in that channel's scope; another channel's id, playlist or video is refused before any YouTube write; Live writes
+// off refuses; there is no playlist delete; every call is in the Producer's call log. The real MCP server and the real playlist core
+// (`createPlaylistManagementServices` with the real agent-scope check) run; only YouTube is a fake that records reads and writes and
+// checks the real Live writes switch first, as the real adapter does.
+function producerPlaylistCore() {
+  const youtube: string[] = [];
+  const playlists: Record<string, { id: string; title: string; description: string; privacyStatus: "private" | "public" | "unlisted"; channelId: string }> = {
+    PL_X: { id: "PL_X", title: "X list", description: "", privacyStatus: "private", channelId: "UC_PR_X" },
+    PL_Y: { id: "PL_Y", title: "Y list", description: "", privacyStatus: "private", channelId: "UC_PR_Y" },
+  };
+  const items = new Map<string, string[]>([["vid-x-2", ["item-x-2"]]]);
+  const write = async (entry: string) => {
+    await assertLiveWritesAuthorized();
+    youtube.push(entry);
+  };
+  const services = createPlaylistManagementServices({
+    authResolver: {
+      resolve: async (args) => {
+        youtube.push(`auth:${(args.credentialRef as { userId: string }).userId}`);
+        return { credentialRef: args.credentialRef as { userId: string }, accessToken: "fake", refreshToken: "fake", tokenExpiry: 0, scopeSet: new Set(args.requiredScopes) };
+      },
+    },
+    youtubeApi: {
+      listPlaylists: async () => Object.values(playlists).map(({ id, title, description, privacyStatus }) => ({ id, title, description, privacyStatus })),
+      createPlaylist: async ({ title, description, privacyStatus }) => {
+        await write(`create:${privacyStatus}`);
+        return { id: "PL_NEW", title, description: description ?? "", privacyStatus };
+      },
+      getPlaylistForUpdate: async ({ playlistId }) => {
+        youtube.push(`read:${playlistId}`);
+        return playlists[playlistId] ?? null;
+      },
+      updatePlaylist: async ({ playlistId, title, description, privacyStatus }) => {
+        await write(`update:${playlistId}:${privacyStatus}`);
+        playlists[playlistId] = { ...playlists[playlistId], title, description, privacyStatus };
+        return { id: playlistId, title, description, privacyStatus };
+      },
+      getPlaylistForDelete: async () => null,
+      deletePlaylist: async () => {
+        await write("delete");
+      },
+      addVideoToPlaylist: async ({ playlistId, videoId }) => {
+        await write(`add:${playlistId}:${videoId}`);
+      },
+      listPlaylistItemIdsByVideo: async () => new Map([...items].map(([videoId, ids]) => [videoId, [...ids]])),
+      deletePlaylistItem: async ({ playlistItemId }) => {
+        await write(`remove:${playlistItemId}`);
+      },
+    },
+    // The guardrail as the real one decides it in a channel scope: the token's own channel is the active write channel.
+    writeContext: {
+      assertWriteChannel: async ({ credentialRef, expectedChannelId }) => {
+        const userId = (credentialRef as { userId: string }).userId;
+        const active = Object.entries(CONNECTED).find(([, connectedUser]) => connectedUser === userId)?.[0] ?? "";
+        if ((expectedChannelId ?? active) !== active) throw new DomainError({ code: "WRITE_CHANNEL_MISMATCH", message: "mismatch" });
+        return { expectedChannelId: active, activeWriteChannel: { id: active, title: null }, shouldPersistSelection: false, userId };
+      },
+    },
+    channelSelectionStore: { setSelectedChannelId: async () => undefined },
+    assertScopeChannel: assertAgentScopeWriteChannel,
+  });
+  const core = { ...createVideoMetadataCore(), ...services } as unknown as Parameters<typeof createMcpServer>[0];
+  return { core, youtube, playlists };
+}
+
+async function withLiveWrites<T>(enabled: boolean, fn: () => Promise<T>): Promise<T> {
+  const before = await getLiveWritesEnabled();
+  await setLiveWritesEnabled(enabled);
+  try {
+    return await fn();
+  } finally {
+    await setLiveWritesEnabled(before);
+  }
+}
+
+const errorCodeOf = (text: string) => (payloadOf(text).error as { code: string }).code;
+
+test("msg 4782: the Producer adds and removes a channel's own videos and makes its playlist public, then private -- each call logged", async () => {
+  await seedTwoChannels();
+  const { core, youtube, playlists } = producerPlaylistCore();
+  const { endpoint, tokens, calls } = setup({ core });
+  const token = (await tokens.issueToken({})).token;
+  const run = async (name: string, args: Record<string, unknown>) => toolResult(await endpoint.handle(rpc(call(name, args), bearer(token))));
+  await withLiveWrites(true, async () => {
+    const listed = await run("playlist_list", { channelId: "UC_PR_X" });
+    assert.equal(listed.isError, false, listed.text);
+    const added = await run("playlist_add_videos", { channelId: "UC_PR_X", playlistId: "PL_X", expectedChannelId: "UC_PR_X", videoIds: ["vid-x-1"] });
+    assert.equal(added.isError, false, added.text);
+    assert.equal(payloadOf(added.text).added, 1);
+    assert.equal(payloadOf(added.text).forChannelId, "UC_PR_X");
+    const removed = await run("playlist_remove_videos", { channelId: "UC_PR_X", playlistId: "PL_X", expectedChannelId: "UC_PR_X", videoIds: ["vid-x-2"] });
+    assert.equal(removed.isError, false, removed.text);
+    assert.equal(payloadOf(removed.text).removed, 1);
+    const madePublic = await run("playlist_update", { channelId: "UC_PR_X", playlistId: "PL_X", expectedChannelId: "UC_PR_X", privacyStatus: "public" });
+    assert.equal(madePublic.isError, false, madePublic.text);
+    assert.equal((payloadOf(madePublic.text).playlist as { privacyStatus: string }).privacyStatus, "public");
+    assert.equal(playlists.PL_X.privacyStatus, "public");
+    const madePrivate = await run("playlist_update", { channelId: "UC_PR_X", playlistId: "PL_X", expectedChannelId: "UC_PR_X", privacyStatus: "private" });
+    assert.equal(madePrivate.isError, false, madePrivate.text);
+    const created = await run("playlist_create", { channelId: "UC_PR_X", title: "New open list", expectedChannelId: "UC_PR_X", privacyStatus: "public" });
+    assert.equal(created.isError, false, created.text);
+  });
+  assert.deepEqual(
+    youtube.filter((entry) => !entry.startsWith("auth:") && !entry.startsWith("read:")),
+    ["add:PL_X:vid-x-1", "remove:item-x-2", "update:PL_X:public", "update:PL_X:private", "create:public"]
+  );
+  assert.ok(youtube.filter((entry) => entry.startsWith("auth:")).every((entry) => entry === "auth:user-pr-x"), "the named channel's own account is used");
+  assert.deepEqual(
+    calls.map((entry) => [entry.tool, entry.channelId, entry.outcome]),
+    [
+      ["playlist_list", "UC_PR_X", "ok"],
+      ["playlist_add_videos", "UC_PR_X", "ok"],
+      ["playlist_remove_videos", "UC_PR_X", "ok"],
+      ["playlist_update", "UC_PR_X", "ok"],
+      ["playlist_update", "UC_PR_X", "ok"],
+      ["playlist_create", "UC_PR_X", "ok"],
+    ]
+  );
+});
+
+test("msg 4782: the Producer's wrong expectedChannelId, another channel's playlist or video are refused before any YouTube write; all logged", async () => {
+  await seedTwoChannels();
+  const { core, youtube } = producerPlaylistCore();
+  const { endpoint, tokens, calls } = setup({ core });
+  const token = (await tokens.issueToken({})).token;
+  const run = async (name: string, args: Record<string, unknown>) => toolResult(await endpoint.handle(rpc(call(name, args), bearer(token))));
+  await withLiveWrites(true, async () => {
+    // The expected channel is not the named one: refused before any credential or YouTube call.
+    const wrongExpected = await run("playlist_update", { channelId: "UC_PR_X", playlistId: "PL_Y", expectedChannelId: "UC_PR_Y", privacyStatus: "public" });
+    assert.equal(wrongExpected.isError, true);
+    assert.equal(errorCodeOf(wrongExpected.text), "WRITE_CHANNEL_MISMATCH");
+    assert.deepEqual(youtube, []);
+    // A video of channel Y into channel X's playlist: refused for the whole call before any credential or YouTube call.
+    const foreignVideo = await run("playlist_add_videos", { channelId: "UC_PR_X", playlistId: "PL_X", expectedChannelId: "UC_PR_X", videoIds: ["vid-x-1", "vid-y-1"] });
+    assert.equal(foreignVideo.isError, true);
+    assert.equal(errorCodeOf(foreignVideo.text), "not_found");
+    const unknownVideo = await run("playlist_add_videos", { channelId: "UC_PR_X", playlistId: "PL_X", expectedChannelId: "UC_PR_X", videoIds: ["never-synced"] });
+    assert.equal(errorCodeOf(unknownVideo.text), "not_found");
+    assert.deepEqual(youtube, []);
+    // Channel Y's playlist through channel X: the playlist's owner check refuses after reading it, before any write.
+    for (const [name, args] of [
+      ["playlist_update", { privacyStatus: "public" }],
+      ["playlist_add_videos", { videoIds: ["vid-x-1"] }],
+      ["playlist_remove_videos", { videoIds: ["vid-x-2"] }],
+    ] as const) {
+      const refused = await run(name, { channelId: "UC_PR_X", playlistId: "PL_Y", expectedChannelId: "UC_PR_X", ...args });
+      assert.equal(refused.isError, true, `${name} on another channel's playlist`);
+      assert.equal(errorCodeOf(refused.text), "WRITE_CHANNEL_MISMATCH");
+    }
+    // A channel not connected on this computer.
+    const elsewhere = await run("playlist_update", { channelId: "UC_PR_ELSEWHERE", playlistId: "PL_X", expectedChannelId: "UC_PR_ELSEWHERE", privacyStatus: "public" });
+    assert.equal(errorCodeOf(elsewhere.text), "CHANNEL_NOT_ACTIVE");
+  });
+  assert.deepEqual(
+    youtube.filter((entry) => !entry.startsWith("auth:") && !entry.startsWith("read:")),
+    [],
+    "nothing was written"
+  );
+  assert.deepEqual(
+    calls.map((entry) => [entry.tool, entry.outcome, entry.errorCode]),
+    [
+      ["playlist_update", "error", "WRITE_CHANNEL_MISMATCH"],
+      ["playlist_add_videos", "error", "not_found"],
+      ["playlist_add_videos", "error", "not_found"],
+      ["playlist_update", "error", "WRITE_CHANNEL_MISMATCH"],
+      ["playlist_add_videos", "error", "WRITE_CHANNEL_MISMATCH"],
+      ["playlist_remove_videos", "error", "WRITE_CHANNEL_MISMATCH"],
+      ["playlist_update", "error", "CHANNEL_NOT_ACTIVE"],
+    ]
+  );
+});
+
+test("msg 4782: with Live writes off the Producer's playlist writes are refused (live_writes_disabled), nothing written, logged", async () => {
+  await seedTwoChannels();
+  const { core, youtube } = producerPlaylistCore();
+  const { endpoint, tokens, calls } = setup({ core });
+  const token = (await tokens.issueToken({})).token;
+  const run = async (name: string, args: Record<string, unknown>) => toolResult(await endpoint.handle(rpc(call(name, args), bearer(token))));
+  await withLiveWrites(false, async () => {
+    const update = await run("playlist_update", { channelId: "UC_PR_X", playlistId: "PL_X", expectedChannelId: "UC_PR_X", privacyStatus: "public" });
+    assert.equal(errorCodeOf(update.text), "live_writes_disabled");
+    const create = await run("playlist_create", { channelId: "UC_PR_X", title: "T", expectedChannelId: "UC_PR_X" });
+    assert.equal(errorCodeOf(create.text), "live_writes_disabled");
+  });
+  assert.deepEqual(youtube.filter((entry) => !entry.startsWith("auth:") && !entry.startsWith("read:")), []);
+  assert.deepEqual(
+    calls.map((entry) => [entry.tool, entry.errorCode]),
+    [
+      ["playlist_update", "live_writes_disabled"],
+      ["playlist_create", "live_writes_disabled"],
+    ]
+  );
+});
+
+test("msg 4782: neither the Producer nor a channel worker gets playlist_delete; the Producer gets no agent_set_privacy", async () => {
+  const { endpoint, tokens, refused } = setup();
+  const token = (await tokens.issueToken({})).token;
+  const listed = ((await (await endpoint.handle(rpc(LIST_TOOLS, bearer(token)))).json()).result.tools as Array<{ name: string }>).map((tool) => tool.name);
+  for (const name of ["playlist_list", "playlist_create", "playlist_update", "playlist_add_videos", "playlist_remove_videos"]) assert.ok(listed.includes(name), `${name} listed`);
+  assert.equal(listed.includes("playlist_delete"), false);
+  assert.equal(listed.includes("agent_set_privacy"), false);
+  const deleteCall = await toolResult(await endpoint.handle(rpc(call("playlist_delete", { channelId: "UC_PR_X", playlistId: "PL_X", expectedChannelId: "UC_PR_X" }), bearer(token))));
+  assert.equal(deleteCall.isError, true);
+  assert.equal(refused.at(-1)?.tool, "playlist_delete");
+  const worker = createMcpServer(undefined, { connectionEnabled: true, agentSession: { tokenId: "t", channelId: "UC_PR_X", async reverify() {} } });
+  const workerTools = Object.keys((worker as unknown as { _registeredTools: Record<string, unknown> })._registeredTools);
+  assert.equal(workerTools.includes("playlist_delete"), false);
+  assert.ok(workerTools.includes("playlist_update") && workerTools.includes("agent_set_privacy"));
 });
