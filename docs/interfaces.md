@@ -1599,9 +1599,15 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
   (`WRITE_CHANNEL_MISMATCH` otherwise, before any credential or YouTube call), the playlist must be that channel's (read first;
   `WRITE_CHANNEL_MISMATCH` / `not_found`), every write goes through the write gateway with Live writes right before it
   (`live_writes_disabled`). `playlist_add_videos` adds only that channel's own videos in its local synced list: any other id → `not_found`
-  for the whole call, nothing called. Real YouTube writes (no dry run), in the Producer call log like every call. Not on this endpoint:
+  for the whole call, nothing called. Real YouTube writes (no dry run), in the Producer call log like every call; a write's row also stores its playlist (`target`) and its details
+  (privacy, video ids, the answer's counts) since schema v123, shown on the Producer card in Settings. Not on this endpoint:
   `playlist_delete` and `agent_set_privacy`.
-- **Own tools:** `producer_get_capabilities` `{}` → `{ role: "producer", producerApiVersion, permissions: ["READ", "DRAFT"], channelRequired: true, tools, draftTools: ["producer_propose", "producer_mark_proposals_done", "create_experiment_proposal"] }`;
+- **Own tools:** `producer_get_capabilities` `{}` → `{ role: "producer", producerApiVersion, permissions: ["READ", "DRAFT", "UPLOAD_QUEUE",
+  "THUMBNAIL_WRITE", "METADATA_WRITE", "PLAN_MOVE", "CAPTIONS_WRITE", "PLAYLIST_WRITE"], channelRequired: true, tools, draftTools:
+  ["producer_propose", "producer_mark_proposals_done", "create_experiment_proposal", "producer_clip_review_submit",
+  "producer_clip_review_withdraw", "producer_week_template_propose"], uploadQueueTools, clipReviewTools, thumbnailTools, metadataTools,
+  captionsTools, planTools, planMoveTools, playlistTools: ["playlist_list", "playlist_create", "playlist_update", "playlist_add_videos",
+  "playlist_remove_videos"], playlistWriteTools: [the four writes] }` (the lists are `src/mcp/producer-tools.ts`, pinned by its test);
   `producer_list_channels` `{}` → `{ channels: [{ channelId, title, workspace: string | null }] }` (Settings → Channels on this device, this
   device's folder); `producer_portfolio_overview` `{ startDate, endDate }` (YYYY-MM-DD, at most 366 days) → `{ startDate, endDate, source: "local",
   channels: [{ channelId, title, analytics: { daysWithData, views, watchMinutes, subscribersGained, subscribersLost }, reach: { state, impressions,
