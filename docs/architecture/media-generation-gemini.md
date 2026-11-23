@@ -56,8 +56,8 @@ Plan: `docs/roadmap/plans/GEMINI_MEDIA_PLAN.md` (AC-GM-01..16). Schema v83, Fact
     base64 + 1 MB) and keeps transport codes. undici's own waits count as timeouts (outcome `unknown`).
   - The worker runs it like an image job. Its cost is Google's token counts (`videoCostFromUsage`: input at the input rate, text
     output and thinking at the text rate, all other output, audio included, at the video rate), never below the saved video's
-    table price (`videoCostFloor`), else the estimate. The estimate is 5,792 video tokens per second at 720p, 2.25 x for
-    1080p, plus input and the thinking allowance (1080p: 8,688 a second since Omni 1.2, below).
+    table price (`videoCostFloor`), else the estimate. The estimate is 5,792 video tokens per second at 720p and 8,688 at 1080p
+    (Google's published figures for Omni 1.2, below), plus input and the thinking allowance.
   - A video delivered as a Files API URI (normalised to its download link) becomes `running` with the URI as `remoteName` and its
     known cost. The poll downloads it without a Veo operation; a 404 or the 47-h give-up keeps the known cost. A link that
     cannot be followed fails the job at its cost, and a JSON answer to a download is refused. The stale-`submitting` sweep is 20
@@ -83,6 +83,11 @@ Plan: `docs/roadmap/plans/GEMINI_MEDIA_PLAN.md` (AC-GM-01..16). Schema v83, Fact
     lookup for create (the job is checked, estimated, stored and sent as 1.2), the worker (a 1.1 job left queued is sent as 1.2),
     and pricing. The replay check accepts the request hash of the given or the resolved content, so a job stored as 1.1 is still
     returned to a retry naming 1.1. The catalog lists only 1.2, with `durationSeconds` and `aliases`.
+  - Media's Gemini form (`gemini-media-create-request.ts`) builds its length list from the selected model's catalog
+    `durationSeconds` (`geminiDurationChoices`: 3-15, capped at 10 while a last frame is set); a chosen length over the cap is
+    kept and named as a problem (`durationLastFrame`), never shortened silently.
+  - At the default per-job limit of $1 a 720p 15 s clip (estimate $1.06) and 1080p clips of 10 s or more are refused with
+    `gemini_limit_exceeded` (`per_job`) until the owner raises the limit; the default is unchanged.
 - **Restarts.** `operation-lock media-idle` refuses `stop.sh` while a job is `submitting` (an image call takes up to 5 minutes, an Omni video up to 15); idle
   shutdown waits while any job is queued, submitting or running.
 - **Web.** Settings → Cloud APIs (`gemini-media-settings.tsx`; Settings → Gemini before BL-193) and `/api/gemini-media` (overview), `/settings`, `/key`, `/key/test`: the

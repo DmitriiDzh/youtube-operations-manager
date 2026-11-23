@@ -94,7 +94,7 @@ export function geminiVideoModelSpec(model: string): GeminiVideoModelSpec | unde
 // 2027". (The speech request shape stays UNVERIFIED, see the gateway.)
 // ---------------------------------------------------------------------------
 
-export const GEMINI_SPEECH_PRICES_AS_OF = "2026-10-29";
+export const GEMINI_SPEECH_PRICES_AS_OF = "2026-11-23";
 
 /** The instant Google's announced doubling applies (UTC midnight -- the earlier reading of "from 2027-01-01", so never under-counted). */
 export const GEMINI_SPEECH_PRICE_CHANGE_AT = "2027-01-01T00:00:00.000Z";
