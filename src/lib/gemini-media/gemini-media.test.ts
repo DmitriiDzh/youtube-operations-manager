@@ -25,7 +25,7 @@ import { createGeminiFiles } from "./adapters/files";
 import { GEMINI_LIMITS, type GeminiPeerSpendReport, type GeminiSpend } from "./contracts";
 import { createSerialLock } from "./index";
 import { estimateImageUsd, estimateVideoUsd, imageCostFromUsage } from "./pricing";
-import { createGeminiMediaServices, type GeminiMediaDeps, type GeminiStore } from "./services";
+import { createGeminiMediaServices, settingsFromJson, type GeminiMediaDeps, type GeminiStore } from "./services";
 import { createGeminiWorker } from "./worker";
 
 // BL-174 acceptance criteria (docs/roadmap/plans/GEMINI_MEDIA_PLAN.md §3, AC-GM-01..12). Expected amounts are computed by hand
@@ -1472,6 +1472,17 @@ test("Omni 1.2: whole seconds 3-15 are accepted (4/6/8 still); 2 and 16 are refu
   } finally {
     await h.cleanup();
   }
+});
+
+test("owner TG 4789: the default per-job limit is $2 -- a computer with nothing stored gets it; a stored value is kept", () => {
+  assert.equal(settingsFromJson(null).maxUsdPerJob, 2);
+  assert.equal(settingsFromJson("{}").maxUsdPerJob, 2);
+  assert.equal(settingsFromJson(JSON.stringify({ maxUsdPerDay: 7 })).maxUsdPerJob, 2, "other stored limits leave the default in place");
+  assert.equal(settingsFromJson(JSON.stringify({ maxUsdPerJob: 1 })).maxUsdPerJob, 1, "the owner's stored $1 is never raised");
+  assert.equal(settingsFromJson(JSON.stringify({ maxUsdPerJob: 0.5 })).maxUsdPerJob, 0.5);
+  assert.equal(settingsFromJson(JSON.stringify({ maxUsdPerJob: -1 })).maxUsdPerJob, 2, "a bad stored value falls back to the default");
+  // The largest Omni 1.2 clip (1080p 15 s, $1.5819 -- the hand value of the test below) fits the default.
+  assert.ok(estimateVideoUsd({ model: "gemini-omni-1.2-flash", resolution: "1080p", durationSeconds: 15, promptChars: 5, inputImages: 0 }) <= 2);
 });
 
 test("Omni 1.2: the per-job limit at the new maximum -- 1080p 15 s ($1.5819) is refused under $1.58 and fits $1.59", async () => {

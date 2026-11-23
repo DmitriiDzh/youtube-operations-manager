@@ -183,7 +183,9 @@ export type GeminiMediaSettings = {
 
 export const DEFAULT_GEMINI_MEDIA_SETTINGS: GeminiMediaSettings = Object.freeze({
   enabled: false,
-  maxUsdPerJob: 1,
+  // Owner TG 4789: $2 (was $1) so every Omni 1.2 clip fits -- the largest, 1080p 15 s, is estimated at $1.58. Only the default:
+  // a stored value (the owner's own or one received through the shared Gemini settings) is kept.
+  maxUsdPerJob: 2,
   maxUsdPerDay: 5,
   maxUsdPerMonth: 50,
   maxActiveJobs: 10,

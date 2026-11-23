@@ -86,8 +86,10 @@ Plan: `docs/roadmap/plans/GEMINI_MEDIA_PLAN.md` (AC-GM-01..16). Schema v83, Fact
   - Media's Gemini form (`gemini-media-create-request.ts`) builds its length list from the selected model's catalog
     `durationSeconds` (`geminiDurationChoices`: 3-15, capped at 10 while a last frame is set); a chosen length over the cap is
     kept and named as a problem (`durationLastFrame`), never shortened silently.
-  - At the default per-job limit of $1 a 720p 15 s clip (estimate $1.06) and 1080p clips of 10 s or more are refused with
-    `gemini_limit_exceeded` (`per_job`) until the owner raises the limit; the default is unchanged.
+  - The default per-job limit is $2 (owner TG 4789, was $1), which every clip fits (the largest, 1080p 15 s, is estimated at
+    $1.58). Only `DEFAULT_GEMINI_MEDIA_SETTINGS` changed: `settingsFromJson` takes a stored value first, so a computer with a stored
+    limit keeps it, and the shared Gemini settings (BL-193) apply the document's value where it already holds `maxUsdPerJob`. At $1
+    a 720p 15 s clip ($1.06) and 1080p clips of 10 s or more are refused with `gemini_limit_exceeded` (`per_job`).
 - **Restarts.** `operation-lock media-idle` refuses `stop.sh` while a job is `submitting` (an image call takes up to 5 minutes, an Omni video up to 15); idle
   shutdown waits while any job is queued, submitting or running.
 - **Web.** Settings → Cloud APIs (`gemini-media-settings.tsx`; Settings → Gemini before BL-193) and `/api/gemini-media` (overview), `/settings`, `/key`, `/key/test`: the
