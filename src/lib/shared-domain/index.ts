@@ -464,6 +464,9 @@ export type DomainErrorCode =
   | "video_missing"
   | "upload_steps_pending"
   | "package_metadata_conflict"
+  // Owner TG 4839/4842 (ADR 0072 amendment 1): a package translation differs on YouTube from both the upload and the package -- the
+  // whole translations call is refused, for the owner too (no override).
+  | "package_localizations_conflict"
   // Review fix 2: the package was re-packaged between the preview and the apply.
   | "package_metadata_manifest_changed"
   // BL-269 (ADR 0074): the captions writer -- the package's captions break a rule (details.reason) or its file is missing; an English

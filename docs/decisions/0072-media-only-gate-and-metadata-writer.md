@@ -99,3 +99,47 @@ There is no SQLite schema change: the upload row's existing `manifest_sha256` / 
 sync family gains additive fields and one kind. An older build is stricter: it reads approvals as manifest-keyed and still fails a
 queued row on re-package. Both computers update together, and the upload computer is the Mac. Existing approvals carry over while
 their manifest is on disk.
+
+## Amendment 1 — the package's translations after upload (2026-11-24)
+
+**Requirement:** owner TG 4839/4842, 2026-11-24 («согласовываю»), relayed by the Producer (TG 2578) for a Japan packaging A/B test
+(B variants on scheduled videos). It reverses §8's "Translations of an uploaded video stay out for now" for the package's own
+translations only; `docs/WRITE_AUTHORIZATIONS.md` «Package metadata after upload» carries the amendment.
+
+1. **What.** A video a release package already put on YouTube may get that package's **current manifest** `localizations` (title and
+   description per language, `packageLocalizationSet` -- the set the upload's translations step sends), descriptions in YouTube's
+   form (§7). Never free text, never YouTube's own `snippet.defaultLanguage` (listed as `ownLanguageSkipped`; that text is §5's
+   snippet path), never a removal: a language the video has and the package lacks is kept (`kept`). A video with no default language
+   on YouTube is refused.
+2. **Writer.** No new writer and no new gateway function: `src/lib/publishing/package-localizations.ts` decides, the shared video
+   translations writer `src/lib/shared-video-localizations/` writes (ADR 0051 §8, ADR 0045: identity check, backup of the current
+   translations, safe merge, Live writes immediately before `videos.update part=snippet,localizations`, read-back, audit), with
+   source `package_localizations`. Two additive writer inputs: `expectedCurrent` (each language written must still read as this
+   check saw it, on the fresh read and on the recheck after the backup; otherwise `video_details_conflict`, nothing sent) and
+   `auditContext` (actor, package). The service reads privacy and `publishAt` before and after (the writer reads only snippet and
+   localizations); a change, or the writer's `verified: false`, is `update_failed`.
+3. **Three-way check per language and field** (YouTube now Y / what the upload sent U / the package P; absent is a value): Y = P
+   same; U known and Y = U write; otherwise conflict. U comes from this computer's audit of the video, newest first
+   (`localizationBaselineOf`): the newest `package_localizations.applied` whose translations read back verified (`writerVerified`, also
+   when a status field changed afterwards) gives `afterLocalizations` -- malformed: unknown; a newer attempt that did not read back
+   verified (an applied row with the writer unverified, or the writer's RESULT row with no applied row after it) makes the languages it
+   tried unknown. Otherwise this computer's finished upload row of the video when its translations step is `verified` (its frozen set, a
+   language not in it was not sent) or `none` (nothing sent); otherwise unknown. The upload record file (`V<n>_youtube.json`) does not
+   hold the translations, so an upload from the other computer is unknown: every difference is a conflict. **Any conflict refuses the
+   whole call, for the owner as well** (`package_localizations_conflict`, `details.conflicts`; no per-language override; the screen
+   shows which language and field).
+4. **One YouTube write per call, and no stale snippet echo.** `producer_video_metadata_update { localizations: true }` and the owner's
+   route `{ localizations: true }` fix the translations instead of title/description/tags (the flag, not a sibling tool, keeps one tool,
+   one permission `METADATA_WRITE` and one session surface). One write per call alone does not stop a stale echo (review of 1c515813):
+   the translations writer sends the snippet back from its own read, so a lagging replica could echo an older title over a texts fix
+   just made, and its read-back -- against that same read -- would pass. So the call passes `expected` title / description / tags
+   (`ExpectedSnippet` gains `title` / `description`): YouTube's texts as this check read them, overridden by what the latest
+   `package_metadata` fix here sent when it is at most 15 minutes old. The writer waits for them (its bounded re-read loop) or refuses
+   with nothing sent, and its read-back checks them. Both package fixes of one video also run one at a time on this computer
+   (`withPackageVideoLock`, in-process). A texts fix made on the other computer within seconds is not covered by the lock; the
+   expected texts then come only from this check's read.
+5. **Gates as §5:** the device gate, `snippet.channelId`, refused while this computer's upload of the video has not finished its
+   read-back, never automatic; public videos as §5 (allowed on a person's click or the Producer's deliberate call). Dry run: every
+   read, no backup, no write. Quota about 56 units. A scheduled video that publishes during the call (private with a due `publishAt` ->
+   public) is not a status change made by the write.
+6. **API:** Producer 1.31.0 (additive; 1.28.0 went to BL-272, 1.29.0 to playlist-rights, 1.30.0 to BL-273). Backlog BL-274. Factory and Agent unchanged.

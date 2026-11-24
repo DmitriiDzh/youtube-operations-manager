@@ -172,6 +172,16 @@ test("BL-265 AC-MG-34: createPackageMetadataCore is used only by the Producer se
   assert.deepEqual(callers.sort(), ["app/api/channels/[channelId]/publishing/package-metadata/handlers.ts", "lib/producer-mcp-endpoint/session-deps.ts", "lib/publishing/index.ts"]);
 });
 
+// Owner TG 4839/4842 (ADR 0072 amendment 1, a new requirement): the package translations fix has the same two callers only -- the
+// Producer session wiring and the owner's package-metadata route; no worker agent or factory path reaches it.
+test("ADR 0072 amendment 1: createPackageLocalizationsCore is used only by the Producer session wiring and the owner's package-metadata route", async () => {
+  const callers: string[] = [];
+  for (const file of await files(SRC)) {
+    if (/\bcreatePackageLocalizationsCore\b/.test(await readFile(file, "utf8"))) callers.push(path.relative(SRC, file));
+  }
+  assert.deepEqual(callers.sort(), ["app/api/channels/[channelId]/publishing/package-metadata/handlers.ts", "lib/producer-mcp-endpoint/session-deps.ts", "lib/publishing/index.ts"]);
+});
+
 // BL-269 AC-CAP-35 (VIDEO_CAPTIONS_PLAN.md §3.5, ADR 0074 §8; owner TG 4590/4592/4660 -- a new requirement): the Producer's captions
 // tool is exactly one, producer-only; the factory and the channel workers have no caption tool; the package-captions service is
 // reached only by the Producer session wiring and the owner's route, and the captions writer only through publishing.

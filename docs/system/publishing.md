@@ -146,3 +146,8 @@
   `/api/channels/[channelId]/publishing/package-metadata`, кнопки на строке загруженного пакета («План» → «⋯» → пакеты, и на карточке слота; до BL-266 — «Ролики и релизы»)
   (`package-packaging-actions.tsx`), инструмент Продюсера `producer_video_metadata_update` (конфликт — отказ). В `video-details`: Live writes
   прямо перед записью, `channelId` в снимке, `verifyUnchanged`, правило описания в сверке.
+- **Переводы упаковки после загрузки (owner TG 4839/4842, ADR 0072 поправка 1):** `publishing/package-localizations.ts`
+  (`createPackageLocalizationsCore`; без нового писателя: общий `shared-video-localizations`, source `package_localizations`) —
+  переводы из текущего `localizations` манифеста, тройная проверка по языку и полю, любой конфликт — отказ всего вызова (и владельцу),
+  язык по умолчанию видео не пишется, лишние языки видео сохраняются; общие ворота с правкой упаковки (`findUploadedPackage` /
+  `readUploadedVideo`). Тот же маршрут и инструмент с `localizations: true`; кнопка «Переводы упаковки» в `package-packaging-actions.tsx`.

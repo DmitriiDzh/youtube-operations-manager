@@ -1573,7 +1573,7 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
 
 - **Transport:** as the factory endpoint, with `Authorization: Bearer ytom_pr_...` (the same checks and codes; a channel or factory token is
   401 `AGENT_TOKEN_INVALID` here, and a producer token on `/api/mcp` and `/api/mcp/factory`). Re-verified on every tool call.
-- **Producer API version:** `1.30.0` (FO-REQ-0056 part 2, BL-273, additive: `channel_video_list` / `agent_get_video_context` carry each
+- **Producer API version:** `1.31.0` (owner TG 4839/4842, ADR 0072 amendment 1, BL-274, additive: `producer_video_metadata_update` takes `localizations: true` -- the package's translations, below); `1.30.0` (FO-REQ-0056 part 2, BL-273, additive: `channel_video_list` / `agent_get_video_context` carry each
   video's synced `tags`, see the channel-sync tools above); `1.29.0` (owner TG 4782, ADR 0048 Amendment 1, additive: the playlist channel tools below, permission
   `PLAYLIST_WRITE`, `playlistTools` / `playlistWriteTools` in `producer_get_capabilities`); `1.28.0` (BL-272, ADR 0076, additive: the image review tools below, `imageReviewTools` in `producer_get_capabilities`, `approvedImageId` on `producer_clip_review_submit`); `1.27.0` (BL-271, ADR 0075, additive: `producer_wait` below); `1.26.0` (since BL-269, ADR 0074, additive: `producer_video_captions_add` below, permission `CAPTIONS_WRITE`,
   `captionsTools` in `producer_get_capabilities`; calendar packages gain `captions`); `1.25.0` (BL-267, ADR 0073, additive: the weekly-plan tools below, permission `PLAN_MOVE`,
@@ -1681,6 +1681,26 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
   `package_metadata_conflict` (`details.conflicts`), `video_details_conflict`, `CHANNEL_NOT_ACTIVE`, `WRITE_CHANNEL_MISMATCH`, `live_writes_disabled`,
   `update_failed`, `operation_lock_held` / `device_in_recovery_mode`. The owner's route: `POST /api/channels/[channelId]/publishing/package-metadata`
   `{ video, dryRun? }` / `{ video, expectedEtag, overwrite?: field[] }` (owner session, active channel; the owner may overwrite a conflicting field).
+  **Translations (Producer 1.31.0; owner TG 4839/4842, 2026-11-24; ADR 0072 amendment 1):** `{ channelId, video, dryRun?, expectedManifestSha256?,
+  localizations: true }` (a boolean only) fixes, instead of the texts, the video's per-language title/description from the package's current manifest
+  `localizations` -- one YouTube write per call. Dry run `{ dryRun: true, kind: "localizations", video, videoId, manifestSha256, etag, baseline:
+  upload_row | localizations_apply | unknown, defaultLanguage, languages: [{ language, status: same | write | conflict, uploadedKnown, fields: [{ field:
+  title | description, youtube (null: no such language), uploaded (null: not sent / unknown), package, status }] }], kept (languages the video has and the
+  package lacks: never touched), ownLanguageSkipped (a package language equal to YouTube's default language: never written), changed, quotaUnits (56) }`;
+  real `{ dryRun: false, kind: "localizations", video, videoId, manifestSha256, changed, written, kept, verified }`, plus `forChannelId`. Per language
+  and field: YouTube = package same; YouTube = what the upload sent write; otherwise conflict. What the upload sent: the latest verified translations
+  fix here, else this computer's finished upload row when its translations step is `verified` (its frozen set) or `none` (nothing sent); otherwise
+  unknown (e.g. uploaded from the other computer: the upload record file does not hold translations) -- every difference a conflict. Any conflict
+  refuses the whole call (`package_localizations_conflict`, `details.conflicts: [{ language, fields }]`), for the owner too.
+  The snippet is sent back only once the video reads its title / description / tags as checked (or as a texts fix on this computer in the
+  last 15 minutes sent; a lagging read is re-read a few times, then `update_failed`, nothing sent), and the texts fix and the translations
+  fix of one video run one at a time here.
+  The write is the shared video translations writer (identity check, backup of the current translations, the languages written re-checked right
+  before the write -- else `video_details_conflict`, nothing sent --, Live writes immediately before `videos.update part=snippet,localizations` with
+  every other language kept and the snippet as read, read-back), then privacy and `publishAt` read back; audit `source: package_localizations`, actor.
+  A read-back that differs is `update_failed` (`details.problem` / `details.changedUntouched`). Also `validation_failed` (the video has no default
+  language on YouTube) and the texts path's errors. The owner's route takes the same `localizations: true` (`{ video, dryRun: true, localizations:
+  true }` / `{ video, localizations: true, expectedEtag, expectedManifestSha256 }`; no overwrite).
 - **Thumbnail tool (BL-255, ADR 0069, owner msgs 4380/4383):** `producer_video_thumbnail_replace` `{ channelId, videoId (11 chars), path (workspace-
   relative, under `04 Videos/`, .jpg/.jpeg/.png), dryRun? }` → `{ channelId, videoId, path, dryRun, file: { bytes, contentType, sha256 }, before:
   { hasCustomThumbnail, privacyStatus, publishAt, url }, after (same shape, or null), units (52), written, backupPath, verified, verificationDetail, imageChanged }`

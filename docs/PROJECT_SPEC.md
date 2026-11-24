@@ -858,7 +858,11 @@ back as read, `zxx` left out), with a three-way conflict check (YouTube now / wh
 backup, the Live-writes check immediately before the call, read-back (the written fields; the untouched snippet fields, privacy,
 `publishAt` and the localization languages unchanged), audit (`source: package_metadata`) and a dry run. Only the owner («Применить
 упаковку», Web UI) and the Producer (`producer_video_metadata_update`, refusing any conflict); refused while this computer's upload of
-that video has not finished its read-back; never automatic, never `localizations`, `status`, category or languages. The owner's package
+that video has not finished its read-back; never automatic, never `status`, category or languages. *Amended 2026-11-24 (owner TG
+4839/4842, ADR 0072 amendment 1):* the same two callers may write the package's current manifest `localizations` (per-language
+title/description) onto that video through the shared video translations writer -- never the video's own default language, never a
+removal, a per-language three-way check where any conflict refuses the whole call, one write per call, the same safety steps
+(`source: package_localizations`); see `docs/WRITE_AUTHORIZATIONS.md`. The owner's package
 review (BL-257) now gates the **media** only: an approval covers the mp4 (`sha256` + `sizeBytes`, per channel and video code, or its
 BL-263 recode alias); packaging changes neither need nor reset it, and a queued upload takes a re-package of only its packaging.
 
