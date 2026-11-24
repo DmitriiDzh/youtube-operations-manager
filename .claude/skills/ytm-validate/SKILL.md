@@ -61,4 +61,3 @@ Worktrees live on the Mac's 256 GB internal SSD. They must not pile up:
 - At the start of each session and after a night restart: `git -C M worktree list`. Remove any clean worktree whose
   branch is already in `dev` (`git merge-base --is-ancestor <branch> dev`), plus harness `agent-*` worktrees that are
   left over. Never remove one with uncommitted changes; ask instead.
-

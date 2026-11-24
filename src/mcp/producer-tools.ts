@@ -76,7 +76,9 @@
 // playlist_update (title / description / privacy, public included), playlist_add_videos (only the channel's own synced videos) and
 // playlist_remove_videos, each run for the named channel as its own agent would (`expectedChannelId`, required except on
 // playlist_create, must equal `channelId`); permission PLAYLIST_WRITE and playlistTools in producer_get_capabilities. No playlist delete. Additive.
-export const PRODUCER_API_VERSION = "1.29.0";
+// 1.30.0 (FO-REQ-0056 part 2, BL-273): channel_video_list gains the selectable field `tags` and agent_get_video_context's metadata gains
+// `tags` (snippet.tags as of the last channel sync; [] = none; null = not read yet). Read-only, local copy. Additive; no tool added.
+export const PRODUCER_API_VERSION = "1.30.0";
 
 /** The channel agent's READ tools the Producer gets; each call names its channel and runs in that channel's agent scope. */
 export const PRODUCER_CHANNEL_TOOLS: Readonly<Record<string, { capability: string }>> = Object.freeze({

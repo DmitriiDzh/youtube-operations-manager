@@ -114,3 +114,48 @@ test("refreshVideoFields applies a fresh scheduled publishAt when YouTube report
   const stored = await getStoredVideo(CHANNEL, "v2");
   assert.equal(stored?.publishAt, "2026-11-20T10:00:00.000Z");
 });
+
+// FO-REQ-0056: after a verified video-details write (video_details_update, the owner's «Применить упаковку»,
+// producer_video_metadata_update) the local copy takes the read-back's tags at once -- the tags YouTube now has, `[]` when it has
+// none -- while the columns this module does not write keep what the last sync stored.
+test("FO-REQ-0056: a verified tags write updates the stored tags at once; other synced columns are kept", async () => {
+  await upsertChannel({ channelId: CHANNEL, title: "Test", thumbnailUrl: null, uploadsPlaylistId: "UU_test", connectedUserId: null });
+  await upsertVideos(
+    [
+      {
+        videoId: "vt1",
+        channelId: CHANNEL,
+        title: "Title before",
+        description: "D",
+        publishedAt: "2026-09-01T00:00:00Z",
+        privacyStatus: "private",
+        defaultLanguage: "en",
+        defaultAudioLanguage: "en",
+        thumbnails: {},
+        existingLocalizations: { es: { title: "ES", description: "ES d" } },
+        etag: "etag-before",
+        viewCount: 42,
+        durationSeconds: 630,
+        tags: ["old tag"],
+      },
+    ],
+    new Date("2026-11-18T00:00:00Z")
+  );
+  const cache = createVideoDetailsLocalCacheAdapter();
+
+  await cache.refreshVideoFields({
+    channelId: CHANNEL,
+    videoId: "vt1",
+    after: baseSnapshot({ videoId: "vt1", title: "Title after", tags: ["tropico jazz", "Smooth Jazz"] }),
+  });
+  const updated = await getStoredVideo(CHANNEL, "vt1");
+  assert.deepEqual(updated?.tags, ["tropico jazz", "Smooth Jazz"]);
+  assert.equal(updated?.title, "Title after");
+  assert.equal(updated?.viewCount, 42);
+  assert.equal(updated?.durationSeconds, 630);
+  assert.deepEqual(updated?.existingLocalizations, { es: { title: "ES", description: "ES d" } });
+
+  // Tags removed on YouTube by the write: the read-back says [] and so does the local copy.
+  await cache.refreshVideoFields({ channelId: CHANNEL, videoId: "vt1", after: baseSnapshot({ videoId: "vt1", tags: [] }) });
+  assert.deepEqual((await getStoredVideo(CHANNEL, "vt1"))?.tags, []);
+});

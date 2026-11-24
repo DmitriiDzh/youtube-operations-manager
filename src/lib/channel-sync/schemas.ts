@@ -50,6 +50,7 @@ const syncedVideoSchema = z
     publishAt: z.string().nullable(),
     durationSeconds: z.number().int().nullable().optional(),
     liveBroadcastContent: z.string().nullable().optional(),
+    tags: z.array(z.string()).nullable(),
   })
   .strict();
 
@@ -103,6 +104,7 @@ export const SYNCED_VIDEO_FIELDS = [
   "publishAt",
   "durationSeconds",
   "liveBroadcastContent",
+  "tags",
 ] as const;
 
 export const listSyncedVideosInputSchema = z
