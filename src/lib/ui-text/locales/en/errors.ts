@@ -172,6 +172,7 @@ export const errors = {
   "errors.OPERATIONS_FILE_NOT_AVAILABLE": "The requested file is not available.",
   "errors.CHANNEL_WORKSPACE_PATH_INVALID": "This folder cannot be used as the channel's workspace.",
   "errors.CHANNEL_WORKSPACE_CHANNEL_NOT_CONNECTED": "This channel is not connected on this computer.",
+  "errors.CHANNEL_WORKSPACE_NESTED": "This folder is inside another channel's workspace folder, or contains one. Each channel needs a folder of its own, side by side.",
   "errors.media_generation_not_configured": "RunPod is not set up on this computer (Settings → Cloud APIs).",
   "errors.media_gateway_disabled": "The RunPod connection is switched off.",
   "errors.media_credentials_invalid": "RunPod did not accept the key.",

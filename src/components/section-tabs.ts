@@ -23,6 +23,8 @@ export const MEDIA_TABS = [
   { value: "video", labelKey: "tabs.media.video", kind: "video" },
   // BL-241 (CLIP_REVIEWS_PLAN.md item 5, owner msgs 4010/4011; moved from Content, owner msg 4025): the Producer's clips for
   // review, approved or returned by the owner.
+  // BL-272 (ADR 0076, owner TG 2547 via the Producer): the scenes' master still images for review -- step 1 before the clip (step 2).
+  { value: "stills", labelKey: "tabs.media.stills", kind: null },
   { value: "clips", labelKey: "tabs.media.clips", kind: null },
   // BL-257 (ADR 0070, owner msgs 4514/4516): the channel's final release packages, approved or returned by the owner before upload.
   { value: "packages", labelKey: "tabs.media.review", kind: null },

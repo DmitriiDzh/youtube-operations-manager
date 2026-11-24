@@ -56,6 +56,10 @@ test("resolveAppPaths: Windows resolves under APPDATA", () => {
   assert.equal(result.packageReviewsSyncFallbackDir, path.join(result.appDataDir, "package-reviews-sync-local"));
   assert.equal(result.packageReviewsDiscardedBackupsDir, path.join(result.appDataDir, "package-reviews-discarded-backups"));
   assert.equal(result.clipReviewUploadsDir, path.join(result.appDataDir, "clip-review-uploads"));
+  // BL-272 (ADR 0076): the master still images for review, a sync family of their own.
+  assert.equal(result.imageReviewsDocDir, path.join(result.appDataDir, "image-reviews-doc"));
+  assert.equal(result.imageReviewsSyncFallbackDir, path.join(result.appDataDir, "image-reviews-sync-local"));
+  assert.equal(result.imageReviewsDiscardedBackupsDir, path.join(result.appDataDir, "image-reviews-discarded-backups"));
   assert.equal(result.liveStreamsShareDir, path.join(result.appDataDir, "live-streams-share"));
   assert.equal(result.liveStreamsSyncFallbackDir, path.join(result.appDataDir, "live-streams-sync-local"));
   assert.equal(result.aiConnectionsCatalogDiscardedBackupsDir, path.join(result.appDataDir, "ai-connections-catalog-discarded-backups"));

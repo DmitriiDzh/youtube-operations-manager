@@ -93,6 +93,7 @@ import {
   PRODUCER_TOOL_NAMES,
   PRODUCER_UPLOAD_QUEUE_TOOLS,
   PRODUCER_CLIP_REVIEW_TOOLS,
+  PRODUCER_IMAGE_REVIEW_TOOLS,
   PRODUCER_THUMBNAIL_TOOLS,
   PRODUCER_PLAN_TOOLS,
   PRODUCER_PLAN_MOVE_TOOLS,
@@ -531,6 +532,16 @@ export type ProducerSession = {
     get(input: { channelId: string; clipId: string }): Promise<Record<string, unknown>>;
   };
   /**
+   * BL-272 (ADR 0076): the Producer's side of the master still images for review -- submit, withdraw, list, get (`session-deps.ts`
+   * wires the image-reviews module's Producer surface; the owner's three answers are reachable only from the Web UI).
+   */
+  imageReviews: {
+    submit(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+    withdraw(input: { channelId: string; imageId: string }): Promise<Record<string, unknown>>;
+    list(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+    get(input: { channelId: string; imageId: string }): Promise<Record<string, unknown>>;
+  };
+  /**
    * BL-255 (ADR 0069): replace a video's custom thumbnail through `src/lib/video-thumbnails/` (`session-deps.ts` wires it; nothing
    * else in src/mcp reaches the writer).
    */
@@ -619,6 +630,11 @@ export const producerClipReviewSubmitInputSchema = z
     note: z.string().min(1).max(2000).describe("What changed / what to look at (1-2000 characters)."),
     startSec: z.number().finite().min(0).optional().describe("Optional: where the owner's player starts, in seconds."),
     endSec: z.number().finite().min(0).optional().describe("Optional: where the owner's player stops, in seconds."),
+    approvedImageId: z
+      .string()
+      .regex(/^[A-Za-z0-9_-]{1,40}$/)
+      .optional()
+      .describe("Optional (1.28.0): the imageId of the approved master still (producer_image_review_*) this clip was made from -- an image of the same channel the owner approved, with or without a note."),
   })
   .strict();
 export const producerClipReviewListInputSchema = z
@@ -629,6 +645,37 @@ export const producerClipReviewListInputSchema = z
   })
   .strict();
 export const producerClipReviewOneInputSchema = z.object({ channelId: producerClipChannelId, clipId: producerClipId }).strict();
+
+/**
+ * BL-272 (ADR 0076): the Producer's image review tools' inputs. Plain shapes here (the MCP layer lists them); the image-reviews
+ * module checks them again with its own schemas (trimming, control characters, the limits) and the rules beyond the shape.
+ */
+const producerImageChannelId = z.string().min(1).max(64).describe("The channel of the image (one of producer_list_channels).");
+const producerImageId = z.string().regex(/^[A-Za-z0-9_-]{1,40}$/).describe("The image's id (imageId from producer_image_review_submit or _list).");
+const producerImageKey = z.string().regex(/^[A-Za-z0-9_.:-]{1,80}$/);
+export const producerImageReviewSubmitInputSchema = z
+  .object({
+    channelId: producerImageChannelId,
+    sceneId: z.string().min(1).max(80).describe("The scene the image is the master still of, e.g. P46 (1-80 characters); a reworked image of the same scene uses the same label."),
+    imagePath: z
+      .string()
+      .min(1)
+      .max(500)
+      .describe("The image file, relative to the channel's workspace folder, '/' between folders, e.g. '03 Images/Scenes/P46/master.png'. PNG or JPEG."),
+    note: z.string().min(1).max(2000).optional().describe("Optional: what to look at (1-2000 characters)."),
+    batchId: producerImageKey.optional().describe("Optional: submits sharing a batchId are one batch -- the owner sees them as one grid (at most 40 images per batch)."),
+    requestId: producerImageKey.optional().describe("Optional idempotency key: a retry with the same requestId answers the stored image (replayed: true); the same requestId for a different request is refused."),
+  })
+  .strict();
+export const producerImageReviewListInputSchema = z
+  .object({
+    channelId: producerImageChannelId,
+    status: z.enum(["pending", "approved", "approved_with_note", "returned", "withdrawn"]).optional(),
+    batchId: producerImageKey.optional().describe("Only this batch's images."),
+    limit: z.number().int().min(1).max(200).optional().describe("At most this many images (default 50)."),
+  })
+  .strict();
+export const producerImageReviewOneInputSchema = z.object({ channelId: producerImageChannelId, imageId: producerImageId }).strict();
 
 /** BL-239 (ADR 0059): the Producer's upload queue tools' inputs. */
 const producerQueueChannelId = z.string().min(1).max(64).describe("The channel of the upload (one of producer_list_channels).");
@@ -704,7 +751,7 @@ export const producerVideoMetadataUpdateInputSchema = z
     localizations: z
       .boolean()
       .optional()
-      .describe("1.28.0: true -- this call fixes the package's TRANSLATIONS (per-language title/description from its manifest's `localizations`) instead of the default-language title/description/tags; one YouTube write per call, so fix the texts and the translations in two calls."),
+      .describe("1.30.0: true -- this call fixes the package's TRANSLATIONS (per-language title/description from its manifest's `localizations`) instead of the default-language title/description/tags; one YouTube write per call, so fix the texts and the translations in two calls."),
   })
   .strict();
 
@@ -3197,7 +3244,7 @@ export function createMcpServer(
     "producer_get_capabilities",
     {
       description:
-        "The Producer role's own report: its API version, its permissions (READ; DRAFT for its proposals only; UPLOAD_QUEUE for this computer's upload queue) and the tools it can call. Every channel tool needs `channelId` -- one of producer_list_channels -- and answers with `forChannelId`. No tool here writes to YouTube or spends money by itself: the DRAFT tools (draftTools) store a proposal or mark one read, and a proposal changes nothing until the owner approves it in YT Manager; the UPLOAD_QUEUE tools (uploadQueueTools) list, order, cancel and add rows of this computer's upload queue -- the app's own uploader then uploads a queued row as private, with its identity check, and only while the owner's Live writes switch is on; a date comes only from a weekly-plan slot the owner approved. The clip review tools (clipReviewTools) submit a clip already in a channel's folder for the owner to watch, and read his answer: only the owner approves or returns a clip, in YT Manager. THUMBNAIL_WRITE (thumbnailTools, since 1.20.0): producer_video_thumbnail_replace writes a video's custom thumbnail on YouTube (owner's decision, any video of a connected channel), with backup, identity check, Live writes, read-back and audit. METADATA_WRITE (metadataTools, since 1.24.0): producer_video_metadata_update writes an uploaded video's title / description / tags from its package's current manifest -- or, with localizations: true (since 1.28.0), its translations -- refusing any conflict, with the same safety steps. PLAN_MOVE (planMoveTools, since 1.25.0): producer_publishing_plan_move_slot moves a weekly-plan slot anywhere at once and, for a video already dated, writes the new date on YouTube with the same safety steps. CAPTIONS_WRITE (captionsTools, since 1.26.0): producer_video_captions_add puts a package's English captions onto its uploaded video (overwrite: true replaces the video's one English standard track), with the same safety steps. These four are the only YouTube writes a Producer tool makes itself; producer_week_template_propose is a DRAFT the owner decides.",
+        "The Producer role's own report: its API version, its permissions (READ; DRAFT for its proposals only; UPLOAD_QUEUE for this computer's upload queue) and the tools it can call. Every channel tool needs `channelId` -- one of producer_list_channels -- and answers with `forChannelId`. No tool here writes to YouTube or spends money by itself: the DRAFT tools (draftTools) store a proposal or mark one read, and a proposal changes nothing until the owner approves it in YT Manager; the UPLOAD_QUEUE tools (uploadQueueTools) list, order, cancel and add rows of this computer's upload queue -- the app's own uploader then uploads a queued row as private, with its identity check, and only while the owner's Live writes switch is on; a date comes only from a weekly-plan slot the owner approved. The clip review tools (clipReviewTools) submit a clip already in a channel's folder for the owner to watch, and read his answer: only the owner approves or returns a clip, in YT Manager. The image review tools (imageReviewTools, since 1.28.0) do the same for a scene's master still image: only the owner approves it, approves it with a note, or returns it. THUMBNAIL_WRITE (thumbnailTools, since 1.20.0): producer_video_thumbnail_replace writes a video's custom thumbnail on YouTube (owner's decision, any video of a connected channel), with backup, identity check, Live writes, read-back and audit. METADATA_WRITE (metadataTools, since 1.24.0): producer_video_metadata_update writes an uploaded video's title / description / tags from its package's current manifest -- or, with localizations: true (since 1.30.0), its translations -- refusing any conflict, with the same safety steps. PLAN_MOVE (planMoveTools, since 1.25.0): producer_publishing_plan_move_slot moves a weekly-plan slot anywhere at once and, for a video already dated, writes the new date on YouTube with the same safety steps. CAPTIONS_WRITE (captionsTools, since 1.26.0): producer_video_captions_add puts a package's English captions onto its uploaded video (overwrite: true replaces the video's one English standard track), with the same safety steps. These four are the only YouTube writes a Producer tool makes itself; producer_week_template_propose is a DRAFT the owner decides.",
       inputSchema: z.object({}).strict(),
     },
     async () =>
@@ -3210,6 +3257,7 @@ export function createMcpServer(
         draftTools: [...PRODUCER_DRAFT_TOOLS],
         uploadQueueTools: [...PRODUCER_UPLOAD_QUEUE_TOOLS],
         clipReviewTools: [...PRODUCER_CLIP_REVIEW_TOOLS],
+        imageReviewTools: [...PRODUCER_IMAGE_REVIEW_TOOLS],
         thumbnailTools: [...PRODUCER_THUMBNAIL_TOOLS],
         metadataTools: [...PRODUCER_METADATA_TOOLS],
         captionsTools: [...PRODUCER_CAPTIONS_TOOLS],
@@ -3405,7 +3453,7 @@ export function createMcpServer(
     "producer_video_metadata_update",
     {
       description:
-        "Fix the default-language title, description and tags of a video already on YouTube from its release package's CURRENT manifest (1.24.0) -- e.g. after the factory re-packaged it for a packaging test. Only those three fields, only the values the package states (never text of yours; a package without its own tags uses the channel's common tags, as the upload did), only the fields that differ; never translations (those only with localizations: true, below), privacy, date, category or languages, and never automatically. Input: channelId, video (V61 or S14), dryRun (optional; call it first), expectedManifestSha256 (optional: the dry run's manifestSha256 -- refused with package_metadata_manifest_changed when the package was re-packaged since). Three-way check per field: YouTube now / what this video's upload sent (this computer's finished upload row, or the latest earlier fix here) / the package. A field equal on YouTube and in the package is not written; one YouTube still has as uploaded is written; one that differs from both (changed in Studio, or the upload ran on the other computer so what it sent is unknown here) is a conflict -- refused for you (package_metadata_conflict, details.conflicts): only the owner may overwrite it in YT Manager. dryRun returns { dryRun: true, video, videoId, manifestSha256, etag, baseline (upload_row | metadata_apply | unknown), fields: [{ field, youtube, uploaded, manifest, status: same | write | conflict }], changed, audioLanguageLeftOut, quotaUnits (54), thumbnail: { path, differs } | null } -- no backup and no write. Otherwise, with no conflict: the device gate, the channel identity check, a backup of the current snippet, the owner's Live writes switch immediately before videos.update (a full snippet read-merge-write: category and languages sent back exactly as read just before; an audio language read as zxx is left out), then a read-back of the written fields and of the untouched ones (category, languages, privacy, publishAt) and the localization languages; audited with source package_metadata, actor producer. Returns { dryRun: false, video, videoId, manifestSha256, changed, written, skippedConflicts, verified, backupPath, audioLanguageLeftOut } and forChannelId. A thumbnail that differs is replaced with producer_video_thumbnail_replace. TRANSLATIONS (1.28.0, owner TG 4839/4842): with localizations: true the call fixes instead the video's per-language titles/descriptions from the package's current manifest `localizations` (the set the upload's translations step sent; never text of yours; never the video's own default language, which is the title/description above; a language the video has and the package lacks is kept, never removed; nothing else changes). One YouTube write per call: run it without the flag for the texts and with it for the translations. Three-way check per language and field: YouTube now / what this computer's upload sent (its finished upload row when its translations step read back verified, or 'none sent' when the package had none then; or the latest earlier translations fix here) / the package -- same, write, or conflict (unknown, e.g. uploaded from the other computer, makes every difference a conflict). Any conflict refuses the whole call (package_localizations_conflict, details.conflicts [{ language, fields }]). dryRun returns { dryRun: true, kind: 'localizations', video, videoId, manifestSha256, etag, baseline (upload_row | localizations_apply | unknown), defaultLanguage, languages: [{ language, status, uploadedKnown, fields: [{ field, youtube, uploaded, package, status }] }], kept, ownLanguageSkipped, changed, quotaUnits (56) }. Otherwise: the same gates, then the shared translations writer (identity check, backup of the current translations, a recheck that the languages it writes still read as checked -- else video_details_conflict, nothing sent -- the owner's Live writes switch immediately before videos.update part=snippet,localizations with every other language kept and the snippet sent back as read, read-back of the written and the kept languages and the snippet) and a read-back of privacy and publishAt; audited with source package_localizations, actor producer. Returns { dryRun: false, kind: 'localizations', video, videoId, manifestSha256, changed, written, kept, verified }; a read-back that differs is update_failed (details.problem / details.changedUntouched). Errors: upload_package_not_ready (no package of that video here), package_metadata_manifest_changed, package_metadata_not_uploaded (not on YouTube yet: no upload record), package_metadata_invalid (the package's texts break YouTube's limits: details.problems), upload_steps_pending (this computer's upload of it has not finished its read-back), video_missing (not on YouTube any more), video_not_in_channel, package_metadata_conflict, video_details_conflict (the video changed while it was written: run again), CHANNEL_NOT_ACTIVE, WRITE_CHANNEL_MISMATCH, live_writes_disabled, update_failed (the read-back differs: details), operation_lock_held / device_in_recovery_mode.",
+        "Fix the default-language title, description and tags of a video already on YouTube from its release package's CURRENT manifest (1.24.0) -- e.g. after the factory re-packaged it for a packaging test. Only those three fields, only the values the package states (never text of yours; a package without its own tags uses the channel's common tags, as the upload did), only the fields that differ; never translations (those only with localizations: true, below), privacy, date, category or languages, and never automatically. Input: channelId, video (V61 or S14), dryRun (optional; call it first), expectedManifestSha256 (optional: the dry run's manifestSha256 -- refused with package_metadata_manifest_changed when the package was re-packaged since). Three-way check per field: YouTube now / what this video's upload sent (this computer's finished upload row, or the latest earlier fix here) / the package. A field equal on YouTube and in the package is not written; one YouTube still has as uploaded is written; one that differs from both (changed in Studio, or the upload ran on the other computer so what it sent is unknown here) is a conflict -- refused for you (package_metadata_conflict, details.conflicts): only the owner may overwrite it in YT Manager. dryRun returns { dryRun: true, video, videoId, manifestSha256, etag, baseline (upload_row | metadata_apply | unknown), fields: [{ field, youtube, uploaded, manifest, status: same | write | conflict }], changed, audioLanguageLeftOut, quotaUnits (54), thumbnail: { path, differs } | null } -- no backup and no write. Otherwise, with no conflict: the device gate, the channel identity check, a backup of the current snippet, the owner's Live writes switch immediately before videos.update (a full snippet read-merge-write: category and languages sent back exactly as read just before; an audio language read as zxx is left out), then a read-back of the written fields and of the untouched ones (category, languages, privacy, publishAt) and the localization languages; audited with source package_metadata, actor producer. Returns { dryRun: false, video, videoId, manifestSha256, changed, written, skippedConflicts, verified, backupPath, audioLanguageLeftOut } and forChannelId. A thumbnail that differs is replaced with producer_video_thumbnail_replace. TRANSLATIONS (1.30.0, owner TG 4839/4842): with localizations: true the call fixes instead the video's per-language titles/descriptions from the package's current manifest `localizations` (the set the upload's translations step sent; never text of yours; never the video's own default language, which is the title/description above; a language the video has and the package lacks is kept, never removed; nothing else changes). One YouTube write per call: run it without the flag for the texts and with it for the translations. Three-way check per language and field: YouTube now / what this computer's upload sent (its finished upload row when its translations step read back verified, or 'none sent' when the package had none then; or the latest earlier translations fix here) / the package -- same, write, or conflict (unknown, e.g. uploaded from the other computer, makes every difference a conflict). Any conflict refuses the whole call (package_localizations_conflict, details.conflicts [{ language, fields }]). dryRun returns { dryRun: true, kind: 'localizations', video, videoId, manifestSha256, etag, baseline (upload_row | localizations_apply | unknown), defaultLanguage, languages: [{ language, status, uploadedKnown, fields: [{ field, youtube, uploaded, package, status }] }], kept, ownLanguageSkipped, changed, quotaUnits (56) }. Otherwise: the same gates, then the shared translations writer (identity check, backup of the current translations, a recheck that the languages it writes still read as checked -- else video_details_conflict, nothing sent -- the owner's Live writes switch immediately before videos.update part=snippet,localizations with every other language kept and the snippet sent back as read, read-back of the written and the kept languages and the snippet) and a read-back of privacy and publishAt; audited with source package_localizations, actor producer. Returns { dryRun: false, kind: 'localizations', video, videoId, manifestSha256, changed, written, kept, verified }; a read-back that differs is update_failed (details.problem / details.changedUntouched). Errors: upload_package_not_ready (no package of that video here), package_metadata_manifest_changed, package_metadata_not_uploaded (not on YouTube yet: no upload record), package_metadata_invalid (the package's texts break YouTube's limits: details.problems), upload_steps_pending (this computer's upload of it has not finished its read-back), video_missing (not on YouTube any more), video_not_in_channel, package_metadata_conflict, video_details_conflict (the video changed while it was written: run again), CHANNEL_NOT_ACTIVE, WRITE_CHANNEL_MISMATCH, live_writes_disabled, update_failed (the read-back differs: details), operation_lock_held / device_in_recovery_mode.",
       inputSchema: producerVideoMetadataUpdateInputSchema,
     },
     async (args: z.infer<typeof producerVideoMetadataUpdateInputSchema>) => toolSuccessResult(await producerSession!.packageMetadata.update(args))
@@ -3428,7 +3476,7 @@ export function createMcpServer(
     "producer_clip_review_submit",
     {
       description:
-        "Ask the owner to watch a short clip and approve it or send it back -- he answers in YT Manager (Контент → «Клипы»), not in Telegram. The clip must already be a file in the channel's own folder (the Factory Operator renders it there; you never write into a channel folder): `clipPath` relative to the channel's workspace folder, '/' between folders, no '..' and no absolute path, the file's real path inside the folder (a symlink out of it is refused), .mp4 or .webm, 5-300 s long by ffprobe (±0.5 s), any size. Optional `startSec` / `endSec`: the part to watch (0 <= startSec < endSec <= the clip's length). Its size and SHA-256 are stored: the owner approves exactly this file, so do not overwrite it while it waits (a changed file cannot be approved). Both computers see the clip (the channel folder syncs; a computer whose copy is missing says so). Returns { clip } with status pending and forChannelId. Errors: CHANNEL_NOT_ACTIVE (not connected here), clip_review_workspace_unavailable (no workspace folder here), clip_review_not_video, clip_review_file_unavailable (details.reason: not in the folder, outside it, not a regular file, a bad path), clip_review_probe_unavailable (the length cannot be measured here), clip_review_duration_out_of_range (details.durationSeconds), clip_review_duplicate (the same file already waits: details.clipId), clip_review_too_many_pending (50 per channel), validation_failed (a bad range or text), operation_lock_held / device_in_recovery_mode. Nothing reaches YouTube.",
+        "Ask the owner to watch a short clip and approve it or send it back -- he answers in YT Manager (Контент → «Клипы»), not in Telegram. The clip must already be a file in the channel's own folder (the Factory Operator renders it there; you never write into a channel folder): `clipPath` relative to the channel's workspace folder, '/' between folders, no '..' and no absolute path, the file's real path inside the folder (a symlink out of it is refused), .mp4 or .webm, 5-300 s long by ffprobe (±0.5 s), any size. Optional `startSec` / `endSec`: the part to watch (0 <= startSec < endSec <= the clip's length). Its size and SHA-256 are stored: the owner approves exactly this file, so do not overwrite it while it waits (a changed file cannot be approved). Both computers see the clip (the channel folder syncs; a computer whose copy is missing says so). Returns { clip } with status pending and forChannelId. Errors: CHANNEL_NOT_ACTIVE (not connected here), clip_review_workspace_unavailable (no workspace folder here), clip_review_not_video, clip_review_file_unavailable (details.reason: not in the folder, outside it, not a regular file, a bad path), clip_review_probe_unavailable (the length cannot be measured here), clip_review_duration_out_of_range (details.durationSeconds), clip_review_duplicate (the same file already waits: details.clipId), clip_review_too_many_pending (50 per channel), validation_failed (a bad range or text), operation_lock_held / device_in_recovery_mode. Optional `approvedImageId` (1.28.0): the approved master still (producer_image_review_*) the clip was made from -- the owner sees that image next to the clip; the clip then carries `approvedImageId` in _get / _list. It must be an image of the same channel the owner approved (with or without a note): clip_review_image_not_found (no such image in this channel), clip_review_image_not_approved (details.status: pending, returned or withdrawn). Nothing reaches YouTube.",
       inputSchema: producerClipReviewSubmitInputSchema,
     },
     async (args: z.infer<typeof producerClipReviewSubmitInputSchema>) => toolSuccessResult(await producerSession!.clipReviews.submit(args))
@@ -3461,6 +3509,48 @@ export function createMcpServer(
       inputSchema: producerClipReviewOneInputSchema,
     },
     async (args: z.infer<typeof producerClipReviewOneInputSchema>) => toolSuccessResult(await producerSession!.clipReviews.withdraw(args))
+  );
+
+  // BL-272 (ADR 0076; owner TG 2547 via the Producer): master still images for review. These tools reach only the session's
+  // `imageReviews` (the image-reviews module's Producer surface); the owner's approve / approve with a note / return is Web-UI-only.
+  const imageViewFields =
+    "imageId, channelId, sceneId, imagePath, note ('' when none), batchId, requestId (null when not given), width, height, sizeBytes, sha256, submittedAt, device (the computer it was submitted on), status (pending | approved | approved_with_note | returned | withdrawn), comment (the owner's words: always on approved_with_note -- approved, but apply this note, e.g. 'убрать прохожего' -- and on returned; null otherwise), decidedAt, decidedOn (the computer the answer was given on)";
+  registerTool(
+    "producer_image_review_submit",
+    {
+      description:
+        "Ask the owner to look at a scene's master still image (e.g. the 1920×1080 PNG a clip will be made from) and answer: approve, approve with a note, or return with a comment -- he answers in YT Manager (Медиа → «Кадры»), not in Telegram; each answer also lands in your Inbox as REVIEW-DECISION-image-<imageId>-<decisionId>.md. The image must already be a file in the channel's own folder (you never write into a channel folder): `imagePath` relative to the channel's workspace folder, '/' between folders, no '..' and no absolute path, the file's real path inside that channel's folder (a symlink out of it, or into another channel's folder, is refused), .png / .jpg / .jpeg whose header is that format, at most 50 MB. Its size and SHA-256 are stored: the owner approves exactly this file, so do not overwrite it while it waits (a changed file cannot be approved). Several submits with the same `batchId` are one batch, shown to the owner as one grid (at most 40 images per batch). `requestId` makes the submit idempotent: a retry with the same requestId answers the stored image with `replayed: true` (even after the file changed or the owner answered); the same requestId with a different request is refused. Returns { image, replayed } and forChannelId. Errors: CHANNEL_NOT_ACTIVE (not connected here), image_review_workspace_unavailable (no workspace folder here), image_review_not_image (not PNG/JPEG, header of another format, unreadable, too large, a side outside 16-16384 px), image_review_file_unavailable (details.reason: not in the folder, outside it, not a regular file, a bad path), image_review_duplicate (the same file already waits: details.imageId), image_review_too_many_pending (200 per channel), image_review_batch_full (40 per batch), image_review_request_conflict (details.imageId), validation_failed, operation_lock_held / device_in_recovery_mode. Nothing reaches YouTube.",
+      inputSchema: producerImageReviewSubmitInputSchema,
+    },
+    async (args: z.infer<typeof producerImageReviewSubmitInputSchema>) => toolSuccessResult(await producerSession!.imageReviews.submit(args))
+  );
+
+  registerTool(
+    "producer_image_review_list",
+    {
+      description: `One channel's master still images for review and the owner's answers: pending first (oldest first), then the rest newest first; optional \`status\` and \`batchId\` filters and \`limit\` (default 50, at most 200). Each image: ${imageViewFields}. Also \`pending\` (how many wait, within the batch when \`batchId\` is given). Two computers' answers merge: the first answer the owner gave counts. A local read that changes nothing.`,
+      inputSchema: producerImageReviewListInputSchema,
+    },
+    async (args: z.infer<typeof producerImageReviewListInputSchema>) => toolSuccessResult(await producerSession!.imageReviews.list(args))
+  );
+
+  registerTool(
+    "producer_image_review_get",
+    {
+      description: `One master still image for review by its imageId with the owner's answer: { image } -- ${imageViewFields}. Errors: image_review_not_found (no such image in that channel), CHANNEL_NOT_ACTIVE.`,
+      inputSchema: producerImageReviewOneInputSchema,
+    },
+    async (args: z.infer<typeof producerImageReviewOneInputSchema>) => toolSuccessResult(await producerSession!.imageReviews.get(args))
+  );
+
+  registerTool(
+    "producer_image_review_withdraw",
+    {
+      description:
+        "Take back an image that still waits for the owner (status pending): it leaves his grid (status withdrawn). An image he already answered is never withdrawn (image_review_not_pending, details.status). Returns { image } and forChannelId. Errors: image_review_not_found, image_review_not_pending, CHANNEL_NOT_ACTIVE, operation_lock_held / device_in_recovery_mode.",
+      inputSchema: producerImageReviewOneInputSchema,
+    },
+    async (args: z.infer<typeof producerImageReviewOneInputSchema>) => toolSuccessResult(await producerSession!.imageReviews.withdraw(args))
   );
 
   // BL-271 (WAIT_TOOLS_PLAN.md §3.2, ADR 0075; Q6): the Producer waits on an upload of this computer (any channel, as the queue list

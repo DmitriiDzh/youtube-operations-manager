@@ -52,7 +52,12 @@ export type ClipReviewView = {
   decidedOn: string | null;
   /** BL-246 (ADR 0065): the files the owner attached to the deciding decision; [] otherwise (and for every older decision). */
   attachments: ClipReviewAttachment[];
+  /** BL-272 (ADR 0076): the approved master still image the clip was made from; the key is present only when the Producer named one. */
+  approvedImageId?: string;
 };
+
+/** BL-272: the source image of a clip as the owner's screen shows it (read now from the image reviews; null when it is gone). */
+export type ClipSourceImage = { imageId: string; sceneId: string; imagePath: string; status: string };
 
 /** This computer's copy of the clip: the submitted file, missing here, or a different file now. */
 export type ClipFileState = "ok" | "missing" | "changed";
@@ -65,6 +70,8 @@ export type OwnerClipView = Omit<ClipReviewView, "attachments"> & {
   /** The deciding record's id (the attachments' folder), null while pending. */
   decisionId: string | null;
   attachments: OwnerAttachmentView[];
+  /** BL-272: present only when the clip names an approved image -- that image now (its status may have changed since), or null when this computer's image reviews do not have it (not synced here yet). */
+  approvedImage?: ClipSourceImage | null;
 };
 
 /** BL-246: the workspace folder the owner's attachments go into, below the workspace root (`/` between folders). */
@@ -123,6 +130,12 @@ export type ClipReviewsPorts = {
    * never throws, never awaited: the decision is recorded already and never depends on it.
    */
   notifyOwnerDecision?(): void;
+  /**
+   * BL-272 (ADR 0076): an image of the channel's master still image reviews with its derived status (`approved`,
+   * `approved_with_note`, `returned`, `withdrawn`, `pending`); null when the channel has no such image. Optional: without it a clip
+   * naming an `approvedImageId` is refused.
+   */
+  imageOf?(channelId: string, imageId: string): Promise<ClipSourceImage | null>;
   /** BL-246 (review): a failure the owner sees only as a fixed message; its detail (absolute paths included) goes to the server log. */
   logError(event: string, context: Record<string, unknown>): void;
   /** BL-246: uploads staged in this computer's app data (never the channel folder) until a decision uses them. */

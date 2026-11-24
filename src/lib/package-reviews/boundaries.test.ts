@@ -12,7 +12,7 @@ import { WORKER_FACTORY_TOOLS } from "@/mcp/worker-factory-tools";
 // The symbols are assembled from parts so this file never matches a scan of its own.
 
 const SRC = path.resolve(process.cwd(), "src");
-const FEATURE_MODULES = ["media-generation", "generation-plans", "gemini-media", "live-streams", "publishing", "publishing-plans", "publishing-plan-progress", "batches", "changesets", "video-details", "playlist-management", "video-comments", "storyboards", "storyboard-takes", "channel-branding", "channel-localizations", "agent-proposals", "clip-reviews", "review-notify"];
+const FEATURE_MODULES = ["media-generation", "generation-plans", "gemini-media", "live-streams", "publishing", "publishing-plans", "publishing-plan-progress", "batches", "changesets", "video-details", "playlist-management", "video-comments", "storyboards", "storyboard-takes", "channel-branding", "channel-localizations", "agent-proposals", "clip-reviews", "image-reviews", "review-notify"];
 const OWNER_CORE = ["createPackageReviews", "OwnerCore"].join("");
 const OWNER_SYMBOLS = [OWNER_CORE, ["PackageReviews", "OwnerSurface"].join(""), ["createPackageReviews", "Service"].join(""), ["packageReviews", "OwnerSurface"].join("")];
 

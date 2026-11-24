@@ -170,6 +170,7 @@ export const errors: Record<keyof typeof en, string> = {
   "errors.OPERATIONS_FILE_NOT_AVAILABLE": "Запрошенный файл недоступен.",
   "errors.CHANNEL_WORKSPACE_PATH_INVALID": "Эту папку нельзя использовать как рабочую папку канала.",
   "errors.CHANNEL_WORKSPACE_CHANNEL_NOT_CONNECTED": "Этот канал не подключён на этом компьютере.",
+  "errors.CHANNEL_WORKSPACE_NESTED": "Эта папка лежит внутри рабочей папки другого канала или содержит её. Каждому каналу нужна своя папка, рядом с остальными.",
   "errors.media_generation_not_configured": "RunPod не настроен на этом компьютере (Настройки → Облачные API).",
   "errors.media_gateway_disabled": "Подключение к RunPod выключено.",
   "errors.media_credentials_invalid": "RunPod не принял ключ.",
