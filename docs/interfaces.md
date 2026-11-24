@@ -1140,6 +1140,7 @@ nothing. This replaces BL-091's per-capability zones, which are retired in
     (READ; not counted as an MCP call for the quiet window); `agent_hold_restart { minutes (whole, 1-60), reason (1-200) }` →
     `{ hold }` with `heldBy: "worker:<bound channel>"` and `agent_release_hold { holdId }` → `{ hold, released }` (DRAFT, local,
     device mutation gate first; another's hold → `not_found`; both logged in the worker log, the hold's id as the target).
+    Timed comments (owner TG 4817, Agent API 4.26.0, additive): `agent_publishing_plan_get` / `_list` packages gain `reviewTimedComments: [{ atSeconds, time, text }]` as in Factory 1.55.0.
     Wait (BL-271, ADR 0075, Agent API 4.25.0, additive): `agent_wait` is `factory_wait` (below) for the bound channel -- `channelId`
     put in when left out, another channel → `CHANNEL_NOT_ACTIVE`, another channel's upload / session / job / request / storyboard /
     render → `not_found` exactly like a missing id. READ; not logged in the worker log; not counted as an MCP call.
@@ -1168,7 +1169,7 @@ A second agent role, separate from the channel agents. Technical contract only (
   POST only (405), the MCP connection switch (403 `MCP_CONNECTION_DISABLED`), a token (401 `AGENT_TOKEN_REQUIRED`), the token (401 `AGENT_TOKEN_INVALID` for an
   unknown, revoked or wrong-type token, including a channel token; 503 `AGENT_ENDPOINT_UNAVAILABLE` if the database cannot answer). The token is re-verified on
   every tool call, so a revocation applies to the next call. A factory token on `/api/mcp` is rejected the same way.
-- **Factory API version:** `1.54.0` since BL-271 (ADR 0075, additive: `factory_wait` below); `1.53.0` since BL-269 (FO-REQ-0055, ADR 0074, additive: `yt-release-package/2` `captions: [{ language, file, name, sha256 }]`
+- **Factory API version:** `1.55.0` since owner TG 4817 (PACKAGE_REVIEW_PLAN.md AC-TC-08, additive: plan packages gain `reviewTimedComments: [{ atSeconds, time, text }]` -- the owner's comments at moments of the video sent with his standing package-review decision; the wake file `REVIEW-DECISION-package-…` gains the section «Timed comments», one line `<seconds> s (<m:ss>): <text>` per comment, absent when none); `1.54.0` since BL-271 (ADR 0075, additive: `factory_wait` below); `1.53.0` since BL-269 (FO-REQ-0055, ADR 0074, additive: `yt-release-package/2` `captions: [{ language, file, name, sha256 }]`
   is read and checked -- plan / calendar packages gain `captions` and the blocking codes `captions_missing` / `captions_invalid` (reason:
   `channel_disabled`, `not_horizontal`, `orientation_unknown`, `count`, `language`, `name`, `size`, `sha256`, `format`); the upload record
   `yt-release-upload/1` gains `videoSha256` (or null), `videoSizeBytes` and `captions: [{ trackId, language, name, sha256, at, by, verified?, pending? }]` (`pending: true` with `verified: false`: sent, YouTube
@@ -1562,7 +1563,7 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
 
 - **Transport:** as the factory endpoint, with `Authorization: Bearer ytom_pr_...` (the same checks and codes; a channel or factory token is
   401 `AGENT_TOKEN_INVALID` here, and a producer token on `/api/mcp` and `/api/mcp/factory`). Re-verified on every tool call.
-- **Producer API version:** `1.27.0` (since BL-271, ADR 0075, additive: `producer_wait` below); `1.26.0` (since BL-269, ADR 0074, additive: `producer_video_captions_add` below, permission `CAPTIONS_WRITE`,
+- **Producer API version:** `1.28.0` (since owner TG 4817, AC-TC-08, additive: `producer_publishing_plan_get` / `_list` packages gain `reviewTimedComments`, the wake file gains «Timed comments»); `1.27.0` (since BL-271, ADR 0075, additive: `producer_wait` below); `1.26.0` (since BL-269, ADR 0074, additive: `producer_video_captions_add` below, permission `CAPTIONS_WRITE`,
   `captionsTools` in `producer_get_capabilities`; calendar packages gain `captions`); `1.25.0` (BL-267, ADR 0073, additive: the weekly-plan tools below, permission `PLAN_MOVE`,
   `planTools` / `planMoveTools` in `producer_get_capabilities`); `1.24.0` (BL-265, ADR 0072, additive: `producer_video_metadata_update`, permission `METADATA_WRITE`
   and `metadataTools` in `producer_get_capabilities`; calendar `warnings`; the media-keyed review gate; the queue add's "tried" rule by

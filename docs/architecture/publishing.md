@@ -503,6 +503,16 @@ flags the error as not sent; the mark keeps the retry count, so a failing insert
 - **Surfaces:** owner routes `/api/channels/[channelId]/package-reviews` (`GET`/`PUT`, `/decision`, `/video`, `/thumbnail` via
   `local-file-response`, `isOwnerBrowserRequest`); Media → «Видео на проверку» (`MEDIA_TABS` value `packages`); the week-plan slot line
   from `PlanSlotPackage.reviewComment` and the problem codes; review-notify kind `package` (`packageNoticesOf`).
+- **Timed comments (owner TG 4817, PACKAGE_REVIEW_PLAN.md AC-TC-01..09):** `package-reviews/timed-comments.ts` (pure, import-free: limits,
+  `m:ss` spelling, well-formed reading) is the one rule for server and screen. A decision (approved / returned only) may carry
+  `timedComments [{ atSeconds, text }]` in the synced document; `wellFormedDecision` keeps the well-formed ones and never drops the decision
+  for them; a return without a general comment stores them as `m:ss text` lines in `comment` (an older build drops a return without one).
+  The unsent draft is device-local: table `package_review_drafts` (schema 124, not in snapshots), port `drafts` of the service,
+  `GET`/`PUT …/package-reviews/draft` under the same session + active-channel guard and the channel's scan; cleared only after the
+  decision is stored. Readouts: the wake file's «Timed comments» section (`ReviewDecisionNotice.timedComments`) and
+  `PlanSlotPackage.reviewTimedComments` via `mediaReviewReaderOf(...).timedComments` (Factory 1.55.0 / Agent 4.26.0 / Producer 1.28.0).
+  Screen: `package-review-workspace.tsx` over the shared `MediaVideoPlayer` (additive props `loop`, `preload`, `onMetadata`, `flags`,
+  `onFlagClick`, `fullscreen`; flags laid out by `visual-review-model.flagPlaces`) -- no parallel player.
 
 ## BL-267 — the week template replaces slot approval (ADR 0073, WEEK_TEMPLATE_PLAN.md)
 

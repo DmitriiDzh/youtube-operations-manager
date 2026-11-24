@@ -100,6 +100,12 @@
 - **Агенты:** только читают коды проблем (Producer API 1.21.0, Agent API 4.19.0, Factory API 1.46.0); файл пробуждения Продюсера
   `REVIEW-DECISION-package-<video>-<decisionId>.md`. Ни один MCP-путь не решает и не переключает (`package-reviews/boundaries.test.ts`).
   Это не писатель YouTube.
+- **Комментарии по времени (owner TG 4817, AC-TC-01..09) — IMPLEMENTED на ветке** `feature/video-review-timed-comments`: экран на общем
+  `MediaVideoPlayer` (крупно, звук, без автозапуска и петли, `preload="metadata"`, во весь экран) + `package-review-workspace.tsx`; клик в
+  поле ставит паузу и берёт момент, комментарий — флажок на шкале и строка списка (правка, удаление). Черновик — на сервере, локально
+  (таблица `package_review_drafts`, схема 124, маршрут `…/package-reviews/draft`); уходит одной пачкой с «Одобрить»/«Вернуть»
+  (`timedComments` решения). Агенты: раздел «Timed comments» в файле пробуждения и `reviewTimedComments` пакета слота плана
+  (Factory 1.55.0, Agent 4.26.0, Producer 1.28.0).
 
 ### 2.9bn Шаблон недели вместо одобрения слотов (BL-267, PRD-REQ-0195 A, ADR 0073, `docs/roadmap/plans/WEEK_TEMPLATE_PLAN.md`) — **IMPLEMENTED на ветке** `feature/bl-267-week-template` (ждёт ревью, текст §F у владельца, разрешения на мердж)
 
