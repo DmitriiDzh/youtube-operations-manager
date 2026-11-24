@@ -869,6 +869,14 @@ that video has not finished its read-back; never automatic, never `localizations
 review (BL-257) now gates the **media** only: an approval covers the mp4 (`sha256` + `sizeBytes`, per channel and video code, or its
 BL-263 recode alias); packaging changes neither need nor reset it, and a queued upload takes a re-package of only its packaging.
 
+**Playlist editing by agents (added 2026-11-23, owner, Telegram msg 4782, ADR 0048 Amendment 1).** The playlist core
+`src/lib/playlist-management/` may, for a channel worker (its bound channel) and for the Producer (any channel connected here, one
+channel per call in that channel's agent scope), create a playlist, change its title, description and privacy (`private`, `unlisted`
+or `public`), and add or remove videos (the Producer adds only the channel's own synced videos) -- with the write-channel guardrail
+(`expectedChannelId` must be the scope's channel), the playlist's owner check, the Live-writes check immediately before each gateway
+write, and the worker log or the Producer call log (refused calls included). Never a playlist delete for an agent, and never a video
+made public by an agent (`agent_set_privacy` with `target: video` stays private/unlisted).
+
 ---
 
 # 22. Idempotent Batch Execution

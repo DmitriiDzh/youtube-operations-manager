@@ -28,6 +28,8 @@ export const submitClipInputSchema = z
     note: text(CLIP_REVIEW_LIMITS.note, true),
     startSec: seconds.optional(),
     endSec: seconds.optional(),
+    /** BL-272 (ADR 0076): the approved master still image of the same channel the clip was made from. */
+    approvedImageId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/).optional(),
   })
   .strict();
 export type SubmitClipInput = z.infer<typeof submitClipInputSchema>;

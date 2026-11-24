@@ -1024,8 +1024,8 @@ Key MCP tools:
     anything at or under that path. It only reads the app's own bootstrap config, for the
     `deviceId`, and never creates it. No MCP tool can set or clear it: `PUT /api/channel-workspaces` (Web UI
     only) is the sole setter. Device-local, never synced or handed off. Error codes
-    (setter only): `CHANNEL_WORKSPACE_PATH_INVALID` (400) and
-    `CHANNEL_WORKSPACE_CHANNEL_NOT_CONNECTED` (404).
+    (setter only): `CHANNEL_WORKSPACE_PATH_INVALID` (400),
+    `CHANNEL_WORKSPACE_CHANNEL_NOT_CONNECTED` (404) and `CHANNEL_WORKSPACE_NESTED` (409).
   - **There is no MCP tool or CLI command to create a hypothesis from scratch, transition an
     experiment's status, or record an outcome** — all Web-UI-only, verified mechanically by
     `decision-engine-agent-approval-inventory.test.ts` (`PHASE10-INV-02`, same scan technique as
@@ -1105,15 +1105,18 @@ nothing. This replaces BL-091's per-capability zones, which are retired in
     writes: `apply` (a real write only with `dryRun: false`), `playlist_create`, `playlist_update`, `playlist_add_videos`,
     `playlist_remove_videos`. `agent_get_capabilities` lists them in the domain `youtube_writes` as `EXECUTE`
     (`grantedPermissions` `READ`, `DRAFT`, `EXECUTE`; never `APPROVE`), and names every other channel tool too (a test ties the
-    list to the registry). `privacyStatus: "public"` on `playlist_create` / `playlist_update` is refused with
-    `AGENT_PUBLIC_NOT_ALLOWED` (403) before any YouTube call; the owner's Web UI still accepts it.
+    list to the registry). Since Agent API 4.27.0 (owner TG 4782, ADR 0048 Amendment 1) `privacyStatus: "public"` on
+    `playlist_create` / `playlist_update` is accepted for the bound channel's playlist (4.0.0–4.25.0 refused it with
+    `AGENT_PUBLIC_NOT_ALLOWED`). A playlist write whose `expectedChannelId` is not the bound channel is refused with
+    `WRITE_CHANNEL_MISMATCH` before any credential or YouTube call; the guardrail and the playlist's owner check still follow.
   - **Worker log (BL-215, schema v107 `worker_action_log`, device-local, 90 days).** One row per call of those five tools that
     would really write (refused ones included): `at`, channel, token id, tool, target (video/playlist id; a created playlist's
     id from YouTube's answer), `detail` (JSON, at most 500 characters: changed fields, `privacyStatus`, `videoIds`,
     `failedVideos`), `outcome` `ok`/`error`, `errorCode`. A failed row write never changes the tool's answer.
     `agent_set_privacy` (BL-216, Agent API 4.1.0, EXECUTE): `{ target: "video" | "playlist", id, privacyStatus: "private" |
-    "unlisted", dryRun? (default true) }` → `{ target, id, dryRun, previousPrivacyStatus, privacyStatus, changed }`. Never
-    public (not accepted). Refused: a scheduled video (`AGENT_SCHEDULE_OWNER_ONLY`, 403), the channel's current live broadcast
+    "unlisted" | "public", dryRun? (default true) }` → `{ target, id, dryRun, previousPrivacyStatus, privacyStatus, changed }`.
+    `public` only for a playlist (Agent API 4.27.0, owner TG 4782); for a video it is refused with `AGENT_PUBLIC_NOT_ALLOWED`
+    (403) before any read (before 4.27.0 `public` was an input error for both). Refused: a scheduled video (`AGENT_SCHEDULE_OWNER_ONLY`, 403), the channel's current live broadcast
     (`AGENT_LIVE_BROADCAST_OWNER_ONLY`, 403), a video not in the channel's synced list or a playlist not of the channel
     (`not_found`). A video is written by `video-details` (identity check, backup, Live writes, read-back, bound to the read
     etag), a playlist by the playlist core; no write when the status is already the asked one. Log rows gain
@@ -1573,8 +1576,9 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
 
 - **Transport:** as the factory endpoint, with `Authorization: Bearer ytom_pr_...` (the same checks and codes; a channel or factory token is
   401 `AGENT_TOKEN_INVALID` here, and a producer token on `/api/mcp` and `/api/mcp/factory`). Re-verified on every tool call.
-- **Producer API version:** `1.33.0` (package playlists, owner TG 4858/4859, ADR 0051 amendment 2026-11-24; 1.29.0-1.32.0 are other branches' numbers; additive: `producer_video_playlists`
-  below; release packages may name `playlists`); `1.27.0` (since BL-271, ADR 0075, additive: `producer_wait` below); `1.26.0` (since BL-269, ADR 0074, additive: `producer_video_captions_add` below, permission `CAPTIONS_WRITE`,
+- **Producer API version:** `1.33.0` (package playlists, owner TG 4858/4859, ADR 0051 amendment 2026-11-24; 1.30.0-1.32.0 are other branches' numbers; additive: `producer_video_playlists`
+  below; release packages may name `playlists`); `1.29.0` (owner TG 4782, ADR 0048 Amendment 1, additive: the playlist channel tools below, permission
+  `PLAYLIST_WRITE`, `playlistTools` / `playlistWriteTools` in `producer_get_capabilities`); `1.28.0` (BL-272, ADR 0076, additive: the image review tools below, `imageReviewTools` in `producer_get_capabilities`, `approvedImageId` on `producer_clip_review_submit`); `1.27.0` (BL-271, ADR 0075, additive: `producer_wait` below); `1.26.0` (since BL-269, ADR 0074, additive: `producer_video_captions_add` below, permission `CAPTIONS_WRITE`,
   `captionsTools` in `producer_get_capabilities`; calendar packages gain `captions`); `1.25.0` (BL-267, ADR 0073, additive: the weekly-plan tools below, permission `PLAN_MOVE`,
   `planTools` / `planMoveTools` in `producer_get_capabilities`); `1.24.0` (BL-265, ADR 0072, additive: `producer_video_metadata_update`, permission `METADATA_WRITE`
   and `metadataTools` in `producer_get_capabilities`; calendar `warnings`; the media-keyed review gate; the queue add's "tried" rule by
@@ -1600,7 +1604,22 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
 - **DRAFT channel tool (BL-170, owner msg 2485, ADR 0034 Amendment 5):** `create_experiment_proposal`, the channel agent's own input plus the
   REQUIRED `channelId`, in that channel's agent scope: an experiment for a hypothesis of that channel, always `proposed` -- only the owner
   approves, runs or abandons it in the Web UI. The only DRAFT channel tool (pinned by the test).
-- **Own tools:** `producer_get_capabilities` `{}` → `{ role: "producer", producerApiVersion, permissions: ["READ", "DRAFT"], channelRequired: true, tools, draftTools: ["producer_propose", "producer_mark_proposals_done", "create_experiment_proposal"] }`;
+- **Playlist channel tools (owner TG 4782, 2026-11-23, ADR 0048 Amendment 1; Producer 1.29.0, `PLAYLIST_WRITE`):** `playlist_list`
+  (READ), `playlist_create`, `playlist_update` (title, description, `privacyStatus` `private` | `unlisted` | `public`),
+  `playlist_add_videos`, `playlist_remove_videos` -- the channel agent's own tools with its own input and output (no `credentialRef`) plus the
+  REQUIRED `channelId` (any channel connected here), in that channel's agent scope: the write's `expectedChannelId` must be that channel
+  (`WRITE_CHANNEL_MISMATCH` otherwise, before any credential or YouTube call), the playlist must be that channel's (read first;
+  `WRITE_CHANNEL_MISMATCH` / `not_found`), every write goes through the write gateway with Live writes right before it
+  (`live_writes_disabled`). `playlist_add_videos` adds only that channel's own videos in its local synced list: any other id → `not_found`
+  for the whole call, nothing called. Real YouTube writes (no dry run), in the Producer call log like every call; a write's row also stores its playlist (`target`) and its details
+  (privacy, video ids, the answer's counts) since schema v124, shown on the Producer card in Settings. Not on this endpoint:
+  `playlist_delete` and `agent_set_privacy`.
+- **Own tools:** `producer_get_capabilities` `{}` → `{ role: "producer", producerApiVersion, permissions: ["READ", "DRAFT", "UPLOAD_QUEUE",
+  "THUMBNAIL_WRITE", "METADATA_WRITE", "PLAN_MOVE", "CAPTIONS_WRITE", "PLAYLIST_WRITE"], channelRequired: true, tools, draftTools:
+  ["producer_propose", "producer_mark_proposals_done", "create_experiment_proposal", "producer_clip_review_submit",
+  "producer_clip_review_withdraw", "producer_week_template_propose"], uploadQueueTools, clipReviewTools, thumbnailTools, metadataTools,
+  captionsTools, planTools, planMoveTools, playlistTools: ["playlist_list", "playlist_create", "playlist_update", "playlist_add_videos",
+  "playlist_remove_videos"], playlistWriteTools: [the four writes] }` (the lists are `src/mcp/producer-tools.ts`, pinned by its test);
   `producer_list_channels` `{}` → `{ channels: [{ channelId, title, workspace: string | null }] }` (Settings → Channels on this device, this
   device's folder); `producer_portfolio_overview` `{ startDate, endDate }` (YYYY-MM-DD, at most 366 days) → `{ startDate, endDate, source: "local",
   channels: [{ channelId, title, analytics: { daysWithData, views, watchMinutes, subscribersGained, subscribersLost }, reach: { state, impressions,
@@ -1715,7 +1734,11 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
     `forChannelId`.
 - **Clip review tools (BL-241, `docs/roadmap/plans/CLIP_REVIEWS_PLAN.md`, ADR 0061).** `producer-only`; submit and withdraw are DRAFT, list and
   get READ. Only the owner approves or returns a clip (Web UI, Контент → «Клипы»); no tool here can. Nothing reaches YouTube.
-  - `producer_clip_review_submit` `{ channelId, sceneId (1-80), clipPath, note (1-2000), startSec?, endSec? }` → `{ clip, forChannelId }`.
+  - `producer_clip_review_submit` `{ channelId, sceneId (1-80), clipPath, note (1-2000), startSec?, endSec?, approvedImageId? }` → `{ clip, forChannelId }`.
+    `approvedImageId` (1.28.0, BL-272, ADR 0076): the approved master still the clip was made from -- an image of the same channel's
+    image reviews whose status is `approved` or `approved_with_note`; else `clip_review_image_not_found` (422: no such image in this
+    channel) or `clip_review_image_not_approved` (409, `details.status`). The clip then carries `approvedImageId` (the key is absent on a
+    clip submitted without one).
     `clipPath` relative to the channel workspace (`/` between folders, no `..`, not absolute; the real path inside the workspace, a regular
     file), `.mp4` / `.webm`, 5-300 s by ffprobe (±0.5 s), any size; `0 <= startSec < endSec <= duration`. Errors:
     `CHANNEL_NOT_ACTIVE`, `clip_review_workspace_unavailable`, `clip_review_not_video`, `clip_review_file_unavailable` (`details.reason`),
@@ -1740,7 +1763,37 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
   `DELETE .../uploads/[uploadId]`; the decision body takes `attachments: [uploadId]` (≤ 10); `GET .../[clipId]/attachments/[decisionId]/
   [index]` (loopback only; 404 `clip_attachment_missing` / `clip_attachment_not_found`, 409 `clip_attachment_changed`). Codes:
   `clip_attachment_too_many` 422, `_too_large` 413, `_type_not_allowed` / `_type_mismatch` 415, `_upload_unknown` 404,
-  `_upload_offset` / `_upload_incomplete` 409, `_upload_corrupt` 422, `_write_failed` 500.
+  `_upload_offset` / `_upload_incomplete` 409, `_upload_corrupt` 422, `_write_failed` 500. BL-272: a clip with `approvedImageId` also
+  carries `approvedImage: { imageId, sceneId, imagePath, status } | null` (that image now; null when it is gone).
+- **Image review tools (BL-272, ADR 0076; Producer 1.28.0).** `producer-only`; submit and withdraw are DRAFT, list and get READ. Only the
+  owner approves, approves with a note, or returns an image (Web UI, Медиа → «Кадры»); no tool here can. Nothing reaches YouTube.
+  - `producer_image_review_submit` `{ channelId, sceneId (1-80), imagePath, note? (1-2000), batchId?, requestId? }` → `{ image, replayed,
+    forChannelId }`. `imagePath` relative to the channel workspace (`/` between folders, no `..`, not absolute; the real path inside that
+    channel's workspace -- a symlink out of it or into another channel's folder is refused -- a regular file); `.png` / `.jpg` / `.jpeg`
+    whose header is that format, 16-16384 px a side, at most 50 MiB; size and SHA-256 stored (approval needs the same file). `batchId` /
+    `requestId`: `[A-Za-z0-9_.:-]{1,80}`. A known `requestId` with the same request answers the stored image with `replayed: true` (even
+    after the file changed or the owner answered); with another request `image_review_request_conflict` (`details.imageId`). Errors:
+    `CHANNEL_NOT_ACTIVE`, `image_review_workspace_unavailable`, `image_review_not_image`, `image_review_file_unavailable`
+    (`details.reason`), `image_review_duplicate` (`details.imageId`), `image_review_too_many_pending` (200 per channel),
+    `image_review_batch_full` (40 per batch), `validation_failed`, `operation_lock_held` / `device_in_recovery_mode`.
+  - `producer_image_review_list` `{ channelId, status?, batchId?, limit? (1-200, default 50) }` → `{ images, pending, forChannelId }`,
+    pending first (oldest first), then the rest newest first; `pending` counts within the batch when `batchId` is given.
+    `producer_image_review_get` `{ channelId, imageId }` → `{ image, forChannelId }` (`image_review_not_found`).
+    `producer_image_review_withdraw` `{ channelId, imageId }` → `{ image, forChannelId }` (pending only: `image_review_not_pending`).
+  - An image: `{ imageId, channelId, sceneId, imagePath, note ('' when none), batchId, requestId, width, height, sizeBytes, sha256,
+    submittedAt, device, status: pending | approved | approved_with_note | returned | withdrawn, comment, decidedAt, decidedOn }`;
+    `comment` is the owner's words, always on `approved_with_note` (approved; apply the note) and `returned`, null otherwise. Shared by
+    both computers (sync family `image_reviews`); the earliest owner answer counts, a withdrawal only without one. Each owner answer
+    also writes `REVIEW-DECISION-image-<imageId>-<decisionId>.md` into the Producer's Inbox (ADR 0066, kind `image`). When an
+    owner return decides an image that also has a later owner approval (two computers answered separately; either arrival order), it also writes
+    `REVIEW-DECISION-image-<imageId>-<approvalId>-overturned-by-<returnId>.md` with status `approval_overturned` (the approval no
+    longer counts; the image is returned).
+- **Image review owner routes (Web session + active channel):** `GET /api/channels/[channelId]/image-reviews` → `{ images (each also
+  `file: ok | missing | changed` while pending, `null` once answered or withdrawn -- not checked), waiting }`; `?view=count` →
+  `{ waiting }` only, from the document (no file work); `POST .../image-reviews/[imageId]/decision` `{ action: approve | approve_with_note | return,
+  comment? }` (a note-approval and a return need a comment, a plain approval takes none; 409 `image_review_not_pending` /
+  `image_review_file_missing` / `image_review_file_changed`); `GET .../[imageId]/image` (full size) and `.../[imageId]/preview` (a JPEG up
+  to 960 px, else the original) -- this computer's copy, to the owner's browser only (403 otherwise; 404 `image_review_file_missing`).
 
 ### Owner review of final release packages (BL-257, ADR 0070, `docs/roadmap/plans/PACKAGE_REVIEW_PLAN.md`)
 
@@ -1919,6 +1972,8 @@ Both are operator-only and require a NextAuth session. The mutating methods are 
   - The channel must be connected (`CHANNEL_WORKSPACE_CHANNEL_NOT_CONNECTED`, 404).
   - The path must be absolute, exist, be a directory, and not overlap app-data
     (`CHANNEL_WORKSPACE_PATH_INVALID`, 400).
+  - It must not be inside, equal to or around another connected channel's folder on this device
+    (`CHANNEL_WORKSPACE_NESTED`, 409; BL-272, ADR 0076 §3).
   - Gated by the `proxy.ts` mutation gate.
 - Both require a NextAuth session. They are not active-channel-scoped: the Settings → Channels
   card manages every connected channel.

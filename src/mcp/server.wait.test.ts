@@ -38,6 +38,7 @@ function producerTools(wait: ProducerSession["wait"], logged: string[]): Tools {
     proposals: { submit: none, list: none, markDone: none },
     uploadQueue: { list: none, add: none, move: none, cancel: none },
     clipReviews: { submit: none, withdraw: none, list: none, get: none },
+    imageReviews: { submit: none, withdraw: none, list: none, get: none },
     thumbnails: { replace: none },
     packageMetadata: { update: none },
     captions: { add: none },

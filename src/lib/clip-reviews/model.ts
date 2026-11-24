@@ -1,22 +1,21 @@
 import path from "node:path";
+import { earliestDecidingRecord } from "@/lib/review-items";
 import type { ClipReviewAttachment, ClipReviewClip, ClipReviewDecision, ClipReviewStatus, ClipReviewView } from "./contracts";
 import { CLIP_VIDEO_TYPES } from "./contracts";
 
 // BL-241 (ADR 0061 §5): pure rules. The status is derived from the decisions, never stored, so two computers' documents merge
 // without a conflict and read the same answer.
 
-const byTimeThenId = (a: ClipReviewDecision, b: ClipReviewDecision) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id);
-
 /**
  * The record that decides a clip: the EARLIEST owner decision (by time, then id); without one, the earliest Producer withdrawal;
  * null while pending. A later owner decision made offline on the other computer is kept in the document but does not count.
+ * BL-272 (ADR 0076): the rule itself is the shared `review-items` one (the master still images use it too).
  */
 export function decidingRecordOf(clipId: string, decisions: readonly ClipReviewDecision[]): ClipReviewDecision | null {
-  const own = decisions.filter((d) => d.clipId === clipId);
-  const owner = own.filter((d) => d.by === "owner" && (d.kind === "approved" || d.kind === "returned")).sort(byTimeThenId);
-  if (owner.length > 0) return owner[0];
-  const withdrawn = own.filter((d) => d.by === "producer" && d.kind === "withdrawn").sort(byTimeThenId);
-  return withdrawn[0] ?? null;
+  return earliestDecidingRecord(
+    decisions.filter((d) => d.clipId === clipId),
+    ["approved", "returned"]
+  );
 }
 
 export function statusOf(record: ClipReviewDecision | null): ClipReviewStatus {
@@ -44,6 +43,8 @@ export function clipViewOf(clip: ClipReviewClip, decisions: readonly ClipReviewD
     decidedOn: record?.device ?? null,
     // BL-246: only an owner decision carries files; a decision stored without the field (older builds) reads [].
     attachments: record?.by === "owner" ? wellFormedAttachments(record.attachments) : [],
+    // BL-272 (ADR 0076): only a clip that names its approved source image carries the key.
+    ...(typeof clip.approvedImageId === "string" ? { approvedImageId: clip.approvedImageId } : {}),
   };
 }
 

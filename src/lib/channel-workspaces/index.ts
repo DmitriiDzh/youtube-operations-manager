@@ -1,3 +1,4 @@
+import { realpath } from "node:fs/promises";
 import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { appDataPaths } from "@/lib/db";
@@ -20,6 +21,7 @@ export function createChannelWorkspacesCore() {
     listConnectedChannelIds: async () =>
       (await channelConnectionsCore.listConnectedChannels()).map((channel) => channel.channelId),
     validatePath: validateOperatorDirectoryPath,
+    realpath: (candidate) => realpath(candidate),
   });
 }
 

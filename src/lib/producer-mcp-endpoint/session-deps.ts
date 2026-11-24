@@ -20,6 +20,7 @@ import { createLiveAnalyticsCore } from "@/lib/live-analytics";
 import { createPackageCaptionsCore, createPackageMetadataCore, createUploadQueueControlCore, listUploadPlaylistRecords, type SlotDecision } from "@/lib/publishing";
 import { createVideoPlaylistMembershipCore } from "@/lib/video-playlist-membership";
 import { createClipReviewsProducerCore } from "@/lib/clip-reviews";
+import { createImageReviewsProducerCore } from "@/lib/image-reviews";
 import type { ProducerMcpSession } from "./index";
 import type { PublishingPlansProducerSurface } from "@/lib/publishing-plans";
 
@@ -214,6 +215,14 @@ export function createProducerSessionDeps(
       withdraw: async (input) => ({ ...(await createClipReviewsProducerCore().withdraw(input)) }),
       list: async (input) => ({ ...(await createClipReviewsProducerCore().list(input)) }),
       get: async (input) => ({ ...(await createClipReviewsProducerCore().get(input)) }),
+    },
+    // BL-272 (ADR 0076): the master still images for review -- the module's Producer surface only (submit, withdraw, list, get); the
+    // owner's answers are reachable only from the Web UI's image-review routes (image-reviews/boundaries.test.ts).
+    imageReviews: {
+      submit: async (input) => ({ ...(await createImageReviewsProducerCore().submit(input, { tokenId: session.tokenId })) }),
+      withdraw: async (input) => ({ ...(await createImageReviewsProducerCore().withdraw(input)) }),
+      list: async (input) => ({ ...(await createImageReviewsProducerCore().list(input)) }),
+      get: async (input) => ({ ...(await createImageReviewsProducerCore().get(input)) }),
     },
     // Package playlists (owner TG 4858/4859): a video's playlists on its channel -- read-only; the channel must be connected here
     // and the video that channel's (checked before any YouTube call), then the identity check on the channel's grant.

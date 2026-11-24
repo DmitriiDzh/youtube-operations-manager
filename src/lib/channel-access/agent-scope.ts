@@ -22,6 +22,23 @@ export function assertAgentScopeChannel(channelId: string | null | undefined): v
 }
 
 /**
+ * In an agent session (a channel worker, or the Producer calling for one channel), a YouTube write's `expectedChannelId` (when given)
+ * must be the bound channel -- refused with the write-channel guardrail's own code, before any credential or YouTube call. The
+ * guardrail itself (`write-context.assertWriteChannel`) still runs after it; this only fails earlier and without a network call.
+ */
+export function assertAgentScopeWriteChannel(expectedChannelId: string | null | undefined): void {
+  const session = getAgentSession();
+  if (!session || expectedChannelId === undefined || expectedChannelId === null) return;
+  if (expectedChannelId !== session.channelId) {
+    throw new DomainError({
+      code: "WRITE_CHANNEL_MISMATCH",
+      message: "expectedChannelId is not this session's channel.",
+      details: { expectedChannelId, activeWriteChannelId: session.channelId },
+    });
+  }
+}
+
+/**
  * In an agent session, `videoId` must be a video of the bound channel, as known from the local
  * sync mirror. Unknown or foreign videos get the same `not_found` (fail-closed: a video never
  * synced for the bound channel is not reachable -- sync the channel first).
@@ -45,14 +62,15 @@ export function readStringField(input: unknown, field: string): string | undefin
 }
 
 /**
- * ADR 0048 (BL-215, owner msg 3384): a channel-bound agent never makes anything public -- that stays the owner's. Outside an agent
- * session (the owner's Web UI) this is a no-op. Called by a core before it resolves credentials or calls YouTube.
+ * ADR 0048 (BL-215, owner msg 3384): a channel-bound agent never makes a VIDEO public -- that stays the owner's (amended by owner msg
+ * 4782, 2026-11-23: a playlist may be made public, so the playlist core no longer calls this; `worker-privacy` calls it for a video).
+ * Outside an agent session (the owner's Web UI) this is a no-op. Called before any credential or YouTube call.
  */
 export function assertAgentMayNotPublish(privacyStatus: string | null | undefined): void {
   if (privacyStatus !== "public" || !getAgentSession()) return;
   throw new DomainError({
     code: "AGENT_PUBLIC_NOT_ALLOWED",
-    message: "A channel agent cannot make anything public -- that stays the owner's. Use private or unlisted.",
+    message: "A channel agent cannot make a video public -- that stays the owner's. Use private or unlisted.",
     details: { privacyStatus },
   });
 }

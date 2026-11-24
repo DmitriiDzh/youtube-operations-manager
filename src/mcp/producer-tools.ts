@@ -2,7 +2,7 @@
  * BL-161 (FO-REQ-0012, `docs/roadmap/plans/PRODUCER_ROLE_PLAN.md` §3, ADR 0034) -- what the Producer role may call on its own
  * endpoint (`/api/mcp/producer`). A closed list: a channel tool reaches the Producer only by being named here, and every entry
  * names the capability (`src/lib/agent-operations` registry) whose permission class must be READ -- the inventory test fails the
- * suite otherwise, so no DRAFT or WRITE channel tool can be added by accident. Its DRAFT tools are its own proposal tools (BL-163) and
+ * suite otherwise, so no DRAFT or WRITE channel tool can be added by accident (the DRAFT and playlist lists below are pinned by name). Its DRAFT tools are its own proposal tools (BL-163) and
  * one channel tool the owner allowed by name (BL-170, `PRODUCER_DRAFT_CHANNEL_TOOLS`), all listed in `PRODUCER_DRAFT_TOOLS`: each only
  * proposes, and nothing changes until the owner approves it in the Web UI.
  *
@@ -10,6 +10,9 @@
  * this computer's upload queue with `PRODUCER_UPLOAD_QUEUE_TOOLS` (permission UPLOAD_QUEUE): it lists the queue, moves and cancels
  * queued rows of any channel (since BL-244, ADR 0064, it also stops a row being sent before its last chunk), and adds a ready release package under the owner's automatic-upload switch -- private, a date only
  * from a weekly-plan slot the owner approved. Channel agents and the factory get none of them.
+ *
+ * Owner msg 4782 (2026-11-23): the Producer edits the playlists of every channel connected here with the channel agent's own playlist
+ * tools (`PRODUCER_PLAYLIST_CHANNEL_TOOLS`, permission EXECUTE in the capability registry) -- never a playlist delete.
  *
  * BL-241 (owner msgs 4010/4011, ADR 0061): the Producer submits clips for review with `PRODUCER_CLIP_REVIEW_TOOLS` -- a short clip
  * already in a channel's folder, which only the owner approves or returns in the Web UI. Submit and withdraw are DRAFT (a request the
@@ -65,7 +68,15 @@
 // problem codes captions_missing / captions_invalid (details.reason); uploads gain steps.captions. Additive.
 // 1.27.0 (BL-271, owner TG 3617/3618, ADR 0075): producer_wait (READ) -- wait until one upload of this computer or a restart is final
 // (timeoutSeconds default 50, clamped 1-240); not counted as MCP activity; any other target is invalid_request. Additive.
-// 1.33.0 (package playlists, owner TG 4858/4859): producer_video_playlists (READ) -- { channelId, videoId, refresh? } -> the channel's
+// 1.28.0 (BL-272, owner TG 2547 via the Producer, ADR 0076): the master still image review tools producer_image_review_submit /
+// _list / _get / _withdraw (submit and withdraw DRAFT; the owner approves, approves with a note or returns, in the Web UI);
+// producer_get_capabilities lists imageReviewTools; producer_clip_review_submit takes an optional approvedImageId (an image of the
+// same channel the owner approved) and the clip then carries it in _get / _list. Additive.
+// 1.29.0 (owner TG 4782, 2026-11-23; ADR 0048 amendment 2026-11-23): the channel playlist tools playlist_list, playlist_create,
+// playlist_update (title / description / privacy, public included), playlist_add_videos (only the channel's own synced videos) and
+// playlist_remove_videos, each run for the named channel as its own agent would (`expectedChannelId`, required except on
+// playlist_create, must equal `channelId`); permission PLAYLIST_WRITE and playlistTools in producer_get_capabilities. No playlist delete. Additive.
+// 1.33.0 (package playlists; 1.30.0-1.32.0 are other branches' numbers, owner TG 4858/4859): producer_video_playlists (READ) -- { channelId, videoId, refresh? } -> the channel's
 // playlists that hold the video (live through the read gateway, kept 10 minutes) and this computer's upload rows of it with each
 // playlist's outcome; release packages (yt-release-package/2) may name `playlists` (0..10 ids) the upload adds the video to. Additive.
 export const PRODUCER_API_VERSION = "1.33.0";
@@ -120,6 +131,31 @@ export const PRODUCER_DRAFT_CHANNEL_TOOLS: Readonly<Record<string, { capability:
 });
 
 /**
+ * Owner, Telegram msg 4782 (2026-11-23; ADR 0048 amendment; `docs/WRITE_AUTHORIZATIONS.md`): the channel agent's playlist tools the
+ * Producer also gets, by name -- exactly these five, pinned by the test (never `playlist_delete`). Called like every channel tool: per
+ * call, in the named channel's agent scope, so the playlist core's checks apply unchanged (the write-channel guardrail with the required
+ * `expectedChannelId`, which must be the named channel; the playlist's owner channel; Live writes immediately before each gateway write).
+ * `playlist_add_videos` adds only the channel's own videos (`PRODUCER_OWN_VIDEO_TOOLS`). The four writes are real YouTube writes
+ * (permission PLAYLIST_WRITE); every call, refused or not, is in the Producer's call log.
+ */
+export const PRODUCER_PLAYLIST_CHANNEL_TOOLS: Readonly<Record<string, { capability: string }>> = Object.freeze({
+  playlist_list: { capability: "youtube_writes.list_playlists" },
+  playlist_create: { capability: "youtube_writes.create_playlist" },
+  playlist_update: { capability: "youtube_writes.update_playlist" },
+  playlist_add_videos: { capability: "youtube_writes.edit_playlist_items" },
+  playlist_remove_videos: { capability: "youtube_writes.edit_playlist_items" },
+});
+
+/** The Producer's playlist writes (permission PLAYLIST_WRITE): the playlist tools without the read. */
+export const PRODUCER_PLAYLIST_WRITE_TOOLS = ["playlist_create", "playlist_update", "playlist_add_videos", "playlist_remove_videos"] as const;
+
+/**
+ * Owner msg 4782 ("добавлять / удалять оттуда видео" -- the channel's videos): on the Producer endpoint each id in `videoIds` must be a
+ * video of the named channel in its local synced list (`not_found` otherwise, for the whole call, before any credential or YouTube call).
+ */
+export const PRODUCER_OWN_VIDEO_TOOLS: readonly string[] = Object.freeze(["playlist_add_videos"]);
+
+/**
  * A channel tool whose own `channelId` means something else gets it under another name on the Producer endpoint, so `channelId`
  * always names the Producer's channel: `query_market_intelligence`'s is a watchlist (competitor) channel.
  */
@@ -145,6 +181,10 @@ export const PRODUCER_ONLY_TOOLS = [
   "producer_clip_review_list",
   "producer_clip_review_get",
   "producer_clip_review_withdraw",
+  "producer_image_review_submit",
+  "producer_image_review_list",
+  "producer_image_review_get",
+  "producer_image_review_withdraw",
   "producer_video_thumbnail_replace",
   "producer_video_metadata_update",
   "producer_video_captions_add",
@@ -198,16 +238,33 @@ export const PRODUCER_CAPTIONS_TOOLS = ["producer_video_captions_add"] as const;
 export const PRODUCER_CLIP_REVIEW_TOOLS = ["producer_clip_review_submit", "producer_clip_review_list", "producer_clip_review_get", "producer_clip_review_withdraw"] as const;
 
 /**
+ * BL-272 (ADR 0076): the Producer's master still image review tools -- exactly these four, the test pins the list. Submit and withdraw
+ * store a request or take it back; only the owner approves, approves with a note or returns an image, in the Web UI.
+ */
+export const PRODUCER_IMAGE_REVIEW_TOOLS = ["producer_image_review_submit", "producer_image_review_list", "producer_image_review_get", "producer_image_review_withdraw"] as const;
+
+/**
  * BL-163 (FO-REQ-0014 §C, ADR 0034 Amendment 1): the Producer's DRAFT tools -- exactly these two, the test pins the list. They store
  * a proposal, or mark a decided one read; neither changes the watchlist or the hypotheses. Approving, rejecting and applying are
  * Web-UI-only (`agent-proposal-approval-inventory.test.ts`). BL-241 adds the clip review submit and withdraw: a request for the owner,
  * taken back while still pending; only the owner decides it (`clip-reviews/boundaries.test.ts`).
  */
-export const PRODUCER_DRAFT_TOOLS = ["producer_propose", "producer_mark_proposals_done", "create_experiment_proposal", "producer_clip_review_submit", "producer_clip_review_withdraw", "producer_week_template_propose"] as const;
+export const PRODUCER_DRAFT_TOOLS = [
+  "producer_propose",
+  "producer_mark_proposals_done",
+  "create_experiment_proposal",
+  "producer_clip_review_submit",
+  "producer_clip_review_withdraw",
+  "producer_week_template_propose",
+  // BL-272 (ADR 0076): a master still image for the owner's review, taken back while pending; only the owner decides it.
+  "producer_image_review_submit",
+  "producer_image_review_withdraw",
+] as const;
 
 /** Every tool the Producer endpoint lists, in order. */
 export const PRODUCER_TOOL_NAMES: readonly string[] = Object.freeze([
   ...PRODUCER_ONLY_TOOLS,
   ...Object.keys(PRODUCER_CHANNEL_TOOLS),
   ...Object.keys(PRODUCER_DRAFT_CHANNEL_TOOLS),
+  ...Object.keys(PRODUCER_PLAYLIST_CHANNEL_TOOLS),
 ]);

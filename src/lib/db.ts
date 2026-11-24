@@ -1913,7 +1913,8 @@ export const producerAgentTokens = sqliteTable("producer_agent_tokens", {
 
 /**
  * BL-161, SCHEMA_MIGRATIONS version 72: one row per Producer MCP tool call, allowed or refused (FO-REQ-0012 §2.4: the owner sees
- * what the Producer looked at). Device-local; rows older than 90 days are pruned on insert.
+ * what the Producer looked at). Device-local; rows older than 90 days are pruned on insert. Version 124 (owner TG 4782 review):
+ * `target` and `details_json` say what a playlist write wrote (the playlist, privacy, video ids, the answer's counts); null otherwise.
  */
 export const producerCallLog = sqliteTable("producer_call_log", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -1922,6 +1923,8 @@ export const producerCallLog = sqliteTable("producer_call_log", {
   channelId: text("channel_id"),
   outcome: text("outcome").notNull(),
   errorCode: text("error_code"),
+  target: text("target"),
+  detailsJson: text("details_json"),
 });
 
 /**
@@ -6231,6 +6234,20 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       }
     },
   },
+  {
+    version: 124,
+    description:
+      "producer_call_log.target + details_json -- owner TG 4782 review (ADR 0048 amendment 1): what a Producer playlist write wrote (the playlist, privacy, video ids, the answer's counts). Additive, nullable, no default, device-local",
+    apply: async (client) => {
+      for (const statement of ["ALTER TABLE producer_call_log ADD COLUMN target TEXT", "ALTER TABLE producer_call_log ADD COLUMN details_json TEXT"]) {
+        try {
+          await client.execute(statement);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
+    },
+  },
 ];
 
 /**
@@ -8778,6 +8795,10 @@ export type ProducerCallLogEntry = {
   channelId: string | null;
   outcome: "ok" | "error";
   errorCode: string | null;
+  /** v124: a playlist write's playlist (null for every other call). */
+  target: string | null;
+  /** v124: a playlist write's details as JSON, at most 500 characters (a long list is cut and is then no longer JSON). */
+  detailsJson: string | null;
 };
 
 /** How long a Producer call stays in the log (BL-161). */
@@ -8785,11 +8806,12 @@ export const PRODUCER_CALL_LOG_RETENTION_MS = 90 * 24 * 60 * 60_000;
 
 /** BL-161: records one Producer tool call and drops rows older than the retention, in one transaction. */
 export async function insertProducerCallLogEntry(
-  entry: { at: Date; tool: string; channelId: string | null; outcome: "ok" | "error"; errorCode: string | null },
+  entry: { at: Date; tool: string; channelId: string | null; outcome: "ok" | "error"; errorCode: string | null; target?: string | null; details?: string | null },
   database: AppDb = db
 ): Promise<void> {
+  const { details, target, ...row } = entry;
   await database.transaction(async (tx) => {
-    await tx.insert(producerCallLog).values(entry);
+    await tx.insert(producerCallLog).values({ ...row, target: target ?? null, detailsJson: details ?? null });
     await tx.delete(producerCallLog).where(lt(producerCallLog.at, new Date(entry.at.getTime() - PRODUCER_CALL_LOG_RETENTION_MS)));
   });
 }
@@ -8956,9 +8978,9 @@ export async function getGatewayTrafficLast24h(
   }));
 }
 
-export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens" | "live_streams" | "channel_language_settings" | "channel_publishing_settings" | "publishing_uploads" | "storyboards" | "media_jobs" | "gemini_spend" | "gemini_settings" | "video_reservations" | "video_costs" | "live_analytics" | "publishing_plans" | "elevenlabs_spend" | "elevenlabs_settings" | "clip_reviews" | "package_reviews";
+export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens" | "live_streams" | "channel_language_settings" | "channel_publishing_settings" | "publishing_uploads" | "storyboards" | "media_jobs" | "gemini_spend" | "gemini_settings" | "video_reservations" | "video_costs" | "live_analytics" | "publishing_plans" | "elevenlabs_spend" | "elevenlabs_settings" | "clip_reviews" | "package_reviews" | "image_reviews";
 
-const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens", "live_streams", "channel_language_settings", "channel_publishing_settings", "publishing_uploads", "storyboards", "media_jobs", "gemini_spend", "gemini_settings", "video_reservations", "video_costs", "live_analytics", "publishing_plans", "elevenlabs_spend", "elevenlabs_settings", "clip_reviews", "package_reviews"];
+const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens", "live_streams", "channel_language_settings", "channel_publishing_settings", "publishing_uploads", "storyboards", "media_jobs", "gemini_spend", "gemini_settings", "video_reservations", "video_costs", "live_analytics", "publishing_plans", "elevenlabs_spend", "elevenlabs_settings", "clip_reviews", "package_reviews", "image_reviews"];
 
 export type SyncFamilyStatusRow = {
   family: SyncFamily;

@@ -27,7 +27,25 @@ export type ClipDto = {
   /** BL-246: the deciding record's id (its attachments' folder), null while pending. */
   decisionId: string | null;
   attachments: ClipAttachmentDto[];
+  /** BL-272 (ADR 0076): the id of the approved master still the clip was made from (present only when the Producer named one). */
+  approvedImageId?: string;
+  /** BL-272: that still as it is now (absent when none was named; null when this computer's stills do not have it yet). */
+  approvedImage?: { imageId: string; sceneId: string; imagePath: string; status: string } | null;
 };
+
+/** The still statuses the clip card names; anything else (a newer build's status) is shown as "unknown". */
+export const SOURCE_IMAGE_STATUSES = ["approved", "approved_with_note", "pending", "returned", "withdrawn"] as const;
+export type SourceImageStatus = (typeof SOURCE_IMAGE_STATUSES)[number] | "unknown";
+
+/**
+ * BL-272 (review): the clip's source still as the card shows it now -- its status (an unknown one as `unknown`) and whether to
+ * highlight it: anything but approved / approved with a note (an earlier answer from the other computer may have returned it after
+ * the clip was made, or a newer status this build does not know).
+ */
+export function sourceImageStateOf(status: string): { status: SourceImageStatus; highlight: boolean } {
+  const known = (SOURCE_IMAGE_STATUSES as readonly string[]).includes(status) ? (status as SourceImageStatus) : "unknown";
+  return { status: known, highlight: known !== "approved" && known !== "approved_with_note" };
+}
 
 /** `m:ss` of a number of seconds (rounded down to the second): 65.4 -> "1:05", 120 -> "2:00". */
 export function clockOf(seconds: number): string {

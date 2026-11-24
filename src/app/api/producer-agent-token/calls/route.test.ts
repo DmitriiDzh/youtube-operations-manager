@@ -26,15 +26,37 @@ test("AC-PR-09: the calls come back as stored, with channel titles where known",
         { at: new Date("2026-10-09T10:05:00Z"), tool: "agent_query_channel_reach", channelId: "UC_T", outcome: "ok", errorCode: null },
         { at: new Date("2026-10-09T10:04:00Z"), tool: "channel_video_list", channelId: "UC_GONE", outcome: "error", errorCode: "CHANNEL_NOT_ACTIVE" },
         { at: new Date("2026-10-09T10:03:00Z"), tool: "producer_list_channels", channelId: null, outcome: "ok", errorCode: null },
+        {
+          at: new Date("2026-10-09T10:02:00Z"),
+          tool: "playlist_update",
+          channelId: "UC_T",
+          outcome: "ok",
+          errorCode: null,
+          target: "PL_1",
+          detailsJson: '{"fields":["privacyStatus"],"privacyStatus":"public"}',
+        },
       ];
     },
     channelTitles: async () => new Map([["UC_T", "Tropico Jazz"]]),
   })();
   assert.equal(response.status, 200);
   assert.equal(asked, 30);
+  // Changed requirement (owner TG 4782, independent review of the Producer's playlist writes): every row also carries `target` and
+  // `details` -- a playlist write's playlist and what it wrote, null for every other call.
+  const none = { target: null, details: null };
   assert.deepEqual((await response.json()).calls, [
-    { at: "2026-10-09T10:05:00.000Z", tool: "agent_query_channel_reach", channelId: "UC_T", channelTitle: "Tropico Jazz", outcome: "ok", errorCode: null },
-    { at: "2026-10-09T10:04:00.000Z", tool: "channel_video_list", channelId: "UC_GONE", channelTitle: null, outcome: "error", errorCode: "CHANNEL_NOT_ACTIVE" },
-    { at: "2026-10-09T10:03:00.000Z", tool: "producer_list_channels", channelId: null, channelTitle: null, outcome: "ok", errorCode: null },
+    { at: "2026-10-09T10:05:00.000Z", tool: "agent_query_channel_reach", channelId: "UC_T", channelTitle: "Tropico Jazz", outcome: "ok", errorCode: null, ...none },
+    { at: "2026-10-09T10:04:00.000Z", tool: "channel_video_list", channelId: "UC_GONE", channelTitle: null, outcome: "error", errorCode: "CHANNEL_NOT_ACTIVE", ...none },
+    { at: "2026-10-09T10:03:00.000Z", tool: "producer_list_channels", channelId: null, channelTitle: null, outcome: "ok", errorCode: null, ...none },
+    {
+      at: "2026-10-09T10:02:00.000Z",
+      tool: "playlist_update",
+      channelId: "UC_T",
+      channelTitle: "Tropico Jazz",
+      outcome: "ok",
+      errorCode: null,
+      target: "PL_1",
+      details: '{"fields":["privacyStatus"],"privacyStatus":"public"}',
+    },
   ]);
 });

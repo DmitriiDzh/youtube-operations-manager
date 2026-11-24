@@ -26,6 +26,11 @@ export type ClipReviewClip = {
   submittedBy: string;
   /** The computer it was submitted on (host name), or null. */
   device: string | null;
+  /**
+   * BL-272 (ADR 0076): the approved master still image (image-reviews, same channel) the clip was made from. Optional and additive:
+   * absent on every clip submitted without one (an older build reads the document without a schema and ignores the field).
+   */
+  approvedImageId?: string;
 };
 
 export type ClipReviewDecisionKind = "approved" | "returned" | "withdrawn";
