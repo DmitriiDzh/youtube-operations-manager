@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { actionsOf, decisionBody, decisionReady, durationLabel, frameOf, mediaSrcOf, newCommentId, nextMoment, oneLineText, returnCommentReady, withComment, withEditedComment, withoutComment } from "./package-reviews-model";
-import { flagPlaces, PLAYBACK_RATES, stepRate, storedRate } from "./visual-review-model";
+import { flagPlaces, PLAYBACK_RATES, rateKeyDirection, stepRate, storedRate } from "./visual-review-model";
 
 // BL-257 (PACKAGE_REVIEW_PLAN.md AC-PR-04/05/09/15; ADR 0070 §4, §6): the screen asks for the media by the manifest hash only; the
 // owner may change his mind until the upload; approval needs the manifest's video checksum; a return needs a comment; a vertical
@@ -105,4 +105,14 @@ test("TG 4844: playback speeds, stepping and the remembered speed", () => {
   assert.equal(stepRate(0.25, -1), 0.25, "the slowest stays");
   assert.equal(stepRate(1.75, 1), 1.25, "an unknown speed counts as 1x");
   assert.deepEqual([storedRate("1.5"), storedRate("3"), storedRate("4"), storedRate("abc"), storedRate(""), storedRate(null)], [1.5, 3, null, null, null, null]);
+});
+
+// TG 4844 / advisor review: `<` / `>` also by the physical key, so a Russian layout (where Shift + that key types «Б» / «Ю») works.
+test("TG 4844: the speed keys on any layout", () => {
+  assert.equal(rateKeyDirection({ key: "<", code: "Comma", shiftKey: true }), -1);
+  assert.equal(rateKeyDirection({ key: ">", code: "Period", shiftKey: true }), 1);
+  assert.equal(rateKeyDirection({ key: "Б", code: "Comma", shiftKey: true }), -1);
+  assert.equal(rateKeyDirection({ key: "Ю", code: "Period", shiftKey: true }), 1);
+  assert.equal(rateKeyDirection({ key: "б", code: "Comma", shiftKey: false }), null, "without Shift it is the frame step key");
+  assert.equal(rateKeyDirection({ key: "a", code: "KeyA", shiftKey: true }), null);
 });

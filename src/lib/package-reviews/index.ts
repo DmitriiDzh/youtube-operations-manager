@@ -47,7 +47,7 @@ function service(ports: PackageReviewsCompositionPorts) {
       get: (channelId, manifestSha256) => getPackageReviewDraft(channelId, manifestSha256),
       set: (channelId, manifestSha256, commentsJson, updatedAt) => setPackageReviewDraft(channelId, manifestSha256, commentsJson, updatedAt),
       remove: (channelId, manifestSha256) => deletePackageReviewDraft(channelId, manifestSha256),
-      prune: (channelId, keepManifests) => prunePackageReviewDrafts(channelId, keepManifests),
+      prune: (channelId, keepManifests, untouchedSince) => prunePackageReviewDrafts(channelId, keepManifests, untouchedSince),
     },
   });
 }

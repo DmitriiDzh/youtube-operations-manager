@@ -79,9 +79,9 @@ function harness(options: { failAdd?: boolean; packages?: ReviewPackage[]; remov
         if (options.removeFails) throw new Error("database is locked");
         drafts.delete(key(c, m));
       },
-      prune: async (c, keep) => {
+      prune: async (c, keep, untouchedSince) => {
         let removed = 0;
-        for (const k of [...drafts.keys()]) if (k.startsWith(`${c}|`) && !keep.includes(k.slice(c.length + 1))) {
+        for (const [k, row] of [...drafts.entries()]) if (k.startsWith(`${c}|`) && !keep.includes(k.slice(c.length + 1)) && row.updatedAt < untouchedSince) {
             drafts.delete(k);
             removed++;
           }
@@ -322,10 +322,13 @@ test("review fix 2: a draft save on a stale base is refused; on the current base
 // Review fix 5: the listing removes drafts of manifests the channel no longer has; fix 6: a draft that cannot be removed is audited.
 test("review fixes 5-6: drafts of gone packages are pruned on listing; a failed removal after a decision is audited", async () => {
   const h = harness();
-  h.drafts.set(`${CH}|${"c".repeat(64)}`, { commentsJson: "[]", updatedAt: new Date("2026-11-20T00:00:00Z") });
+  // 14 days before the clock (2026-11-24) is 2026-11-10: a gone package's draft from 11-01 goes, one from 11-20 (maybe a manifest being
+  // rewritten during this scan) stays.
+  h.drafts.set(`${CH}|${"c".repeat(64)}`, { commentsJson: "[]", updatedAt: new Date("2026-11-01T00:00:00Z") });
+  h.drafts.set(`${CH}|${"d".repeat(64)}`, { commentsJson: "[]", updatedAt: new Date("2026-11-20T00:00:00Z") });
   await h.service.saveDraft(CH, { manifestSha256: MANIFEST, comments: [{ id: "a", atSeconds: 1, text: "x" }] });
   await h.service.view(CH);
-  assert.deepEqual([...h.drafts.keys()], [`${CH}|${MANIFEST}`]);
+  assert.deepEqual([...h.drafts.keys()].sort(), [`${CH}|${"d".repeat(64)}`, `${CH}|${MANIFEST}`].sort());
   const failing = harness({ removeFails: true });
   await failing.service.saveDraft(CH, { manifestSha256: MANIFEST, comments: [{ id: "a", atSeconds: 1, text: "x" }] });
   await failing.service.decide(CH, { manifestSha256: MANIFEST, kind: "approved", draftUpdatedAt: "2026-11-24T10:00:00.000Z" });

@@ -34,7 +34,7 @@ export type PackageReviewDraftsStore = {
   set(channelId: string, manifestSha256: string, commentsJson: string, updatedAt: Date): Promise<void>;
   remove(channelId: string, manifestSha256: string): Promise<void>;
   /** Review fix 5: removes the channel's drafts of packages it no longer has (re-packaged, removed); returns how many. */
-  prune?(channelId: string, keepManifests: readonly string[]): Promise<number>;
+  prune?(channelId: string, keepManifests: readonly string[], untouchedSince: Date): Promise<number>;
 };
 
 export type PackageReviewsDeps = {
@@ -65,6 +65,9 @@ export type PackageReviewsDeps = {
 const VIDEO_TYPES: Readonly<Record<string, string>> = { mp4: "video/mp4", m4v: "video/mp4", mov: "video/quicktime", webm: "video/webm" };
 const IMAGE_TYPES: Readonly<Record<string, string>> = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png" };
 const extensionOf = (p: string) => (/\.([A-Za-z0-9]+)$/.exec(p)?.[1] ?? "").toLowerCase();
+
+/** Drafts of packages the channel no longer lists are removed once untouched this long. */
+const DRAFT_PRUNE_DAYS = 14;
 
 const STATE_ORDER: Record<PackageReviewItemState, number> = { pending: 0, returned: 1, approved: 2, uploaded: 3 };
 
@@ -147,7 +150,8 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
     };
     if (found.status !== "ok") return { ...base, packages: found.status, items: [], waiting: 0 };
     // Review fix 5: a draft of a package the channel no longer has (re-packaged, removed) would never show again -- pruned here.
-    await deps.drafts?.prune?.(channelId, found.packages.map((p) => p.manifestSha256)).catch(() => 0);
+    // Only drafts untouched for DRAFT_PRUNE_DAYS: a package missing from one scan (its manifest being rewritten) keeps its draft.
+    await deps.drafts?.prune?.(channelId, found.packages.map((p) => p.manifestSha256), new Date(deps.now().getTime() - DRAFT_PRUNE_DAYS * 86_400_000)).catch(() => 0);
     const decided = new Set(decisions.map((d) => (d as { manifestSha256?: unknown }).manifestSha256));
     // The scan lists packages by planned date (oldest first): the decided uploads kept are the latest ones.
     const uploadedKept = new Set(found.packages.filter((p) => p.uploaded && decided.has(p.manifestSha256)).slice(-PACKAGE_REVIEW_LIMITS.uploadedShown));

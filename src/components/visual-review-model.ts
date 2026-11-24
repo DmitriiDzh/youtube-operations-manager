@@ -348,3 +348,16 @@ export function storedRate(value: string | null): PlaybackRate | null {
   const n = Number(value);
   return (PLAYBACK_RATES as readonly number[]).includes(n) ? (n as PlaybackRate) : null;
 }
+
+/**
+ * Owner TG 4844: the speed key -- `<` slower, `>` faster. Also by the physical key (Shift + the comma / period key), so it works on a
+ * Russian layout where that key types «Б» / «Ю». Null for any other key.
+ */
+export function rateKeyDirection(event: { key: string; code: string; shiftKey: boolean }): 1 | -1 | null {
+  if (event.key === "<") return -1;
+  if (event.key === ">") return 1;
+  if (!event.shiftKey) return null;
+  if (event.code === "Comma") return -1;
+  if (event.code === "Period") return 1;
+  return null;
+}

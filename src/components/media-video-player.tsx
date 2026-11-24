@@ -4,7 +4,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useSta
 import type { PlanMarkerRegion } from "@/lib/generation-plans/contracts";
 import { formatPlayerTime } from "./media-review-player";
 import { useUiText } from "./ui-text-provider";
-import { fitView, flagPlaces, frameAt, isWrap, PLAYBACK_RATES, stepRate, storedRate, type PlaybackRate, lastFrameTime, measuredFps, regionFromDrag, regionToScreen, sameProportions, seamJump, seamWindowOf, splitAt, stepFrame, wipeClip, type ImageBox } from "./visual-review-model";
+import { fitView, flagPlaces, frameAt, isWrap, PLAYBACK_RATES, rateKeyDirection, stepRate, storedRate, type PlaybackRate, lastFrameTime, measuredFps, regionFromDrag, regionToScreen, sameProportions, seamJump, seamWindowOf, splitAt, stepFrame, wipeClip, type ImageBox } from "./visual-review-model";
 
 /**
  * BL-175 phase 2 (review): where the second clip of a wipe / difference stands for the first one's `time` -- the same moment, or,
@@ -324,10 +324,11 @@ export const MediaVideoPlayer = forwardRef<
       const tag = (event.target as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
       const full = document.fullscreenElement === box;
-      if (event.key === "<" || event.key === ">") {
+      const direction = rateKeyDirection(event);
+      if (direction !== null) {
         if (!full && !box.contains(document.activeElement)) return;
         event.preventDefault();
-        setRate(stepRate(rateRef.current, event.key === ">" ? 1 : -1));
+        setRate(stepRate(rateRef.current, direction));
         return;
       }
       if (!full || (event.key !== " " && event.key.toLowerCase() !== "k")) return;

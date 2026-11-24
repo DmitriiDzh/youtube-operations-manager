@@ -55,10 +55,12 @@ test("review fix 5: prunePackageReviewDrafts keeps the listed manifests and othe
     const database = createIsolatedDb(client);
     const at = new Date("2026-11-24T10:00:00Z");
     for (const [c, m] of [["UC1", "a"], ["UC1", "b"], ["UC2", "a"]] as const) await setPackageReviewDraft(c, m.repeat(64), "[]", at, database);
-    assert.equal(await prunePackageReviewDrafts("UC1", ["a".repeat(64)], database), 1);
+    // Advisor review: a draft touched after the cut-off stays even when its manifest is not listed.
+    assert.equal(await prunePackageReviewDrafts("UC1", ["a".repeat(64)], new Date("2026-11-24T09:00:00Z"), database), 0);
+    assert.equal(await prunePackageReviewDrafts("UC1", ["a".repeat(64)], new Date("2026-11-25T00:00:00Z"), database), 1);
     assert.ok(await getPackageReviewDraft("UC1", "a".repeat(64), database));
     assert.equal(await getPackageReviewDraft("UC1", "b".repeat(64), database), null);
     assert.ok(await getPackageReviewDraft("UC2", "a".repeat(64), database));
-    assert.equal(await prunePackageReviewDrafts("UC2", [], database), 1);
+    assert.equal(await prunePackageReviewDrafts("UC2", [], new Date("2026-11-25T00:00:00Z"), database), 1);
   });
 });

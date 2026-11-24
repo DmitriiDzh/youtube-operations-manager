@@ -11048,9 +11048,12 @@ export async function setPackageReviewDraft(channelId: string, manifestSha256: s
     .onConflictDoUpdate({ target: [packageReviewDrafts.channelId, packageReviewDrafts.manifestSha256], set: { commentsJson, updatedAt } });
 }
 
-/** Review fix 5: the channel's drafts whose manifest is not in `keepManifests` (the package was re-packaged or removed); returns how many. */
-export async function prunePackageReviewDrafts(channelId: string, keepManifests: readonly string[], database: AppDb = db): Promise<number> {
-  const where = keepManifests.length > 0 ? and(eq(packageReviewDrafts.channelId, channelId), notInArray(packageReviewDrafts.manifestSha256, [...keepManifests])) : eq(packageReviewDrafts.channelId, channelId);
+/** Review fix 5: the channel's drafts whose manifest is not in `keepManifests` (re-packaged or removed) and not touched since `untouchedSince`. */
+export async function prunePackageReviewDrafts(channelId: string, keepManifests: readonly string[], untouchedSince: Date, database: AppDb = db): Promise<number> {
+  // Advisor review: only drafts not touched since `untouchedSince` -- a package missing from one scan (a manifest being rewritten) never
+  // costs the owner a draft he is working on.
+  const old = and(eq(packageReviewDrafts.channelId, channelId), lt(packageReviewDrafts.updatedAt, untouchedSince));
+  const where = keepManifests.length > 0 ? and(old, notInArray(packageReviewDrafts.manifestSha256, [...keepManifests])) : old;
   const result = await database.delete(packageReviewDrafts).where(where);
   return Number(result.rowsAffected ?? 0);
 }
