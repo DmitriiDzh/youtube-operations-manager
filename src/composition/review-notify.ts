@@ -398,7 +398,7 @@ export function packageNoticesOf(channel: Channel, snapshot: PackageReviewsSnaps
         ...(d.kind === "approved" ? [{ label: "Next", value: "the video (this mp4) is approved: every package of it is ready -- a re-package of only its packaging keeps the approval; the automatic upload (or producer_upload_queue_add) takes it; the owner's slot approval gives the date" }] : []),
         ...(d.kind === "returned" ? [{ label: "Next", value: "this mp4 stays out of the upload and the plan; a package with a new mp4 is reviewed again" }] : []),
         ...(d.kind === "packaging_comment"
-          ? [{ label: "Next", value: "a comment on the packaging (title, description, tags, thumbnail, translations): it blocks nothing -- re-package if you agree; an uploaded video's texts are fixed with producer_video_metadata_update (dry run first)" }]
+          ? [{ label: "Next", value: "a comment on the packaging (title, description, tags, thumbnail, translations): it blocks nothing -- re-package if you agree; an uploaded video's texts are fixed with producer_video_metadata_update, its translations with the same tool and localizations: true (dry run first)" }]
           : []),
         ...(later ? [{ label: "Counts", value: `no: a later owner decision (${later.id}) decides this video` }] : []),
       ],

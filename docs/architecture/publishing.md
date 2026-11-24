@@ -399,7 +399,9 @@ FO-REQ-0040; owner msgs 3511/3534; plan `docs/roadmap/plans/WEEKLY_PUBLISHING_PL
     writer via `writeLocalizations`, `expected` = the insert's snippet so a stale read is never echoed back), then thumbnail, playlist,
     read-back, and the date only when all passed (`steps.localizations` in `none` / `verified`).
   - `src/lib/shared-video-localizations/` holds the writer moved out of `live-localizations` (unchanged; `source` names the caller in
-    the audit); `live-localizations` re-exports it.
+    the audit); `live-localizations` re-exports it. Since ADR 0072 amendment 1 a third source `package_localizations` and two optional
+    inputs: `expectedCurrent` (fail closed with `video_details_conflict` when a language to write no longer reads as the caller checked)
+    and `auditContext` (merged into every audit row).
   - `plan-schedule.ts` + `createPlanScheduleCore` (loop in `instrumentation.ts`, every minute): for each done row with a slot and a
     video, `desiredDate` (veto -> no date; approved -> the slot's time when the upload's checks passed and it is > 15 min ahead; pending
     -> nothing; a date within 15 min is never changed); a fresh read, refused if not private; video-details `applyFieldsUpdate`
@@ -583,6 +585,16 @@ flags the error as not sent; the mark keeps the retry count, so a failing insert
   VERIFICATION audit's `afterTexts`, else the finished upload row's package. `apply` sends only differing fields through
   `video-details.applyFieldsUpdate` with `expectedEtag`, `verifyUnchanged` (category, languages -- not a `zxx` audio language -- privacy,
   publishAt) and `auditContext`, then compares the localization language set before/after (`getVideoMetadataContext`).
+- **Package translations fix (ADR 0072 amendment 1, owner TG 4839/4842).** `publishing/package-localizations.ts`
+  (`createPackageLocalizationsCore`): the same gates (`findUploadedPackage`, `readUploadedVideo` exported from `package-metadata.ts`),
+  the set `packageLocalizationSet` (descriptions `youtubeDescriptionOf`), YouTube's own default language skipped, per language and
+  field three-way (`LocalizationBaseline { entries, complete }`: the latest verified `package_localizations.applied` audit's
+  `afterLocalizations`, else the done row's frozen `localizations` when `steps.localizations` is `verified`, or empty and complete when
+  `none`; else unknown). Any conflict refuses. `apply` calls `createVideoLocalizationsWriterCore("package_localizations")` with only the
+  languages to write, `expectedCurrent` (the entries this check read; the writer re-checks them on its fresh read and recheck) and
+  `auditContext`, then reads the snapshot again for privacy / publishAt. One write per call; against the writer's stale snippet echo it
+  passes `expected` texts (`expectedSnippetOf`: the checked texts, or a `package_metadata` fix of the last 15 minutes) and both fixes
+  take `withPackageVideoLock` (package-metadata.ts). Baseline parsing is `localizationBaselineOf` (pure, over `auditEvents`).
 - **video-details.** `adapters/youtube-api.ts` takes injectable I/O; order client -> read -> refusal checks -> Live writes -> write;
   `snippetPartOf` (full snippet read-merge-write); snapshot `channelId`; `applyFieldsUpdate` input `verifyUnchanged` / `auditContext`;
   `read-back.ts` `youtubeDescriptionText` in `sameFieldValue`.

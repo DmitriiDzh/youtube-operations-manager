@@ -78,7 +78,9 @@
 // playlist_create, must equal `channelId`); permission PLAYLIST_WRITE and playlistTools in producer_get_capabilities. No playlist delete. Additive.
 // 1.30.0 (FO-REQ-0056 part 2, BL-273): channel_video_list gains the selectable field `tags` and agent_get_video_context's metadata gains
 // `tags` (snippet.tags as of the last channel sync; [] = none; null = not read yet). Read-only, local copy. Additive; no tool added.
-// 1.31.0 (BL-274): package translations (feature/package-localizations-update, merged into dev before this branch).
+// 1.31.0 (BL-274, owner TG 4839/4842, ADR 0072 amendment 1): producer_video_metadata_update takes `localizations: true` -- the package's current
+// translations onto its uploaded video (per-language three-way check, any conflict refuses, nothing removed, dryRun), through the
+// shared video translations writer. Additive; no tool added.
 // 1.32.0 (owner TG 4817, PACKAGE_REVIEW_PLAN.md AC-TC-08): producer_publishing_plan_get / _list -- a slot's package gains
 // reviewTimedComments [{ atSeconds, time, text }] (the comments the owner bound to moments of the video in package review, sent with
 // his standing approval or return), and the wake file REVIEW-DECISION-package-<video>-<decisionId>.md gains the section «Timed

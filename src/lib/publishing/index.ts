@@ -8,7 +8,8 @@ import { lstat, mkdir, open, readdir, readFile, realpath, rename as renamePath, 
 import { hostname } from "node:os";
 import path from "node:path";
 import { YOUTUBE_READ_SCOPE, YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
-import { createPackageMetadata } from "./package-metadata";
+import { createPackageMetadata, type PackageMetadataDeps } from "./package-metadata";
+import { createPackageLocalizations } from "./package-localizations";
 import { createPackageCaptions, recordWithCaption, stepsWithCaptionsSetLater } from "./package-captions";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { createChannelVideoStoreAdapter } from "@/lib/channel-video-store";
@@ -1249,12 +1250,9 @@ export { renamedForCode, rewriteManifest, type ReleaseRecodeInput, type ReleaseR
  * the Producer's tool, one service. The write is video-details' own (`applyFieldsUpdate`); this wires the package scan, this
  * computer's upload rows and audit, the device gate and publishing's own localization read.
  */
-export function createPackageMetadataCore() {
-  const scan = createPackageScanCore();
-  const settings = createPublishingSettingsCore();
-  const videoDetails = createVideoDetailsCore();
-  const resolved = (userId: string, scopes: readonly string[]) => resolveGoogleCredentials({ credentialRef: { userId }, requiredScopes: scopes });
-  return createPackageMetadata({
+/** The package-driven fixes' common wiring (BL-265 and the package localizations): the scan, upload rows, device gate, user, snapshot. */
+function uploadedPackageDeps(scan: ReturnType<typeof createPackageScanCore>, videoDetails: ReturnType<typeof createVideoDetailsCore>): Pick<PackageMetadataDeps, "findPackage" | "uploadRows" | "assertDeviceAvailable" | "credentialRef" | "snapshot"> {
+  return {
     async findPackage(channelId, video) {
       const result = await scan.scan(channelId);
       if (result.status !== "ok") return result.status;
@@ -1264,10 +1262,38 @@ export function createPackageMetadataCore() {
       const p = named[0];
       return { pkg: p.pkg!, manifestSha256: p.manifestSha256!, manifestPath: p.manifestPath, folder: p.folder, videoId: p.youtube?.videoId ?? null, thumbnailPath: p.thumbnailPath };
     },
-    channelTags: async (channelId) => (await settings.read(channelId)).settings.channelTags ?? [],
     async uploadRows(channelId, video) {
-      return (await listPublishingUploads({ channelId, limit: 5000 })).filter((row) => row.video === video).map((row) => ({ status: row.status, videoId: row.videoId, packageJson: row.packageJson, finishedAt: row.finishedAt }));
+      return (await listPublishingUploads({ channelId, limit: 5000 }))
+        .filter((row) => row.video === video)
+        .map((row) => ({ status: row.status, videoId: row.videoId, packageJson: row.packageJson, finishedAt: row.finishedAt, stepsJson: row.stepsJson }));
     },
+    assertDeviceAvailable: () => assertDeviceAvailableForMutation(rawSqlClient),
+    async credentialRef(channelId, actor) {
+      if (actor.kind === "owner") return { userId: actor.userId };
+      const channel = (await listStoredChannels()).find((c) => c.channelId === channelId);
+      if (!channel?.connectedUserId) throw new DomainError({ code: "CHANNEL_NOT_ACTIVE", message: "This channel has no connected Google account on this computer.", details: { channelId } });
+      return { userId: channel.connectedUserId };
+    },
+    async snapshot({ credentialRef, channelId, videoId }) {
+      try {
+        return await videoDetails.getSnapshot({ credentialRef, expectedChannelId: channelId, videoId });
+      } catch (error) {
+        // Only YouTube's own "no such video" is a missing video; any other failure is reported as it is.
+        if (isDomainError(error) && error.code === "not_found" && (error.details as { reason?: unknown } | undefined)?.reason === "no_item") return "not_found";
+        throw error;
+      }
+    },
+  };
+}
+
+export function createPackageMetadataCore() {
+  const scan = createPackageScanCore();
+  const settings = createPublishingSettingsCore();
+  const videoDetails = createVideoDetailsCore();
+  const resolved = (userId: string, scopes: readonly string[]) => resolveGoogleCredentials({ credentialRef: { userId }, requiredScopes: scopes });
+  return createPackageMetadata({
+    ...uploadedPackageDeps(scan, videoDetails),
+    channelTags: async (channelId) => (await settings.read(channelId)).settings.channelTags ?? [],
     async lastApplied(channelId, videoId) {
       const events = (await listVideoEditAuditEventsByVideo(videoId)).filter((e) => e.channelId === channelId && e.eventType === "VERIFICATION");
       for (const event of events.reverse()) {
@@ -1296,22 +1322,6 @@ export function createPackageMetadataCore() {
       const file = await scan.resolvePackageFile(channelId, relativePath);
       return file ? sha256OfFile(file.path) : null;
     },
-    assertDeviceAvailable: () => assertDeviceAvailableForMutation(rawSqlClient),
-    async credentialRef(channelId, actor) {
-      if (actor.kind === "owner") return { userId: actor.userId };
-      const channel = (await listStoredChannels()).find((c) => c.channelId === channelId);
-      if (!channel?.connectedUserId) throw new DomainError({ code: "CHANNEL_NOT_ACTIVE", message: "This channel has no connected Google account on this computer.", details: { channelId } });
-      return { userId: channel.connectedUserId };
-    },
-    async snapshot({ credentialRef, channelId, videoId }) {
-      try {
-        return await videoDetails.getSnapshot({ credentialRef, expectedChannelId: channelId, videoId });
-      } catch (error) {
-        // Only YouTube's own "no such video" is a missing video; any other failure is reported as it is.
-        if (isDomainError(error) && error.code === "not_found" && (error.details as { reason?: unknown } | undefined)?.reason === "no_item") return "not_found";
-        throw error;
-      }
-    },
     async localizationLanguages({ credentialRef, videoId }) {
       try {
         const youtube = await createYoutubeClient(authorizedOAuth(await resolved(credentialRef.userId, [YOUTUBE_READ_SCOPE])));
@@ -1326,6 +1336,36 @@ export function createPackageMetadataCore() {
   });
 }
 export type { PackageMetadataActor, PackageMetadataApplyResult, PackageMetadataPreview } from "./package-metadata";
+
+/**
+ * Package localizations after upload (owner TG 4839/4842, ADR 0072 amendment): the package's current translations onto its uploaded
+ * video -- the owner's route (`localizations: true`) and the Producer's `producer_video_metadata_update { localizations: true }`. The
+ * write is the shared video translations writer (source `package_localizations`); this wires its reads and this computer's audit.
+ */
+export function createPackageLocalizationsCore() {
+  const resolved = (userId: string, scopes: readonly string[]) => resolveGoogleCredentials({ credentialRef: { userId }, requiredScopes: scopes });
+  return createPackageLocalizations({
+    ...uploadedPackageDeps(createPackageScanCore(), createVideoDetailsCore()),
+    async readLocalizations({ credentialRef, channelId, videoId }) {
+      try {
+        const youtube = await createYoutubeClient(authorizedOAuth(await resolved(credentialRef.userId, [YOUTUBE_READ_SCOPE])));
+        const context = await getVideoMetadataContext(youtube, videoId);
+        return context ? { defaultLanguage: context.snippet.defaultLanguage ?? null, localizations: context.localizations } : null;
+      } catch (error) {
+        // A domain refusal (the reads switch off, the account) as it is; any raw client error as update_failed with its message.
+        if (isDomainError(error)) throw error;
+        throw new DomainError({ code: "update_failed", message: `The video's translations could not be read: ${error instanceof Error ? error.message : String(error)}`, details: { channelId, videoId } });
+      }
+    },
+    // The parsing is the service's own (`localizationBaselineOf`, `expectedSnippetOf`); this is only the read.
+    auditEvents: async (channelId, videoId) =>
+      (await listVideoEditAuditEventsByVideo(videoId)).filter((e) => e.channelId === channelId).map((e) => ({ channelId: e.channelId, eventType: e.eventType, detail: e.detail, occurredAt: e.occurredAt })),
+    writeLocalizations: ({ credentialRef, channelId, videoId, localizations, expectedCurrent, expected, auditContext }) =>
+      createVideoLocalizationsWriterCore("package_localizations").apply({ credentialRef, channelId, videoId, localizations, expectedCurrent, expected, auditContext }),
+    audit: ({ channelId, videoId, eventType, detail }) => insertVideoEditAuditEvent({ channelId, videoId, eventType, detail }),
+  });
+}
+export type { PackageLocalizationsApplyResult, PackageLocalizationsPreview } from "./package-localizations";
 
 /**
  * BL-269 (owner msg 4396's rule, applied to captions; ADR 0074 §8): a caption track the captions writer added or overwrote later -- and

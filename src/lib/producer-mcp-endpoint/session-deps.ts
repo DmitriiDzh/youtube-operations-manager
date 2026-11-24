@@ -17,7 +17,7 @@ import { createPortfolioOverviewServices, createUploadMilestonesServices } from 
 import { createReachReportsCore } from "@/lib/reach-reports";
 import { PRODUCER_API_VERSION } from "@/mcp/producer-tools";
 import { createLiveAnalyticsCore } from "@/lib/live-analytics";
-import { createPackageCaptionsCore, createPackageMetadataCore, createUploadQueueControlCore, type SlotDecision } from "@/lib/publishing";
+import { createPackageCaptionsCore, createPackageLocalizationsCore, createPackageMetadataCore, createUploadQueueControlCore, type SlotDecision } from "@/lib/publishing";
 import { createClipReviewsProducerCore } from "@/lib/clip-reviews";
 import { createImageReviewsProducerCore } from "@/lib/image-reviews";
 import type { ProducerMcpSession } from "./index";
@@ -155,7 +155,18 @@ export function createProducerSessionDeps(
     // conflict override).
     packageMetadata: {
       update: async (input) =>
-        input.dryRun === true
+        // Owner TG 4839/4842 (ADR 0072 amendment): `localizations: true` fixes the package's translations instead (one write per call).
+        input.localizations === true
+          ? input.dryRun === true
+            ? { ...(await createPackageLocalizationsCore().preview(input.channelId, { video: input.video }, { kind: "producer" })) }
+            : {
+                ...(await createPackageLocalizationsCore().apply(
+                  input.channelId,
+                  { video: input.video, ...(input.expectedManifestSha256 !== undefined ? { expectedManifestSha256: input.expectedManifestSha256 } : {}) },
+                  { kind: "producer" }
+                )),
+              }
+          : input.dryRun === true
           ? { ...(await createPackageMetadataCore().preview(input.channelId, { video: input.video }, { kind: "producer" })) }
           : {
               ...(await createPackageMetadataCore().apply(

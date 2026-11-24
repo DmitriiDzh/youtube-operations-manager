@@ -14,8 +14,13 @@ export type FreshLiveVideo = FreshVideoContext & {
   snippet: FreshVideoContext["snippet"] & { defaultAudioLanguage?: string | null; tags?: string[] | null; categoryId?: string | null };
 };
 
-/** The fields step's snippet values (the same run wrote them seconds earlier): the fresh read must already show them. */
-export type ExpectedSnippet = { tags?: unknown; categoryId?: unknown; defaultLanguage?: unknown; defaultAudioLanguage?: unknown };
+/**
+ * The fields step's snippet values (the same run wrote them seconds earlier): the fresh read must already show them. `title` /
+ * `description` (ADR 0072 amendment 1, review): the default-language text a package fix just wrote -- the snippet is sent back from
+ * the fresh read, so a lagging replica's older text would otherwise be echoed back over it (description compared with CR made LF and
+ * trailing line breaks dropped, as YouTube keeps it).
+ */
+export type ExpectedSnippet = { title?: unknown; description?: unknown; tags?: unknown; categoryId?: unknown; defaultLanguage?: unknown; defaultAudioLanguage?: unknown };
 
 export type LiveLocalizationsApplyInput = {
   credentialRef: unknown;
@@ -28,6 +33,15 @@ export type LiveLocalizationsApplyInput = {
    * switch may land while the step reads and backs up). Absent: not asked.
    */
   isCurrent?: () => Promise<"current" | "stopped" | "replaced">;
+  /**
+   * Package localizations (owner TG 4839/4842, ADR 0072 amendment): what the caller's own three-way check saw for each language it
+   * writes -- the entry as read, or null when the video had no such language. Checked on the fresh read and on the recheck right
+   * before the write; any difference (a Studio edit in between) fails closed with `video_details_conflict`, nothing sent. Absent:
+   * not checked (the live and upload callers).
+   */
+  expectedCurrent?: Record<string, LiveLocalizationEntry | null>;
+  /** Added to every audit row's detail of this write (e.g. the actor and the package); `source` stays the writer's. */
+  auditContext?: Record<string, unknown>;
 };
 
 /**
@@ -62,7 +76,7 @@ export type LiveLocalizationsWriterDependencies = {
   sleep(ms: number): Promise<void>;
   newId(): string;
   /** BL-225 stage 3: the writer named in the audit details (default `live_localizations`). */
-  source?: "live_localizations" | "upload_localizations";
+  source?: "live_localizations" | "upload_localizations" | "package_localizations";
   /** Reads (the first included) while the video does not yet show what was written; the pause between them. */
   readBack?: { attempts: number; delayMs: number };
 };
