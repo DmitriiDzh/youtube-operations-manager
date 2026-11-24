@@ -11,7 +11,7 @@ import { diskNoticeEntry, liveNoticeEntries, type BellEntry, type DiskNotice, ty
 import { useChannelNames } from "./use-channel-names";
 import Link from "next/link";
 import type { ComponentType, SVGProps } from "react";
-import { BroadcastIcon, CalendarIcon, DiskIcon, HeadphonesIcon, LocalizationsIcon, MediaIcon, SyncIcon } from "./icons";
+import { BroadcastIcon, CalendarIcon, DiskIcon, HeadphonesIcon, LocalizationsIcon, MediaIcon, PlayIcon, SyncIcon } from "./icons";
 
 /**
  * Automatic device sync notifications (docs/roadmap/plans/DEVICE_AUTO_SYNC_PLAN.md §3.7): a bell in
@@ -55,6 +55,7 @@ const GROUP_ICON: Record<BellGroup, ComponentType<SVGProps<SVGSVGElement>>> = {
   media: HeadphonesIcon,
   translations: LocalizationsIcon,
   storyboards: MediaIcon,
+  packages: PlayIcon,
   publishing: CalendarIcon,
   live: BroadcastIcon,
   sync: SyncIcon,
@@ -95,6 +96,7 @@ export function DeviceSyncBell({
   languageEntries = [],
   publishingEntries = [],
   storyboardEntries = [],
+  packageEntries = [],
   onOpenChannelWork,
 }: {
   onReviewDivergence?: () => void;
@@ -106,6 +108,8 @@ export function DeviceSyncBell({
   publishingEntries?: readonly ChannelWorkEntry[];
   /** BL-184: the other channels' storyboards waiting for review. */
   storyboardEntries?: readonly ChannelWorkEntry[];
+  /** BL-257 fix: the other channels' final videos waiting for the owner's review. */
+  packageEntries?: readonly ChannelWorkEntry[];
   onOpenChannelWork?: (channelId: string, href: string) => void;
 }) {
   const t = useT();
@@ -225,6 +229,7 @@ export function DeviceSyncBell({
     ...entries,
     ...languageEntries,
     ...storyboardEntries,
+    ...packageEntries,
     ...publishingEntries,
     ...liveNoticeEntries(t, liveNotices),
   ];
@@ -235,7 +240,7 @@ export function DeviceSyncBell({
     ? "bg-red-500"
     : status?.state === "waiting" || status?.state === "busy" || status?.state === "folder_unreachable"
       ? "bg-amber-400"
-      : entries.length > 0 || liveNotices.length > 0 || languageEntries.length > 0 || publishingEntries.length > 0 || storyboardEntries.length > 0
+      : entries.length > 0 || liveNotices.length > 0 || languageEntries.length > 0 || publishingEntries.length > 0 || storyboardEntries.length > 0 || packageEntries.length > 0
         ? "bg-sky-400"
         : null;
 
