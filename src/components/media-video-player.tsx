@@ -4,7 +4,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useSta
 import type { PlanMarkerRegion } from "@/lib/generation-plans/contracts";
 import { formatPlayerTime } from "./media-review-player";
 import { useUiText } from "./ui-text-provider";
-import { fitView, frameAt, isWrap, lastFrameTime, measuredFps, regionFromDrag, regionToScreen, sameProportions, seamJump, seamWindowOf, splitAt, stepFrame, wipeClip, type ImageBox } from "./visual-review-model";
+import { fitView, flagPlaces, frameAt, isWrap, lastFrameTime, measuredFps, regionFromDrag, regionToScreen, sameProportions, seamJump, seamWindowOf, splitAt, stepFrame, wipeClip, type ImageBox } from "./visual-review-model";
 
 /**
  * BL-175 phase 2 (review): where the second clip of a wipe / difference stands for the first one's `time` -- the same moment, or,
@@ -48,6 +48,13 @@ export type VideoPlayerHandle = {
   playTimes(times: number): void;
 };
 
+/** Owner TG 4817: a comment flag above the timeline (`draft`: not sent yet; `sent`: part of the owner's sent decision). */
+export type VideoFlag = { id: string; atSeconds: number; number: number; text: string; tone: "draft" | "sent"; active?: boolean };
+/** A flag's width in px: the number only on a narrow timeline, the number and the start of the text on a wide one. */
+const FLAG_CHIP_NARROW = 26;
+const FLAG_CHIP_WIDE = 150;
+const FLAG_ROW_PX = 22;
+
 /** BL-175 phase 2 (§E): a second clip drawn in this player's frame, following its moment, play and speed (wipe or difference). */
 export type VideoOverlay = { src: string; mode: "wipe" | "difference"; split: number; onSplit: (split: number) => void; labels: { first: string; second: string } };
 
@@ -87,8 +94,20 @@ export const MediaVideoPlayer = forwardRef<
     /** Starts muted (the default) -- FO-REQ-0018 §A. */
     startMuted?: boolean;
     compact?: boolean;
+    /** Owner TG 4817: plays on from the start at the end (the default, clips) or stops there (a whole release video). */
+    loop?: boolean;
+    /** Owner TG 4817: `metadata` reads only the header until play (a multi-GB episode streamed by Range); default `auto`. */
+    preload?: "auto" | "metadata";
+    /** Owner TG 4817: the clip's own size and length, once known (the review screen picks a 9:16 or 16:9 frame). */
+    onMetadata?: (info: { width: number; height: number; duration: number }) => void;
+    /** Owner TG 4817 (PACKAGE_REVIEW_PLAN.md AC-TC-02): comment flags above the timeline -- number, moment and text. */
+    flags?: VideoFlag[];
+    /** A flag was clicked (the screen seeks there or opens the comment). */
+    onFlagClick?: (id: string) => void;
+    /** Owner TG 4817: a full-screen button (the native controls' one is gone with them). */
+    fullscreen?: boolean;
   }
->(function MediaVideoPlayer({ src, markers, fps: reportedFps, onAddPin, onPlayStart, onUserSeek, onUserPlay, onPlayingChange, autoPlay = true, onReady, initialTime = null, seam = false, overlay, className = "h-[48vh]", startMuted = true, compact = false }, ref) {
+>(function MediaVideoPlayer({ src, markers, fps: reportedFps, onAddPin, onPlayStart, onUserSeek, onUserPlay, onPlayingChange, autoPlay = true, onReady, initialTime = null, seam = false, overlay, className = "h-[48vh]", startMuted = true, compact = false, loop = true, preload = "auto", onMetadata, flags, onFlagClick, fullscreen = false }, ref) {
   const { t } = useUiText();
   const video = useRef<HTMLVideoElement | null>(null);
   const frameBox = useRef<HTMLDivElement | null>(null);
@@ -136,6 +155,18 @@ export const MediaVideoPlayer = forwardRef<
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
+  // Owner TG 4817: the timeline's width lays the comment flags out above it.
+  const [timelineWidth, setTimelineWidth] = useState(0);
+  const hasFlags = (flags?.length ?? 0) > 0;
+  useEffect(() => {
+    const el = timeline.current;
+    if (!el || !hasFlags) return;
+    const measure = () => setTimelineWidth(el.clientWidth);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasFlags]);
 
   // The playhead follows every presented frame (rAF while playing), and the loop range holds playback inside it.
   useEffect(() => {
@@ -334,6 +365,15 @@ export const MediaVideoPlayer = forwardRef<
     }
   };
 
+  /** Owner TG 4817: full screen -- the frame where the browser allows it, else the video's own (an iPhone). */
+  const enterFullscreen = () => {
+    const box = frameBox.current as (HTMLDivElement & { webkitRequestFullscreen?: () => void }) | null;
+    const v = video.current as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | null;
+    if (box && typeof box.requestFullscreen === "function") void box.requestFullscreen().catch(() => v?.webkitEnterFullscreen?.());
+    else if (box?.webkitRequestFullscreen) box.webkitRequestFullscreen();
+    else v?.webkitEnterFullscreen?.();
+  };
+
   const local = (event: { clientX: number; clientY: number }) => {
     const rect = frameBox.current?.getBoundingClientRect();
     return rect ? { x: event.clientX - rect.left, y: event.clientY - rect.top } : { x: 0, y: 0 };
@@ -365,7 +405,7 @@ export const MediaVideoPlayer = forwardRef<
     <div className="space-y-2">
       <div
         ref={frameBox}
-        className={`relative touch-none select-none overflow-hidden rounded-lg bg-black ${className}`}
+        className={`relative ${onAddPin || overlay ? "touch-none" : ""} select-none overflow-hidden rounded-lg bg-black [&:fullscreen]:h-full [&:fullscreen]:max-h-none [&:fullscreen]:rounded-none ${className}`}
         onPointerDown={onFrameDown}
         onPointerMove={onFrameMove}
         onPointerUp={onFrameUp}
@@ -380,15 +420,16 @@ export const MediaVideoPlayer = forwardRef<
             key={src}
             ref={video}
             src={src}
-            loop
+            loop={loop}
             muted={muted}
             playsInline
-            preload="auto"
+            preload={preload}
             className="absolute inset-0 h-full w-full object-contain"
             onLoadedMetadata={(event) => {
               setFailed(false);
               setDuration(event.currentTarget.duration);
               setBox({ naturalWidth: event.currentTarget.videoWidth, naturalHeight: event.currentTarget.videoHeight });
+              onMetadata?.({ width: event.currentTarget.videoWidth, height: event.currentTarget.videoHeight, duration: event.currentTarget.duration });
               event.currentTarget.playbackRate = rate;
               // Phase 2 (§E): a question about a spot opens paused there, so its pin shows.
               if (initialTime !== null) {
@@ -502,6 +543,40 @@ export const MediaVideoPlayer = forwardRef<
             );
           })}
       </div>
+      {/* Owner TG 4817 (AC-TC-02): the comment flags -- a number (and, on a wide timeline, the start of the text) at each moment,
+          one row up when two would overlap; the full text and the time on hover, a click opens it. */}
+      {hasFlags && duration > 0 && timelineWidth > 0
+        ? (() => {
+            const wide = timelineWidth >= 560;
+            const chip = wide ? FLAG_CHIP_WIDE : FLAG_CHIP_NARROW;
+            const sorted = [...(flags ?? [])].sort((a, b) => a.atSeconds - b.atSeconds);
+            const places = flagPlaces(sorted.map((f) => f.atSeconds), duration, timelineWidth, chip);
+            const rows = Math.max(1, ...places.map((p) => p.row + 1));
+            return (
+              <div className="relative" style={{ height: rows * FLAG_ROW_PX }}>
+                {sorted.map((flag, i) => {
+                  const place = places[i];
+                  const label = t("review.visual.flagLabel", { number: flag.number, time: formatPlayerTime(flag.atSeconds), text: flag.text });
+                  const tone = flag.tone === "sent" ? "border-sky-400 bg-sky-950/90 text-sky-100" : "border-amber-400 bg-amber-950/90 text-amber-100";
+                  return (
+                    <button
+                      key={flag.id}
+                      type="button"
+                      onClick={() => onFlagClick?.(flag.id)}
+                      title={label}
+                      aria-label={label}
+                      className={`absolute flex h-5 items-center gap-1 overflow-hidden whitespace-nowrap rounded-sm px-1 text-[11px] leading-none shadow ${place.side === "start" ? "border-l-2" : "flex-row-reverse border-r-2"} ${tone} ${flag.active ? "ring-2 ring-white/80" : ""}`}
+                      style={{ left: place.left, bottom: place.row * FLAG_ROW_PX, width: wide ? undefined : chip, maxWidth: chip }}
+                    >
+                      <span className="font-semibold tabular-nums">{flag.number}</span>
+                      {wide ? <span className="truncate">{flag.text}</span> : null}
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })()
+        : null}
       {/* The timeline: markers, the loop range, the playhead; hover shows the time (and scrubs while paused). */}
       <div
         ref={timeline}
@@ -524,6 +599,9 @@ export const MediaVideoPlayer = forwardRef<
         {markers.map((m, i) => (
           // ui-text-ignore: a CSS length, not text
           <span key={i} title={m.label ?? undefined} className={`absolute top-1 bottom-1 rounded-sm ${TONE_COLORS[m.tone]}`} style={{ left: pct(m.start), width: m.end !== null && m.end > m.start ? `calc(${pct(m.end - m.start)} + 2px)` : "3px" }} />
+        ))}
+        {(flags ?? []).map((flag) => (
+          <span key={`flag-${flag.id}`} className={`pointer-events-none absolute inset-y-0 w-0.5 ${flag.tone === "sent" ? "bg-sky-400" : "bg-amber-400"}`} style={{ left: pct(flag.atSeconds) }} />
         ))}
         {loopRange && <span className="absolute inset-y-0 rounded-sm border border-indigo-300/70 bg-indigo-400/20" style={{ left: pct(loopRange.start), width: pct(loopRange.end - loopRange.start) }} />}
         <span className="absolute inset-y-0 w-0.5 bg-white" style={{ left: pct(time) }} />
@@ -559,6 +637,11 @@ export const MediaVideoPlayer = forwardRef<
             </button>
           ))}
         </span>
+        {fullscreen ? (
+          <button type="button" onClick={enterFullscreen} className="rounded border border-zinc-700 px-2 py-0.5 hover:bg-zinc-800" title={t("review.visual.fullscreen")} aria-label={t("review.visual.fullscreen")}>
+            {/* ui-text-ignore: a symbol */}⛶
+          </button>
+        ) : null}
         <button type="button" onClick={() => setMuted((m) => !m)} aria-pressed={!muted} className={`rounded border px-2 py-0.5 ${muted ? "border-zinc-700 text-zinc-400" : "border-emerald-600 text-emerald-200"}`}>
           {muted ? t("review.visual.soundOff") : t("review.visual.soundOn")}
         </button>

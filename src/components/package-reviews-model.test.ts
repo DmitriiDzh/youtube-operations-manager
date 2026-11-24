@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { actionsOf, durationLabel, frameOf, mediaSrcOf, returnCommentReady } from "./package-reviews-model";
+import { actionsOf, decisionBody, decisionReady, durationLabel, frameOf, mediaSrcOf, newCommentId, oneLineText, returnCommentReady, withComment, withEditedComment, withoutComment } from "./package-reviews-model";
+import { flagPlaces } from "./visual-review-model";
 
 // BL-257 (PACKAGE_REVIEW_PLAN.md AC-PR-04/05/09/15; ADR 0070 §4, §6): the screen asks for the media by the manifest hash only; the
 // owner may change his mind until the upload; approval needs the manifest's video checksum; a return needs a comment; a vertical
@@ -23,6 +24,47 @@ test("AC-PR-04/05, AC-MG-07: actions by state", () => {
   assert.deepEqual(actionsOf({ state: "returned", hasVideoSha256: true }), { approve: true, ret: false, comment: true });
   assert.deepEqual(actionsOf({ state: "uploaded", hasVideoSha256: true }), { approve: false, ret: false, comment: true });
   assert.deepEqual([returnCommentReady(""), returnCommentReady("  \n"), returnCommentReady(" x ")], [false, false, true]);
+});
+
+// Owner TG 4817 (PACKAGE_REVIEW_PLAN.md AC-TC-01/03/05/06): the screen's draft edits keep the comments in time order with one decimal;
+// a return can go with comments at moments instead of a general comment; the decision's body carries them without the screen's ids,
+// and never with a packaging comment.
+test("AC-TC-01/03: adding keeps time order and one decimal; editing changes only the text; deleting removes one", () => {
+  const a = withComment([], { id: "a", atSeconds: 61.26, text: "  logo late " });
+  const b = withComment(a, { id: "b", atSeconds: 4, text: "black frame" });
+  assert.deepEqual(b, [
+    { id: "b", atSeconds: 4, text: "black frame" },
+    { id: "a", atSeconds: 61.3, text: "logo late" },
+  ]);
+  assert.deepEqual(withComment(b, { id: "c", atSeconds: 10, text: "   " }), b, "an empty text adds nothing");
+  assert.deepEqual(withEditedComment(b, "a", "logo too late"), [b[0], { id: "a", atSeconds: 61.3, text: "logo too late" }]);
+  assert.deepEqual(withEditedComment(b, "a", "  "), b, "an empty edit keeps the text");
+  assert.deepEqual(withoutComment(b, "b"), [{ id: "a", atSeconds: 61.3, text: "logo late" }]);
+  assert.equal(oneLineText("one\ntwo\r\nthree"), "one two three");
+  assert.match(newCommentId(() => 0.5), /^[A-Za-z0-9_-]{1,40}$/);
+});
+
+test("AC-TC-05/06: what can be sent and what the decision carries", () => {
+  assert.deepEqual([decisionReady("approved", "", 0), decisionReady("returned", "", 0), decisionReady("returned", "", 2), decisionReady("returned", "redo", 0)], [true, false, true, true]);
+  assert.deepEqual([decisionReady("packaging_comment", "", 3), decisionReady("packaging_comment", "title", 0)], [false, true]);
+  const draft = [{ id: "a", atSeconds: 4, text: "black frame" }];
+  assert.deepEqual(decisionBody("m", "returned", "  ", draft), { manifestSha256: "m", kind: "returned", comment: null, timedComments: [{ atSeconds: 4, text: "black frame" }] });
+  assert.deepEqual(decisionBody("m", "approved", " ok ", []), { manifestSha256: "m", kind: "approved", comment: "ok" });
+  assert.deepEqual(decisionBody("m", "packaging_comment", "title", draft), { manifestSha256: "m", kind: "packaging_comment", comment: "title" });
+});
+
+// AC-TC-02: flags never cover each other in a row -- the next one goes up a row; one past the right edge ends at its moment.
+test("AC-TC-02: flag places on the timeline", () => {
+  // 100 s over 1000 px, 150 px flags: 10 s -> 100 px, 12 s -> 120 px (overlaps -> row 1), 40 s -> 400 px (row 0 again), 95 s -> ends at 950.
+  assert.deepEqual(flagPlaces([10, 12, 40, 95], 100, 1000, 150), [
+    { left: 100, row: 0, side: "start" },
+    { left: 120, row: 1, side: "start" },
+    { left: 400, row: 0, side: "start" },
+    { left: 800, row: 0, side: "end" },
+  ]);
+  // More overlaps than rows share the top row.
+  assert.deepEqual(flagPlaces([1, 1, 1, 1], 100, 1000, 150, 3).map((p) => p.row), [0, 1, 2, 2]);
+  assert.deepEqual(flagPlaces([5], 0, 1000, 26), [{ left: 0, row: 0, side: "start" }]);
 });
 
 test("AC-PR-15: the frame follows the video's own size", () => {

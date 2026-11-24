@@ -399,6 +399,8 @@ export const production = {
   "review.visual.megabytes": "{size} MB",
   "review.visual.pinHint": "Shift + drag on the picture: a pin with a note",
   "review.visual.timeline": "Timeline",
+  "review.visual.flagLabel": "Comment {number} at {time}: {text}",
+  "review.visual.fullscreen": "Full screen",
   "review.visual.play": "Play",
   "review.visual.pause": "Pause",
   "review.visual.frameBack": "One frame back (,)",

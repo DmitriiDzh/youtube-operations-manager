@@ -306,3 +306,24 @@ export function questionStart(recheck: { kind: string; markers: ReadonlyArray<{ 
   if (!recheck || recheck.kind !== "question" || recheck.markers.length === 0) return null;
   return Math.min(...recheck.markers.map((m) => m.start));
 }
+
+/** A flag laid out above the timeline: its left edge in px, the row it sits in (0 = nearest the timeline) and its side. */
+export type FlagPlace = { left: number; row: number; side: "start" | "end" };
+
+/**
+ * Owner TG 4817 (PACKAGE_REVIEW_PLAN.md AC-TC-02): where each comment flag sits above a timeline `width` px wide -- a flag of `chip`
+ * px starts at its moment (or ends there when it would overflow the right edge), and goes one row up when it would cover the flag
+ * before it in a row; at most `maxRows` rows (then it shares the top row). Flags in time order; returns one place per flag.
+ */
+export function flagPlaces(times: readonly number[], duration: number, width: number, chip: number, maxRows = 3, gap = 4): FlagPlace[] {
+  const rowsEnd: number[] = [];
+  return times.map((at) => {
+    const x = duration > 0 && width > 0 ? Math.max(0, Math.min(width, (at / duration) * width)) : 0;
+    const side: FlagPlace["side"] = x + chip > width ? "end" : "start";
+    const left = side === "start" ? x : Math.max(0, x - chip);
+    let row = rowsEnd.findIndex((end) => end + gap <= left);
+    if (row === -1) row = rowsEnd.length < maxRows ? rowsEnd.length : maxRows - 1;
+    rowsEnd[row] = left + chip;
+    return { left, row, side };
+  });
+}

@@ -400,6 +400,8 @@ export const production: Record<keyof typeof en, string> = {
   "review.visual.megabytes": "{size} МБ",
   "review.visual.pinHint": "Shift + перетаскивание по картинке — метка-кружок с заметкой",
   "review.visual.timeline": "Шкала времени",
+  "review.visual.flagLabel": "Комментарий {number} на {time}: {text}",
+  "review.visual.fullscreen": "Во весь экран",
   "review.visual.play": "Пуск",
   "review.visual.pause": "Пауза",
   "review.visual.frameBack": "Кадр назад (,)",

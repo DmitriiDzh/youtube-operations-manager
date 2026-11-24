@@ -1,11 +1,25 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { DraftTimedComment } from "@/lib/package-reviews/timed-comments";
 import type { UiTextKey } from "@/lib/ui-text";
 import { SkeletonLines } from "./busy-feedback";
 import { ConfirmDialog } from "./confirm-dialog";
-import { actionsOf, durationLabel, frameOf, mediaSrcOf, returnCommentReady, type PackageReviewDto, type PackageReviewState, type PackageReviewsDto } from "./package-reviews-model";
+import { formatPlayerTime } from "./media-review-player";
+import { PackageReviewWorkspace } from "./package-review-workspace";
+import {
+  actionsOf,
+  decisionBody,
+  decisionReady,
+  durationLabel,
+  mediaSrcOf,
+  type DraftSaveState,
+  type PackageReviewDraftDto,
+  type PackageReviewDto,
+  type PackageReviewState,
+  type PackageReviewsDto,
+} from "./package-reviews-model";
 import { ToggleSwitch } from "./toggle-switch";
 import { useT, useUiText } from "./ui-text-provider";
 import { useUserTimezone } from "./use-user-timezone";
@@ -86,6 +100,58 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
 
   const base = channelId ? `/api/channels/${encodeURIComponent(channelId)}/package-reviews` : null;
 
+  // Owner TG 4817 (AC-TC-03/05): each package's draft of timed comments -- the server's (device-local), loaded when its card opens and
+  // saved whole on every change, one save at a time per package (the last one wins). Kept apart from the list the minute poll reloads.
+  const [drafts, setDrafts] = useState<Record<string, { comments: DraftTimedComment[]; state: DraftSaveState }>>({});
+  const requested = useRef<Set<string>>(new Set());
+  const saveChains = useRef<Map<string, Promise<unknown>>>(new Map());
+  const saveSeq = useRef<Map<string, number>>(new Map());
+  useEffect(() => {
+    requested.current = new Set();
+    setDrafts({});
+  }, [base]);
+  const loadDraft = useCallback(
+    async (manifest: string) => {
+      if (!base || requested.current.has(manifest)) return;
+      requested.current.add(manifest);
+      setDrafts((d) => ({ ...d, [manifest]: { comments: d[manifest]?.comments ?? [], state: "loading" } }));
+      try {
+        const res = await fetch(`${base}/draft?manifest=${encodeURIComponent(manifest)}`);
+        if (!res.ok) throw new Error(String(res.status));
+        const body = (await res.json()) as PackageReviewDraftDto;
+        setDrafts((d) => ({ ...d, [manifest]: { comments: body.comments, state: "saved" } }));
+      } catch {
+        requested.current.delete(manifest);
+        setDrafts((d) => ({ ...d, [manifest]: { comments: d[manifest]?.comments ?? [], state: "error" } }));
+      }
+    },
+    [base]
+  );
+  const saveDraft = useCallback(
+    (manifest: string, comments: DraftTimedComment[]) => {
+      if (!base) return;
+      const seq = (saveSeq.current.get(manifest) ?? 0) + 1;
+      saveSeq.current.set(manifest, seq);
+      setDrafts((d) => ({ ...d, [manifest]: { comments, state: "saving" } }));
+      const run = async () => {
+        const res = await fetch(`${base}/draft`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ manifestSha256: manifest, comments }) });
+        if (!res.ok) throw new Error(String(res.status));
+      };
+      const chain = (saveChains.current.get(manifest) ?? Promise.resolve()).then(run, run);
+      saveChains.current.set(manifest, chain.catch(() => undefined));
+      chain.then(
+        () => {
+          if (saveSeq.current.get(manifest) === seq) setDrafts((d) => ({ ...d, [manifest]: { comments: d[manifest]?.comments ?? comments, state: "saved" } }));
+        },
+        () => {
+          if (saveSeq.current.get(manifest) === seq) setDrafts((d) => ({ ...d, [manifest]: { comments: d[manifest]?.comments ?? comments, state: "error" } }));
+        }
+      );
+    },
+    [base]
+  );
+  const draftOf = (manifest: string) => drafts[manifest]?.comments ?? [];
+
   const accept = useCallback(
     (body: PackageReviewsDto) => {
       setData(body);
@@ -151,10 +217,13 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
     setBusy(item.manifestSha256);
     setActionError(null);
     try {
+      // A draft save still on its way would otherwise land after the decision cleared the draft and bring it back.
+      await saveChains.current.get(item.manifestSha256);
       const res = await fetch(`${base}/decision`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ manifestSha256: item.manifestSha256, kind, comment: comment.trim() || null }),
+        // AC-TC-05: the draft's timed comments go with an approval or a return, as one batch.
+        body: JSON.stringify(decisionBody(item.manifestSha256, kind, comment, draftOf(item.manifestSha256))),
       });
       const body = (await res.json().catch(() => ({}))) as { view?: PackageReviewsDto; error?: string; message?: string };
       if (!res.ok || !body.view) {
@@ -165,6 +234,11 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
         return;
       }
       accept(body.view);
+      // The server cleared the draft once the decision was stored (a packaging comment never carries it).
+      if (kind !== "packaging_comment") {
+        saveSeq.current.set(item.manifestSha256, (saveSeq.current.get(item.manifestSha256) ?? 0) + 1);
+        setDrafts((d) => ({ ...d, [item.manifestSha256]: { comments: [], state: "saved" } }));
+      }
       try {
         window.localStorage.removeItem(draftKey(item.manifestSha256, kind));
       } catch {
@@ -178,6 +252,17 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
       setBusy(null);
     }
   }
+
+  // AC-TC-03: an open card that takes comments loads its draft once (a reload brings it back from the server).
+  useEffect(() => {
+    if (!data) return;
+    const off = data.readable && !data.required;
+    for (const item of data.items) {
+      if (item.state === "uploaded") continue;
+      const isOpen = item.state === "pending" && !off ? !open.has(item.manifestSha256) : open.has(item.manifestSha256);
+      if (isOpen) void loadDraft(item.manifestSha256);
+    }
+  }, [data, open, loadDraft]);
 
   if (!channelId) return null;
   const gateOff = data !== null && data.readable && !data.required;
@@ -218,12 +303,24 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
         </button>
         {expanded && (
           <div className="border-t border-zinc-800">
-            <div className="grid gap-4 p-3 md:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
-              <PackagePlayer src={mediaSrcOf(base!, item.manifestSha256, "video")} unavailableLabel={t("packageReviews.player.unavailable")} />
+            {/* Owner TG 4817: the video first and large, with the comments at moments beside it (below it on a narrower screen). */}
+            <div className="space-y-4 p-3">
+              <PackageReviewWorkspace
+                src={mediaSrcOf(base!, item.manifestSha256, "video")}
+                editable={item.state !== "uploaded"}
+                draft={draftOf(item.manifestSha256)}
+                saveState={drafts[item.manifestSha256]?.state ?? "loading"}
+                sent={item.timedComments ?? []}
+                onDraft={(next) => saveDraft(item.manifestSha256, next)}
+                onRetry={() => {
+                  if (requested.current.has(item.manifestSha256)) saveDraft(item.manifestSha256, draftOf(item.manifestSha256));
+                  else void loadDraft(item.manifestSha256);
+                }}
+              />
               <div className="min-w-0 space-y-3 text-sm">
                 {item.thumbnailPath ? (
                   // eslint-disable-next-line @next/next/no-img-element -- a local file streamed by the route, not an optimisable asset
-                  <img src={mediaSrcOf(base!, item.manifestSha256, "thumbnail")} alt={t("packageReviews.thumbnail")} className="aspect-video w-full rounded-md bg-black object-contain" loading="lazy" />
+                  <img src={mediaSrcOf(base!, item.manifestSha256, "thumbnail")} alt={t("packageReviews.thumbnail")} className="aspect-video w-full max-w-xs rounded-md bg-black object-contain" loading="lazy" />
                 ) : (
                   <p className="text-orange-300">{t("packageReviews.noThumbnail")}</p>
                 )}
@@ -370,7 +467,7 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
           cancelLabel={t("packageReviews.action.cancel")}
           confirmLabel={t(DIALOG_KEYS[asking.kind].confirm)}
           confirmVariant={asking.kind === "returned" ? "danger" : "default"}
-          confirmDisabled={busy !== null || (asking.kind !== "approved" && !returnCommentReady(comment))}
+          confirmDisabled={busy !== null || !decisionReady(asking.kind, comment, asking.kind === "packaging_comment" ? 0 : draftOf(asking.item.manifestSha256).length)}
           confirmBusyLabel={busy === asking.item.manifestSha256 ? t(asking.kind === "approved" ? "packageReviews.action.checking" : "packageReviews.action.saving") : null}
           onCancel={() => {
             if (busy === null) setAsking(null);
@@ -386,32 +483,29 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
             placeholder={t(DIALOG_KEYS[asking.kind].placeholder)}
             className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-100 placeholder:text-zinc-600"
           />
+          {/* Owner TG 4817 (AC-TC-05/06): what goes with the decision -- the draft's comments at moments, in one batch. */}
+          {(() => {
+            const timed = draftOf(asking.item.manifestSha256);
+            if (timed.length === 0) return null;
+            if (asking.kind === "packaging_comment") return <p className="mt-2 text-xs text-zinc-500">{t("packageReviews.timed.notSent", { count: timed.length })}</p>;
+            return (
+              <div className="mt-2 space-y-1">
+                {asking.kind === "returned" && <p className="text-xs text-zinc-500">{t("packageReviews.timed.returnOptional")}</p>}
+                <p className="text-xs text-zinc-300">{t("packageReviews.timed.willSend", { count: timed.length })}</p>
+                <ol className="max-h-40 space-y-0.5 overflow-y-auto rounded-md bg-zinc-950 p-2 text-xs">
+                  {timed.map((c, i) => (
+                    <li key={c.id} className="flex gap-2">
+                      <span className="shrink-0 tabular-nums text-amber-300">{i + 1}.</span>
+                      <span className="shrink-0 font-mono text-amber-200">{formatPlayerTime(c.atSeconds)}</span>
+                      <span className="min-w-0 break-words text-zinc-300">{c.text}</span>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            );
+          })()}
         </ConfirmDialog>
       )}
     </section>
-  );
-}
-
-/**
- * The package's own video by HTTP Range (`preload="metadata"`: only the header is read until the owner presses play, so a 20-minute
- * episode never downloads first). The frame follows the video's own size -- 9:16 for a Short, 16:9 otherwise -- and fills the width
- * on a phone (AC-PR-15).
- */
-function PackagePlayer({ src, unavailableLabel }: { src: string; unavailableLabel: string }) {
-  const [frame, setFrame] = useState<"vertical" | "horizontal">("horizontal");
-  const [failed, setFailed] = useState(false);
-  if (failed) return <p className="rounded-md border border-orange-900 bg-orange-950/40 px-3 py-2 text-sm text-orange-200">{unavailableLabel}</p>;
-  return (
-    <div className={frame === "vertical" ? "mx-auto w-full max-w-sm" : "w-full"}>
-      <video
-        src={src}
-        controls
-        playsInline
-        preload="metadata"
-        onLoadedMetadata={(event) => setFrame(frameOf(event.currentTarget.videoWidth, event.currentTarget.videoHeight))}
-        onError={() => setFailed(true)}
-        className={`${frame === "vertical" ? "aspect-[9/16] max-h-[80vh]" : "aspect-video"} w-full rounded-md bg-black object-contain`}
-      />
-    </div>
   );
 }
