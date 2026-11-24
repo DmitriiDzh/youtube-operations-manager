@@ -6,6 +6,9 @@
   write for workers, logged; 3 `playlist_delete` owner-only; 4 privacy as a direct narrow write (stage 2); 5 paid work approved
   each time, "через продюсера" (to be clarified before stage 4); 6 the stale broadcasts are deleted by the owner in Studio.
 - **ADR:** `docs/decisions/0048-channel-worker-writes.md`.
+- **Changed 2026-11-23 (owner, Telegram msg 4782, ADR 0048 Amendment 1, Agent API 4.27.0):** a worker may make its channel's
+  playlist public (`playlist_create` / `playlist_update`, `agent_set_privacy` with `target: playlist`); AC-WK-01/02 and AC-WP-01 below
+  are superseded for playlists. A video is still never made public; `playlist_delete` stays owner-only.
 
 ## Stages
 

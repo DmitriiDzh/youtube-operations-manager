@@ -1094,15 +1094,18 @@ nothing. This replaces BL-091's per-capability zones, which are retired in
     writes: `apply` (a real write only with `dryRun: false`), `playlist_create`, `playlist_update`, `playlist_add_videos`,
     `playlist_remove_videos`. `agent_get_capabilities` lists them in the domain `youtube_writes` as `EXECUTE`
     (`grantedPermissions` `READ`, `DRAFT`, `EXECUTE`; never `APPROVE`), and names every other channel tool too (a test ties the
-    list to the registry). `privacyStatus: "public"` on `playlist_create` / `playlist_update` is refused with
-    `AGENT_PUBLIC_NOT_ALLOWED` (403) before any YouTube call; the owner's Web UI still accepts it.
+    list to the registry). Since Agent API 4.27.0 (owner TG 4782, ADR 0048 Amendment 1) `privacyStatus: "public"` on
+    `playlist_create` / `playlist_update` is accepted for the bound channel's playlist (4.0.0–4.25.0 refused it with
+    `AGENT_PUBLIC_NOT_ALLOWED`). A playlist write whose `expectedChannelId` is not the bound channel is refused with
+    `WRITE_CHANNEL_MISMATCH` before any credential or YouTube call; the guardrail and the playlist's owner check still follow.
   - **Worker log (BL-215, schema v107 `worker_action_log`, device-local, 90 days).** One row per call of those five tools that
     would really write (refused ones included): `at`, channel, token id, tool, target (video/playlist id; a created playlist's
     id from YouTube's answer), `detail` (JSON, at most 500 characters: changed fields, `privacyStatus`, `videoIds`,
     `failedVideos`), `outcome` `ok`/`error`, `errorCode`. A failed row write never changes the tool's answer.
     `agent_set_privacy` (BL-216, Agent API 4.1.0, EXECUTE): `{ target: "video" | "playlist", id, privacyStatus: "private" |
-    "unlisted", dryRun? (default true) }` → `{ target, id, dryRun, previousPrivacyStatus, privacyStatus, changed }`. Never
-    public (not accepted). Refused: a scheduled video (`AGENT_SCHEDULE_OWNER_ONLY`, 403), the channel's current live broadcast
+    "unlisted" | "public", dryRun? (default true) }` → `{ target, id, dryRun, previousPrivacyStatus, privacyStatus, changed }`.
+    `public` only for a playlist (Agent API 4.27.0, owner TG 4782); for a video it is refused with `AGENT_PUBLIC_NOT_ALLOWED`
+    (403) before any read (before 4.27.0 `public` was an input error for both). Refused: a scheduled video (`AGENT_SCHEDULE_OWNER_ONLY`, 403), the channel's current live broadcast
     (`AGENT_LIVE_BROADCAST_OWNER_ONLY`, 403), a video not in the channel's synced list or a playlist not of the channel
     (`not_found`). A video is written by `video-details` (identity check, backup, Live writes, read-back, bound to the read
     etag), a playlist by the playlist core; no write when the status is already the asked one. Log rows gain
@@ -1562,7 +1565,8 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
 
 - **Transport:** as the factory endpoint, with `Authorization: Bearer ytom_pr_...` (the same checks and codes; a channel or factory token is
   401 `AGENT_TOKEN_INVALID` here, and a producer token on `/api/mcp` and `/api/mcp/factory`). Re-verified on every tool call.
-- **Producer API version:** `1.28.0` (since BL-272, ADR 0076, additive: the image review tools below, `imageReviewTools` in `producer_get_capabilities`, `approvedImageId` on `producer_clip_review_submit`); `1.27.0` (BL-271, ADR 0075, additive: `producer_wait` below); `1.26.0` (since BL-269, ADR 0074, additive: `producer_video_captions_add` below, permission `CAPTIONS_WRITE`,
+- **Producer API version:** `1.29.0` (owner TG 4782, ADR 0048 Amendment 1, additive: the playlist channel tools below, permission
+  `PLAYLIST_WRITE`, `playlistTools` / `playlistWriteTools` in `producer_get_capabilities`); `1.28.0` (BL-272, ADR 0076, additive: the image review tools below, `imageReviewTools` in `producer_get_capabilities`, `approvedImageId` on `producer_clip_review_submit`); `1.27.0` (BL-271, ADR 0075, additive: `producer_wait` below); `1.26.0` (since BL-269, ADR 0074, additive: `producer_video_captions_add` below, permission `CAPTIONS_WRITE`,
   `captionsTools` in `producer_get_capabilities`; calendar packages gain `captions`); `1.25.0` (BL-267, ADR 0073, additive: the weekly-plan tools below, permission `PLAN_MOVE`,
   `planTools` / `planMoveTools` in `producer_get_capabilities`); `1.24.0` (BL-265, ADR 0072, additive: `producer_video_metadata_update`, permission `METADATA_WRITE`
   and `metadataTools` in `producer_get_capabilities`; calendar `warnings`; the media-keyed review gate; the queue add's "tried" rule by
@@ -1588,7 +1592,22 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
 - **DRAFT channel tool (BL-170, owner msg 2485, ADR 0034 Amendment 5):** `create_experiment_proposal`, the channel agent's own input plus the
   REQUIRED `channelId`, in that channel's agent scope: an experiment for a hypothesis of that channel, always `proposed` -- only the owner
   approves, runs or abandons it in the Web UI. The only DRAFT channel tool (pinned by the test).
-- **Own tools:** `producer_get_capabilities` `{}` → `{ role: "producer", producerApiVersion, permissions: ["READ", "DRAFT"], channelRequired: true, tools, draftTools: ["producer_propose", "producer_mark_proposals_done", "create_experiment_proposal"] }`;
+- **Playlist channel tools (owner TG 4782, 2026-11-23, ADR 0048 Amendment 1; Producer 1.29.0, `PLAYLIST_WRITE`):** `playlist_list`
+  (READ), `playlist_create`, `playlist_update` (title, description, `privacyStatus` `private` | `unlisted` | `public`),
+  `playlist_add_videos`, `playlist_remove_videos` -- the channel agent's own tools with its own input and output (no `credentialRef`) plus the
+  REQUIRED `channelId` (any channel connected here), in that channel's agent scope: the write's `expectedChannelId` must be that channel
+  (`WRITE_CHANNEL_MISMATCH` otherwise, before any credential or YouTube call), the playlist must be that channel's (read first;
+  `WRITE_CHANNEL_MISMATCH` / `not_found`), every write goes through the write gateway with Live writes right before it
+  (`live_writes_disabled`). `playlist_add_videos` adds only that channel's own videos in its local synced list: any other id → `not_found`
+  for the whole call, nothing called. Real YouTube writes (no dry run), in the Producer call log like every call; a write's row also stores its playlist (`target`) and its details
+  (privacy, video ids, the answer's counts) since schema v124, shown on the Producer card in Settings. Not on this endpoint:
+  `playlist_delete` and `agent_set_privacy`.
+- **Own tools:** `producer_get_capabilities` `{}` → `{ role: "producer", producerApiVersion, permissions: ["READ", "DRAFT", "UPLOAD_QUEUE",
+  "THUMBNAIL_WRITE", "METADATA_WRITE", "PLAN_MOVE", "CAPTIONS_WRITE", "PLAYLIST_WRITE"], channelRequired: true, tools, draftTools:
+  ["producer_propose", "producer_mark_proposals_done", "create_experiment_proposal", "producer_clip_review_submit",
+  "producer_clip_review_withdraw", "producer_week_template_propose"], uploadQueueTools, clipReviewTools, thumbnailTools, metadataTools,
+  captionsTools, planTools, planMoveTools, playlistTools: ["playlist_list", "playlist_create", "playlist_update", "playlist_add_videos",
+  "playlist_remove_videos"], playlistWriteTools: [the four writes] }` (the lists are `src/mcp/producer-tools.ts`, pinned by its test);
   `producer_list_channels` `{}` → `{ channels: [{ channelId, title, workspace: string | null }] }` (Settings → Channels on this device, this
   device's folder); `producer_portfolio_overview` `{ startDate, endDate }` (YYYY-MM-DD, at most 366 days) → `{ startDate, endDate, source: "local",
   channels: [{ channelId, title, analytics: { daysWithData, views, watchMinutes, subscribersGained, subscribersLost }, reach: { state, impressions,
