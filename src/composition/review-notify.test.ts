@@ -282,3 +282,75 @@ test("BL-265 review fix 4: a later decision on the same mp4 (another manifest) m
   assert.ok(notices[0].context.some((l) => l.label === "Counts" && l.value.includes("pr_r")));
   assert.equal(notices[1].context.some((l) => l.label === "Counts"), false);
 });
+
+// Owner TG 4817 (PACKAGE_REVIEW_PLAN.md AC-TC-08): the Producer's notice of an approval or a return carries the owner's timed comments
+// as seconds + m:ss + text (well-formed only, sorted by time); a decision without them, and a packaging comment, carry none.
+test("AC-TC-08: package notices carry the timed comments of an approval or a return; none otherwise", () => {
+  const M = "a".repeat(64);
+  const base = { manifestSha256: M, video: "V11", thumbnailSha256: null, comment: null, by: "owner" as const, device: "Mac" };
+  const snapshot: PackageReviewsSnapshot = {
+    exists: true,
+    required: { value: true, updatedAt: "2026-11-15T08:00:00Z", by: "owner", device: "Mac" },
+    decisions: {
+      pr_r: { ...base, id: "pr_r", kind: "returned", comment: "0:05 black frame", at: "2026-11-24T10:00:00Z", timedComments: [{ atSeconds: 65.5, text: "map is wrong" }, { atSeconds: 5, text: "black frame" }, { atSeconds: -3, text: "bad" }] },
+      pr_a: { ...base, id: "pr_a", kind: "approved", at: "2026-11-24T11:00:00Z" },
+      pr_c: { ...base, id: "pr_c", kind: "packaging_comment", comment: "title", at: "2026-11-24T12:00:00Z", timedComments: [{ atSeconds: 1, text: "x" }] },
+    },
+  };
+  const notices = packageNoticesOf(CH, snapshot, SINCE);
+  assert.deepEqual(notices.map((n) => [n.decisionId, n.timedComments]), [
+    [
+      "pr_r",
+      [
+        { atSeconds: 5, time: "0:05", text: "black frame" },
+        { atSeconds: 65.5, time: "1:05", text: "map is wrong" },
+      ],
+    ],
+    ["pr_a", undefined],
+    ["pr_c", undefined],
+  ]);
+});
+
+// Owner TG 4846 (AC-IS-07, AC-RN-16): each package notice carries the video's issues AS OF its own decision -- a later decision never
+// changes an earlier file.
+test("AC-IS-07: package notices carry the issues as of their own decision", () => {
+  const M = "a".repeat(64);
+  const base = { manifestSha256: M, video: "V11", thumbnailSha256: null, by: "owner" as const, device: "Mac" };
+  const snapshot: PackageReviewsSnapshot = {
+    exists: true,
+    required: { value: true, updatedAt: "2026-11-15T08:00:00Z", by: "owner", device: "Mac" },
+    decisions: {
+      pr_1: { ...base, id: "pr_1", kind: "returned", comment: "0:03 black frame", at: "2026-11-24T10:00:00Z", seq: 1, timedComments: [{ atSeconds: 3, text: "black frame", id: "pr_1.1" }] },
+      pr_2: { ...base, id: "pr_2", kind: "approved", comment: null, at: "2026-11-25T10:00:00Z", seq: 2, repliesSeen: [{ issueId: "pr_1.1", status: "fixed", text: "cut" }], issueActions: [{ issueId: "pr_1.1", kind: "resolved" }] },
+    },
+  };
+  const notices = packageNoticesOf(CH, snapshot, SINCE);
+  const of = (id: string) => notices.find((n) => n.decisionId === id)!.issues!;
+  assert.deepEqual(of("pr_1").map((i) => [i.id, i.state, i.thread.length]), [["pr_1.1", "open", 1]]);
+  assert.deepEqual(of("pr_2").map((i) => [i.id, i.state, i.thread.map((t) => t.by)]), [["pr_1.1", "resolved", ["owner", "agent", "owner"]]]);
+});
+
+// Owner TG 4836: an approval with a comment or timed comments is labelled as notes for the future (non-blocking); a plain approval is
+// not. Review fix 7: a return whose comment is only its timed comments written out shows them once -- no fenced copy.
+test("TG 4836 / review fix 7: approval notes are labelled; a generated return comment is not repeated", () => {
+  const M = "a".repeat(64);
+  const base = { manifestSha256: M, video: "V11", thumbnailSha256: null, by: "owner" as const, device: "Mac" };
+  const snapshot: PackageReviewsSnapshot = {
+    exists: true,
+    required: { value: true, updatedAt: "2026-11-15T08:00:00Z", by: "owner", device: "Mac" },
+    decisions: {
+      pr_plain: { ...base, id: "pr_plain", kind: "approved", comment: null, at: "2026-11-24T09:00:00Z" },
+      pr_notes: { ...base, id: "pr_notes", kind: "approved", comment: "next time a shorter intro", at: "2026-11-24T10:00:00Z" },
+      pr_gen: { ...base, id: "pr_gen", kind: "returned", comment: "0:03 black frame", at: "2026-11-24T11:00:00Z", timedComments: [{ atSeconds: 3, text: "black frame" }] },
+    },
+  };
+  const notices = packageNoticesOf(CH, snapshot, SINCE);
+  const notes = (id: string) => notices.find((n) => n.decisionId === id)!.context.find((l) => l.label === "Notes")?.value ?? null;
+  assert.equal(notes("pr_plain"), null);
+  assert.ok(notes("pr_notes")?.startsWith("Одобрено с замечаниями на будущее"));
+  assert.ok(notes("pr_notes")?.includes("non-blocking"));
+  const gen = notices.find((n) => n.decisionId === "pr_gen")!;
+  assert.equal(gen.comment, null);
+  assert.deepEqual(gen.timedComments, [{ atSeconds: 3, time: "0:03", text: "black frame" }]);
+  assert.ok(gen.context.some((l) => l.label === "Owner's comment"));
+});

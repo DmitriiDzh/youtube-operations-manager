@@ -47,6 +47,7 @@ function harness(options: { packages?: ReviewPackage[]; hashes?: Record<string, 
   const files = new Set(options.files ?? [`${FOLDER}/V11.mp4`, `${FOLDER}/Thumbnail_V11.jpg`]);
   const hashes: Record<string, string> = { [`/ws/${FOLDER}/V11.mp4`]: VIDEO_SHA, [`/ws/${FOLDER}/Thumbnail_V11.jpg`]: THUMB_SHA, ...(options.hashes ?? {}) };
   let n = 0;
+  const scans: string[] = [];
   const deps: PackageReviewsDeps = {
     store: {
       async read(): Promise<PackageReviewsSnapshot> {
@@ -62,7 +63,7 @@ function harness(options: { packages?: ReviewPackage[]; hashes?: Record<string, 
         decisions[decision.id] = decision;
       },
     },
-    packages: async (channelId) => (channelId === CH ? { status: "ok", packages: options.packages ?? [pkg()] } : { status: "ok", packages: [] }),
+    packages: async (channelId) => (scans.push(channelId), channelId === CH ? { status: "ok", packages: options.packages ?? [pkg()] } : { status: "ok", packages: [] }),
     resolveFile: async (channelId, rel) => (channelId === CH && files.has(rel) ? { path: `/ws/${rel}`, bytes: 1000 } : null),
     hashFile: async (abs) => {
       hashed.push(abs);
@@ -82,7 +83,7 @@ function harness(options: { packages?: ReviewPackage[]; hashes?: Record<string, 
     exists = true;
     decisions[decision.id] = decision;
   };
-  return { service: createPackageReviewsService(deps), hashes, afterChange, audits, hashed, seed, decisions: () => Object.values(decisions) };
+  return { service: createPackageReviewsService(deps), hashes, afterChange, audits, hashed, seed, scans, decisions: () => Object.values(decisions) };
 }
 
 async function refusedWith(promise: Promise<unknown>, code: string) {
@@ -394,4 +395,35 @@ test("AC-MG-08 / ADR 0072 §1 (BL-265): a media decision is NOT copied by the re
 test("TG 4584: the owner's surface has no carry (only the recode's composition reaches it)", () => {
   const h = harness();
   assert.equal("carryDecision" in packageReviewsOwnerSurface(h.service), false);
+});
+
+// Fix (owner report 2026-11-24, WWE V31/V32): the packages waiting for the owner reach the Media menu badge and the bell. Expected
+// from ADR 0070 §2/§4 and the screen's own rule (review M2): a pending package of a gated channel waits (1); the owner's approval or
+// return ends the wait (0); with the gate off nothing waits -- and then the packages are not even scanned (the poll asks every channel).
+test("waiting: one pending package of a gated channel is 1; after the owner's approval it is 0", async () => {
+  const h = harness();
+  await h.service.setRequired(CH, { required: true });
+  assert.equal(await h.service.waiting(CH), 1);
+  await h.service.decide(CH, { manifestSha256: MANIFEST, kind: "approved" });
+  assert.equal(await h.service.waiting(CH), 0);
+});
+
+test("waiting: after the owner's return it is 0 (a returned package waits for the factory, not for him)", async () => {
+  const h = harness();
+  await h.service.setRequired(CH, { required: true });
+  assert.equal(await h.service.waiting(CH), 1);
+  await h.service.decide(CH, { manifestSha256: MANIFEST, kind: "returned", comment: "the intro is cut" });
+  assert.equal(await h.service.waiting(CH), 0);
+});
+
+test("waiting: a channel without the gate is 0 and its packages are never scanned; an unreadable document holds every package", async () => {
+  const off = harness();
+  assert.equal(await off.service.waiting(CH), 0);
+  assert.deepEqual(off.scans, []);
+  const unreadable = harness({ unreadable: true });
+  assert.equal(await unreadable.service.waiting(CH), 1);
+  const uploaded = harness({ packages: [pkg({ uploaded: true })] });
+  await uploaded.service.setRequired(CH, { required: true });
+  assert.equal(await uploaded.service.waiting(CH), 0, "an uploaded package waits for nobody");
+  assert.equal(typeof packageReviewsOwnerSurface(off.service).waiting, "function", "the owner's routes reach the count");
 });

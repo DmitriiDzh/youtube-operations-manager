@@ -829,8 +829,8 @@ test("AC-PR-07 / AC-PR-10: the Producer's own tools -- its channels with their f
   // Owner TG 4782 (2026-11-23, ADR 0048 amendment -- the requirement changed: the Producer edits the connected channels' playlists):
   // 1.29.0 adds the five channel playlist tools, PLAYLIST_WRITE and playlistTools / playlistWriteTools.
   // Package playlists (owner TG 4858/4859, ADR 0051 amendment -- the requirement changed: release packages name playlists and the
-  // Producer reads a video's playlists): 1.33.0 adds producer_video_playlists (1.30.0-1.32.0 are other branches' numbers).
-  assert.equal(PRODUCER_API_VERSION, "1.33.0"); // 1.33.0 (new requirement owner TG 4858/4859, package playlists): producer_video_playlists; 1.29.0 (owner TG 4782, ADR 0048 amendment): the five channel playlist tools, PLAYLIST_WRITE; 1.28.0 (BL-272): producer_image_review_*; 1.27.0 (BL-271, new requirement owner TG 3617/3618, ADR 0075): producer_wait; 1.26.0 (BL-269): producer_video_captions_add; 1.24.0 (BL-265, new requirement PRD-REQ-0195 B, ADR 0072): producer_video_metadata_update, METADATA_WRITE / metadataTools, calendar warnings, the media-keyed review gate; 1.23.0 (BL-263, new requirement PRD-REQ-0194, ADR 0071): S codes in the calendar, the queue tools and wake file names; 1.22.0 = PRD-REQ-0195 C (queue add after an approved, cancelled-before-approval version); 1.21.0 (BL-257, new requirement ADR 0070): calendar problem codes owner_review_pending / _returned; 1.20.0 (BL-255): producer_video_thumbnail_replace; 1.19.0 (BL-246): clip review answers carry the owner's attachments; 1.18.0 (BL-244): producer_upload_queue_cancel also stops a row being sent before its last chunk; 1.17.0 (BL-243): the calendar read's deleted_on_youtube / missingOnChannel, channel_video_list videoIds; 1.16.0 (BL-242): the add dates only the approved manifest in the packaged stage; 1.14.0 (BL-239): the upload queue tools; 1.13.0 (BL-235): the calendar read's due / gapDates from the daily coverage, published_pending; 1.12.0 (BL-221): a live sample without a count is 0 viewers; 1.10.0 (BL-209): the calendar read's uploads gain automatic / progressPercent / finishedAt; 1.8.0 (BL-182 stage 2): the calendar read lists packages and uploads
+  // Producer reads a video's playlists): 1.33.0 adds producer_video_playlists.
+  assert.equal(PRODUCER_API_VERSION, "1.33.0"); // 1.33.0 (new requirement owner TG 4858/4859, package playlists, BL-276): producer_video_playlists; 1.32.0 (owner TG 4817, new requirement AC-TC-08): reviewTimedComments, reviewIssues and the wake file sections; 1.31.0 (BL-274, new requirement owner TG 4839/4842, ADR 0072 amendment 1): producer_video_metadata_update localizations: true; 1.30.0 (FO-REQ-0056 part 2, BL-273, new requirement): video tags in channel_video_list / agent_get_video_context; 1.29.0 (owner TG 4782, ADR 0048 amendment): the five channel playlist tools, PLAYLIST_WRITE; 1.28.0 (BL-272): producer_image_review_*; 1.27.0 (BL-271, new requirement owner TG 3617/3618, ADR 0075): producer_wait; 1.26.0 (BL-269): producer_video_captions_add; 1.24.0 (BL-265, new requirement PRD-REQ-0195 B, ADR 0072): producer_video_metadata_update, METADATA_WRITE / metadataTools, calendar warnings, the media-keyed review gate; 1.23.0 (BL-263, new requirement PRD-REQ-0194, ADR 0071): S codes in the calendar, the queue tools and wake file names; 1.22.0 = PRD-REQ-0195 C (queue add after an approved, cancelled-before-approval version); 1.21.0 (BL-257, new requirement ADR 0070): calendar problem codes owner_review_pending / _returned; 1.20.0 (BL-255): producer_video_thumbnail_replace; 1.19.0 (BL-246): clip review answers carry the owner's attachments; 1.18.0 (BL-244): producer_upload_queue_cancel also stops a row being sent before its last chunk; 1.17.0 (BL-243): the calendar read's deleted_on_youtube / missingOnChannel, channel_video_list videoIds; 1.16.0 (BL-242): the add dates only the approved manifest in the packaged stage; 1.14.0 (BL-239): the upload queue tools; 1.13.0 (BL-235): the calendar read's due / gapDates from the daily coverage, published_pending; 1.12.0 (BL-221): a live sample without a count is 0 viewers; 1.10.0 (BL-209): the calendar read's uploads gain automatic / progressPercent / finishedAt; 1.8.0 (BL-182 stage 2): the calendar read lists packages and uploads
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_stored_suggested_sources"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_publishing_calendar"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_video_comments"));
@@ -1300,6 +1300,19 @@ test("BL-265 AC-MG-34: producer_video_metadata_update reaches only the session's
   }
   assert.deepEqual(metadataCalls, [args, pinned]);
   assert.deepEqual([calls[0].tool, calls[0].channelId, calls[0].outcome], ["producer_video_metadata_update", "UC_PR_X", "ok"]);
+});
+
+// Owner TG 4839/4842 (ADR 0072 amendment, Producer 1.31.0): `localizations: true` -- a boolean only, passed to the same session
+// surface; still no text of the caller's (a translations object is refused by the strict schema).
+test("1.31.0: producer_video_metadata_update takes localizations: true (boolean only), passed through; a translations object refused", async () => {
+  const { endpoint, tokens, metadataCalls } = setup();
+  const token = (await tokens.issueToken({})).token;
+  const args = { channelId: "UC_PR_X", video: "V25", dryRun: true, localizations: true };
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("producer_video_metadata_update", args), bearer(token))))).isError, false);
+  for (const bad of [{ ...args, localizations: "ja" }, { ...args, localizations: { ja: { title: "free", description: "text" } } }]) {
+    assert.equal((await toolResult(await endpoint.handle(rpc(call("producer_video_metadata_update", bad), bearer(token))))).isError, true, JSON.stringify(bad));
+  }
+  assert.deepEqual(metadataCalls, [args]);
 });
 
 // BL-269 AC-CAP-35 / AC-CAP-48 (VIDEO_CAPTIONS_PLAN.md §3.5, §3.7): the captions tool reaches only the session's `captions`, takes a

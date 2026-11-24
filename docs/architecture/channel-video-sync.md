@@ -56,6 +56,8 @@ defaultLanguage, defaultAudioLanguage, thumbnails, existingLocalizations,
 lastSyncedAt, etag
 ```
 
+Later additive columns (each NULL = unknown until the video's next sync, never a fabricated value): `viewCount`/`commentCount`/`likeCount`, `durationSeconds`, `liveBroadcastContent`, `publishAt`, and `tags` (FO-REQ-0056 part 2, schema v125 `videos.tags_json`, a JSON array: YouTube's `snippet.tags` in YouTube's order, `[]` when the video has none). Tags come from the `snippet` part the sync already requests, so they add no quota. `upsertVideos` writes `tags_json` only when the entry carries `tags`: a targeted re-upsert without them keeps the stored tags instead of blanking them. video-details' local cache refresh after a write passes the verified read-back's tags, so a tags write (video_details_update, «Применить упаковку», producer_video_metadata_update) shows at once; otherwise the next real sync replaces them. Exposed read-only as `channel_video_list`'s `tags` field and `agent_get_video_context`'s `metadata.tags` (`docs/interfaces.md`).
+
 `existingLocalizations` stores the full `{ [locale]: { title, description } }` map fetched via `videos.list(part: localizations)` — not just language codes — because the Localization Manager (Phase 3, `src/lib/localization/`) needs the actual remote title/description per locale, not only which locales exist. `existingLocalizationLanguages` (a derived, sorted array of the map's keys) is exposed alongside it purely for cheap UI rendering (badges) without every consumer having to re-derive it.
 
 ### 4.5 Re-sync semantics (no draft/remote distinction yet)

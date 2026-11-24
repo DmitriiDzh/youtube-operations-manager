@@ -270,6 +270,8 @@ export const shell = {
   "channelWork.attemptsExhaustedShort": "{plan}: attempts used up ({count})",
   "channelWork.budget80Short": "{plan}: budget at 80%",
   "channelWork.budget100Short": "{plan}: budget used up",
+  "channelWork.packagesWaiting": "Media → «Videos for review»: {count, plural, one {# video waits} other {# videos wait}} for your review",
+  "channelWork.packagesWaitingShort": "{count, plural, one {# video to review} other {# videos to review}}",
   "languageAlerts.missingShort": "{count, plural, one {# video} other {# videos}} without a translation: {languages}",
   "languageAlerts.deviationsShort": "{count, plural, one {# video} other {# videos}}: wrong language",
   "publishingAlerts.coveredThroughShort": "Scheduled only through {date}",

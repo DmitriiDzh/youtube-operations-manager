@@ -437,7 +437,11 @@ Key MCP tools:
     (it mutates local state even though it never touches YouTube).
   - `channel_list` — `{ credentialRef? }` → `{ channels: SyncedChannel[] }`. Read-only.
   - `channel_video_list` — `{ channelId, credentialRef? }` → `{ channelId, videos: SyncedVideo[] }`.
-    Read-only.
+    Read-only. **Tags (FO-REQ-0056 part 2, Agent API 4.28.0 / Producer 1.30.0, additive):** every `SyncedVideo` has
+    `tags: string[] | null` -- YouTube's `snippet.tags` as of the last `channel_sync`, in YouTube's order and spelling; `[]` when
+    the video has none; `null` when this copy has not read them yet (rows synced before schema v125 `videos.tags_json`, until
+    the next sync). `"tags"` is selectable in `fields` and is left out when `fields` does not name it. The sync already reads
+    the `snippet` part, so tags cost no extra quota and no tool makes a YouTube call for them.
 - AI Localization tools (BL-075/BL-078, `docs/roadmap/BACKLOG.md`) — wrap the exact same two
   service functions the Web UI's own `POST .../ai-localization/{generate,change-sets}` routes
   already call; no new validation/persistence logic. Neither accepts `credentialRef` (mirrors
@@ -545,7 +549,8 @@ Key MCP tools:
     such check). Local read only.
   - `agent_get_video_context` — `{ channelId, videoId, include? }` → `VideoContext`, section-
     selectable: `"metadata"` (title, description, publish date, privacy status, default
-    language, last sync time) and/or `"localizations"` (every existing per-language
+    language, last sync time, `durationSeconds`, `liveBroadcastContent`, and since Agent API 4.28.0 / Producer 1.30.0
+    `tags` -- the same value as `channel_video_list`'s `tags`: `[]` none, `null` not read yet) and/or `"localizations"` (every existing per-language
     title/description already synced locally). Omitting `include` returns both sections; an
     omitted section is left entirely absent from the response (`undefined`), not an empty
     placeholder, for token efficiency. Requires `channelId` to be the caller's active channel and
@@ -1154,9 +1159,13 @@ nothing. This replaces BL-091's per-capability zones, which are retired in
     (READ; not counted as an MCP call for the quiet window); `agent_hold_restart { minutes (whole, 1-60), reason (1-200) }` →
     `{ hold }` with `heldBy: "worker:<bound channel>"` and `agent_release_hold { holdId }` → `{ hold, released }` (DRAFT, local,
     device mutation gate first; another's hold → `not_found`; both logged in the worker log, the hold's id as the target).
+    Timed comments (owner TG 4817, Agent API 4.29.0, additive): `agent_publishing_plan_get` / `_list` packages gain `reviewTimedComments: [{ atSeconds, time, text }]` as in Factory 1.56.0.
     Wait (BL-271, ADR 0075, Agent API 4.25.0, additive): `agent_wait` is `factory_wait` (below) for the bound channel -- `channelId`
     put in when left out, another channel → `CHANNEL_NOT_ACTIVE`, another channel's upload / session / job / request / storyboard /
     render → `not_found` exactly like a missing id. READ; not logged in the worker log; not counted as an MCP call.
+    Video tags (FO-REQ-0056 part 2, Agent API 4.28.0, additive): `channel_video_list` (field `tags`, selectable in `fields`) and
+    `agent_get_video_context`'s `metadata.tags` give each video's YouTube tags as of the last `channel_sync` (`[]` none, `null` not
+    read yet) -- local copy only, no YouTube call.
   - `list` / `transcript` / `preview` / `channel_sync` are confined to the bound channel.
   - Market tools return only records the operator assigned to that channel (below).
   - Channel-less hypotheses are invisible.
@@ -1182,7 +1191,7 @@ A second agent role, separate from the channel agents. Technical contract only (
   POST only (405), the MCP connection switch (403 `MCP_CONNECTION_DISABLED`), a token (401 `AGENT_TOKEN_REQUIRED`), the token (401 `AGENT_TOKEN_INVALID` for an
   unknown, revoked or wrong-type token, including a channel token; 503 `AGENT_ENDPOINT_UNAVAILABLE` if the database cannot answer). The token is re-verified on
   every tool call, so a revocation applies to the next call. A factory token on `/api/mcp` is rejected the same way.
-- **Factory API version:** `1.55.0` since owner TG 3700 (additive in shape: the Gemini video model is `gemini-omni-1.2-flash` at Google's 1.2 prices, `video.durationSeconds` any whole second 3-15 (at most 10 with a `lastFrame`), `gemini-omni-1.1-flash` a deprecated alias sent and recorded as 1.2, the catalog's video entries gain `durationSeconds` and `aliases`; the default `maxUsdPerJob` is $2 (owner TG 4789, was $1), which every clip fits (the largest, 1080p 15 s, about $1.58); a stored limit, the owner's own or one received through the shared Gemini settings, is kept, and at $1 a 720p 15 s clip ($1.06) and 1080p clips of 10 s or more are refused with `gemini_limit_exceeded` `per_job` until the owner raises it; Agent API `4.26.0` the same through `agent_gemini_*`); `1.54.0` since BL-271 (ADR 0075, additive: `factory_wait` below); `1.53.0` since BL-269 (FO-REQ-0055, ADR 0074, additive: `yt-release-package/2` `captions: [{ language, file, name, sha256 }]`
+- **Factory API version:** `1.56.0` since owner TG 4817 (PACKAGE_REVIEW_PLAN.md AC-TC-08, additive: plan packages gain `reviewTimedComments: [{ atSeconds, time, text }]` -- the owner's comments at moments of the video sent with his standing package-review decision -- and `reviewCommentKind` (returned | returned_timed | approved_notes; owner TG 4836: `reviewComment` also carries an approval's notes for future videos, non-blocking, wake file line «Notes: Одобрено с замечаниями на будущее»); owner TG 4846: each timed comment is an ISSUE with id `<decisionId>.<n>` that outlives the package version (key: channel + video code or its recode alias) -- `yt-release-package/2` gains the optional `reviewReplies: [{ issueId, status: fixed | not_fixed | partly, text (1-2000), atSeconds? }]` written by whoever re-packages (read leniently: a malformed entry or an unknown issue is ignored, never a package problem; the replies the owner saw are kept in his next decision), plan packages gain `reviewIssues: [{ id, atSeconds, time, state: open | resolved | noted, thread: [{ by: owner | agent, kind?, status?, text, atSeconds?, time?, at }] }]` and `reviewIssueCounts`, and the wake file gains the section «Issues» (as of its decision); the owner resolves («Исправлено, принимаю») or follows up per issue with his next approve / return (Web UI only; no MCP path writes the review document); the wake file `REVIEW-DECISION-package-…` gains the section «Timed comments», one line `<seconds> s (<m:ss>): <text>` per comment, absent when none); `1.55.0` since owner TG 3700 (additive in shape: the Gemini video model is `gemini-omni-1.2-flash` at Google's 1.2 prices, `video.durationSeconds` any whole second 3-15 (at most 10 with a `lastFrame`), `gemini-omni-1.1-flash` a deprecated alias sent and recorded as 1.2, the catalog's video entries gain `durationSeconds` and `aliases`; the default `maxUsdPerJob` is $2 (owner TG 4789, was $1), which every clip fits (the largest, 1080p 15 s, about $1.58); a stored limit, the owner's own or one received through the shared Gemini settings, is kept, and at $1 a 720p 15 s clip ($1.06) and 1080p clips of 10 s or more are refused with `gemini_limit_exceeded` `per_job` until the owner raises it; Agent API `4.26.0` the same through `agent_gemini_*`); `1.54.0` since BL-271 (ADR 0075, additive: `factory_wait` below); `1.53.0` since BL-269 (FO-REQ-0055, ADR 0074, additive: `yt-release-package/2` `captions: [{ language, file, name, sha256 }]`
   is read and checked -- plan / calendar packages gain `captions` and the blocking codes `captions_missing` / `captions_invalid` (reason:
   `channel_disabled`, `not_horizontal`, `orientation_unknown`, `count`, `language`, `name`, `size`, `sha256`, `format`); the upload record
   `yt-release-upload/1` gains `videoSha256` (or null), `videoSizeBytes` and `captions: [{ trackId, language, name, sha256, at, by, verified?, pending? }]` (`pending: true` with `verified: false`: sent, YouTube
@@ -1576,8 +1585,9 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
 
 - **Transport:** as the factory endpoint, with `Authorization: Bearer ytom_pr_...` (the same checks and codes; a channel or factory token is
   401 `AGENT_TOKEN_INVALID` here, and a producer token on `/api/mcp` and `/api/mcp/factory`). Re-verified on every tool call.
-- **Producer API version:** `1.33.0` (package playlists, owner TG 4858/4859, ADR 0051 amendment 2026-11-24; 1.30.0-1.32.0 are other branches' numbers; additive: `producer_video_playlists`
-  below; release packages may name `playlists`); `1.29.0` (owner TG 4782, ADR 0048 Amendment 1, additive: the playlist channel tools below, permission
+- **Producer API version:** `1.33.0` (package playlists, owner TG 4858/4859, ADR 0051 amendment 2026-11-24, BL-276; additive: `producer_video_playlists`
+  below; release packages may name `playlists`); `1.32.0` (since owner TG 4817, AC-TC-08, additive: `producer_publishing_plan_get` / `_list` packages gain `reviewTimedComments`, the wake file gains «Timed comments»); `1.31.0` (owner TG 4839/4842, ADR 0072 amendment 1, BL-274, additive: `producer_video_metadata_update` takes `localizations: true` -- the package's translations, below); `1.30.0` (FO-REQ-0056 part 2, BL-273, additive: `channel_video_list` / `agent_get_video_context` carry each
+  video's synced `tags`, see the channel-sync tools above); `1.29.0` (owner TG 4782, ADR 0048 Amendment 1, additive: the playlist channel tools below, permission
   `PLAYLIST_WRITE`, `playlistTools` / `playlistWriteTools` in `producer_get_capabilities`); `1.28.0` (BL-272, ADR 0076, additive: the image review tools below, `imageReviewTools` in `producer_get_capabilities`, `approvedImageId` on `producer_clip_review_submit`); `1.27.0` (BL-271, ADR 0075, additive: `producer_wait` below); `1.26.0` (since BL-269, ADR 0074, additive: `producer_video_captions_add` below, permission `CAPTIONS_WRITE`,
   `captionsTools` in `producer_get_capabilities`; calendar packages gain `captions`); `1.25.0` (BL-267, ADR 0073, additive: the weekly-plan tools below, permission `PLAN_MOVE`,
   `planTools` / `planMoveTools` in `producer_get_capabilities`); `1.24.0` (BL-265, ADR 0072, additive: `producer_video_metadata_update`, permission `METADATA_WRITE`
@@ -1695,6 +1705,26 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
   `package_metadata_conflict` (`details.conflicts`), `video_details_conflict`, `CHANNEL_NOT_ACTIVE`, `WRITE_CHANNEL_MISMATCH`, `live_writes_disabled`,
   `update_failed`, `operation_lock_held` / `device_in_recovery_mode`. The owner's route: `POST /api/channels/[channelId]/publishing/package-metadata`
   `{ video, dryRun? }` / `{ video, expectedEtag, overwrite?: field[] }` (owner session, active channel; the owner may overwrite a conflicting field).
+  **Translations (Producer 1.31.0; owner TG 4839/4842, 2026-11-24; ADR 0072 amendment 1):** `{ channelId, video, dryRun?, expectedManifestSha256?,
+  localizations: true }` (a boolean only) fixes, instead of the texts, the video's per-language title/description from the package's current manifest
+  `localizations` -- one YouTube write per call. Dry run `{ dryRun: true, kind: "localizations", video, videoId, manifestSha256, etag, baseline:
+  upload_row | localizations_apply | unknown, defaultLanguage, languages: [{ language, status: same | write | conflict, uploadedKnown, fields: [{ field:
+  title | description, youtube (null: no such language), uploaded (null: not sent / unknown), package, status }] }], kept (languages the video has and the
+  package lacks: never touched), ownLanguageSkipped (a package language equal to YouTube's default language: never written), changed, quotaUnits (56) }`;
+  real `{ dryRun: false, kind: "localizations", video, videoId, manifestSha256, changed, written, kept, verified }`, plus `forChannelId`. Per language
+  and field: YouTube = package same; YouTube = what the upload sent write; otherwise conflict. What the upload sent: the latest verified translations
+  fix here, else this computer's finished upload row when its translations step is `verified` (its frozen set) or `none` (nothing sent); otherwise
+  unknown (e.g. uploaded from the other computer: the upload record file does not hold translations) -- every difference a conflict. Any conflict
+  refuses the whole call (`package_localizations_conflict`, `details.conflicts: [{ language, fields }]`), for the owner too.
+  The snippet is sent back only once the video reads its title / description / tags as checked (or as a texts fix on this computer in the
+  last 15 minutes sent; a lagging read is re-read a few times, then `update_failed`, nothing sent), and the texts fix and the translations
+  fix of one video run one at a time here.
+  The write is the shared video translations writer (identity check, backup of the current translations, the languages written re-checked right
+  before the write -- else `video_details_conflict`, nothing sent --, Live writes immediately before `videos.update part=snippet,localizations` with
+  every other language kept and the snippet as read, read-back), then privacy and `publishAt` read back; audit `source: package_localizations`, actor.
+  A read-back that differs is `update_failed` (`details.problem` / `details.changedUntouched`). Also `validation_failed` (the video has no default
+  language on YouTube) and the texts path's errors. The owner's route takes the same `localizations: true` (`{ video, dryRun: true, localizations:
+  true }` / `{ video, localizations: true, expectedEtag, expectedManifestSha256 }`; no overwrite).
 - **Thumbnail tool (BL-255, ADR 0069, owner msgs 4380/4383):** `producer_video_thumbnail_replace` `{ channelId, videoId (11 chars), path (workspace-
   relative, under `04 Videos/`, .jpg/.jpeg/.png), dryRun? }` → `{ channelId, videoId, path, dryRun, file: { bytes, contentType, sha256 }, before:
   { hasCustomThumbnail, privacyStatus, publishAt, url }, after (same shape, or null), units (52), written, backupPath, verified, verificationDetail, imageChanged }`

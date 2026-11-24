@@ -51,6 +51,17 @@ export type PackageReviewDecision = {
    * original's. Absent on the owner's own decisions; an older build ignores it.
    */
   carriedFrom?: string;
+  /**
+   * Owner TG 4817 (PACKAGE_REVIEW_PLAN.md AC-TC-05): the owner's comments bound to moments of the video, sent with this approval or
+   * return as one batch -- seconds (one decimal) and text, sorted by time. Absent when there are none; an older build ignores it.
+   */
+  timedComments?: Array<{ atSeconds: number; text: string; /** Owner TG 4846: the issue id `<decisionId>.<n>`. */ id?: string }>;
+  /** Owner TG 4846 (AC-IS-04): the owner's actions on existing issues of this video, sent with this decision. An older build ignores it. */
+  issueActions?: Array<{ issueId: string; kind: "resolved" | "follow_up"; text?: string }>;
+  /** Owner TG 4846 (AC-IS-03): the factory's answers (`reviewReplies` of the package) the owner saw when he decided. Ignored by older builds. */
+  repliesSeen?: Array<{ issueId: string; status: "fixed" | "not_fixed" | "partly"; text: string; atSeconds?: number }>;
+  /** Review 2 #8: `comment` was written from the timed comments and follow-ups (the owner wrote no general one). Ignored by older builds. */
+  commentGenerated?: true;
 };
 
 /** The owner's switch: review the channel's final packages before they count as ready. Assigned whole. */

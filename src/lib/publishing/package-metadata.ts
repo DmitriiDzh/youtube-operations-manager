@@ -32,7 +32,8 @@ export type PackageMetadataFound = {
   thumbnailPath: string | null;
 };
 
-export type PackageMetadataUploadRow = { status: string; videoId: string | null; packageJson: string; finishedAt: Date | null };
+/** `stepsJson`: the row's steps (the translations step's outcome tells what the upload sent; absent: unknown). */
+export type PackageMetadataUploadRow = { status: string; videoId: string | null; packageJson: string; finishedAt: Date | null; stepsJson?: string };
 
 export type PackageMetadataDeps = {
   /** The channel's package of `video` on this computer (the publishing scan), or why there is none. */
@@ -104,7 +105,7 @@ export type PackageMetadataApplyResult = {
   audioLanguageLeftOut: boolean;
 };
 
-const refuse = (code: DomainErrorCode, message: string, details: Record<string, unknown> = {}) => new DomainError({ code, message, details });
+export const refuse = (code: DomainErrorCode, message: string, details: Record<string, unknown> = {}) => new DomainError({ code, message, details });
 
 /** YouTube's own limits on the default-language texts (the same codes as the package scan's blocking problems). */
 export function packageTextProblems(texts: { title: string; description: string; tags: readonly string[] }): string[] {
@@ -117,6 +118,68 @@ export function packageTextProblems(texts: { title: string; description: string;
   if (tagsLength(texts.tags) > TAGS_MAX_CHARACTERS) problems.push("tags_too_long");
   if (texts.tags.some((tag) => hasAngleBrackets(tag))) problems.push("tags_angle_brackets");
   return problems;
+}
+
+/**
+ * The gates every package-driven fix of an uploaded video passes first (title/description/tags here, the translations in
+ * `package-localizations.ts`): the channel's one package of `video` on this computer, and the video its upload record names.
+ */
+export async function findUploadedPackage(
+  deps: Pick<PackageMetadataDeps, "findPackage">,
+  channelId: string,
+  video: string
+): Promise<PackageMetadataFound & { videoId: string }> {
+  if (typeof video !== "string" || video.trim() === "") throw refuse("validation_failed", "video is required (e.g. V61 or S14)");
+  const found = await deps.findPackage(channelId, video);
+  if (found === "no_workspace") throw refuse("package_no_workspace", "This channel has no workspace folder on this computer.", { channelId });
+  if (found === "workspace_unavailable") throw refuse("package_workspace_unavailable", "The channel's workspace cannot be used now.", { channelId });
+  if (found === "ambiguous") throw refuse("validation_failed", `${video}: more than one package names this video.`, { channelId, video });
+  if (found === "not_found") throw refuse("upload_package_not_ready", `${video}: no release package of this channel has this video number on this computer.`, { channelId, video });
+  if (!found.videoId) throw refuse("package_metadata_not_uploaded", `${video} is not on YouTube yet (no upload record): its packaging goes up with the upload.`, { channelId, video });
+  return { ...found, videoId: found.videoId };
+}
+
+/**
+ * The next gates: no upload of `video` still running here (it has not finished its read-back), the device gate, the Google user to act
+ * as, and YouTube's current snapshot of the video, which must exist and be the channel's.
+ */
+export async function readUploadedVideo(
+  deps: Pick<PackageMetadataDeps, "uploadRows" | "assertDeviceAvailable" | "credentialRef" | "snapshot">,
+  channelId: string,
+  video: string,
+  videoId: string,
+  actor: PackageMetadataActor
+): Promise<{ rows: PackageMetadataUploadRow[]; credentialRef: { userId: string }; now: VideoDetailsSnapshot }> {
+  const rows = await deps.uploadRows(channelId, video);
+  if (rows.some((row) => ACTIVE_UPLOAD.has(row.status))) {
+    throw refuse("upload_steps_pending", `${video}'s upload on this computer has not finished its read-back yet: fix the packaging after it is done.`, { channelId, video });
+  }
+  await deps.assertDeviceAvailable();
+  const credentialRef = await deps.credentialRef(channelId, actor);
+  const now = await deps.snapshot({ credentialRef, channelId, videoId });
+  if (now === "not_found") throw refuse("video_missing", `${video}'s video ${videoId} is not on YouTube (deleted, or not visible to this account).`, { channelId, video, videoId });
+  if (now.channelId !== channelId) throw refuse("video_not_in_channel", `${videoId} is not a video of this channel.`, { channelId, video, videoId, videoChannelId: now.channelId ?? null });
+  return { rows, credentialRef, now };
+}
+
+/** The fixes of a video in progress on this computer, by channel and video code: each waits for the one before it. */
+const videoLocks = new Map<string, Promise<unknown>>();
+
+/**
+ * Runs one package-driven fix of a video (texts or translations) after any other one of the same video on this computer has ended
+ * (review of 1c515813: the translations write echoes the snippet it read, so a texts fix landing in between could be reverted).
+ */
+export async function withPackageVideoLock<T>(channelId: string, video: string, run: () => Promise<T>): Promise<T> {
+  const key = `${channelId}\u0000${String(video ?? "")}`;
+  const before = videoLocks.get(key) ?? Promise.resolve();
+  const mine = before.catch(() => undefined).then(run);
+  const tail = mine.catch(() => undefined);
+  videoLocks.set(key, tail);
+  try {
+    return await mine;
+  } finally {
+    if (videoLocks.get(key) === tail) videoLocks.delete(key);
+  }
 }
 
 type Texts = { title: string; description: string; tags: string[] };
@@ -144,28 +207,14 @@ export function afterTextsOf(
 export function createPackageMetadata(deps: PackageMetadataDeps) {
   /** Every read and check both the preview and the apply make, in the plan's order; nothing is written. */
   async function inspect(channelId: string, video: string, actor: PackageMetadataActor) {
-    if (typeof video !== "string" || video.trim() === "") throw refuse("validation_failed", "video is required (e.g. V61 or S14)");
-    const found = await deps.findPackage(channelId, video);
-    if (found === "no_workspace") throw refuse("package_no_workspace", "This channel has no workspace folder on this computer.", { channelId });
-    if (found === "workspace_unavailable") throw refuse("package_workspace_unavailable", "The channel's workspace cannot be used now.", { channelId });
-    if (found === "ambiguous") throw refuse("validation_failed", `${video}: more than one package names this video.`, { channelId, video });
-    if (found === "not_found") throw refuse("upload_package_not_ready", `${video}: no release package of this channel has this video number on this computer.`, { channelId, video });
-    if (!found.videoId) throw refuse("package_metadata_not_uploaded", `${video} is not on YouTube yet (no upload record): its packaging goes up with the upload.`, { channelId, video });
+    const found = await findUploadedPackage(deps, channelId, video);
     const settingsTags = await deps.channelTags(channelId);
     const frozen = approvedPackageOf(found.pkg, { manifestPath: found.manifestPath, folder: found.folder }, { channelTags: settingsTags });
     // The patch sends what YouTube keeps: the description with LF and no trailing line breaks, so its echo is the text sent.
     const manifest: Texts = { title: frozen.title, description: youtubeDescriptionOf(frozen.description), tags: frozen.tags };
     const problems = packageTextProblems(manifest);
     if (problems.length > 0) throw refuse("package_metadata_invalid", `${video}'s package texts break YouTube's limits: ${problems.join(", ")}.`, { channelId, video, problems });
-    const rows = await deps.uploadRows(channelId, video);
-    if (rows.some((row) => ACTIVE_UPLOAD.has(row.status))) {
-      throw refuse("upload_steps_pending", `${video}'s upload on this computer has not finished its read-back yet: fix the packaging after it is done.`, { channelId, video });
-    }
-    await deps.assertDeviceAvailable();
-    const credentialRef = await deps.credentialRef(channelId, actor);
-    const now = await deps.snapshot({ credentialRef, channelId, videoId: found.videoId });
-    if (now === "not_found") throw refuse("video_missing", `${video}'s video ${found.videoId} is not on YouTube (deleted, or not visible to this account).`, { channelId, video, videoId: found.videoId });
-    if (now.channelId !== channelId) throw refuse("video_not_in_channel", `${found.videoId} is not a video of this channel.`, { channelId, video, videoId: found.videoId, videoChannelId: now.channelId ?? null });
+    const { rows, credentialRef, now } = await readUploadedVideo(deps, channelId, video, found.videoId, actor);
     // (b) what this video's upload sent: the latest packaging fix here, else the finished upload row of this video here.
     const applied = await deps.lastApplied(channelId, found.videoId);
     const doneRow = rows
@@ -255,6 +304,8 @@ export function createPackageMetadata(deps: PackageMetadataDeps) {
         throw refuse("validation_failed", "expectedManifestSha256 is required: apply the package the preview showed");
       }
       const overwrite = actor.kind === "owner" ? (input.overwrite ?? []).filter((f): f is PackagingField => (PACKAGING_FIELDS as readonly string[]).includes(f)) : [];
+      // One package fix of a video at a time on this computer (the translations fix takes the same lock, review of 1c515813).
+      return withPackageVideoLock(channelId, input?.video, async () => {
       const seen = await inspect(channelId, input?.video, actor);
       if (input.expectedManifestSha256 !== undefined && input.expectedManifestSha256 !== seen.found.manifestSha256) {
         throw refuse("package_metadata_manifest_changed", `${seen.found.pkg.video}'s package was re-packaged since the preview: preview it again.`, {
@@ -323,6 +374,7 @@ export function createPackageMetadata(deps: PackageMetadataDeps) {
         throw refuse("update_failed", "The write went through, but the video's translation languages could not be confirmed unchanged afterwards: check them in Studio.", { channelId, video: base.video, before: languagesBefore, after: languagesAfter });
       }
       return { ...base, changed: true, written, skippedConflicts, verified: true, backupPath: result.backupPath };
+      });
     },
   };
 }

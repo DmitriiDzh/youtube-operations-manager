@@ -1,5 +1,5 @@
 import { createPackageScanCore, createPublishingSettingsCore, listChannelUploads, ownerReviewStateFor, packageScanFilesSignature, packageScanSignature, removedVideosOf } from "@/lib/publishing";
-import { standingDecision } from "@/lib/package-reviews";
+import { decisionsOfVideo, issueCounts, issuesOf, issuesReadout, standingDecision, timedCommentsReadout, wellFormedReplies } from "@/lib/package-reviews";
 import type { PlanProgressResult, PlanSlotProgress, PublishingPlansPorts } from "@/lib/publishing-plans";
 import { createPackagesReader, invalidatePackagesEntry, type PackagesEntry } from "./packages-cache";
 import { deletedVideosBySlot, progressOfSlots, progressWithUploads, type MediaReviewOf } from "./progress";
@@ -12,11 +12,26 @@ import { deletedVideosBySlot, progressOfSlots, progressWithUploads, type MediaRe
 export async function mediaReviewReaderOf(channelId: string, read: (channelId: string) => ReturnType<typeof ownerReviewStateFor> = ownerReviewStateFor): Promise<MediaReviewOf> {
   try {
     const state = await read(channelId);
-    if (!state.required) return () => "not_required";
-    return (key) => {
-      const standing = standingDecision(state, key);
-      return standing?.kind === "approved" ? "approved" : standing?.kind === "returned" ? "returned" : "pending";
+    // Owner TG 4817 (AC-TC-08): the standing decision's timed comments, also on a channel without the gate (he may still decide).
+    const timedComments: MediaReviewOf["timedComments"] = (key) => timedCommentsReadout(standingDecision(state, key)?.timedComments ?? []);
+    const reader: MediaReviewOf = state.required
+      ? (key) => {
+          const standing = standingDecision(state, key);
+          return standing?.kind === "approved" ? "approved" : standing?.kind === "returned" ? "returned" : "pending";
+        }
+      : () => "not_required";
+    reader.timedComments = timedComments;
+    // Owner TG 4846 (AC-IS-07): the video's issues across its package versions, with this package's answers (read leniently).
+    reader.issues = (video, rawReplies, manifestSha256) => {
+      const issues = issuesOf(decisionsOfVideo(state.decisions, video, state.aliases), wellFormedReplies(rawReplies), manifestSha256);
+      return { issues: issuesReadout(issues), counts: issueCounts(issues) };
     };
+    // Owner TG 4836: the notes of a standing approval (an approval with a comment), for the plan's package.
+    reader.approvalComment = (key) => {
+      const standing = standingDecision(state, key);
+      return standing?.kind === "approved" && (standing.comment ?? "").trim() !== "" ? standing.comment : null;
+    };
+    return reader;
   } catch {
     return () => "unreadable";
   }

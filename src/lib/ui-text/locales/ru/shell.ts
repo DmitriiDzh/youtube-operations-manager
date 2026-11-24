@@ -270,6 +270,8 @@ export const shell: Record<keyof typeof en, string> = {
   "channelWork.attemptsExhaustedShort": "{plan}: попытки кончились ({count})",
   "channelWork.budget80Short": "{plan}: бюджет 80%",
   "channelWork.budget100Short": "{plan}: бюджет исчерпан",
+  "channelWork.packagesWaiting": "Медиа → «Видео на проверку»: {count, plural, one {# видео ждёт} few {# видео ждут} many {# видео ждут} other {# видео ждут}} вашей проверки",
+  "channelWork.packagesWaitingShort": "{count, plural, one {# видео ждёт} few {# видео ждут} many {# видео ждут} other {# видео ждут}} проверки",
   "languageAlerts.missingShort": "{count, plural, one {# видео} few {# видео} many {# видео} other {# видео}} без перевода: {languages}",
   "languageAlerts.deviationsShort": "{count, plural, one {# видео} few {# видео} many {# видео} other {# видео}}: не тот язык",
   "publishingAlerts.coveredThroughShort": "План только до {date}",

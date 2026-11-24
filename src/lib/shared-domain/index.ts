@@ -411,6 +411,8 @@ export type DomainErrorCode =
   | "package_review_video_mismatch"
   | "package_review_thumbnail_missing"
   | "package_review_workspace_unavailable"
+  | "package_review_draft_changed"
+  | "package_review_issue_unknown"
   // BL-246 (ADR 0065, CLIP_REVIEWS_PLAN.md items 11-16): the owner's comment attachments. TOO_MANY: more than 10 in a decision;
   // TOO_LARGE: over 50 MiB; TYPE_NOT_ALLOWED: an extension not on the list; TYPE_MISMATCH: the declared type or the first bytes are
   // not the extension's kind; UPLOAD_*: a staged upload unknown here / of another clip, a piece not continuing it, the arrived file not
@@ -464,6 +466,9 @@ export type DomainErrorCode =
   | "video_missing"
   | "upload_steps_pending"
   | "package_metadata_conflict"
+  // Owner TG 4839/4842 (ADR 0072 amendment 1): a package translation differs on YouTube from both the upload and the package -- the
+  // whole translations call is refused, for the owner too (no override).
+  | "package_localizations_conflict"
   // Review fix 2: the package was re-packaged between the preview and the apply.
   | "package_metadata_manifest_changed"
   // BL-269 (ADR 0074): the captions writer -- the package's captions break a rule (details.reason) or its file is missing; an English

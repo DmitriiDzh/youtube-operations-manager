@@ -399,7 +399,9 @@ FO-REQ-0040; owner msgs 3511/3534; plan `docs/roadmap/plans/WEEKLY_PUBLISHING_PL
     writer via `writeLocalizations`, `expected` = the insert's snippet so a stale read is never echoed back), then thumbnail, playlist,
     read-back, and the date only when all passed (`steps.localizations` in `none` / `verified`).
   - `src/lib/shared-video-localizations/` holds the writer moved out of `live-localizations` (unchanged; `source` names the caller in
-    the audit); `live-localizations` re-exports it.
+    the audit); `live-localizations` re-exports it. Since ADR 0072 amendment 1 a third source `package_localizations` and two optional
+    inputs: `expectedCurrent` (fail closed with `video_details_conflict` when a language to write no longer reads as the caller checked)
+    and `auditContext` (merged into every audit row).
   - `plan-schedule.ts` + `createPlanScheduleCore` (loop in `instrumentation.ts`, every minute): for each done row with a slot and a
     video, `desiredDate` (veto -> no date; approved -> the slot's time when the upload's checks passed and it is > 15 min ahead; pending
     -> nothing; a date within 15 min is never changed); a fresh read, refused if not private; video-details `applyFieldsUpdate`
@@ -522,7 +524,28 @@ flags the error as not sent; the mark keeps the retry count, so a failing insert
   (no re-queue loop).
 - **Surfaces:** owner routes `/api/channels/[channelId]/package-reviews` (`GET`/`PUT`, `/decision`, `/video`, `/thumbnail` via
   `local-file-response`, `isOwnerBrowserRequest`); Media → «Видео на проверку» (`MEDIA_TABS` value `packages`); the week-plan slot line
-  from `PlanSlotPackage.reviewComment` and the problem codes; review-notify kind `package` (`packageNoticesOf`).
+  from `PlanSlotPackage.reviewComment` and the problem codes; review-notify kind `package` (`packageNoticesOf`). Notices (fix
+  2026-11-24): `GET /api/package-review-alerts` (`createPackageReviewAlertsHandler` in the same `handlers.ts`, so AC-PR-08's single
+  composer holds) -- per connected channel the owner surface's `waiting(channelId)` (= `view().waiting`; 0 without a scan when the gate
+  is off), the Media menu badge for the active channel and a bell entry (group `packages`, `/media/packages`) for the others
+  (`src/components/package-review-alerts.ts`, the storyboard-alerts pattern).
+- **Timed comments (owner TG 4817, PACKAGE_REVIEW_PLAN.md AC-TC-01..09):** `package-reviews/timed-comments.ts` (pure, import-free: limits,
+  `m:ss` spelling, well-formed reading) is the one rule for server and screen. A decision (approved / returned only) may carry
+  `timedComments [{ atSeconds, text }]` in the synced document; `wellFormedDecision` keeps the well-formed ones and never drops the decision
+  for them; a return without a general comment stores them as `m:ss text` lines in `comment` (an older build drops a return without one).
+  The unsent draft is device-local: table `package_review_drafts` (schema 126, not in snapshots), port `drafts` of the service,
+  `GET`/`PUT …/package-reviews/draft` under the same session + active-channel guard and the channel's scan; cleared only after the
+  decision is stored. Readouts: the wake file's «Timed comments» section (`ReviewDecisionNotice.timedComments`) and
+  `PlanSlotPackage.reviewTimedComments` via `mediaReviewReaderOf(...).timedComments`, an approval's notes (owner TG 4836) as `reviewComment` +
+  `reviewCommentKind: approved_notes` via `.approvalComment` (Factory 1.56.0 / Agent 4.29.0 / Producer 1.32.0). The draft is guarded by
+  stamps: a save names `baseUpdatedAt`, a decision `draftUpdatedAt`; a mismatch is `package_review_draft_changed` (409); drafts of gone
+  packages untouched for 14 days are pruned in `view()`. Issues (owner TG 4846): `package-reviews/issues.ts` (pure: `decisionsOfVideo` by
+  video code / recode alias, `issuesOf` builds threads from `timedComments[].id`, `repliesSeen`, `issueActions` and the current
+  manifest's `reviewReplies` passed raw by `publishing/packages.ts`), readouts `ReviewDecisionNotice.issues` (as of the decision) and
+  `PlanSlotPackage.reviewIssues` via `mediaReviewReaderOf(...).issues`; the screen's `IssueList` (resolve / follow-up into the draft).
+  `MediaVideoPlayer` `seekKeys` / `keysWithoutFocus` (← → 5 s, Space) and `rememberRate`; key rules in `visual-review-model.playerKeyAction`.
+  Screen: `package-review-workspace.tsx` over the shared `MediaVideoPlayer` (additive props `loop`, `preload`, `onMetadata`, `flags`,
+  `onFlagClick`, `fullscreen`; flags laid out by `visual-review-model.flagPlaces`) -- no parallel player.
 
 ## BL-267 — the week template replaces slot approval (ADR 0073, WEEK_TEMPLATE_PLAN.md)
 
@@ -582,6 +605,16 @@ flags the error as not sent; the mark keeps the retry count, so a failing insert
   VERIFICATION audit's `afterTexts`, else the finished upload row's package. `apply` sends only differing fields through
   `video-details.applyFieldsUpdate` with `expectedEtag`, `verifyUnchanged` (category, languages -- not a `zxx` audio language -- privacy,
   publishAt) and `auditContext`, then compares the localization language set before/after (`getVideoMetadataContext`).
+- **Package translations fix (ADR 0072 amendment 1, owner TG 4839/4842).** `publishing/package-localizations.ts`
+  (`createPackageLocalizationsCore`): the same gates (`findUploadedPackage`, `readUploadedVideo` exported from `package-metadata.ts`),
+  the set `packageLocalizationSet` (descriptions `youtubeDescriptionOf`), YouTube's own default language skipped, per language and
+  field three-way (`LocalizationBaseline { entries, complete }`: the latest verified `package_localizations.applied` audit's
+  `afterLocalizations`, else the done row's frozen `localizations` when `steps.localizations` is `verified`, or empty and complete when
+  `none`; else unknown). Any conflict refuses. `apply` calls `createVideoLocalizationsWriterCore("package_localizations")` with only the
+  languages to write, `expectedCurrent` (the entries this check read; the writer re-checks them on its fresh read and recheck) and
+  `auditContext`, then reads the snapshot again for privacy / publishAt. One write per call; against the writer's stale snippet echo it
+  passes `expected` texts (`expectedSnippetOf`: the checked texts, or a `package_metadata` fix of the last 15 minutes) and both fixes
+  take `withPackageVideoLock` (package-metadata.ts). Baseline parsing is `localizationBaselineOf` (pure, over `auditEvents`).
 - **video-details.** `adapters/youtube-api.ts` takes injectable I/O; order client -> read -> refusal checks -> Live writes -> write;
   `snippetPartOf` (full snippet read-merge-write); snapshot `channelId`; `applyFieldsUpdate` input `verifyUnchanged` / `auditContext`;
   `read-back.ts` `youtubeDescriptionText` in `sameFieldValue`.

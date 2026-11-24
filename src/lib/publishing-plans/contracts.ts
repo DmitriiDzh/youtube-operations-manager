@@ -54,6 +54,25 @@ export type PlanSlotPackage = {
    * null. Shown on the slot only; not part of the package fingerprint an approval names.
    */
   reviewComment?: string | null;
+  /**
+   * Owner TG 4836: what `reviewComment` is -- `returned` (his return comment: re-make the video), `returned_timed` (a return whose comment
+   * is only its timed comments and follow-ups written out as `m:ss text` lines) or `approved_notes` (the general comment
+   * of his standing approval: notes for future videos, non-blocking; this video stays approved). Present whenever `reviewComment` is.
+   */
+  reviewCommentKind?: "returned" | "returned_timed" | "approved_notes";
+  /**
+   * Owner TG 4817 (PACKAGE_REVIEW_PLAN.md AC-TC-08): the comments the owner bound to moments of the video, sent with his standing
+   * package-review decision (approved or returned) -- seconds, the same moment as `m:ss` (`h:mm:ss` past an hour), the text; sorted
+   * by time. Absent when there are none. Not part of the package fingerprint.
+   */
+  reviewTimedComments?: Array<{ atSeconds: number; time: string; text: string }>;
+  /**
+   * Owner TG 4846 (PACKAGE_REVIEW_PLAN.md AC-IS-07): the owner's issues on this video across its package versions -- id, the moment now,
+   * state, the thread (owner and agent turns; an agent turn with `at: null` is this package's own `reviewReplies`, not decided on yet).
+   * Absent when there are none. Answer them in the next package's `reviewReplies`.
+   */
+  reviewIssues?: PlanReviewIssue[];
+  reviewIssueCounts?: { open: number; resolved: number; noted: number };
   /** BL-259 (owner msg 4397): the video's frame (vertical / horizontal), null or absent when not known. Not part of the fingerprint. */
   orientation?: "vertical" | "horizontal" | null;
 };
@@ -92,6 +111,15 @@ export type PlanSlotProgress = {
 
 /** BL-267: the owner's media review of a slot's package. `unreadable`: the review document could not be read (counts as not approved). */
 export type PlanMediaReview = "approved" | "pending" | "returned" | "not_required" | "unreadable";
+
+/** Owner TG 4846: one review issue as the plan's package carries it (package-reviews' `issuesReadout`). */
+export type PlanReviewIssue = {
+  id: string;
+  atSeconds: number;
+  time: string;
+  state: "open" | "resolved" | "noted";
+  thread: Array<{ by: "owner" | "agent"; kind?: "opened" | "follow_up" | "resolved"; status?: "fixed" | "not_fixed" | "partly"; text: string | null; atSeconds?: number; time?: string; at: string | null }>;
+};
 
 /** Why an agent's save was refused, one entry per problem (`validation_failed`, `details.refused`). */
 export type PlanSaveRefusal = {

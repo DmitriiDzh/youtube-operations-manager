@@ -1,4 +1,4 @@
-import { createPackageReviewsOwnerCore, OWNER_REVIEW_PROBLEM_CODES, type PackageReviewsOwnerSurface, type ReviewPackage, type ReviewPackagesResult } from "@/lib/package-reviews";
+import { createPackageReviewsOwnerCore, OWNER_REVIEW_PROBLEM_CODES, wellFormedReplies, type PackageReviewsOwnerSurface, type ReviewPackage, type ReviewPackagesResult } from "@/lib/package-reviews";
 import { createPackageScanCore, type PackageScanResult, type ScannedPackage } from "@/lib/publishing";
 import { createVideoProjectsServiceForProduction } from "@/lib/video-projects";
 import { invalidatePlanPackages } from "@/lib/publishing-plan-progress";
@@ -30,6 +30,8 @@ export function reviewPackagesOf(scan: PackageScanResult): ReviewPackagesResult 
       videoSizeBytes: p.pkg.sizeBytes,
       uploaded: p.youtube !== null,
       videoId: p.youtube?.videoId ?? null,
+      // Owner TG 4846 (AC-IS-03): the factory's answers to the owner's issues, read by package-reviews' lenient rule.
+      ...(p.pkg.reviewReplies !== undefined ? { reviewReplies: wellFormedReplies(p.pkg.reviewReplies) } : {}),
       otherProblems: p.problems.map((problem) => problem.code).filter((code) => !OWNER_REVIEW_PROBLEM_CODES.includes(code)),
     });
   }

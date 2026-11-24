@@ -249,6 +249,9 @@ export const videos = sqliteTable("videos", {
   durationSeconds: integer("duration_seconds"),
   // Additive, SCHEMA_MIGRATIONS version 47: YouTube's `snippet.liveBroadcastContent` ("none" | "live" | "upcoming") from the last sync; NULL = unknown.
   liveBroadcastContent: text("live_broadcast_content"),
+  // Additive, SCHEMA_MIGRATIONS version 125 (FO-REQ-0056 part 2): YouTube's `snippet.tags` from the last sync, a JSON array of strings
+  // ("[]" = the sync saw none). Nullable, no default: NULL = not read since this column existed (unknown, never shown as "no tags").
+  tagsJson: text("tags_json"),
   // Additive, schema version 21 (owner instruction, 2026-09-26, Telegram: Content tab's "Publish"
   // column needs a scheduled-publish date for a still-private video, not only its actual
   // `publishedAt`). This is YouTube's own `status.publishAt` -- a distinct field from
@@ -2142,6 +2145,24 @@ export const socialPostJobs = sqliteTable(
     ownerRetryAt: integer("owner_retry_at", { mode: "timestamp_ms" }),
   },
   (table) => [index("social_post_jobs_channel_idx").on(table.channelId, table.slotId)]
+);
+
+/**
+ * SCHEMA_MIGRATIONS version 126 (owner TG 4817, PACKAGE_REVIEW_PLAN.md AC-TC-03): the owner's draft of timed comments on one release
+ * package (channel, manifest SHA-256) in Media → «Видео на проверку» -- kept until he sends them with his decision, so a reload, another
+ * tab or his phone through remote access finds them. Device-local (the review screen runs on one computer), never synced, never in a
+ * snapshot; the row goes when the decision carrying them is stored or the draft is emptied.
+ */
+export const packageReviewDrafts = sqliteTable(
+  "package_review_drafts",
+  {
+    channelId: text("channel_id").notNull(),
+    manifestSha256: text("manifest_sha256").notNull(),
+    /** `[{ id, atSeconds, text }]`, as the package-reviews module checked it. */
+    commentsJson: text("comments_json").notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.channelId, table.manifestSha256] })]
 );
 
 /**
@@ -6248,6 +6269,32 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       }
     },
   },
+  {
+    version: 125,
+    description:
+      "videos.tags_json -- FO-REQ-0056 part 2 (BL-273): YouTube's snippet.tags of each synced video (already in the sync's snippet read, no extra quota), for channel_video_list / agent_get_video_context. Additive, nullable; existing rows stay NULL (unknown) until their next sync. videos is a device-local cache (not transferred)",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE videos ADD COLUMN tags_json TEXT");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
+    },
+  },
+  {
+    version: 126,
+    description:
+      "package_review_drafts -- owner TG 4817 (PACKAGE_REVIEW_PLAN.md AC-TC-03; renumbered from v124 at the merge after v124 producer_call_log and v125 videos.tags_json): the owner's draft of timed comments per (channel, release-package manifest) until he sends them with his review decision. Additive (one new table), device-local",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS package_review_drafts (
+        channel_id TEXT NOT NULL,
+        manifest_sha256 TEXT NOT NULL,
+        comments_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (channel_id, manifest_sha256)
+      )`);
+    },
+  },
 ];
 
 /**
@@ -7058,6 +7105,8 @@ export type StoredVideo = {
   durationSeconds: number | null;
   /** `snippet.liveBroadcastContent` as of the last sync; absent/null = unknown. */
   liveBroadcastContent?: string | null;
+  /** FO-REQ-0056: `snippet.tags` as of the last sync (`[]` = none); null = not read since the column existed. */
+  tags: string[] | null;
   publishAt: string | null;
   lastSyncedAt: Date;
 };
@@ -7098,6 +7147,7 @@ function mapStoredVideo(row: typeof videos.$inferSelect): StoredVideo {
     likeCount: row.likeCount,
     durationSeconds: row.durationSeconds,
     liveBroadcastContent: row.liveBroadcastContent,
+    tags: row.tagsJson === null ? null : (JSON.parse(row.tagsJson) as string[]),
     publishAt: row.publishAt,
     lastSyncedAt: row.lastSyncedAt,
   };
@@ -9195,6 +9245,11 @@ export async function upsertVideos(
     likeCount?: number | null;
     durationSeconds?: number | null;
     liveBroadcastContent?: string | null;
+    /**
+     * FO-REQ-0056: `snippet.tags` as read (`[]` = none). Unlike the other columns, an omitted value leaves the stored tags as they
+     * are: a targeted re-upsert that does not carry tags must not erase what the last read stored.
+     */
+    tags?: string[];
     publishAt?: string | null;
   }>,
   syncedAt: Date
@@ -9217,6 +9272,7 @@ export async function upsertVideos(
       likeCount: entry.likeCount ?? null,
       durationSeconds: entry.durationSeconds ?? null,
       liveBroadcastContent: entry.liveBroadcastContent ?? null,
+      ...(entry.tags !== undefined ? { tagsJson: JSON.stringify(entry.tags) } : {}),
       publishAt: entry.publishAt ?? null,
       lastSyncedAt: syncedAt,
       // YouTube just returned this video, so it is not removed (clears a mark left by an earlier sync).
@@ -9366,9 +9422,9 @@ export async function markVideosRemovedOnYoutube(
 }
 
 /** `src/lib/video-details/` (2026-09-20) needs a single stored video's current cached fields to
- * merge a live-write's freshly-verified values onto before re-upserting -- `upsertVideos` always
- * replaces every column of the row it's given, so a caller wanting to update only some columns
- * must first read the rest. `null` when the video was never synced locally at all. */
+ * merge a live-write's freshly-verified values onto before re-upserting -- `upsertVideos`
+ * replaces every column of the row it's given except `tags` (kept as stored when an entry omits it,
+ * FO-REQ-0056), so a caller wanting to update only some columns must first read the rest. `null` when the video was never synced locally at all. */
 export async function getStoredVideo(channelId: string, videoId: string): Promise<StoredVideo | null> {
   const rows = await db
     .select()
@@ -11017,6 +11073,40 @@ export async function insertReviewNotifyLedgerEntries(entries: ReadonlyArray<{ k
       .values(chunk.map((e) => ({ entryKey: e.key, kind: e.kind, fileName: e.fileName, recordedAt: at })))
       .onConflictDoNothing();
   }
+}
+
+// --- Owner TG 4817: package-review drafts of timed comments ----------------------------------------------------------------
+
+/** AC-TC-03: the owner's stored draft for one package, or null (the comments are JSON, checked by the package-reviews module). */
+export async function getPackageReviewDraft(channelId: string, manifestSha256: string, database: AppDb = db): Promise<{ commentsJson: string; updatedAt: Date } | null> {
+  const [row] = await database
+    .select({ commentsJson: packageReviewDrafts.commentsJson, updatedAt: packageReviewDrafts.updatedAt })
+    .from(packageReviewDrafts)
+    .where(and(eq(packageReviewDrafts.channelId, channelId), eq(packageReviewDrafts.manifestSha256, manifestSha256)));
+  return row ?? null;
+}
+
+/** AC-TC-03: replaces the draft whole. */
+export async function setPackageReviewDraft(channelId: string, manifestSha256: string, commentsJson: string, updatedAt: Date, database: AppDb = db): Promise<void> {
+  await database
+    .insert(packageReviewDrafts)
+    .values({ channelId, manifestSha256, commentsJson, updatedAt })
+    .onConflictDoUpdate({ target: [packageReviewDrafts.channelId, packageReviewDrafts.manifestSha256], set: { commentsJson, updatedAt } });
+}
+
+/** Review fix 5: the channel's drafts whose manifest is not in `keepManifests` (re-packaged or removed) and not touched since `untouchedSince`. */
+export async function prunePackageReviewDrafts(channelId: string, keepManifests: readonly string[], untouchedSince: Date, database: AppDb = db): Promise<number> {
+  // Advisor review: only drafts not touched since `untouchedSince` -- a package missing from one scan (a manifest being rewritten) never
+  // costs the owner a draft he is working on.
+  const old = and(eq(packageReviewDrafts.channelId, channelId), lt(packageReviewDrafts.updatedAt, untouchedSince));
+  const where = keepManifests.length > 0 ? and(old, notInArray(packageReviewDrafts.manifestSha256, [...keepManifests])) : old;
+  const result = await database.delete(packageReviewDrafts).where(where);
+  return Number(result.rowsAffected ?? 0);
+}
+
+/** AC-TC-03/05: the draft is gone (emptied, or sent with a decision). */
+export async function deletePackageReviewDraft(channelId: string, manifestSha256: string, database: AppDb = db): Promise<void> {
+  await database.delete(packageReviewDrafts).where(and(eq(packageReviewDrafts.channelId, channelId), eq(packageReviewDrafts.manifestSha256, manifestSha256)));
 }
 
 /** BL-248: retention -- removes rows recorded before `cutoff`; returns how many. */

@@ -306,3 +306,96 @@ export function questionStart(recheck: { kind: string; markers: ReadonlyArray<{ 
   if (!recheck || recheck.kind !== "question" || recheck.markers.length === 0) return null;
   return Math.min(...recheck.markers.map((m) => m.start));
 }
+
+/** A flag laid out above the timeline: its left edge in px, the row it sits in (0 = nearest the timeline) and its side. */
+export type FlagPlace = { left: number; row: number; side: "start" | "end" };
+
+/**
+ * Owner TG 4817 (PACKAGE_REVIEW_PLAN.md AC-TC-02): where each comment flag sits above a timeline `width` px wide -- a flag of `chip`
+ * px starts at its moment (or ends there when it would overflow the right edge), and goes one row up when it would cover the flag
+ * before it in a row; at most `maxRows` rows (then it shares the top row). Flags in time order; returns one place per flag.
+ */
+export function flagPlaces(times: readonly number[], duration: number, width: number, chip: number, maxRows = 3, gap = 4): FlagPlace[] {
+  const rowsEnd: number[] = [];
+  return times.map((at) => {
+    const x = duration > 0 && width > 0 ? Math.max(0, Math.min(width, (at / duration) * width)) : 0;
+    const side: FlagPlace["side"] = x + chip > width ? "end" : "start";
+    const left = side === "start" ? x : Math.max(0, x - chip);
+    let row = rowsEnd.findIndex((end) => end + gap <= left);
+    if (row === -1) row = rowsEnd.length < maxRows ? rowsEnd.length : maxRows - 1;
+    rowsEnd[row] = left + chip;
+    return { left, row, side };
+  });
+}
+
+/**
+ * Owner TG 4844: the player's speeds -- 0.25x and 0.5x for frame checks, 1.25x / 1.5x / 2x / 3x to watch a long review faster (the
+ * audio keeps its pitch).
+ */
+export const PLAYBACK_RATES = [0.25, 0.5, 1, 1.25, 1.5, 2, 3] as const;
+export type PlaybackRate = (typeof PLAYBACK_RATES)[number];
+
+/** `<` / `>`: the next slower or faster speed, staying at the ends of the list; an unknown speed counts as 1x. */
+export function stepRate(rate: number, direction: 1 | -1): PlaybackRate {
+  const index = PLAYBACK_RATES.indexOf(rate as PlaybackRate);
+  const from = index === -1 ? PLAYBACK_RATES.indexOf(1) : index;
+  return PLAYBACK_RATES[Math.max(0, Math.min(PLAYBACK_RATES.length - 1, from + direction))];
+}
+
+/** A remembered speed read back (localStorage text): one of the list, else null (the default applies). */
+export function storedRate(value: string | null): PlaybackRate | null {
+  if (value === null || value.trim() === "") return null;
+  const n = Number(value);
+  return (PLAYBACK_RATES as readonly number[]).includes(n) ? (n as PlaybackRate) : null;
+}
+
+/**
+ * Owner TG 4844: the speed key -- `<` slower, `>` faster. Also by the physical key (Shift + the comma / period key), so it works on a
+ * Russian layout where that key types «Б» / «Ю». Null for any other key.
+ */
+export function rateKeyDirection(event: { key: string; code: string; shiftKey: boolean }): 1 | -1 | null {
+  if (event.key === "<") return -1;
+  if (event.key === ">") return 1;
+  if (!event.shiftKey) return null;
+  if (event.code === "Comma") return -1;
+  if (event.code === "Period") return 1;
+  return null;
+}
+
+/** Owner TG 4856: ← / → seek this many seconds. */
+export const SEEK_KEY_SECONDS = 5;
+
+export type PlayerKeyAction = { kind: "seek"; delta: number } | { kind: "rate"; direction: 1 | -1 } | { kind: "toggle" } | null;
+
+/**
+ * Owner TG 4844 / 4856 and review fix 4: what a key does in a player. Never while typing (an input, a textarea, a select, an editable
+ * element) or with Ctrl / Cmd / Alt. `<` / `>` (any layout) step the speed when the player is full screen or has the focus. Space / K
+ * play and pause in full screen, and -- on a screen that turns the watching keys on (`seekKeys`) -- also when the player has the focus or
+ * is the only video open; ← / → then seek 5 s the same way.
+ */
+export function playerKeyAction(
+  event: { key: string; code: string; shiftKey: boolean; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean },
+  target: { tag: string | null; editable: boolean; role?: string | null },
+  scope: { full: boolean; focused: boolean; alone: boolean; seekKeys: boolean; rendered?: boolean }
+): PlayerKeyAction {
+  if (target.editable || target.tag === "INPUT" || target.tag === "TEXTAREA" || target.tag === "SELECT") return null;
+  // Review 2 #2: a player that is not on screen (its tab hidden) never takes a key.
+  if (scope.rendered === false) return null;
+  if (event.ctrlKey || event.metaKey || event.altKey) return null;
+  const direction = rateKeyDirection(event);
+  if (direction !== null) return scope.full || scope.focused ? { kind: "rate", direction } : null;
+  const watching = scope.full || (scope.seekKeys && (scope.focused || scope.alone));
+  // Review 2 #3: Space / K on a focused control (a button, a switch, a link) is that control's, never the video's.
+  const control = target.tag === "BUTTON" || target.tag === "A" || target.role === "switch";
+  if (event.key === " " || event.key.toLowerCase() === "k" || event.code === "KeyK") return watching && !control ? { kind: "toggle" } : null;
+  if (scope.seekKeys && (event.key === "ArrowLeft" || event.key === "ArrowRight") && (scope.full || scope.focused || scope.alone)) {
+    return { kind: "seek", delta: event.key === "ArrowLeft" ? -SEEK_KEY_SECONDS : SEEK_KEY_SECONDS };
+  }
+  return null;
+}
+
+/** Where a seek lands: kept between 0 and the clip's length (an unknown length only stops at 0). */
+export function seekTarget(current: number, delta: number, duration: number): number {
+  const to = Math.max(0, current + delta);
+  return Number.isFinite(duration) && duration > 0 ? Math.min(duration, to) : to;
+}

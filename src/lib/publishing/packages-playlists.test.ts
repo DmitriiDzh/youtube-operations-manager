@@ -87,3 +87,18 @@ test("AC-PP-06: the quota budget adds 53 units per package playlist (ownership 1
   assert.equal(estimateUploadUnits({ playlist: true, deferredPublishAt: true, packagePlaylists: 2 }), 202 + 106);
   assert.equal(estimateUploadUnits({ playlist: false, deferredPublishAt: false, packagePlaylists: 0 }), 95);
 });
+
+// Both features of one v2 manifest (owner TG 4858/4859 package playlists + owner TG 4846 AC-IS-03 reviewReplies + owner TG
+// 4839/4842 localizations): the fields are independent -- each is kept as written and none makes the others a problem.
+test("AC-PP-07: a v2 package carries playlists, reviewReplies and localizations together", () => {
+  const replies = [{ issueId: "pr_a.1", status: "fixed", text: "cut" }];
+  const localizations = { de: { title: "Langes Video", description: "Text." } };
+  const result = parse({ playlists: ["PLaaaa_1"], reviewReplies: replies, localizations });
+  assert.deepEqual(result.problems, []);
+  assert.deepEqual(result.pkg!.playlists, ["PLaaaa_1"]);
+  assert.deepEqual(result.pkg!.reviewReplies, replies);
+  assert.deepEqual(result.pkg!.localizations, localizations);
+  // A bad playlist list still refuses the package even with valid reviewReplies beside it.
+  const bad = parse({ playlists: ["PLaaaa_1", "PLaaaa_1"], reviewReplies: replies });
+  assert.deepEqual(bad.problems, [{ code: "field_invalid", params: { field: "playlists" } }]);
+});

@@ -1,5 +1,7 @@
 import { DomainError, isDomainError } from "@/lib/shared-domain";
 import type { PackageReviewDecision, PackageReviewDecisionKind, PackageReviewRequired, PackageReviewsSnapshot } from "@/lib/sync-gateway";
+import type { IssueCounts, ReviewIssue } from "./issues";
+import type { DraftTimedComment, IssueAction, IssueReply, TimedComment } from "./timed-comments";
 
 export { DomainError, isDomainError };
 export type { PackageReviewDecision, PackageReviewDecisionKind, PackageReviewRequired, PackageReviewsSnapshot };
@@ -63,6 +65,11 @@ export type PackageReviewItem = {
   decision: "approved" | "returned" | null;
   /** That decision's comment (a return always has one), else null. */
   comment: string | null;
+  /** Owner TG 4817 (AC-TC-09): that decision's timed comments, sorted by time ([] when none). */
+  timedComments: TimedComment[];
+  /** Owner TG 4846 (AC-IS-06): the video's issues across its package versions (with the current package's answers) and their counts. */
+  issues: ReviewIssue[];
+  issueCounts: IssueCounts;
   decidedAt: string | null;
   decidedOn: string | null;
   /** The manifest states the video's `sha256` (without it the package cannot be approved, AC-PR-05). */
@@ -109,11 +116,19 @@ export type ReviewPackage = {
   uploaded: boolean;
   /** BL-265: the YouTube video id from the upload record, else null. */
   videoId?: string | null;
+  /** Owner TG 4846 (AC-IS-03): the manifest's `reviewReplies`, read leniently (absent: none). */
+  reviewReplies?: IssueReply[];
   /** Problem codes of the scan other than this module's own. */
   otherProblems: string[];
 };
 
 export type ReviewPackagesResult = { status: "ok"; packages: ReviewPackage[] } | { status: "no_workspace" | "workspace_unavailable" };
+
+/**
+ * Owner TG 4817 (AC-TC-03): the owner's draft of timed comments for one package on this computer -- device-local, never synced,
+ * cleared once a decision carrying them is stored. `updatedAt` null: no draft.
+ */
+export type PackageReviewDraft = { manifestSha256: string; comments: DraftTimedComment[]; /** Owner TG 4846: actions on existing issues. */ issueActions: IssueAction[]; updatedAt: string | null };
 
 /** A local file the media routes stream (absolute path, size, browser type). */
 export type PackageMediaFile = { path: string; bytes: number; type: string };

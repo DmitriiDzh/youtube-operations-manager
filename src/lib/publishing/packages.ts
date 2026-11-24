@@ -86,6 +86,11 @@ export type ReleasePackage = {
    * the video to besides the settings playlist; each must be the channel's own (checked at the playlist step). Absent: none.
    */
   playlists?: string[];
+  /**
+   * Owner TG 4846 (PACKAGE_REVIEW_PLAN.md AC-IS-03): v2 `reviewReplies` as written -- the factory's answers to the owner's review issues. Kept
+   * raw: the package-reviews rule reads it (leniently); it is never a package problem.
+   */
+  reviewReplies?: unknown;
 };
 
 /** Why a package cannot be uploaded; `params` fill the interface text (`publishingPackages.problem.<code>`). */
@@ -228,6 +233,7 @@ export function parseReleasePackage(raw: unknown): { pkg: ReleasePackage | null;
       thumbnails,
       captions,
       ...(playlists ? { playlists } : {}),
+      ...(v2 && raw.reviewReplies !== undefined ? { reviewReplies: raw.reviewReplies } : {}),
     },
     problems: [],
   };

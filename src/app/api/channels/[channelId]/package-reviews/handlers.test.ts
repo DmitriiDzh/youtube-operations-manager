@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { DomainError } from "@/lib/shared-domain";
-import { createPackageReviewRouteHandlers, type PackageReviewRouteDeps } from "./handlers";
+import { createPackageReviewAlertsHandler, createPackageReviewRouteHandlers, type PackageReviewRouteDeps } from "./handlers";
 
 // BL-257 (PACKAGE_REVIEW_PLAN.md AC-PR-08 / AC-PR-09 / AC-PR-15; AGENTS.md §F): the owner's package-review routes need a Web session
 // (401) and the ACTIVE channel (403); the media go only to the owner's browser (403 otherwise) and honour HTTP Range (RFC 9110 §14:
@@ -32,6 +32,17 @@ function make(options: { session?: { user: { id: string } } | null; refuse?: Dom
         return { decision: {} as never, view: {} as never };
       },
       mediaFile: async (...args) => (calls.push(["media", ...args]), options.file ?? null),
+      waiting: async (...args) => (calls.push(["waiting", ...args]), 0),
+      draft: async (...args) => {
+        calls.push(["draft", ...args]);
+        if (options.refuse) throw options.refuse;
+        return { manifestSha256: MANIFEST, comments: [], issueActions: [], updatedAt: null };
+      },
+      saveDraft: async (...args) => {
+        calls.push(["saveDraft", ...args]);
+        if (options.refuse) throw options.refuse;
+        return { manifestSha256: MANIFEST, comments: [], issueActions: [], updatedAt: null };
+      },
     }),
     isOwnerBrowser: () => options.ownerBrowser ?? true,
   };
@@ -87,4 +98,55 @@ test("AC-PR-09: the video streams the package's file with Range 206 (exact bytes
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("AC-TC-04: the draft routes need the session and the active channel; they pass the channel, the manifest and the body; a package of another channel is 404", async () => {
+  const anonymous = make({ session: null });
+  assert.equal((await anonymous.handlers.draft(req("GET", `?manifest=${MANIFEST}`), ctx("UC_active"))).status, 401);
+  assert.equal((await anonymous.handlers.saveDraft(req("PUT", "", {}, { manifestSha256: MANIFEST, comments: [] }), ctx("UC_active"))).status, 401);
+  const other = make();
+  assert.equal((await other.handlers.draft(req("GET", `?manifest=${MANIFEST}`), ctx("UC_other"))).status, 403);
+  assert.equal((await other.handlers.saveDraft(req("PUT", "", {}, { manifestSha256: MANIFEST, comments: [] }), ctx("UC_other"))).status, 403);
+  assert.deepEqual([...anonymous.calls, ...other.calls], []);
+  const { handlers, calls } = make();
+  const body = { manifestSha256: MANIFEST, comments: [{ id: "c1", atSeconds: 12.5, text: "cut here" }] };
+  assert.equal((await handlers.draft(req("GET", `?manifest=${MANIFEST}`), ctx("UC_active"))).status, 200);
+  assert.equal((await handlers.saveDraft(req("PUT", "", {}, body), ctx("UC_active"))).status, 200);
+  assert.deepEqual(calls, [["draft", "UC_active", MANIFEST], ["saveDraft", "UC_active", body]]);
+  const missing = make({ refuse: new DomainError({ code: "package_review_not_found", message: "no" }) });
+  const res = await missing.handlers.draft(req("GET", `?manifest=${MANIFEST}`), ctx("UC_active"));
+  assert.equal(res.status, 404);
+  assert.equal((await res.json()).error, "package_review_not_found");
+});
+
+// Fix (owner report 2026-11-24, WWE V31/V32 waited unseen): `GET /api/package-review-alerts` -- a session is required (401, nothing
+// read); every connected channel is asked, the active one named, only channels with something waiting listed; one channel that cannot
+// be read never hides the others (the storyboard alerts' rule).
+test("package-review alerts: 401 without a session; per connected channel the waiting count, a failing channel skipped", async () => {
+  const asked: string[] = [];
+  const make = (session: { user: { id: string } } | null) =>
+    createPackageReviewAlertsHandler({
+      getSession: async () => session,
+      activeChannelId: async () => "UC_wwe",
+      connectedChannelIds: async () => ["UC_wwe", "UC_other", "UC_broken", "UC_quiet"],
+      service: () => ({
+        waiting: async (channelId) => {
+          asked.push(channelId);
+          if (channelId === "UC_broken") throw new Error("unreadable");
+          return channelId === "UC_wwe" ? 2 : channelId === "UC_other" ? 1 : 0;
+        },
+      }),
+    });
+  assert.equal((await make(null)()).status, 401);
+  assert.deepEqual(asked, []);
+  const response = await make({ user: { id: "owner" } })();
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    activeChannelId: "UC_wwe",
+    channels: [
+      { channelId: "UC_wwe", waiting: 2 },
+      { channelId: "UC_other", waiting: 1 },
+    ],
+  });
+  assert.deepEqual(asked.sort(), ["UC_broken", "UC_other", "UC_quiet", "UC_wwe"]);
 });

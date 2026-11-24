@@ -563,6 +563,8 @@ export type VideoSyncMetadata = {
   durationSeconds: number | null;
   /** `snippet.liveBroadcastContent` as returned by the sync read ("none" | "live" | "upcoming"); `null` when absent. */
   liveBroadcastContent: string | null;
+  /** FO-REQ-0056: `snippet.tags` as YouTube returned them (order and spelling kept); `[]` when the video has none. */
+  tags: string[];
   publishAt: string | null;
 };
 
@@ -664,6 +666,8 @@ export async function getVideosMetadataContextBatch(
         durationSeconds: parseIso8601DurationToSeconds(item.contentDetails?.duration),
         // Operator request 2026-10-04: already in the `snippet` part this read requests, no extra cost.
         liveBroadcastContent: item.snippet.liveBroadcastContent ?? null,
+        // FO-REQ-0056: also in the `snippet` part already requested (no extra cost); YouTube omits the field when there are none.
+        tags: item.snippet.tags ?? [],
         // Owner instruction, 2026-09-26: YouTube's own scheduled-publish time for a still-private
         // video (distinct from `snippet.publishedAt` above, which reflects when a PUBLIC video
         // actually went live). Already present in this same response -- `part: ["status", ...]`

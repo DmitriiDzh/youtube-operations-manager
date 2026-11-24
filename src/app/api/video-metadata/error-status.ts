@@ -306,6 +306,8 @@ const DOMAIN_ERROR_STATUS = {
   package_review_video_mismatch: 409,
   package_review_thumbnail_missing: 409,
   package_review_workspace_unavailable: 409,
+  package_review_draft_changed: 409,
+  package_review_issue_unknown: 409,
   // BL-246 (ADR 0065): the owner's comment attachments.
   clip_attachment_too_many: 422,
   clip_attachment_too_large: 413,
@@ -338,6 +340,7 @@ const DOMAIN_ERROR_STATUS = {
   video_missing: 404,
   upload_steps_pending: 409,
   package_metadata_conflict: 409,
+  package_localizations_conflict: 409,
   package_metadata_manifest_changed: 409,
   captions_invalid: 400,
   captions_missing: 400,

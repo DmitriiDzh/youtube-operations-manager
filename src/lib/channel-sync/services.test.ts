@@ -98,6 +98,7 @@ function createFakeStore() {
         commentCount: number | null;
         likeCount: number | null;
         durationSeconds: number | null;
+        tags?: string[];
         publishAt: string | null;
       }>,
       syncedAt: Date
@@ -184,6 +185,8 @@ function createServicesFixture(
           commentCount: 10,
           likeCount: 20,
           durationSeconds: 630,
+          // FO-REQ-0056: v1 carries tags (order and a duplicate kept as YouTube gave them); every other video has none.
+          tags: videoId === "v1" ? ["tropico jazz", "Smooth Jazz", "tropico jazz"] : [],
           publishAt: null,
         }));
       },
@@ -276,6 +279,41 @@ test("listSyncedVideos returns each video's stored duration and live status, als
   assert.deepEqual([listed.videos[0]?.durationSeconds, listed.videos[0]?.liveBroadcastContent], [630, null]);
   const slim = await services.listSyncedVideos({ credentialRef: { userId: "user-1" }, channelId: synced.channel.channelId, fields: ["durationSeconds", "liveBroadcastContent"] });
   assert.deepEqual(slim.videos[0], { videoId: "v1", durationSeconds: 630, liveBroadcastContent: null });
+});
+
+// FO-REQ-0056 part 2: channel_video_list carries each video's live YouTube tags as of the last sync -- a list of strings, [] when the
+// video has none -- selectable by name in `fields`, and absent when `fields` does not ask for it.
+test("FO-REQ-0056: listSyncedVideos returns each video's tags as synced ([] when none), also as a requested field, never when not asked", async () => {
+  const { services } = createServicesFixture({ videoIds: ["v1", "v2"] });
+  const synced = await services.syncChannel({ credentialRef: { userId: "user-1" } });
+  const channelId = synced.channel.channelId;
+
+  const full = await services.listSyncedVideos({ credentialRef: { userId: "user-1" }, channelId });
+  const byId = new Map(full.videos.map((video) => [video.videoId as string, video]));
+  assert.deepEqual(byId.get("v1")?.tags, ["tropico jazz", "Smooth Jazz", "tropico jazz"]);
+  assert.deepEqual(byId.get("v2")?.tags, []);
+
+  const slim = await services.listSyncedVideos({ credentialRef: { userId: "user-1" }, channelId, fields: ["tags"], videoIds: ["v2", "v1"] });
+  assert.deepEqual(slim.videos, [
+    { videoId: "v2", tags: [] },
+    { videoId: "v1", tags: ["tropico jazz", "Smooth Jazz", "tropico jazz"] },
+  ]);
+
+  const withoutTags = await services.listSyncedVideos({ credentialRef: { userId: "user-1" }, channelId, fields: ["title"] });
+  for (const video of withoutTags.videos) assert.equal("tags" in video, false);
+});
+
+test("FO-REQ-0056: a stored video read before tags were stored lists tags as null (unknown), never as [] (no tags)", async () => {
+  const { services, store } = createServicesFixture({ videoIds: ["v1"] });
+  const synced = await services.syncChannel({ credentialRef: { userId: "user-1" } });
+  const channelId = synced.channel.channelId;
+  // A row written by a build before FO-REQ-0056 has no tags at all.
+  for (const video of store.videos.get(channelId) ?? []) delete (video as { tags?: unknown }).tags;
+
+  const full = await services.listSyncedVideos({ credentialRef: { userId: "user-1" }, channelId });
+  assert.equal(full.videos[0]?.tags, null);
+  const slim = await services.listSyncedVideos({ credentialRef: { userId: "user-1" }, channelId, fields: ["tags"] });
+  assert.deepEqual(slim.videos[0], { videoId: "v1", tags: null });
 });
 
 test("syncChannel re-sync replaces prior video rows for the same channel without duplication", async () => {
