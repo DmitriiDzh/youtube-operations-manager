@@ -81,7 +81,15 @@
 // 1.31.0 (BL-274, owner TG 4839/4842, ADR 0072 amendment 1): producer_video_metadata_update takes `localizations: true` -- the package's current
 // translations onto its uploaded video (per-language three-way check, any conflict refuses, nothing removed, dryRun), through the
 // shared video translations writer. Additive; no tool added.
-export const PRODUCER_API_VERSION = "1.31.0";
+// 1.32.0 (owner TG 4817, PACKAGE_REVIEW_PLAN.md AC-TC-08): producer_publishing_plan_get / _list -- a slot's package gains
+// reviewTimedComments [{ atSeconds, time, text }] (the comments the owner bound to moments of the video in package review, sent with
+// his standing approval or return), and the wake file REVIEW-DECISION-package-<video>-<decisionId>.md gains the section «Timed
+// comments» (one line per comment: `<seconds> s (<m:ss>): <text>`; absent when none); owner TG 4836: an approval may carry notes for
+// future videos (non-blocking) -- the wake file says «Notes: Одобрено с замечаниями на будущее», the plan package reviewComment with
+// reviewCommentKind approved_notes (returned | returned_timed for a return); owner TG 4846: reviewIssues + reviewIssueCounts on the
+// plan's package and the wake file section «Issues» (each owner comment an issue with an id; the factory answers in the next
+// package's reviewReplies). Additive; no tool added.
+export const PRODUCER_API_VERSION = "1.32.0";
 
 /** The channel agent's READ tools the Producer gets; each call names its channel and runs in that channel's agent scope. */
 export const PRODUCER_CHANNEL_TOOLS: Readonly<Record<string, { capability: string }>> = Object.freeze({

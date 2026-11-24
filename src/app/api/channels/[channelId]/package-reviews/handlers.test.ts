@@ -33,6 +33,16 @@ function make(options: { session?: { user: { id: string } } | null; refuse?: Dom
       },
       mediaFile: async (...args) => (calls.push(["media", ...args]), options.file ?? null),
       waiting: async (...args) => (calls.push(["waiting", ...args]), 0),
+      draft: async (...args) => {
+        calls.push(["draft", ...args]);
+        if (options.refuse) throw options.refuse;
+        return { manifestSha256: MANIFEST, comments: [], issueActions: [], updatedAt: null };
+      },
+      saveDraft: async (...args) => {
+        calls.push(["saveDraft", ...args]);
+        if (options.refuse) throw options.refuse;
+        return { manifestSha256: MANIFEST, comments: [], issueActions: [], updatedAt: null };
+      },
     }),
     isOwnerBrowser: () => options.ownerBrowser ?? true,
   };
@@ -88,6 +98,25 @@ test("AC-PR-09: the video streams the package's file with Range 206 (exact bytes
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("AC-TC-04: the draft routes need the session and the active channel; they pass the channel, the manifest and the body; a package of another channel is 404", async () => {
+  const anonymous = make({ session: null });
+  assert.equal((await anonymous.handlers.draft(req("GET", `?manifest=${MANIFEST}`), ctx("UC_active"))).status, 401);
+  assert.equal((await anonymous.handlers.saveDraft(req("PUT", "", {}, { manifestSha256: MANIFEST, comments: [] }), ctx("UC_active"))).status, 401);
+  const other = make();
+  assert.equal((await other.handlers.draft(req("GET", `?manifest=${MANIFEST}`), ctx("UC_other"))).status, 403);
+  assert.equal((await other.handlers.saveDraft(req("PUT", "", {}, { manifestSha256: MANIFEST, comments: [] }), ctx("UC_other"))).status, 403);
+  assert.deepEqual([...anonymous.calls, ...other.calls], []);
+  const { handlers, calls } = make();
+  const body = { manifestSha256: MANIFEST, comments: [{ id: "c1", atSeconds: 12.5, text: "cut here" }] };
+  assert.equal((await handlers.draft(req("GET", `?manifest=${MANIFEST}`), ctx("UC_active"))).status, 200);
+  assert.equal((await handlers.saveDraft(req("PUT", "", {}, body), ctx("UC_active"))).status, 200);
+  assert.deepEqual(calls, [["draft", "UC_active", MANIFEST], ["saveDraft", "UC_active", body]]);
+  const missing = make({ refuse: new DomainError({ code: "package_review_not_found", message: "no" }) });
+  const res = await missing.handlers.draft(req("GET", `?manifest=${MANIFEST}`), ctx("UC_active"));
+  assert.equal(res.status, 404);
+  assert.equal((await res.json()).error, "package_review_not_found");
 });
 
 // Fix (owner report 2026-11-24, WWE V31/V32 waited unseen): `GET /api/package-review-alerts` -- a session is required (401, nothing

@@ -71,7 +71,8 @@ test("merge numbering: the current schema is 90 with both branches' tables", asy
   // v123: BL-252 social_post_jobs.owner_retry_at (ADR 0068 amendment 2, owner TG 4780: a new additive migration, not a renumbering).
   // v124: producer_call_log.target + details_json (owner TG 4782 review: renumbered from v123 at the merge after BL-252's owner_retry_at).
   // v125: FO-REQ-0056 videos.tags_json (BL-273; renumbered from v123 at the merge after v123 owner_retry_at and v124 producer_call_log).
-  assert.equal(SCHEMA_CURRENT_VERSION, 125);
+  // v126: owner TG 4817 package_review_drafts (PACKAGE_REVIEW_PLAN.md AC-TC-03; renumbered from v124 at the merge after v124 producer_call_log and v125 videos.tags_json).
+  assert.equal(SCHEMA_CURRENT_VERSION, 126);
   await withDb(async (client) => {
     await initializeDatabaseSchema(client);
     const t = await tables(client);

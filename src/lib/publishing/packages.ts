@@ -77,6 +77,11 @@ export type ReleasePackage = {
   thumbnails?: PackageThumbnail[];
   /** BL-269: v2 `captions` as written (null: none; the rules are `captionsProblems`'). */
   captions?: PackageCaption[] | null;
+  /**
+   * Owner TG 4846 (PACKAGE_REVIEW_PLAN.md AC-IS-03): v2 `reviewReplies` as written -- the factory's answers to the owner's review issues. Kept
+   * raw: the package-reviews rule reads it (leniently); it is never a package problem.
+   */
+  reviewReplies?: unknown;
 };
 
 /** Why a package cannot be uploaded; `params` fill the interface text (`publishingPackages.problem.<code>`). */
@@ -212,6 +217,7 @@ export function parseReleasePackage(raw: unknown): { pkg: ReleasePackage | null;
       containsSyntheticMedia,
       thumbnails,
       captions,
+      ...(v2 && raw.reviewReplies !== undefined ? { reviewReplies: raw.reviewReplies } : {}),
     },
     problems: [],
   };

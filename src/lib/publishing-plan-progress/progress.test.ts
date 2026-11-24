@@ -313,3 +313,73 @@ test("AC-WT-41: mediaReviewReaderOf -- not_required, approved, pending, returned
   });
   assert.equal(broken(key), "unreadable");
 });
+
+// Owner TG 4817 (PACKAGE_REVIEW_PLAN.md AC-TC-08): the plan's package carries the timed comments of the owner's standing decision
+// (approved or returned, also on a channel without the gate) as [{ atSeconds, time 'm:ss', text }]; none -> no field.
+test("AC-TC-08: the standing decision's timed comments reach the plan's package as reviewTimedComments; none -> absent", async () => {
+  const { mediaReviewReaderOf } = await import("./index");
+  const key = { manifestSha256: "a".repeat(64), video: "V1", videoSha256: "1".repeat(64), videoSizeBytes: 1000 };
+  const decision = { id: "d1", kind: "returned", video: "V1", manifestSha256: "a".repeat(64), videoSha256: "1".repeat(64), videoSizeBytes: 1000, by: "owner", device: null, at: "2026-11-24T10:00:00Z", seq: 1, comment: "0:12 cut", timedComments: [{ atSeconds: 12.3, text: "cut" }, { atSeconds: 3725, text: "too loud" }] };
+  const expected = [
+    { atSeconds: 12.3, time: "0:12", text: "cut" },
+    { atSeconds: 3725, time: "1:02:05", text: "too loud" },
+  ];
+  for (const required of [true, false]) {
+    const reader = await mediaReviewReaderOf("UC", async () => ({ required, decisions: [decision], aliases: new Map() }) as never);
+    assert.deepEqual(reader.timedComments?.(key), expected, `gate ${required ? "on" : "off"}`);
+    assert.deepEqual(reader.timedComments?.({ ...key, manifestSha256: "c".repeat(64), videoSha256: "2".repeat(64) }), [], "another mp4: none");
+  }
+  const reviewOf = Object.assign(() => "returned" as const, { timedComments: () => expected });
+  const withComments = progressOfSlots([scanned("V1", "s1", { manifestSha256: "a".repeat(64) }, { sha256: "1".repeat(64), sizeBytes: 1000 })], ["s1"], false, [], reviewOf);
+  assert.deepEqual(withComments.get("s1")?.package?.reviewTimedComments, expected);
+  const without = progressOfSlots([scanned("V1", "s1")], ["s1"], false, [], Object.assign(() => "approved" as const, { timedComments: () => [] }));
+  assert.equal(without.get("s1")?.package && "reviewTimedComments" in without.get("s1")!.package!, false);
+});
+
+// Owner TG 4846 (AC-IS-07): the plan's package carries the video's issues (any package version) with this package's own answers
+// (pending: at null) and the counts; none -> no fields.
+test("AC-IS-07: reviewIssues and reviewIssueCounts on the plan's package", async () => {
+  const { mediaReviewReaderOf } = await import("./index");
+  const ret = { id: "pr_1", kind: "returned", video: "V1", manifestSha256: "c".repeat(64), videoSha256: "9".repeat(64), videoSizeBytes: 5, by: "owner", device: null, at: "2026-11-24T10:00:00Z", seq: 1, comment: "0:03 black frame", timedComments: [{ atSeconds: 3, text: "black frame", id: "pr_1.1" }] };
+  const reader = await mediaReviewReaderOf("UC", async () => ({ required: true, decisions: [ret], aliases: new Map() }) as never);
+  // The re-packaged V1 (another manifest and mp4) answers in its manifest.
+  const pkgOver = { sha256: "1".repeat(64), sizeBytes: 1000, reviewReplies: [{ issueId: "pr_1.1", status: "fixed", text: "cut", atSeconds: 2.5 }] };
+  const p = progressOfSlots([scanned("V1", "s1", { manifestSha256: "a".repeat(64) }, pkgOver)], ["s1"], false, [], reader).get("s1")?.package;
+  assert.deepEqual(p?.reviewIssueCounts, { open: 1, resolved: 0, noted: 0 });
+  assert.deepEqual(p?.reviewIssues, [
+    {
+      id: "pr_1.1",
+      atSeconds: 2.5,
+      time: "0:02",
+      state: "open",
+      thread: [
+        { by: "owner", kind: "opened", text: "black frame", at: "2026-11-24T10:00:00Z" },
+        { by: "agent", status: "fixed", text: "cut", atSeconds: 2.5, time: "0:02", at: null },
+      ],
+    },
+  ]);
+  const none = progressOfSlots([scanned("V2", "s2")], ["s2"], false, [], reader).get("s2")?.package;
+  assert.equal(none && "reviewIssues" in none, false);
+});
+
+// Owner TG 4836: the standing approval's comment reaches the plan's package as reviewComment with reviewCommentKind approved_notes
+// (non-blocking notes for future videos); a return keeps kind returned, or returned_timed when its comment is only the timed comments
+// written out (review fix 7). No comment: neither field.
+test("TG 4836: reviewComment / reviewCommentKind for approval notes, returns and generated returns", async () => {
+  const { mediaReviewReaderOf } = await import("./index");
+  const key = { manifestSha256: "a".repeat(64), video: "V1", videoSha256: "1".repeat(64), videoSizeBytes: 1000 };
+  const approval = { id: "d1", kind: "approved", video: "V1", manifestSha256: "a".repeat(64), videoSha256: "1".repeat(64), videoSizeBytes: 1000, by: "owner", device: null, at: "2026-11-24T10:00:00Z", seq: 1, comment: "next time a shorter intro" };
+  const reader = await mediaReviewReaderOf("UC", async () => ({ required: true, decisions: [approval], aliases: new Map() }) as never);
+  assert.equal(reader.approvalComment?.(key), "next time a shorter intro");
+  const pkgOver = { sha256: "1".repeat(64), sizeBytes: 1000 };
+  const approved = progressOfSlots([scanned("V1", "s1", { manifestSha256: "a".repeat(64) }, pkgOver)], ["s1"], false, [], reader);
+  assert.deepEqual([approved.get("s1")?.package?.reviewComment, approved.get("s1")?.package?.reviewCommentKind], ["next time a shorter intro", "approved_notes"]);
+  const plain = await mediaReviewReaderOf("UC", async () => ({ required: true, decisions: [{ ...approval, comment: null }], aliases: new Map() }) as never);
+  const none = progressOfSlots([scanned("V1", "s1", { manifestSha256: "a".repeat(64) }, pkgOver)], ["s1"], false, [], plain).get("s1")?.package;
+  assert.deepEqual([none?.reviewComment, none?.reviewCommentKind], [undefined, undefined]);
+  const returned = (comment: string, timed: Array<{ atSeconds: number; time: string; text: string }>) =>
+    progressOfSlots([scanned("V1", "s1", { state: "not_ready", problems: [{ code: "owner_review_returned", params: { comment } }] })], ["s1"], false, [], Object.assign(() => "returned" as const, { timedComments: () => timed })).get("s1")?.package;
+  const timed = [{ atSeconds: 3, time: "0:03", text: "black frame" }];
+  assert.equal(returned("redo the ending", timed)?.reviewCommentKind, "returned");
+  assert.deepEqual([returned("0:03 black frame", timed)?.reviewComment, returned("0:03 black frame", timed)?.reviewCommentKind], ["0:03 black frame", "returned_timed"]);
+});

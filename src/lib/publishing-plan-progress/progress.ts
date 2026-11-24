@@ -2,10 +2,18 @@
 // composition between `publishing` (the scan) and `publishing-plans` (the plan), so neither feature module imports the other. Pure:
 // the scanned packages and the channel's AI-flag setting come in; the slot statuses go out.
 
-import type { PlanMediaReview, PlanSlotProgress } from "@/lib/publishing-plans";
+import type { PlanMediaReview, PlanReviewIssue, PlanSlotProgress } from "@/lib/publishing-plans";
 
 /** BL-267 (plan §3.4): the owner's media review of a package by its key, as the composition computes it (package-reviews' rule). */
-export type MediaReviewOf = (key: { manifestSha256: string | null; video: string; videoSha256: string | null; videoSizeBytes: number | null }) => PlanMediaReview;
+export type MediaReviewKey = { manifestSha256: string | null; video: string; videoSha256: string | null; videoSizeBytes: number | null };
+export type MediaReviewOf = ((key: MediaReviewKey) => PlanMediaReview) & {
+  /** Owner TG 4817 (AC-TC-08): the timed comments of the owner's standing decision on this package ([] when none). */
+  timedComments?: (key: MediaReviewKey) => Array<{ atSeconds: number; time: string; text: string }>;
+  /** Owner TG 4836: the general comment of the owner's standing APPROVAL (notes for future videos), else null. */
+  approvalComment?: (key: MediaReviewKey) => string | null;
+  /** Owner TG 4846 (AC-IS-07): the video's issues across its package versions, with this package's raw `reviewReplies`. */
+  issues?: (video: string, rawReplies: unknown, manifestSha256: string | null) => { issues: PlanReviewIssue[]; counts: { open: number; resolved: number; noted: number } };
+};
 import { uploadTimeOf, VIDEO_DELETED_ON_YOUTUBE } from "@/lib/shared-video-presence";
 import type { ScannedPackage } from "@/lib/publishing";
 
@@ -53,11 +61,19 @@ export function progressOfPackage(scanned: ScannedPackage, channelSyntheticMedia
   }
   if (!status) return null;
   const videoSha256 = typeof pkg.sha256 === "string" ? pkg.sha256.toLowerCase() : null;
+  const reviewKey = { manifestSha256: scanned.manifestSha256, video: pkg.video, videoSha256, videoSizeBytes: pkg.sizeBytes ?? null };
+  const timed = reviewOf?.timedComments?.(reviewKey) ?? [];
+  const issues = reviewOf?.issues?.(pkg.video, pkg.reviewReplies, scanned.manifestSha256) ?? null;
+  // BL-257: a return's comment (gate on); owner TG 4836: else the standing approval's notes for future videos.
+  const returnComment = reviewCommentOf(scanned);
+  // Review 2 #8: a comment written from the timed comments and follow-ups is marked so by the gate (`generated: 1`).
+  const returnGenerated = scanned.problems.find((p) => p.code === "owner_review_returned")?.params?.generated === 1;
+  const approvalNotes = returnComment === null ? (reviewOf?.approvalComment?.(reviewKey) ?? null) : null;
   return {
     status,
     code,
     // BL-267 (plan §3.4): the media key and the owner's review of it, for uploaded packages too (absent without a review reader).
-    ...(reviewOf ? { media: { videoSha256, sizeBytes: pkg.sizeBytes ?? null, review: reviewOf({ manifestSha256: scanned.manifestSha256, video: pkg.video, videoSha256, videoSizeBytes: pkg.sizeBytes ?? null }) } } : {}),
+    ...(reviewOf ? { media: { videoSha256, sizeBytes: pkg.sizeBytes ?? null, review: reviewOf(reviewKey) } } : {}),
     videoId: scanned.youtube?.videoId ?? null,
     publishAt: code === null ? (scanned.youtube?.publishAt ?? null) : null,
     package: {
@@ -78,7 +94,13 @@ export function progressOfPackage(scanned: ScannedPackage, channelSyntheticMedia
       // BL-242 (ADR 0062 §2): part of what the owner approves in the `packaged` stage.
       manifestSha256: scanned.manifestSha256,
       // BL-257 (ADR 0070): the owner's return comment from package review, for the slot's status line (only when returned).
-      ...(reviewCommentOf(scanned) !== null ? { reviewComment: reviewCommentOf(scanned) } : {}),
+      // Review fix 7: a return whose comment is only its timed comments written out says so (`returned_timed`: read reviewTimedComments).
+      ...(returnComment !== null ? { reviewComment: returnComment, reviewCommentKind: returnGenerated || (timed.length > 0 && returnComment === timed.map((c) => `${c.time} ${c.text}`).join("\n")) ? ("returned_timed" as const) : ("returned" as const) } : {}),
+      ...(approvalNotes ? { reviewComment: approvalNotes, reviewCommentKind: "approved_notes" as const } : {}),
+      // Owner TG 4817 (AC-TC-08): the owner's timed comments of his standing decision, only when there are some.
+      ...(timed.length > 0 ? { reviewTimedComments: timed } : {}),
+      // Owner TG 4846 (AC-IS-07): the issues with their threads and counts, only when there are some.
+      ...(issues && issues.issues.length > 0 ? { reviewIssues: issues.issues, reviewIssueCounts: issues.counts } : {}),
     },
   };
 }

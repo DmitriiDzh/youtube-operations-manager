@@ -194,3 +194,15 @@ test("AC-MG-13: chapters are warnings (the package stays without blocking proble
   assert.deepEqual(blocking({}, { sameTitleVideoId: "vid1" }), ["same_title_on_channel"]);
   assert.deepEqual(blocking({ ready: false }), ["factory_not_ready"]);
 });
+
+// Owner TG 4846 (PACKAGE_REVIEW_PLAN.md AC-IS-03): v2 `reviewReplies` is passed through as written -- never a problem, even malformed;
+// a v1 manifest does not carry it.
+test("AC-IS-03: reviewReplies passes through a v2 manifest untouched and never makes a problem", () => {
+  const replies = [{ issueId: "pr_a.1", status: "fixed", text: "cut" }, "garbage"];
+  const v2 = parseReleasePackage({ ...MANIFEST, schema: "yt-release-package/2", slotId: null, reviewReplies: replies });
+  assert.deepEqual(v2.problems, []);
+  assert.deepEqual(v2.pkg?.reviewReplies, replies);
+  const odd = parseReleasePackage({ ...MANIFEST, schema: "yt-release-package/2", slotId: null, reviewReplies: "not a list" });
+  assert.deepEqual(odd.problems, []);
+  assert.equal(parseReleasePackage({ ...MANIFEST, reviewReplies: replies }).pkg?.reviewReplies, undefined);
+});

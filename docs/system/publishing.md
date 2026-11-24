@@ -103,6 +103,15 @@
 - **Агенты:** только читают коды проблем (Producer API 1.21.0, Agent API 4.19.0, Factory API 1.46.0); файл пробуждения Продюсера
   `REVIEW-DECISION-package-<video>-<decisionId>.md`. Ни один MCP-путь не решает и не переключает (`package-reviews/boundaries.test.ts`).
   Это не писатель YouTube.
+- **Комментарии по времени (owner TG 4817, AC-TC-01..09) — IMPLEMENTED на ветке** `feature/video-review-timed-comments`: экран на общем
+  `MediaVideoPlayer` (крупно, звук, без автозапуска и петли, `preload="metadata"`, во весь экран) + `package-review-workspace.tsx`; клик в
+  поле ставит паузу и берёт момент, комментарий — флажок на шкале и строка списка (правка, удаление). Черновик — на сервере, локально
+  (таблица `package_review_drafts`, схема 126, маршрут `…/package-reviews/draft`); уходит одной пачкой с «Одобрить»/«Вернуть»
+  (`timedComments` решения). Одобрение может нести общий комментарий — замечания на будущее (owner TG 4836), в т.ч. «Одобрить ещё раз с замечаниями» для одобренного видео. Агенты: раздел «Timed comments» и строка «Notes: Одобрено с замечаниями на будущее» в файле пробуждения, `reviewTimedComments`, `reviewComment` + `reviewCommentKind` (returned / returned_timed / approved_notes) пакета слота плана
+  (Factory 1.56.0, Agent 4.29.0, Producer 1.32.0). Замечания (owner TG 4846): каждый комментарий — замечание с id, живущее между
+  версиями пакета (канал + код видео); фабрика отвечает полем `reviewReplies` нового манифеста, владелец принимает («Исправлено,
+  принимаю») или уточняет — уходит со следующим решением; агенты читают раздел «Issues» и `reviewIssues`. Скорости 0.25–3×,
+  ← → 5 с, пробел, < > (TG 4844/4856).
 
 ### 2.9bn Шаблон недели вместо одобрения слотов (BL-267, PRD-REQ-0195 A, ADR 0073, `docs/roadmap/plans/WEEK_TEMPLATE_PLAN.md`) — **IMPLEMENTED на ветке** `feature/bl-267-week-template` (ждёт ревью, текст §F у владельца, разрешения на мердж)
 

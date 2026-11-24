@@ -53,3 +53,22 @@ video: the format differs (a finished episode, not a 5–300 s scene clip).
 
 No schema change (a sync family document). An older build ignores the family: it would not enforce the gate (both computers update
 together).
+
+**Amendment (2026-11-24, owner TG 4817, timed comments; PACKAGE_REVIEW_PLAN.md AC-TC-01..09):** the review screen uses the app's own
+review player (`MediaVideoPlayer`, as the plan review of clips) instead of the native controls, and the owner may bind comments to moments of
+the video. An approval or a return may carry `timedComments [{ atSeconds, text }]` in the synced decision (never a packaging comment); a
+return without a general comment stores them as `m:ss text` lines in `comment`, so an older build still reads the return. The unsent
+draft is device-local: SQLite schema 126 `package_review_drafts` (the first schema change of this feature). Agents read the batch in the
+wake file («Timed comments») and as `reviewTimedComments` of the plan's package (Factory 1.56.0, Agent 4.29.0, Producer 1.32.0).
+Still no YouTube write and no MCP path that decides.
+
+**Amendment (2026-11-24, owner TG 4836):** an approval may carry a general comment as notes for future videos (non-blocking), also as
+a new approval of an already approved video («одобрить ещё раз с замечаниями»; it stays approved). Agents read them as
+`reviewCommentKind: approved_notes` on the plan package and the wake file line «Notes: Одобрено с замечаниями на будущее». No new
+decision kind: older builds read it as an approval.
+
+**Amendment (2026-11-24, owner TG 4846/4848, issues):** each timed comment is an issue (`<decisionId>.<n>`) keyed across package
+versions by the channel's document plus the video code (or its recode alias). The factory answers in the re-packaged manifest
+(`yt-release-package/2` `reviewReplies`, read leniently); the owner's next decision keeps the answers he saw (`repliesSeen`) and his
+per-issue actions (`issueActions`: resolved / follow_up). Agents still only read (wake file «Issues», plan `reviewIssues`); no MCP path
+writes the review document (§4 unchanged).
