@@ -105,7 +105,9 @@ run in parallel with the code. I prepare the texts and the demo video each revie
 - AC-XP-7 After publish the post is read back; the permalink and status are stored; the audit has upload, publish and
   verify events.
 - AC-XP-8 Wrong account: if the connected account is not the one stored for that channel and network, the post is refused
-  (`social_account_mismatch`) — the same fail-closed rule as YouTube channel identity.
+  (`social_account_mismatch`) — the same fail-closed rule as YouTube channel identity. Judged per network (2026-11-23, owner
+  TG 4779, ADR 0068 amendment 2): a problem of one network refuses only that network's posts; a problem of the shared Page token
+  (`token_invalid`, `page_mismatch`) refuses every Meta network.
 - AC-XP-9 Only the computer whose cross-posting switch is on runs jobs; the other one shows the queue read-only.
 - AC-XP-10 Changing the clip file, a caption, the network list, the link or the schedule after approval voids the approval
   (hash mismatch → `social_approval_stale`); nothing is posted until it is approved again.

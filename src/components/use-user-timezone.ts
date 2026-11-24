@@ -17,17 +17,25 @@ function loadUserTimezone(): Promise<string | null> {
 
 /** The configured time zone, or null until loaded / when unavailable (callers then show the browser's local time). */
 export function useUserTimezone(): string | null {
-  const [timezone, setTimezone] = useState<string | null>(null);
+  return useUserTimezoneStatus().timezone;
+}
+
+/**
+ * Owner TG 4784 review (item 5): the zone and whether its read has finished -- `resolved: false` while loading, so a caller can
+ * tell "not known yet" from "not set" (both `timezone: null`).
+ */
+export function useUserTimezoneStatus(): { timezone: string | null; resolved: boolean } {
+  const [status, setStatus] = useState<{ timezone: string | null; resolved: boolean }>({ timezone: null, resolved: false });
   useEffect(() => {
     let alive = true;
     void loadUserTimezone().then((tz) => {
-      if (alive) setTimezone(tz);
+      if (alive) setStatus({ timezone: tz, resolved: true });
     });
     return () => {
       alive = false;
     };
   }, []);
-  return timezone;
+  return status;
 }
 
 /** Called after the operator saves a new timezone, so quota widgets pick it up without a reload. */

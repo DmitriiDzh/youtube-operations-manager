@@ -593,6 +593,7 @@ export const content: Record<keyof typeof en, string> = {
   "videoCostsBackfill.linked": "«{title}»: запуски здесь ({runs}) теперь засчитаны {video}.",
   // BL-225 (WEEKLY_PUBLISHING_PLAN.md stage 1 item 6): Контент → «План недели».
   "weekPlan.loadFailed": "Не удалось загрузить план недели.",
+  "weekPlan.listLoadFailed": "Не удалось прочитать список недель канала.",
   "weekPlan.prevWeek": "Предыдущая неделя",
   "weekPlan.nextWeek": "Следующая неделя",
   "weekPlan.range": "{from} – {to}",
@@ -680,6 +681,7 @@ export const content: Record<keyof typeof en, string> = {
   "weekPlan.action.veto": "Снять слот",
   "weekPlan.action.vetoShort": "Снять",
   "weekPlan.action.restore": "Вернуть",
+  "weekPlan.action.more": "Ещё действия со слотом",
   "weekPlan.action.approve": "Одобрить",
   "weekPlan.action.revoke": "Отозвать",
   "weekPlan.action.approveWeek": "Одобрить неделю",

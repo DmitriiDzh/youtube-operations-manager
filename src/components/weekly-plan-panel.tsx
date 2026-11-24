@@ -1,7 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { ThumbnailReplaceButton } from "./thumbnail-replace";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ThumbnailReplaceDialog } from "./thumbnail-replace";
+import { Popover } from "./popover";
+import { Spinner } from "./operation-progress/spinner";
 import { SlotSocialPreview } from "./slot-social-preview";
 import { OrientationIcon } from "./orientation-icon";
 import { VideoPlayButton } from "./video-popup";
@@ -10,21 +12,25 @@ import { CaptionsActions } from "./package-captions-actions";
 import type { ActiveUpload } from "./plan-extras-model";
 import type { PlanPackageRow } from "./plan-extras";
 import { estimateUploadUnits } from "@/lib/publishing/publish-dates";
-import type { UiTextKey } from "@/lib/ui-text";
+import { translate, UI_LANGUAGES, type UiLanguage, type UiTextKey } from "@/lib/ui-text";
 import { ActionButton, SkeletonLines } from "./busy-feedback";
 import { ConfirmDialog } from "./confirm-dialog";
 import { PublishingCalendar } from "./publishing-calendar";
 import { useT, useUiText } from "./ui-text-provider";
 import { WeekTemplateEditor } from "./week-template-editor";
 import { freePositions, localAndUtc, type TemplateAnswerDto } from "./week-template-model";
-import { useUserTimezone } from "./use-user-timezone";
+import { useUserTimezoneStatus } from "./use-user-timezone";
 import {
+  applyDecisionAnswer,
   canApprove,
   canRetime,
   type DatingState,
   deletedOnYoutube,
   changedField,
-  defaultWeek,
+  channelZoneOf,
+  createWeekLoader,
+  currentWeekStart,
+  weekFromSearch,
   lengthLabel,
   pipelineOf,
   replacedToPull,
@@ -38,7 +44,12 @@ import {
   weekCoverageLine,
   weekDays,
   parseClock,
+  scopedValue,
+  weekIsZoneIndependent,
+  weekScreenOf,
   zonedParts,
+  type LoadedWeek,
+  type Scoped,
   type PipelineStep,
   type PipelineStepState,
   type PlanDto,
@@ -59,6 +70,8 @@ import {
 // date-changing action is one slot behind a dialog that names the exact change; every time shows the owner's own time beside UTC.
 type Mode = "one";
 type View = "week" | "month" | "template";
+/** Review item 5: how long the opening waits for the owner's and the channel's zone near the Sunday/Monday boundary. */
+const OPEN_WAIT_MS = 1_500;
 const VIEW_KEY = "ytom.plan.view";
 
 function readView(): View {
@@ -117,6 +130,24 @@ const STEP_STYLES: Record<PipelineStepState, string> = {
   failed: "border-red-800 bg-red-950/70 text-red-300",
   todo: "border-zinc-800 bg-zinc-900 text-zinc-500",
 };
+// Owner TG 4784: the slot rows share the list's columns (CSS subgrid) -- day, thumbnail, title, the step chain and the buttons, each
+// in its own column, so the chain stands at the same place in every row whatever buttons a row has. Review item 2: a row shows at
+// most its one primary action (restore a pulled slot, or give a slot off the template its date) and «⋯» with the rest, so the
+// reserved button column is narrow enough to sit beside the title and the chain from a 44rem list on (the owner's ~1060 px window);
+// below 64rem the day column and the thumbnail are narrower. A list under 44rem (a phone, a narrow window) keeps the stacked card.
+const ROWS_GRID =
+  "@min-[44rem]:grid @min-[44rem]:grid-cols-[6rem_4rem_minmax(0,1fr)_max-content_max-content] @min-[44rem]:gap-x-2 @min-[64rem]:grid-cols-[7.5rem_6rem_minmax(0,1fr)_max-content_max-content] @min-[64rem]:gap-x-3";
+const ROW_ITEM = "@min-[44rem]:col-span-full @min-[44rem]:grid @min-[44rem]:grid-cols-subgrid";
+const ROW_MAIN = "grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 @min-[44rem]:col-span-full @min-[44rem]:grid-cols-subgrid @min-[44rem]:gap-x-2 @min-[44rem]:gap-y-2 @min-[44rem]:px-3 @min-[64rem]:gap-x-3 @min-[64rem]:px-4";
+const ROW_CHAIN = "col-span-1";
+// On a phone the buttons sit at the end of the chain's line (the day and the title take whole lines above it).
+const ROW_ACTIONS = "col-span-1 flex flex-nowrap items-center justify-end gap-2 self-end @min-[44rem]:self-auto";
+const SIZER_ACTIONS = "hidden flex-col gap-1 @min-[44rem]:col-start-5 @min-[44rem]:flex";
+const THUMB_SIZE = "h-9 w-16 @min-[64rem]:h-[54px] @min-[64rem]:w-24";
+const BUTTON = "whitespace-nowrap rounded-md border border-zinc-600 px-3 py-1 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-40";
+const DATE_BUTTON = "whitespace-nowrap rounded-md bg-violet-600 px-3 py-1 text-sm font-semibold text-white hover:bg-violet-500 disabled:opacity-40";
+const MORE_TRIGGER = "inline-flex h-[30px] w-8 items-center justify-center rounded-md border border-zinc-600 text-sm text-zinc-200 hover:bg-zinc-800";
+const MENU_ITEM = "block w-full whitespace-nowrap rounded-md px-3 py-2 text-left text-sm hover:bg-zinc-800 focus:bg-zinc-800 focus:outline-none disabled:opacity-40";
 const STATE_STYLES: Record<PlanSummaryDto["state"] | "none", string> = {
   awaiting_approval: "bg-amber-500/15 text-amber-300 ring-amber-500/30",
   planned: "bg-sky-500/15 text-sky-300 ring-sky-500/30",
@@ -175,18 +206,32 @@ export function WeeklyPlanPanel({
 }) {
   const t = useT();
   const { language } = useUiText();
-  const ownerZone = useUserTimezone();
-  const [summaries, setSummaries] = useState<PlanSummaryDto[] | null>(null);
+  const { timezone: ownerZone, resolved: ownerZoneResolved } = useUserTimezoneStatus();
+  const base = channelId ? `/api/channels/${encodeURIComponent(channelId)}/publishing-plans` : null;
+  // Owner TG 4784 review (item 1): the channel every answer is kept for (`Scoped`, `LoadedWeek`); an answer arriving after the
+  // channel changed is dropped, and what was kept for another channel is never shown.
+  const baseRef = useRef(base);
+  useEffect(() => {
+    baseRef.current = base;
+  }, [base]);
+  const [list, setList] = useState<Scoped<PlanSummaryDto[]> | null>(null);
+  const summaries = scopedValue(list, base);
   const [week, setWeek] = useState<string | null>(null);
-  const [plan, setPlan] = useState<PlanDto | "none" | null>(null);
-  // BL-235: what YouTube has for the shown week (the shared coverage), next to the approvals; null when unknown.
-  const [coverage, setCoverage] = useState<{ weekStart: string; value: WeekCoverageDto } | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // Owner TG 4784: the read week, always with the channel and the week it is for -- a plan (with BL-235's coverage: what YouTube
+  // has for that week, null when unknown) or «none» (404). The screen shows it only while that channel and week are the selected ones.
+  const [loaded, setLoaded] = useState<LoadedWeek | null>(null);
+  // Owner TG 4784: the owner moved off the week the screen opened on (arrows, a move, a `?week=` link) -- then the opening week is
+  // never recomputed under him.
+  const navigated = useRef(false);
+  // Review item 4: the list read and the week read fail separately -- one succeeding never clears the other's failure.
+  const [listError, setListError] = useState<Scoped<string> | null>(null);
+  const [weekError, setWeekError] = useState<{ base: string; week: string; message: string } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const mode: Mode = "one";
   const [view, setView] = useState<View>("week");
   // BL-267: the week template (ghost rows of free positions); null until read or when unreadable.
-  const [template, setTemplate] = useState<TemplateAnswerDto | null>(null);
+  const [templateRead, setTemplateRead] = useState<Scoped<TemplateAnswerDto | null> | null>(null);
+  const template = scopedValue(templateRead, base);
   // BL-267 (AC-WT-27/28): «Дать дату вне шаблона» waits for its dialog.
   const [confirmDate, setConfirmDate] = useState<PlanSlotDto | null>(null);
   const [confirmVeto, setConfirmVeto] = useState<string | null>(null);
@@ -198,7 +243,7 @@ export function WeeklyPlanPanel({
     setNowMs(Date.now());
     const id = setInterval(() => setNowMs(Date.now()), 30_000);
     return () => clearInterval(id);
-  }, [plan]);
+  }, [loaded]);
   // BL-240 (A): pulled slots sit under one closed row; opening it is for this visit only.
   const [showVetoed, setShowVetoed] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
@@ -213,44 +258,105 @@ export function WeeklyPlanPanel({
     }
   };
 
-  const base = channelId ? `/api/channels/${encodeURIComponent(channelId)}/publishing-plans` : null;
+  // Another channel: nothing the owner had under way on the last one (a busy button, an open editor or confirmation) carries over.
+  useEffect(() => {
+    setBusy(null);
+    setActionError(null);
+    setConfirmVeto(null);
+    setConfirmDate(null);
+    setEditing(null);
+  }, [base]);
 
   const loadList = useCallback(async () => {
     if (!base) return;
+    const sentFor = base;
+    const stillHere = () => baseRef.current === sentFor;
+    // BL-267: the template, for the week's ghost rows (a failed read just shows none) -- read beside the list, not after it.
+    void fetch(`${base}/template`)
+      .then((r) => (r.ok ? (r.json() as Promise<TemplateAnswerDto>) : null))
+      .then((answer) => {
+        if (stillHere()) setTemplateRead({ base: sentFor, value: answer });
+      })
+      .catch(() => {
+        if (stillHere()) setTemplateRead({ base: sentFor, value: null });
+      });
     try {
       const res = await fetch(base);
       if (!res.ok) throw new Error(String(res.status));
       const body = (await res.json()) as { plans: PlanSummaryDto[] };
-      setSummaries(body.plans);
-      // BL-267: the template, for the week's ghost rows (a failed read just shows none).
-      void fetch(`${base}/template`)
-        .then((r) => (r.ok ? (r.json() as Promise<TemplateAnswerDto>) : null))
-        .then((answer) => setTemplate(answer))
-        .catch(() => setTemplate(null));
-      setWeek((current) => current ?? defaultWeek(body.plans, zonedParts(new Date().toISOString(), null).ymd));
-      setError(null);
+      if (!stillHere()) return;
+      setList({ base: sentFor, value: body.plans });
+      setListError(null);
     } catch {
-      setError(t("weekPlan.loadFailed"));
+      if (stillHere()) setListError({ base: sentFor, value: t("weekPlan.listLoadFailed") });
     }
   }, [base, t]);
 
-  const loadPlan = useCallback(async () => {
-    if (!base || !week) return;
-    try {
-      const res = await fetch(`${base}/${week}`);
-      if (res.status === 404) {
-        setPlan("none");
-        return;
-      }
-      if (!res.ok) throw new Error(String(res.status));
-      const body = (await res.json()) as { plan: PlanDto; coverage?: WeekCoverageDto | null };
-      setPlan(body.plan);
-      setCoverage(body.coverage ? { weekStart: body.plan.weekStart, value: body.coverage } : null);
-      setError(null);
-    } catch {
-      setError(t("weekPlan.loadFailed"));
+  // Owner TG 4784 (the view broke when switching weeks): one week read at a time -- the read before is aborted, and an older week's
+  // answer arriving late is dropped instead of replacing the selected week (which left the screen empty until the next minute).
+  const loader = useRef<ReturnType<typeof createWeekLoader<{ plan: PlanDto; coverage: WeekCoverageDto | null } | "none">> | null>(null);
+  useEffect(() => {
+    if (!base) return;
+    const readFor = base;
+    const current = createWeekLoader<{ plan: PlanDto; coverage: WeekCoverageDto | null } | "none">({
+      fetchWeek: async (w, signal) => {
+        const res = await fetch(`${base}/${w}`, { signal });
+        if (res.status === 404) return "none";
+        if (!res.ok) throw new Error(String(res.status));
+        const body = (await res.json()) as { plan: PlanDto; coverage?: WeekCoverageDto | null };
+        return { plan: body.plan, coverage: body.coverage ?? null };
+      },
+      apply: (w, answer) => {
+        setLoaded(answer === "none" ? { base: readFor, week: w, plan: "none", coverage: null } : { base: readFor, week: w, plan: answer.plan, coverage: answer.coverage });
+        setWeekError((kept) => (kept?.base === readFor && kept.week === w ? null : kept));
+      },
+      fail: (w) => setWeekError({ base: readFor, week: w, message: t("weekPlan.loadFailed") }),
+    });
+    loader.current = current;
+    return () => {
+      current.cancel();
+      if (loader.current === current) loader.current = null;
+    };
+  }, [base, t]);
+  const weekRef = useRef(week);
+  useEffect(() => {
+    weekRef.current = week;
+  }, [week]);
+  const loadPlan = useCallback(async (which?: string, fresh = false) => {
+    const w = which ?? weekRef.current;
+    if (w) await loader.current?.load(w, { fresh });
+  }, []);
+
+  // Owner TG 4784: each time the tab opens, the current week -- in the channel's zone (the owner's own zone, else the browser's,
+  // while the plans are unknown); a deliberate `?week=` link keeps its week. Review item 5: away from the Sunday/Monday boundary
+  // the week is the same in every zone, so it is set at once and the week's read runs beside the list's; near it the screen waits
+  // for the owner's zone and the plans (or OPEN_WAIT_MS) instead of jumping from week to week as they arrive.
+  const [openWaitOver, setOpenWaitOver] = useState(false);
+  useEffect(() => {
+    if (!visible) return;
+    const linked = weekFromSearch(window.location.search);
+    navigated.current = linked !== null;
+    setOpenWaitOver(false);
+    if (linked) {
+      setWeek(linked);
+      return;
     }
-  }, [base, week, t]);
+    const id = setTimeout(() => setOpenWaitOver(true), OPEN_WAIT_MS);
+    return () => clearTimeout(id);
+  }, [visible, channelId]);
+  const listSettled = base !== null && (list?.base === base || listError?.base === base);
+  // The zones arrived, the wait ran out, or a minute's list read passed into a new week: the opening week follows them while the
+  // owner has not moved off it.
+  useEffect(() => {
+    if (!visible || navigated.current) return;
+    const now = new Date().toISOString();
+    if (!weekIsZoneIndependent(now) && !openWaitOver && !(ownerZoneResolved && listSettled)) return;
+    setWeek(currentWeekStart(now, channelZoneOf(summaries ?? []) ?? ownerZone));
+  }, [visible, summaries, ownerZone, ownerZoneResolved, listSettled, openWaitOver]);
+  const goToWeek = (next: string) => {
+    navigated.current = true;
+    setWeek(next);
+  };
 
   // While visible: the list and the shown week, then every minute (the agents' saves and the other computer's decisions arrive by
   // sync); a hidden tab reads nothing.
@@ -262,32 +368,44 @@ export function WeeklyPlanPanel({
   }, [visible, loadList]);
   useEffect(() => {
     if (!visible || !week) return;
-    setPlan((current) => (current !== "none" && current?.weekStart === week ? current : null));
-    void loadPlan();
-    const id = setInterval(() => void loadPlan(), 60_000);
+    void loadPlan(week);
+    const id = setInterval(() => void loadPlan(week), 60_000);
     return () => clearInterval(id);
-  }, [visible, week, loadPlan]);
+  }, [visible, week, loadPlan, base]);
 
   async function decide(action: "approve" | "revoke" | "veto" | "restore", slots: Array<{ slotId: string; contentHash?: string }>, busyKey: string) {
     if (!base || !week) return;
+    // Review item 1: everything after the answer applies only while the channel it was sent for is still the current one.
+    const sentFor = base;
+    const stillHere = () => baseRef.current === sentFor;
     setBusy(busyKey);
     setActionError(null);
     try {
       const res = await fetch(`${base}/${week}/decisions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action, slots }) });
       const body = (await res.json().catch(() => ({}))) as { plan?: PlanDto; error?: string };
+      if (!stillHere()) return;
       if (!res.ok) {
         const key = body.error ? ERROR_KEYS[body.error] : undefined;
         setActionError(key ? t(key) : t("weekPlan.error.generic", { code: body.error ?? String(res.status) }));
-        await loadPlan();
+        await loadPlan(undefined, true);
         return;
       }
-      if (body.plan) setPlan(body.plan);
+      // Applied only while its week is still the shown one (the owner may have switched weeks during the save); the decision's own
+      // answer is newer than any read still in flight, so that one is dropped.
+      applyDecisionAnswer({
+        sentFor,
+        current: { base: baseRef.current, week: weekRef.current },
+        plan: body.plan,
+        cancelReads: () => loader.current?.cancel(),
+        apply: (decided) =>
+          setLoaded((current) => ({ base: sentFor, week: decided.weekStart, plan: decided, coverage: current?.base === sentFor && current.week === decided.weekStart ? current.coverage : null })),
+      });
       setConfirmVeto(null);
       void loadList();
     } catch {
-      setActionError(t("weekPlan.error.generic", { code: "network" }));
+      if (stillHere()) setActionError(t("weekPlan.error.generic", { code: "network" }));
     } finally {
-      setBusy(null);
+      setBusy((current) => (current === busyKey ? null : current));
     }
   }
 
@@ -297,7 +415,10 @@ export function WeeklyPlanPanel({
    */
   async function move(slot: PlanSlotDto, shownHash: string, toWeekStart: string, date: string, time: string, dryRun: boolean): Promise<MoveAnswer | null> {
     if (!base) return null;
-    setBusy(`move:${slot.slotId}`);
+    const sentFor = base;
+    const stillHere = () => baseRef.current === sentFor;
+    const busyKey = `move:${slot.slotId}`;
+    setBusy(busyKey);
     setActionError(null);
     try {
       const res = await fetch(`${base}/move`, {
@@ -306,29 +427,35 @@ export function WeeklyPlanPanel({
         body: JSON.stringify({ slotId: slot.slotId, contentHash: shownHash, toWeekStart, date, publishAt: `${date}T${time}`, dryRun }),
       });
       const body = (await res.json().catch(() => ({}))) as MoveAnswer & { error?: string; details?: { refused?: Array<{ reason: string }> } };
+      if (!stillHere()) return null;
       if (!res.ok) {
         const reason = body.details?.refused?.[0]?.reason;
         const key = (reason ? RETIME_REASON_KEYS[reason] : undefined) ?? (body.error ? ERROR_KEYS[body.error] : undefined);
         setActionError(key ? t(key) : t("weekPlan.error.generic", { code: reason ?? body.error ?? String(res.status) }));
-        await loadPlan();
+        await loadPlan(undefined, true);
         return null;
       }
       if (!dryRun) {
         if (body.youtube?.result === "failed") setActionError(t("weekTemplate.move.youtubeFailed", { reason: body.youtube.reason ?? "?" }));
         setEditing(null);
-        if (body.to.weekStart !== week) setWeek(body.to.weekStart);
-        await Promise.all([loadPlan(), loadList()]);
+        // The plan follows the slot to its week (read here for that week -- never the old closure's).
+        if (body.to.weekStart !== week) goToWeek(body.to.weekStart);
+        await Promise.all([loadPlan(body.to.weekStart, true), loadList()]);
       }
       return body;
     } catch {
-      setActionError(t("weekPlan.error.generic", { code: "network" }));
+      if (stillHere()) setActionError(t("weekPlan.error.generic", { code: "network" }));
       return null;
     } finally {
-      setBusy(null);
+      setBusy((current) => (current === busyKey ? null : current));
     }
   }
 
-  const shown = plan && plan !== "none" && plan.weekStart === week ? plan : null;
+  // Owner TG 4784: the selected week of the selected channel is not read yet (the open, a switch) -- a skeleton, never an empty or
+  // another week's or channel's body; the week read's and the list read's failures each shown on their own (review items 1, 4).
+  const screen = weekScreenOf({ base, week, loaded, weekError, listError });
+  const shown = screen.shown;
+  const coverage = screen.coverage;
   const ghosts = useMemo(() => (shown && template?.template && nowMs > 0 ? freePositions(template.template.days, shown.weekStart, shown.slots, nowMs) : []), [shown, template, nowMs]);
   // The owner's own time is shown only where it differs from the channel's (also when his zone is unknown and the browser's is used).
   const sameZone = shown ? shown.slots.every((s) => sameClock(s, ownerZone)) : true;
@@ -386,7 +513,7 @@ export function WeeklyPlanPanel({
   const vetoedCount = shown ? shown.counts.vetoed : 0;
   const units = estimateUploadUnits({ playlist: true, deferredPublishAt: true });
   const groups = shown ? splitVetoed(shown.slots) : { live: [], vetoed: [] };
-  const weekCoverage = shown && coverage?.weekStart === shown.weekStart ? weekCoverageLine(coverage.value) : null;
+  const weekCoverage = coverage ? weekCoverageLine(coverage) : null;
   const dayLabel = (date: string) => new Intl.DateTimeFormat(language, { day: "numeric", month: "short", timeZone: "UTC" }).format(new Date(`${date}T00:00:00Z`));
 
   const viewSwitch = (
@@ -420,19 +547,20 @@ export function WeeklyPlanPanel({
       {/* Week header: arrows, the range, the state. */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
-          <button type="button" onClick={() => week && setWeek(shiftWeek(week, -1))} disabled={!week} aria-label={t("weekPlan.prevWeek")} title={t("weekPlan.prevWeek")} className="rounded-md border border-zinc-700 px-2 py-1 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-40">
+          <button type="button" onClick={() => week && goToWeek(shiftWeek(week, -1))} disabled={!week} aria-label={t("weekPlan.prevWeek")} title={t("weekPlan.prevWeek")} className="rounded-md border border-zinc-700 px-2 py-1 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-40">
             ‹
           </button>
           <h2 className="text-lg font-semibold text-zinc-100">{week ? rangeLabel(week) : t("weekPlan.none")}</h2>
-          <button type="button" onClick={() => week && setWeek(shiftWeek(week, 1))} disabled={!week} aria-label={t("weekPlan.nextWeek")} title={t("weekPlan.nextWeek")} className="rounded-md border border-zinc-700 px-2 py-1 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-40">
+          <button type="button" onClick={() => week && goToWeek(shiftWeek(week, 1))} disabled={!week} aria-label={t("weekPlan.nextWeek")} title={t("weekPlan.nextWeek")} className="rounded-md border border-zinc-700 px-2 py-1 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-40">
             ›
           </button>
           {week && <span className={`ml-1 rounded-md px-2 py-0.5 text-xs font-medium ring-1 ${stateStyle}`}>{t(stateKey)}</span>}
         </div>
       </div>
 
-      {error && <p className="rounded-md border border-red-900 bg-red-950/40 px-3 py-2 text-sm text-red-300">{error}</p>}
-      {!summaries && !error && <SkeletonLines lines={4} />}
+      {screen.weekError && <p className="rounded-md border border-red-900 bg-red-950/40 px-3 py-2 text-sm text-red-300">{screen.weekError}</p>}
+      {screen.listError && <p className="rounded-md border border-red-900 bg-red-950/40 px-3 py-2 text-sm text-red-300">{screen.listError}</p>}
+      {screen.loading && <SkeletonLines lines={4} />}
 
       {shown && (
         <p className="text-sm text-zinc-500">
@@ -440,7 +568,7 @@ export function WeeklyPlanPanel({
         </p>
       )}
 
-      {plan === "none" && week && <p className="rounded-lg border border-dashed border-zinc-700 px-4 py-6 text-center text-sm text-zinc-400">{t("weekPlan.noPlan")}</p>}
+      {screen.noPlan && <p className="rounded-lg border border-dashed border-zinc-700 px-4 py-6 text-center text-sm text-zinc-400">{t("weekPlan.noPlan")}</p>}
 
       {shown && (
         <>
@@ -458,7 +586,7 @@ export function WeeklyPlanPanel({
             // BL-235 (owner msg 3806): the truth on YouTube next to the approvals -- a day is closed when a video is scheduled or
             // published on it with every tracked translation. It decides nothing here.
             <p
-              title={t("weekPlan.coverage.hint", { time: coverage?.value.asOf ? at(coverage.value.asOf) : t("weekPlan.coverage.never") })}
+              title={t("weekPlan.coverage.hint", { time: coverage?.asOf ? at(coverage.asOf) : t("weekPlan.coverage.never") })}
               className={`rounded-lg border px-4 py-2 text-sm ${weekCoverage.covered === weekCoverage.total ? "border-emerald-900 bg-emerald-950/30 text-emerald-200" : "border-yellow-800/70 bg-yellow-950/20 text-zinc-200"}`}
             >
               <span className="font-medium">{t("weekPlan.coverage.closed", { covered: weekCoverage.covered, total: weekCoverage.total })}</span>
@@ -477,24 +605,31 @@ export function WeeklyPlanPanel({
           {shown.slots.length === 0 ? (
             <p className="rounded-lg border border-dashed border-zinc-700 px-4 py-6 text-center text-sm text-zinc-400">{t("weekPlan.emptyPlan")}</p>
           ) : (
-            <div className="space-y-2">
+            <div className="@container space-y-2">
               {groups.live.length > 0 && (
-                <ul className="divide-y divide-zinc-800 overflow-hidden rounded-lg border border-zinc-800">
+                // Not `overflow-hidden`: a row's «⋯» menu may reach past the list's last row (the rows round their own corners).
+                <ul className={`divide-y divide-zinc-800 rounded-lg border border-zinc-800 ${ROWS_GRID}`}>
+                  <ColumnSizer />
                   {groups.live.map(({ slot, number }) => renderRow(slot, number))}
                 </ul>
               )}
               {groups.vetoed.length > 0 && (
-                <div className="overflow-hidden rounded-lg border border-zinc-800">
+                <div className="rounded-lg border border-zinc-800">
                   <button
                     type="button"
                     aria-expanded={showVetoed}
                     onClick={() => setShowVetoed((open) => !open)}
-                    className="flex w-full items-center justify-between gap-3 px-4 py-2 text-left text-sm text-zinc-400 hover:bg-zinc-800/60"
+                    className={`flex w-full items-center justify-between gap-3 px-4 py-2 text-left text-sm text-zinc-400 hover:bg-zinc-800/60 ${showVetoed ? "rounded-t-lg" : "rounded-lg"}`}
                   >
                     <span>{t(showVetoed ? "weekPlan.vetoedGroup.hide" : "weekPlan.vetoedGroup.show", { count: groups.vetoed.length })}</span>
                     <span aria-hidden>{showVetoed ? "▴" : "▾"}</span>
                   </button>
-                  {showVetoed && <ul className="divide-y divide-zinc-800 border-t border-zinc-800">{groups.vetoed.map(({ slot, number }) => renderRow(slot, number))}</ul>}
+                  {showVetoed && (
+                    <ul className={`divide-y divide-zinc-800 border-t border-zinc-800 ${ROWS_GRID}`}>
+                      <ColumnSizer />
+                      {groups.vetoed.map(({ slot, number }) => renderRow(slot, number))}
+                    </ul>
+                  )}
                 </div>
               )}
             </div>
@@ -656,10 +791,31 @@ function SlotRow(props: {
   // BL-243: a video deleted on YouTube is not there any more (its id is kept only to show which one it was).
   const afterUpload = !deletedOnYoutube(slot) && (slot.videoId !== null || slot.status === "uploading" || slot.status === "scheduled" || slot.status === "published");
 
+  // The buttons on the right, each by its own rule (restore and pull never together; revoke and the explicit date never together).
+  const showThumb = slot.videoId !== null && !deletedOnYoutube(slot);
+  const showRestore = canAct && slot.vetoed !== null;
+  const showRevoke = canAct && !slot.vetoed && mode === "one" && slot.approval === "approved";
+  const showDate = canAct && mode === "one" && canApprove(slot) && slot.dating?.source !== "template";
+  const showRetime = props.nowMs > 0 && canRetime(slot, props.nowMs) && !props.editing;
+  const showVeto = canAct && !slot.vetoed;
+  // Owner TG 4784 review (item 2): the one action the row asks for stays visible -- restoring a pulled slot, or the date of a slot
+  // the template does not date; everything else is in «⋯» (the pull is confirmed in its own row, the revoke shows its spinner on
+  // «⋯» while it saves, the thumbnail and the new time open their own dialog and editor).
+  const primary: "restore" | "date" | null = showRestore ? "restore" : showDate ? "date" : null;
+  const [thumbOpen, setThumbOpen] = useState(false);
+  const menuItems: Array<{ key: string; label: string; run: () => void; disabled?: boolean; danger?: boolean }> = [
+    ...(showThumb ? [{ key: "thumb", label: t("thumbReplace.button"), run: () => setThumbOpen(true) }] : []),
+    ...(showRetime ? [{ key: "retime", label: t("weekPlan.action.retime"), run: props.onAskEdit, disabled: anyBusy }] : []),
+    ...(showRevoke ? [{ key: "revoke", label: t("weekPlan.action.revoke"), run: () => void props.onDecide("revoke", [{ slotId: slot.slotId, contentHash: slot.contentHash }], `revoke:${slot.slotId}`), disabled: anyBusy }] : []),
+    ...(showVeto ? [{ key: "veto", label: t("weekPlan.action.veto"), run: props.onAskVeto, disabled: anyBusy || busyHere, danger: true }] : []),
+  ];
+  const menuBusy = props.busy === `revoke:${slot.slotId}`;
+
   return (
-    <li className={changed ? "bg-amber-950/20" : slot.vetoed ? "bg-zinc-950/40" : undefined}>
-      <div className="grid grid-cols-[6.5rem_1fr] items-center gap-3 px-4 py-3 md:grid-cols-[6.5rem_6rem_minmax(0,1fr)_auto_auto]">
-        <div className={slot.vetoed ? "text-zinc-500" : "text-zinc-100"}>
+    <li className={`${ROW_ITEM} last:rounded-b-lg [&:nth-child(2)]:rounded-t-lg ${changed ? "bg-amber-950/20" : slot.vetoed ? "bg-zinc-950/40" : ""}`}>
+      <div className={ROW_MAIN}>
+        {/* On a phone the day and time take the whole line (the thumbnail column is hidden there). */}
+        <div className={`col-span-2 @min-[44rem]:col-span-1 ${slot.vetoed ? "text-zinc-500" : "text-zinc-100"}`}>
           <div className={`text-sm font-medium ${slot.vetoed ? "line-through" : ""}`}>{dayLabel}</div>
           {/* BL-267 (O6, AC-WT-43): the owner's own time with UTC beside it; the channel's time on hover. */}
           <div className="text-sm" title={t("weekTemplate.channelTime", { time: wall.time, zone: plan.timeZone })}>
@@ -671,18 +827,20 @@ function SlotRow(props: {
           <img
             src={`/api/channels/${encodeURIComponent(props.channelId)}/publishing/packages/thumbnail?path=${encodeURIComponent(pkg.thumbnailPath)}`}
             alt={pkg.title}
-            className={`hidden h-[54px] w-24 rounded-md object-cover md:block ${slot.vetoed ? "opacity-50" : ""}`}
+            className={`hidden ${THUMB_SIZE} rounded-md object-cover @min-[44rem]:block ${slot.vetoed ? "opacity-50" : ""}`}
           />
         ) : (
-          <div className="hidden h-[54px] w-24 items-center justify-center rounded-md border border-dashed border-zinc-700 text-[10px] text-zinc-500 md:flex">{t("weekPlan.noThumbnail")}</div>
+          <div className={`hidden ${THUMB_SIZE} items-center justify-center rounded-md border border-dashed border-zinc-700 text-center text-[10px] leading-tight text-zinc-500 @min-[44rem]:flex`}>{t("weekPlan.noThumbnail")}</div>
         )}
-        <div className="col-span-2 min-w-0 md:col-span-1">
+        <div className="col-span-2 min-w-0 @min-[44rem]:col-span-1">
           <div className={`flex items-center gap-1.5 truncate text-sm font-medium ${slot.vetoed ? "text-zinc-500" : "text-zinc-100"}`}>
             {/* BL-259 (owner msg 4397): vertical (Shorts) or horizontal. */}
             <OrientationIcon orientation={pkg?.orientation} />
             {/* BL-260 (owner msg 4421): the video in a popup player -- the package's file here, else YouTube's player. */}
             <VideoPlayButton channelId={props.channelId} target={{ title, manifestSha256: pkg?.manifestSha256 ?? null, videoId: deletedOnYoutube(slot) ? null : slot.videoId }} />
-            <span className="truncate">{title}</span>
+            <span className="truncate" title={title}>
+              {title}
+            </span>
           </div>
           {facts.length > 0 && (
             <div className="flex flex-wrap gap-x-1.5 text-xs text-zinc-400">
@@ -721,52 +879,59 @@ function SlotRow(props: {
             </div>
           )}
         </div>
-        <div className="col-span-2 md:col-span-1" aria-label={t("weekPlan.pipelineLabel")}>
-          {pipeline ? (
-            <ol className="flex flex-wrap items-center gap-1 text-[11px]">
-              {pipeline.map((step, i) => (
-                <li key={step.step} className="flex items-center gap-1">
-                  {i > 0 && <span aria-hidden className="text-zinc-600">›</span>}
-                  <span className={`rounded border px-1.5 py-0.5 ${STEP_STYLES[step.state]}`}>{t(STEP_KEYS[step.step])}</span>
-                </li>
-              ))}
-            </ol>
-          ) : (
-            <span className="text-zinc-600">{t("weekPlan.none")}</span>
-          )}
+        <div className={ROW_CHAIN} aria-label={t("weekPlan.pipelineLabel")}>
+          {pipeline ? <PipelineChain steps={pipeline} /> : <span className="text-zinc-600">{t("weekPlan.none")}</span>}
         </div>
-        <div className="col-span-2 flex flex-wrap justify-end gap-2 md:col-span-1">
-          {/* BL-255 (ADR 0069): an uploaded video's thumbnail can be replaced on YouTube without touching the slot or its approval. */}
-          {slot.videoId !== null && !deletedOnYoutube(slot) && <ThumbnailReplaceButton channelId={props.channelId} videoId={slot.videoId} videoNumber={pkg?.video ?? null} currentUrl={null} />}
-          {canAct && slot.vetoed && (
-            <ActionButton busy={props.busy === `restore:${slot.slotId}`} busyLabel={t("weekPlan.action.saving")} disabled={anyBusy} onClick={() => void props.onDecide("restore", [{ slotId: slot.slotId }], `restore:${slot.slotId}`)} className="rounded-md border border-zinc-600 px-3 py-1 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-40">
-              {t("weekPlan.action.restore")}
-            </ActionButton>
-          )}
-          {canAct && !slot.vetoed && mode === "one" && slot.approval === "approved" && (
-            <ActionButton busy={props.busy === `revoke:${slot.slotId}`} busyLabel={t("weekPlan.action.saving")} disabled={anyBusy} onClick={() => void props.onDecide("revoke", [{ slotId: slot.slotId, contentHash: slot.contentHash }], `revoke:${slot.slotId}`)} className="rounded-md border border-zinc-600 px-3 py-1 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-40">
-              {t("weekPlan.action.revoke")}
-            </ActionButton>
-          )}
-          {/* BL-267 (AC-WT-27): the explicit one-slot date, only where the template gives none; behind a dialog. */}
-          {canAct && mode === "one" && canApprove(slot) && slot.dating?.source !== "template" && (
-            <button type="button" disabled={anyBusy} onClick={props.onAskDate} className="rounded-md bg-violet-600 px-3 py-1 text-sm font-semibold text-white hover:bg-violet-500 disabled:opacity-40">
-              {t("weekTemplate.date.action")}
-            </button>
-          )}
-          {/* BL-256: move the slot to another day of the week or another time (not within 15 minutes of its time). */}
-          {props.nowMs > 0 && canRetime(slot, props.nowMs) && !props.editing && (
-            <button type="button" disabled={anyBusy} onClick={props.onAskEdit} className="rounded-md border border-zinc-600 px-3 py-1 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-40">
-              {t("weekPlan.action.retime")}
-            </button>
-          )}
-          {canAct && !slot.vetoed && (
-            <button type="button" disabled={anyBusy || busyHere} onClick={props.onAskVeto} className="rounded-md border border-red-900 px-3 py-1 text-sm text-red-300 hover:bg-red-950/50 disabled:opacity-40">
-              {t(mode === "one" ? "weekPlan.action.vetoShort" : "weekPlan.action.veto")}
-            </button>
-          )}
-        </div>
+        {(primary !== null || menuItems.length > 0) && (
+          <div className={ROW_ACTIONS}>
+            {primary === "restore" && (
+              // While it saves, the spinner alone (the saving text for screen readers), so it never needs more than the reserved column.
+              <ActionButton busy={props.busy === `restore:${slot.slotId}`} busyLabel={<span className="sr-only">{t("weekPlan.action.saving")}</span>} disabled={anyBusy} onClick={() => void props.onDecide("restore", [{ slotId: slot.slotId }], `restore:${slot.slotId}`)} className={BUTTON}>
+                {t("weekPlan.action.restore")}
+              </ActionButton>
+            )}
+            {/* BL-267 (AC-WT-27): the explicit one-slot date, only where the template gives none; behind a dialog. */}
+            {primary === "date" && (
+              <button type="button" disabled={anyBusy} onClick={props.onAskDate} title={t("weekTemplate.date.action")} className={DATE_BUTTON}>
+                {t("weekTemplate.date.actionShort")}
+              </button>
+            )}
+            {menuItems.length > 0 && (
+              <Popover
+                menu
+                align="right"
+                label={t("weekPlan.action.more")}
+                trigger={menuBusy ? <Spinner className="h-3.5 w-3.5" /> : <span aria-hidden>⋯</span>}
+                triggerClassName={MORE_TRIGGER}
+                panelClassName="min-w-48 p-1"
+              >
+                {(close) => (
+                  <div role="menu" aria-label={t("weekPlan.action.more")}>
+                    {menuItems.map((item) => (
+                      <button
+                        key={item.key}
+                        type="button"
+                        role="menuitem"
+                        disabled={item.disabled}
+                        onClick={() => {
+                          close();
+                          item.run();
+                        }}
+                        className={`${MENU_ITEM} ${item.danger ? "text-red-300" : "text-zinc-200"}`}
+                      >
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </Popover>
+            )}
+          </div>
+        )}
       </div>
+      {/* BL-255 (ADR 0069): the thumbnail dialog lives on the row, so it stays open after the «⋯» menu that opened it closes. */}
+      {thumbOpen && slot.videoId !== null && <ThumbnailReplaceDialog channelId={props.channelId} videoId={slot.videoId} videoNumber={pkg?.video ?? null} currentUrl={null} onClose={() => setThumbOpen(false)} />}
+      <div className="@min-[44rem]:col-span-full">
       {props.confirming && !slot.vetoed && (
         <div className="flex flex-wrap items-center gap-3 border-t border-red-900/60 bg-red-950/30 px-4 py-2 text-sm text-red-100" role="alert">
           <span>
@@ -791,6 +956,64 @@ function SlotRow(props: {
         </div>
       )}
       {pkg && <SlotSocialPreview channelId={props.channelId} video={pkg.video} manifestSha256={pkg.manifestSha256 ?? null} slotTime={wall.time} />}
+      </div>
+    </li>
+  );
+}
+
+/** The step chain План › Видео › Пакет › YouTube › Дата (one width in a language, whatever the states). */
+function PipelineChain({ steps, label }: { steps: ReadonlyArray<{ step: PipelineStep; state: PipelineStepState }>; label?: (key: UiTextKey) => string }) {
+  const t = useT();
+  const text = label ?? t;
+  return (
+    <ol className="flex flex-wrap items-center gap-0.5 text-[11px] min-[400px]:gap-1 @min-[44rem]:flex-nowrap @min-[44rem]:gap-0.5 @min-[64rem]:gap-1">
+      {steps.map((s, i) => (
+        <li key={s.step} className="flex items-center gap-0.5 whitespace-nowrap min-[400px]:gap-1">
+          {/* The compact list (44-64rem) drops the arrows: the chips' order already reads as the chain. */}
+          {i > 0 && <span aria-hidden className="text-zinc-600 @min-[44rem]:hidden @min-[64rem]:inline">›</span>}
+          <span className={`rounded border px-1 py-0.5 min-[400px]:px-1.5 @min-[44rem]:px-1 @min-[64rem]:px-1.5 ${STEP_STYLES[s.state]}`}>{text(STEP_KEYS[s.step])}</span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+const ALL_STEPS = (["plan", "video", "package", "youtube", "date"] as const).map((step) => ({ step, state: "todo" as const }));
+
+/**
+ * Owner TG 4784: the chain's column and the buttons' column take their width from the widest content they can ever hold -- not from
+ * the rows of this week -- so the chain stands at the same place in every row and every week. An invisible first row of the list
+ * (the rows share its columns through CSS subgrid) holds the full chain and every set of buttons a row can show (review item 2:
+ * the primary action, saving included, beside «⋯»). Review item 3: in EVERY interface language, not only the current one, so the
+ * columns do not move when the owner switches the language.
+ */
+function ColumnSizer() {
+  const languages: UiLanguage[] = UI_LANGUAGES.map((l) => l.code);
+  return (
+    <li aria-hidden className="invisible hidden h-0 overflow-hidden !border-0 @min-[44rem]:col-span-full @min-[44rem]:grid @min-[44rem]:grid-cols-subgrid">
+      <div className="px-4 @min-[44rem]:col-span-full @min-[44rem]:grid @min-[44rem]:grid-cols-subgrid @min-[44rem]:gap-x-2 @min-[44rem]:px-3 @min-[64rem]:gap-x-3 @min-[64rem]:px-4">
+        <div className="flex flex-col @min-[44rem]:col-start-4">
+          {languages.map((lang) => (
+            <PipelineChain key={lang} steps={ALL_STEPS} label={(key) => translate(lang, key)} />
+          ))}
+        </div>
+        <div className={SIZER_ACTIONS}>
+          {languages.flatMap((lang) => {
+            const more = <span className={MORE_TRIGGER}>⋯</span>;
+            return [
+              // Restoring (while it saves the button shows only its spinner, never wider).
+              <div key={`${lang}-restore`} className="flex flex-nowrap items-center gap-2">
+                <span className={BUTTON}>{translate(lang, "weekPlan.action.restore")}</span>
+                {more}
+              </div>,
+              <div key={`${lang}-date`} className="flex flex-nowrap items-center gap-2">
+                <span className={DATE_BUTTON}>{translate(lang, "weekTemplate.date.actionShort")}</span>
+                {more}
+              </div>,
+            ];
+          })}
+        </div>
+      </div>
     </li>
   );
 }
