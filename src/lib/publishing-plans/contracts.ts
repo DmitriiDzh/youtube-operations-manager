@@ -56,7 +56,7 @@ export type PlanSlotPackage = {
   reviewComment?: string | null;
   /**
    * Owner TG 4836: what `reviewComment` is -- `returned` (his return comment: re-make the video), `returned_timed` (a return whose comment
-   * is only `reviewTimedComments` written out as `m:ss text` lines) or `approved_notes` (the general comment
+   * is only its timed comments and follow-ups written out as `m:ss text` lines) or `approved_notes` (the general comment
    * of his standing approval: notes for future videos, non-blocking; this video stays approved). Present whenever `reviewComment` is.
    */
   reviewCommentKind?: "returned" | "returned_timed" | "approved_notes";

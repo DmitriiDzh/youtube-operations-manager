@@ -54,7 +54,8 @@ test("AC-IS-03/05: a reply binds to its issue by id, moves its moment, and shows
   assert.equal(issues.length, 2, "a reply to an unknown issue adds nothing");
   // The owner then decides on that package: the answers he saw are part of his decision -- no longer pending, and not twice.
   const d2 = ret("pr_b", "2026-11-25T10:00:00Z", 2, { kind: "approved", repliesSeen: replies.filter((r) => r.issueId.startsWith("pr_a")), issueActions: [{ issueId: "pr_a.1", kind: "resolved" }] });
-  const after = issuesOf([d1, d2], replies);
+  // Review 2 #9: the pending answers belong to the current package version (M1 here, the one d2 decided on).
+  const after = issuesOf([d1, d2], replies, M1);
   const frame = after.find((i) => i.id === "pr_a.1")!;
   assert.deepEqual(frame.thread.map((t) => (t.by === "owner" ? `owner:${t.kind}` : `agent:${t.status}:${t.at}`)), ["owner:opened", "agent:fixed:2026-11-25T10:00:00Z", "owner:resolved"]);
   assert.equal(frame.state, "resolved");
@@ -155,6 +156,9 @@ function harness() {
       clock = new Date(iso);
     },
     decisions: () => Object.values(decisions),
+    seed: (channelId: string, decision: PackageReviewDecision) => {
+      decisions[`${channelId}|${decision.id}`] = { ...decision, seq: ++n };
+    },
   };
 }
 
@@ -199,4 +203,51 @@ test("AC-IS-04: an action on an issue of another channel or another video is ref
   // A packaging comment never carries actions.
   await refusedWith(h.service.decide(CH, { manifestSha256: M1, kind: "packaging_comment", comment: "t", issueActions: [{ issueId: id, kind: "resolved" }] }), "validation_failed");
   assert.equal(h.decisions().length, 1);
+});
+
+// Independent review 2 #6: the recode's REAL carry copies a stage-1 decision (manifest-keyed, comments without stored ids) with the
+// original's issue ids, so after V11 -> S3 the issues are the same ones, not twice.
+test("review 2 #6: carryDecision keeps the original issue ids -- no duplicate issues after a recode", async () => {
+  const h = harness();
+  h.seed(CH, { ...base, id: "pr_orig", kind: "returned", comment: "0:03 black frame", manifestSha256: M1, video: "V11", at: "2026-11-24T10:00:00Z", timedComments: [{ atSeconds: 61, text: "wrong map" }, { atSeconds: 3, text: "black frame" }] });
+  const carried = await h.service.carryDecision(CH, { fromSha256: M1, toSha256: M2, video: "S3" });
+  assert.equal(carried.wrote, true);
+  const all = h.decisions().map(wellFormedDecision).filter((d): d is PackageReviewDecision => d !== null);
+  const copy = all.find((d) => d.carriedFrom === M1)!;
+  assert.deepEqual(copy.timedComments?.map((c) => c.id), ["pr_orig.1", "pr_orig.2"]);
+  const issues = issuesOf(decisionsOfVideo(all, "S3", new Map([["V11", "S3"]])));
+  assert.deepEqual(issues.map((i) => i.id), ["pr_orig.1", "pr_orig.2"]);
+});
+
+// Independent review 2 #8: a return made only of follow-ups gets its comment written out AND marked as generated, so readers show the
+// follow-ups once (not as the owner's own comment).
+test("review 2 #8: a return with only a follow-up is marked commentGenerated", async () => {
+  const h = harness();
+  const first = await h.service.decide(CH, { manifestSha256: M1, kind: "returned", comment: "redo the map", timedComments: [{ atSeconds: 61, text: "wrong map" }] });
+  assert.equal(first.decision.commentGenerated, undefined, "his own comment is not generated");
+  const id = first.decision.timedComments![0].id!;
+  const second = await h.service.decide(CH, { manifestSha256: M1, kind: "returned", issueActions: [{ issueId: id, kind: "follow_up", text: "still wrong" }] });
+  assert.equal(second.decision.comment, "1:01 still wrong");
+  assert.equal(second.decision.commentGenerated, true);
+  assert.equal(wellFormedDecision(second.decision)?.commentGenerated, true);
+  const state = ownerReviewStateOf({ exists: true, required: { value: true, updatedAt: "2026-11-01T00:00:00Z", by: "owner", device: null }, decisions: { [second.decision.id]: second.decision } });
+  assert.deepEqual(ownerReviewProblemOf(state, { manifestSha256: M1, video: "V11", videoSha256: SHA1, videoSizeBytes: 1000 }), { code: "owner_review_returned", params: { comment: "1:01 still wrong", generated: 1 } });
+});
+
+// Independent review 2 #9: one package version's answer seen by two decisions is one turn; a NEW version answering the same words after
+// the owner's follow-up is a new turn.
+test("review 2 #9: a repeated answer from a new package version shows after a follow-up; the same version's answer does not repeat", () => {
+  const d1 = ret("pr_a", "2026-11-24T10:00:00Z", 1, { timedComments: [{ atSeconds: 3, text: "black frame" }] });
+  const answer = { issueId: "pr_a.1", status: "fixed" as const, text: "cut" };
+  // Version M2 answers; the owner follows up (d2), then decides on the same M2 again (d3) -- the answer is not repeated.
+  const d2 = ret("pr_b", "2026-11-25T10:00:00Z", 2, { manifestSha256: M2, repliesSeen: [answer], issueActions: [{ issueId: "pr_a.1", kind: "follow_up", text: "still there" }] });
+  const d3 = ret("pr_c", "2026-11-25T11:00:00Z", 3, { manifestSha256: M2, repliesSeen: [answer] });
+  const sameVersion = issuesOf([d1, d2, d3]);
+  assert.deepEqual(sameVersion[0].thread.map((t) => t.by), ["owner", "agent", "owner"]);
+  // Version M3 answers in the same words: a genuine new answer.
+  const M3 = "3".repeat(64);
+  const newVersion = issuesOf([d1, d2, d3], [answer], M3);
+  assert.deepEqual(newVersion[0].thread.map((t) => (t.by === "agent" ? `agent:${t.at}` : "owner")), ["owner", "agent:2026-11-25T10:00:00Z", "owner", "agent:null"]);
+  // The current M2 package's pending answer (already seen) adds nothing.
+  assert.equal(issuesOf([d1, d2, d3], [answer], M2)[0].thread.length, 3);
 });

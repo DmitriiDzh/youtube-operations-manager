@@ -60,6 +60,8 @@ export type PackageReviewDecision = {
   issueActions?: Array<{ issueId: string; kind: "resolved" | "follow_up"; text?: string }>;
   /** Owner TG 4846 (AC-IS-03): the factory's answers (`reviewReplies` of the package) the owner saw when he decided. Ignored by older builds. */
   repliesSeen?: Array<{ issueId: string; status: "fixed" | "not_fixed" | "partly"; text: string; atSeconds?: number }>;
+  /** Review 2 #8: `comment` was written from the timed comments and follow-ups (the owner wrote no general one). Ignored by older builds. */
+  commentGenerated?: true;
 };
 
 /** The owner's switch: review the channel's final packages before they count as ready. Assigned whole. */

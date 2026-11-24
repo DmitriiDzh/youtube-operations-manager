@@ -114,7 +114,7 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
     else state = "pending";
     const own = comments.filter((c) => c.manifestSha256 === pkg.manifestSha256 || (c.video !== "" && (c.video === pkg.video || gate.aliases.get(c.video) === pkg.video)));
     // Owner TG 4846 (AC-IS-01): the video's issues across its package versions, with this package's answers.
-    const issues = issuesOf(decisionsOfVideo(gate.decisions, pkg.video, gate.aliases), pkg.reviewReplies ?? []);
+    const issues = issuesOf(decisionsOfVideo(gate.decisions, pkg.video, gate.aliases), pkg.reviewReplies ?? [], pkg.manifestSha256);
     return {
       manifestSha256: pkg.manifestSha256,
       manifestPath: pkg.manifestPath,
@@ -235,7 +235,7 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
     const timed = parsed.kind === "packaging_comment" ? [] : withIssueIds(decisionId, wellFormedTimedComments((parsed.timedComments ?? []).map((c) => ({ atSeconds: roundSeconds(c.atSeconds), text: c.text }))));
     // AC-IS-04: actions only on this channel's issues of this video (any of its package versions); another one refuses everything.
     const gateNow = await ownerReviewState(channelId);
-    const known = issuesOf(decisionsOfVideo(gateNow.decisions, pkg.video, gateNow.aliases), pkg.reviewReplies ?? []);
+    const known = issuesOf(decisionsOfVideo(gateNow.decisions, pkg.video, gateNow.aliases), pkg.reviewReplies ?? [], pkg.manifestSha256);
     const actions = parsed.kind === "packaging_comment" ? [] : wellFormedIssueActions(parsed.issueActions ?? []);
     const unknown = actions.filter((a) => !known.some((i) => i.id === a.issueId)).map((a) => a.issueId);
     if (unknown.length > 0) throw refuse("package_review_issue_unknown", `No issue of ${pkg.video} in this channel has these ids: ${unknown.join(", ")} (reload the video's comments)`, { video: pkg.video, issueIds: unknown });
@@ -244,7 +244,9 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
     // A return without a general comment states its timed comments and follow-ups as `m:ss text` lines (an older build needs one).
     const followUps = actions.flatMap((a) => (a.kind === "follow_up" ? [{ atSeconds: known.find((i) => i.id === a.issueId)!.atSeconds, text: a.text ?? "" }] : []));
     const spoken = [...timed, ...followUps].sort((a, b) => a.atSeconds - b.atSeconds);
-    const comment = (parsed.comment ?? "").trim() || (parsed.kind === "returned" && spoken.length > 0 ? timedCommentsAsText(spoken, PACKAGE_REVIEW_LIMITS.comment) : null);
+    const ownComment = (parsed.comment ?? "").trim();
+    const commentGenerated = !ownComment && parsed.kind === "returned" && spoken.length > 0;
+    const comment = ownComment || (commentGenerated ? timedCommentsAsText(spoken, PACKAGE_REVIEW_LIMITS.comment) : null);
     const decision: PackageReviewDecision = {
       id: decisionId,
       manifestSha256: pkg.manifestSha256,
@@ -259,6 +261,7 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
       ...(timed.length > 0 ? { timedComments: timed } : {}),
       ...(actions.length > 0 ? { issueActions: actions } : {}),
       ...(repliesSeen.length > 0 ? { repliesSeen } : {}),
+      ...(commentGenerated ? { commentGenerated: true as const } : {}),
     };
     // Review fix 1 (AC-TC-05): the stored draft goes only when it is the one this decision was made from (`draftUpdatedAt` = its stamp;
     // null = the screen saw none). Another stored draft -- saved from the phone, or not loaded in this tab -- refuses the decision
@@ -276,13 +279,14 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
         draftToRemove = row !== null;
       }
       await deps.store.addDecision(channelId, decision);
-    });
-    if (draftToRemove) {
+      // Review 2 #5: the draft goes inside the same lock every draft save takes, so a save made meanwhile (the phone) is never lost.
       // Review fix 6: a draft that could not be removed would come back and go out twice -- audited, never silent.
-      await deps.drafts!.remove(channelId, pkg.manifestSha256).catch((error: unknown) =>
-        deps.audit({ channelId, video: pkg.video, detail: { event: "package_review.draft_remove_failed", decisionId: decision.id, manifestSha256: pkg.manifestSha256, message: error instanceof Error ? error.message : String(error) } }).catch(() => undefined)
-      );
-    }
+      if (draftToRemove) {
+        await deps.drafts!.remove(channelId, pkg.manifestSha256).catch((error: unknown) =>
+          deps.audit({ channelId, video: pkg.video, detail: { event: "package_review.draft_remove_failed", decisionId: decision.id, manifestSha256: pkg.manifestSha256, message: error instanceof Error ? error.message : String(error) } }).catch(() => undefined)
+        );
+      }
+    });
     await deps.audit({ channelId, video: pkg.video, detail: { event: `package_review.${decision.kind}`, decisionId: decision.id, manifestSha256: decision.manifestSha256, ...(media ?? {}), thumbnailSha256, comment, ...(timed.length > 0 ? { timedComments: timed.length } : {}) } });
     await deps.afterChange(channelId);
     return { decision, view: await view(channelId) };
@@ -402,7 +406,8 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
         at: latest.at,
         carriedFrom: from,
         // Owner TG 4817: the owner's timed comments travel with his decision.
-        ...(latest.timedComments && latest.timedComments.length > 0 ? { timedComments: latest.timedComments } : {}),
+        // Review 2 #6: with the ORIGINAL decision's issue ids (a stage-1 comment has none stored), so the copy is the same issues.
+        ...(latest.timedComments && latest.timedComments.length > 0 ? { timedComments: withIssueIds(latest.id, latest.timedComments) } : {}),
       };
       await deps.store.addDecision(channelId, copy);
       await deps

@@ -278,7 +278,7 @@ export function packageNoticesOf(channel: Channel, snapshot: PackageReviewsSnaps
     // Owner TG 4817 (AC-TC-08): the timed comments sent with an approval or a return, as the package-reviews rule reads them.
     const timed = d.kind === "packaging_comment" ? [] : timedCommentsReadout(wellFormedTimedComments(d.timedComments));
     // Review fix 7: a return whose comment is only its timed comments written out shows them once (in their own section).
-    const generated = commentIsTimedText(d.comment, timed);
+    const generated = d.commentGenerated === true || commentIsTimedText(d.comment, timed);
     // Owner TG 4846 (AC-IS-07): the video's issues AS OF this decision (its decisions up to this one, the answers they saw) -- the same
     // bytes on either computer, whatever was decided later.
     const ofVideo = d.kind === "packaging_comment" || !d.video ? [] : decisionsOfVideo(gate.decisions, d.video, new Map());
@@ -298,7 +298,7 @@ export function packageNoticesOf(channel: Channel, snapshot: PackageReviewsSnaps
         { label: "Video", value: d.video },
         { label: "Manifest sha256", value: d.manifestSha256 },
         ...media,
-        ...(generated ? [{ label: "Owner's comment", value: "none of its own -- what to change is the timed comments below" }] : []),
+        ...(generated ? [{ label: "Owner's comment", value: "none of its own -- what to change is the timed comments and the issues below" }] : []),
         // Owner TG 4836: an approval with a comment or timed comments is an approval WITH NOTES for future videos -- never a return.
         ...(d.kind === "approved" && ((d.comment ?? "").trim() !== "" || timed.length > 0)
           ? [{ label: "Notes", value: "Одобрено с замечаниями на будущее (approved with notes for the future): non-blocking -- take the owner's comment and timed comments into account in the next videos; this video stays approved, nothing to redo" }]

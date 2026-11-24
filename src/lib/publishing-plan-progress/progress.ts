@@ -12,7 +12,7 @@ export type MediaReviewOf = ((key: MediaReviewKey) => PlanMediaReview) & {
   /** Owner TG 4836: the general comment of the owner's standing APPROVAL (notes for future videos), else null. */
   approvalComment?: (key: MediaReviewKey) => string | null;
   /** Owner TG 4846 (AC-IS-07): the video's issues across its package versions, with this package's raw `reviewReplies`. */
-  issues?: (video: string, rawReplies: unknown) => { issues: PlanReviewIssue[]; counts: { open: number; resolved: number; noted: number } };
+  issues?: (video: string, rawReplies: unknown, manifestSha256: string | null) => { issues: PlanReviewIssue[]; counts: { open: number; resolved: number; noted: number } };
 };
 import { uploadTimeOf, VIDEO_DELETED_ON_YOUTUBE } from "@/lib/shared-video-presence";
 import type { ScannedPackage } from "@/lib/publishing";
@@ -63,9 +63,11 @@ export function progressOfPackage(scanned: ScannedPackage, channelSyntheticMedia
   const videoSha256 = typeof pkg.sha256 === "string" ? pkg.sha256.toLowerCase() : null;
   const reviewKey = { manifestSha256: scanned.manifestSha256, video: pkg.video, videoSha256, videoSizeBytes: pkg.sizeBytes ?? null };
   const timed = reviewOf?.timedComments?.(reviewKey) ?? [];
-  const issues = reviewOf?.issues?.(pkg.video, pkg.reviewReplies) ?? null;
+  const issues = reviewOf?.issues?.(pkg.video, pkg.reviewReplies, scanned.manifestSha256) ?? null;
   // BL-257: a return's comment (gate on); owner TG 4836: else the standing approval's notes for future videos.
   const returnComment = reviewCommentOf(scanned);
+  // Review 2 #8: a comment written from the timed comments and follow-ups is marked so by the gate (`generated: 1`).
+  const returnGenerated = scanned.problems.find((p) => p.code === "owner_review_returned")?.params?.generated === 1;
   const approvalNotes = returnComment === null ? (reviewOf?.approvalComment?.(reviewKey) ?? null) : null;
   return {
     status,
@@ -93,7 +95,7 @@ export function progressOfPackage(scanned: ScannedPackage, channelSyntheticMedia
       manifestSha256: scanned.manifestSha256,
       // BL-257 (ADR 0070): the owner's return comment from package review, for the slot's status line (only when returned).
       // Review fix 7: a return whose comment is only its timed comments written out says so (`returned_timed`: read reviewTimedComments).
-      ...(returnComment !== null ? { reviewComment: returnComment, reviewCommentKind: timed.length > 0 && returnComment === timed.map((c) => `${c.time} ${c.text}`).join("\n") ? ("returned_timed" as const) : ("returned" as const) } : {}),
+      ...(returnComment !== null ? { reviewComment: returnComment, reviewCommentKind: returnGenerated || (timed.length > 0 && returnComment === timed.map((c) => `${c.time} ${c.text}`).join("\n")) ? ("returned_timed" as const) : ("returned" as const) } : {}),
       ...(approvalNotes ? { reviewComment: approvalNotes, reviewCommentKind: "approved_notes" as const } : {}),
       // Owner TG 4817 (AC-TC-08): the owner's timed comments of his standing decision, only when there are some.
       ...(timed.length > 0 ? { reviewTimedComments: timed } : {}),

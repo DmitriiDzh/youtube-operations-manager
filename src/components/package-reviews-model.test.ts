@@ -153,3 +153,18 @@ test("AC-IS-04: draft issue actions and what they count for", () => {
   assert.equal("issueActions" in decisionBody("m", "packaging_comment", "t", [], null, a), false);
   assert.deepEqual([issueLabel(0), issueLabel(11)], ["I1", "I12"]);
 });
+
+// Independent review 2 #2 / #3: a hidden player (its tab not shown) takes no key; Space / K on a focused button, switch or link is that
+// control's (no toggle), while the arrows still seek.
+test("review 2: hidden players and focused controls", () => {
+  const space = { key: " ", code: "Space", shiftKey: false };
+  const alone = { full: false, focused: false, alone: true, seekKeys: true };
+  assert.equal(playerKeyAction({ key: "ArrowLeft", code: "ArrowLeft", shiftKey: false }, { tag: "BODY", editable: false }, { ...alone, rendered: false }), null);
+  assert.equal(playerKeyAction(space, { tag: "BODY", editable: false }, { ...alone, rendered: false }), null);
+  assert.equal(playerKeyAction(space, { tag: "BUTTON", editable: false }, { ...alone, focused: true }), null);
+  assert.equal(playerKeyAction({ key: "k", code: "KeyK", shiftKey: false }, { tag: "BUTTON", editable: false }, { full: true, focused: true, alone: false, seekKeys: true }), null);
+  assert.equal(playerKeyAction(space, { tag: "A", editable: false }, { ...alone, focused: true }), null);
+  assert.equal(playerKeyAction(space, { tag: "SPAN", editable: false, role: "switch" }, { ...alone, focused: true }), null);
+  assert.deepEqual(playerKeyAction(space, { tag: "DIV", editable: false }, { ...alone, focused: true }), { kind: "toggle" });
+  assert.deepEqual(playerKeyAction({ key: "ArrowRight", code: "ArrowRight", shiftKey: false }, { tag: "BUTTON", editable: false }, { ...alone, focused: true }), { kind: "seek", delta: 5 });
+});

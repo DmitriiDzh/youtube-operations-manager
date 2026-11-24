@@ -339,12 +339,14 @@ export const MediaVideoPlayer = forwardRef<
       const active = document.activeElement;
       const action = playerKeyAction(
         event,
-        { tag: el?.tagName ?? null, editable: Boolean(el?.isContentEditable) },
+        { tag: el?.tagName ?? null, editable: Boolean(el?.isContentEditable), role: el?.getAttribute?.("role") ?? null },
         {
           full: document.fullscreenElement === box,
           focused: box.contains(active),
           alone: keysRef.current.keysWithoutFocus && (active === null || active === document.body),
           seekKeys: keysRef.current.seekKeys,
+          // A hidden player (its tab or screen not shown) takes no key.
+          rendered: box.getClientRects().length > 0,
         }
       );
       if (!action) return;

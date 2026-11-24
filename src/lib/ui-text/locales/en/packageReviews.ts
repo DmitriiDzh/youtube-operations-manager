@@ -102,7 +102,8 @@ export const packageReviews = {
   "packageReviews.timed.returnOptional": "With comments at moments the general comment is optional.",
   "packageReviews.timed.notSent": "Your {count, plural, one {# comment} other {# comments}} at moments stay in the draft: they go only with «Approve» or «Return».",
   // Owner TG 4856: the watching keys.
-  "packageReviews.keysHint": "← → 5 s · Space: pause · < > speed · , . one frame",
+  "packageReviews.keysHint": "← → 5 s · Space: pause · < > speed",
+  "packageReviews.issues.countsShort": "{open} open · {resolved} ✓",
   // Owner TG 4846 (AC-IS-04..07): issues across package versions.
   "packageReviews.issues.title": "Issues from earlier reviews",
   "packageReviews.issues.counts": "open {open} · resolved {resolved}",

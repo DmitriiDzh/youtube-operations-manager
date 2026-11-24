@@ -174,7 +174,7 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
   const draftOf = (manifest: string) => drafts[manifest]?.comments ?? [];
   const draftActionsOf = (manifest: string) => drafts[manifest]?.actions ?? [];
   /** The decision buttons wait for the draft: loaded, and not failing (review fix 1). */
-  const draftReady = (manifest: string) => drafts[manifest]?.loaded === true && drafts[manifest]?.state !== "error" && drafts[manifest]?.state !== "loading";
+  const draftReady = (manifest: string) => drafts[manifest]?.loaded === true && drafts[manifest]?.state !== "error" && drafts[manifest]?.state !== "loading" && drafts[manifest]?.state !== "saving";
 
   const accept = useCallback(
     (body: PackageReviewsDto) => {
@@ -331,7 +331,11 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
           <span className="min-w-0 flex-1 truncate text-sm text-zinc-300">{item.title}</span>
           {/* Owner TG 4846 (AC-IS-06): the open / resolved issues at a glance. */}
           {(item.issues ?? []).length > 0 && (
-            <span className="hidden shrink-0 rounded bg-violet-500/15 px-1.5 py-0.5 text-[11px] text-violet-200 sm:inline">{t("packageReviews.issues.counts", { open: item.issueCounts?.open ?? 0, resolved: item.issueCounts?.resolved ?? 0 })}</span>
+            <>
+              {/* Review 2 #10: on a phone a compact count, so a folded card still says what is open. */}
+              <span className="shrink-0 rounded bg-violet-500/15 px-1.5 py-0.5 text-[11px] tabular-nums text-violet-200 sm:hidden">{t("packageReviews.issues.countsShort", { open: item.issueCounts?.open ?? 0, resolved: item.issueCounts?.resolved ?? 0 })}</span>
+              <span className="hidden shrink-0 rounded bg-violet-500/15 px-1.5 py-0.5 text-[11px] text-violet-200 sm:inline">{t("packageReviews.issues.counts", { open: item.issueCounts?.open ?? 0, resolved: item.issueCounts?.resolved ?? 0 })}</span>
+            </>
           )}
           <span className="shrink-0 text-xs tabular-nums text-zinc-500">{durationLabel(item.durationSeconds)}</span>
           <span aria-hidden className="shrink-0 text-zinc-500">
@@ -352,7 +356,7 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
                 issues={item.issues ?? []}
                 issueActions={draftActionsOf(item.manifestSha256)}
                 onIssueActions={(next) => saveDraft(item.manifestSha256, draftOf(item.manifestSha256), next)}
-                alone={openCount === 1}
+                alone={openCount === 1 && visible}
                 onDraft={(next) => saveDraft(item.manifestSha256, next, draftActionsOf(item.manifestSha256))}
                 onRetry={() => {
                   if (drafts[item.manifestSha256]?.loaded) saveDraft(item.manifestSha256, draftOf(item.manifestSha256), draftActionsOf(item.manifestSha256));

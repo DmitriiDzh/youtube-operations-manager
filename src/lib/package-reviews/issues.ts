@@ -45,19 +45,27 @@ const sameAgentTurn = (a: IssueTurn | undefined, r: IssueReply) => a?.by === "ag
  * Per decision: the answers it saw come first (the factory answered before the owner looked), then the issues it opens (an approval's
  * are `noted`, a return's `open`), then the owner's actions (`resolved`; `follow_up` -- open again). A carried copy of a decision adds
  * nothing twice (issues by id, turns by content). A reply or an action to an unknown issue is ignored.
+ * Review 2 #9: an answer is ONE answer of one package version -- the decision's manifest (or `pendingManifest` for the current
+ * package): the same version's answer seen again by a later decision is not repeated, but a new version may answer in the same words
+ * again (after a follow-up, say) and that shows. Without `pendingManifest` a pending answer equal to the thread's last turn is skipped.
  */
-export function issuesOf(decisions: readonly PackageReviewDecision[], pending: readonly IssueReply[] = []): ReviewIssue[] {
+export function issuesOf(decisions: readonly PackageReviewDecision[], pending: readonly IssueReply[] = [], pendingManifest: string | null = null): ReviewIssue[] {
   const issues = new Map<string, ReviewIssue>();
-  const lastAgent = (issue: ReviewIssue) => [...issue.thread].reverse().find((t) => t.by === "agent");
-  const addReply = (r: IssueReply, at: string | null) => {
+  const seenAnswers = new Set<string>();
+  const addReply = (r: IssueReply, at: string | null, manifest: string | null) => {
     const issue = issues.get(r.issueId);
-    if (!issue || sameAgentTurn(lastAgent(issue), r)) return;
+    if (!issue) return;
+    if (manifest !== null) {
+      const key = `${manifest}|${r.issueId}`;
+      if (seenAnswers.has(key)) return;
+      seenAnswers.add(key);
+    } else if (sameAgentTurn(issue.thread.at(-1), r)) return;
     issue.thread.push({ by: "agent", status: r.status, text: r.text, atSeconds: r.atSeconds ?? null, at });
     if (r.atSeconds !== undefined) issue.atSeconds = r.atSeconds;
   };
   const seenOwnerTurns = new Set<string>();
   for (const d of decisions) {
-    for (const r of d.repliesSeen ?? []) addReply(r, d.at);
+    for (const r of d.repliesSeen ?? []) addReply(r, d.at, d.manifestSha256);
     for (const c of withIssueIds(d.id, wellFormedTimedComments(d.timedComments))) {
       if (issues.has(c.id!)) continue;
       issues.set(c.id!, {
@@ -79,11 +87,7 @@ export function issuesOf(decisions: readonly PackageReviewDecision[], pending: r
       issue.state = a.kind === "resolved" ? "resolved" : "open";
     }
   }
-  // A pending answer that is already the last one seen adds nothing.
-  for (const r of pending) {
-    const issue = issues.get(r.issueId);
-    if (issue && !sameAgentTurn(lastAgent(issue), r)) addReply(r, null);
-  }
+  for (const r of pending) addReply(r, null, pendingManifest);
   return [...issues.values()].sort((a, b) => a.atSeconds - b.atSeconds || a.id.localeCompare(b.id));
 }
 

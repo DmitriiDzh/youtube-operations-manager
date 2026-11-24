@@ -108,3 +108,9 @@ mp4, same video code), answers each issue in the new manifest, and the owner see
   Producer 1.28.0, unreleased).
 - AC-IS-08 Old builds: additive fields only (`timedComments[].id`, `issueActions`, `repliesSeen`, `reviewReplies`); a decision carrying
   them reads exactly as before.
+
+- AC-IS-09 (independent review 2, #7; a known gap) The wake file computes a video's issues WITHOUT the BL-263 recode aliases: they come
+  from video-projects on each computer and may differ between the two at the moment of writing, and the file must be the same bytes
+  everywhere (AC-RN-16). After a V → S recode the wake file of a later decision lists the issues of the decisions carried to the S
+  code (a manifest-keyed decision is copied with its issue ids) and the new ones; issues of a media-keyed decision under the V code show
+  on the screen and in the plan package (both use the aliases) but not in that file.

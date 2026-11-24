@@ -44,6 +44,7 @@ export function wellFormedDecision(value: unknown): PackageReviewDecision | null
     ...(timed.length > 0 ? { timedComments: timed } : {}),
     ...(actions.length > 0 ? { issueActions: actions } : {}),
     ...(replies.length > 0 ? { repliesSeen: replies } : {}),
+    ...(d.commentGenerated === true && typeof d.comment === "string" ? { commentGenerated: true as const } : {}),
   };
 }
 
@@ -106,7 +107,7 @@ export function ownerReviewStateOf(snapshot: PackageReviewsSnapshot | "unreadabl
   return { required: snapshot.required?.value === true, decisions, aliases };
 }
 
-export type OwnerReviewProblem = { code: "owner_review_pending" } | { code: "owner_review_returned"; params: { comment: string } };
+export type OwnerReviewProblem = { code: "owner_review_pending" } | { code: "owner_review_returned"; params: { comment: string; generated?: number } };
 
 /**
  * The gate for one package that is not uploaded and has no other problem (ADR 0072 §1): null -- it may be ready (the owner's standing
@@ -117,7 +118,8 @@ export function ownerReviewProblemOf(state: OwnerReviewState, key: ReviewKey): O
   if (!state.required) return null;
   const standing = standingDecision(state, key);
   if (standing?.kind === "approved") return null;
-  if (standing?.kind === "returned") return { code: "owner_review_returned", params: { comment: standing.comment ?? "" } };
+  // Review 2 #8: `generated: 1` -- the comment is the timed comments and follow-ups written out (absent otherwise: the shape stays).
+  if (standing?.kind === "returned") return { code: "owner_review_returned", params: { comment: standing.comment ?? "", ...(standing.commentGenerated ? { generated: 1 } : {}) } };
   return { code: "owner_review_pending" };
 }
 

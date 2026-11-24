@@ -375,15 +375,19 @@ export type PlayerKeyAction = { kind: "seek"; delta: number } | { kind: "rate"; 
  */
 export function playerKeyAction(
   event: { key: string; code: string; shiftKey: boolean; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean },
-  target: { tag: string | null; editable: boolean },
-  scope: { full: boolean; focused: boolean; alone: boolean; seekKeys: boolean }
+  target: { tag: string | null; editable: boolean; role?: string | null },
+  scope: { full: boolean; focused: boolean; alone: boolean; seekKeys: boolean; rendered?: boolean }
 ): PlayerKeyAction {
   if (target.editable || target.tag === "INPUT" || target.tag === "TEXTAREA" || target.tag === "SELECT") return null;
+  // Review 2 #2: a player that is not on screen (its tab hidden) never takes a key.
+  if (scope.rendered === false) return null;
   if (event.ctrlKey || event.metaKey || event.altKey) return null;
   const direction = rateKeyDirection(event);
   if (direction !== null) return scope.full || scope.focused ? { kind: "rate", direction } : null;
   const watching = scope.full || (scope.seekKeys && (scope.focused || scope.alone));
-  if (event.key === " " || event.key.toLowerCase() === "k" || event.code === "KeyK") return watching ? { kind: "toggle" } : null;
+  // Review 2 #3: Space / K on a focused control (a button, a switch, a link) is that control's, never the video's.
+  const control = target.tag === "BUTTON" || target.tag === "A" || target.role === "switch";
+  if (event.key === " " || event.key.toLowerCase() === "k" || event.code === "KeyK") return watching && !control ? { kind: "toggle" } : null;
   if (scope.seekKeys && (event.key === "ArrowLeft" || event.key === "ArrowRight") && (scope.full || scope.focused || scope.alone)) {
     return { kind: "seek", delta: event.key === "ArrowLeft" ? -SEEK_KEY_SECONDS : SEEK_KEY_SECONDS };
   }
