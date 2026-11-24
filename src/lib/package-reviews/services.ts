@@ -145,6 +145,16 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
     return { ...base, packages: "ok", items, waiting: gate.required ? items.filter((i) => i.state === "pending").length : 0 };
   }
 
+  /**
+   * The bell and the Media menu badge (fix of BL-257: they never counted the packages waiting): the same count as `view().waiting`,
+   * but a channel without the gate is 0 without scanning its packages -- the alerts poll asks every connected channel each minute.
+   */
+  async function waiting(channelId: string): Promise<number> {
+    const gate = await ownerReviewState(channelId);
+    if (!gate.required) return 0;
+    return (await view(channelId)).waiting;
+  }
+
   async function findPackage(channelId: string, manifestSha256: string, cached: boolean): Promise<ReviewPackage> {
     const found = await deps.packages(channelId, { cached });
     if (found.status !== "ok") throw refuse("package_review_workspace_unavailable", "The channel's packages cannot be read on this computer (Settings → Channels: its workspace folder)", { status: found.status });
@@ -287,13 +297,13 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
     });
   }
 
-  return { ownerReviewState, view, setRequired, decide, mediaFile, carryDecision };
+  return { ownerReviewState, view, waiting, setRequired, decide, mediaFile, carryDecision };
 }
 
 export type PackageReviewsService = ReturnType<typeof createPackageReviewsService>;
 
 /** The owner's surface (the Web UI's package-review routes only, AC-PR-08). */
 export function packageReviewsOwnerSurface(service: PackageReviewsService) {
-  return { view: service.view, setRequired: service.setRequired, decide: service.decide, mediaFile: service.mediaFile };
+  return { view: service.view, waiting: service.waiting, setRequired: service.setRequired, decide: service.decide, mediaFile: service.mediaFile };
 }
 export type PackageReviewsOwnerSurface = ReturnType<typeof packageReviewsOwnerSurface>;

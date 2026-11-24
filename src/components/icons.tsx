@@ -121,6 +121,16 @@ export function MediaIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+// BL-257 fix: a final video waiting for the owner's review (the bell) -- a screen with a play mark.
+export function PlayIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <IconBase {...props}>
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <path d="M10 9l5 3-5 3z" />
+    </IconBase>
+  );
+}
+
 // BL-157: the Servers section (the shared GPU and model infrastructure) -- two stacked server units.
 export function ServersIcon(props: SVGProps<SVGSVGElement>) {
   return (
