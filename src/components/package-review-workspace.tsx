@@ -107,6 +107,7 @@ export function PackageReviewWorkspace({
           loop={false}
           preload="metadata"
           fullscreen
+          rememberRate="ytm.packageReview.playbackRate"
           compact
           className={playerClass}
           onMetadata={({ width, height }) => setFrame(frameOf(width, height))}

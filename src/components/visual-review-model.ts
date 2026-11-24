@@ -327,3 +327,24 @@ export function flagPlaces(times: readonly number[], duration: number, width: nu
     return { left, row, side };
   });
 }
+
+/**
+ * Owner TG 4844: the player's speeds -- 0.25x and 0.5x for frame checks, 1.25x / 1.5x / 2x / 3x to watch a long review faster (the
+ * audio keeps its pitch).
+ */
+export const PLAYBACK_RATES = [0.25, 0.5, 1, 1.25, 1.5, 2, 3] as const;
+export type PlaybackRate = (typeof PLAYBACK_RATES)[number];
+
+/** `<` / `>`: the next slower or faster speed, staying at the ends of the list; an unknown speed counts as 1x. */
+export function stepRate(rate: number, direction: 1 | -1): PlaybackRate {
+  const index = PLAYBACK_RATES.indexOf(rate as PlaybackRate);
+  const from = index === -1 ? PLAYBACK_RATES.indexOf(1) : index;
+  return PLAYBACK_RATES[Math.max(0, Math.min(PLAYBACK_RATES.length - 1, from + direction))];
+}
+
+/** A remembered speed read back (localStorage text): one of the list, else null (the default applies). */
+export function storedRate(value: string | null): PlaybackRate | null {
+  if (value === null || value.trim() === "") return null;
+  const n = Number(value);
+  return (PLAYBACK_RATES as readonly number[]).includes(n) ? (n as PlaybackRate) : null;
+}

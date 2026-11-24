@@ -4,7 +4,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useSta
 import type { PlanMarkerRegion } from "@/lib/generation-plans/contracts";
 import { formatPlayerTime } from "./media-review-player";
 import { useUiText } from "./ui-text-provider";
-import { fitView, flagPlaces, frameAt, isWrap, lastFrameTime, measuredFps, regionFromDrag, regionToScreen, sameProportions, seamJump, seamWindowOf, splitAt, stepFrame, wipeClip, type ImageBox } from "./visual-review-model";
+import { fitView, flagPlaces, frameAt, isWrap, PLAYBACK_RATES, stepRate, storedRate, type PlaybackRate, lastFrameTime, measuredFps, regionFromDrag, regionToScreen, sameProportions, seamJump, seamWindowOf, splitAt, stepFrame, wipeClip, type ImageBox } from "./visual-review-model";
 
 /**
  * BL-175 phase 2 (review): where the second clip of a wipe / difference stands for the first one's `time` -- the same moment, or,
@@ -58,7 +58,7 @@ const FLAG_ROW_PX = 22;
 /** BL-175 phase 2 (§E): a second clip drawn in this player's frame, following its moment, play and speed (wipe or difference). */
 export type VideoOverlay = { src: string; mode: "wipe" | "difference"; split: number; onSplit: (split: number) => void; labels: { first: string; second: string } };
 
-const RATES = [0.25, 0.5, 1, 2] as const;
+const RATES = PLAYBACK_RATES;
 const TONE_COLORS = { finding: "bg-red-500/40", mark: "bg-amber-400/50", question: "bg-sky-400/45" } as const;
 /** Without a known frame rate a step is 1/30 s. */
 const FALLBACK_FPS = 30;
@@ -104,10 +104,12 @@ export const MediaVideoPlayer = forwardRef<
     flags?: VideoFlag[];
     /** A flag was clicked (the screen seeks there or opens the comment). */
     onFlagClick?: (id: string) => void;
+    /** Owner TG 4844: the localStorage key the chosen speed is remembered under (absent: not remembered). */
+    rememberRate?: string;
     /** Owner TG 4817: a full-screen button (the native controls' one is gone with them). */
     fullscreen?: boolean;
   }
->(function MediaVideoPlayer({ src, markers, fps: reportedFps, onAddPin, onPlayStart, onUserSeek, onUserPlay, onPlayingChange, autoPlay = true, onReady, initialTime = null, seam = false, overlay, className = "h-[48vh]", startMuted = true, compact = false, loop = true, preload = "auto", onMetadata, flags, onFlagClick, fullscreen = false }, ref) {
+>(function MediaVideoPlayer({ src, markers, fps: reportedFps, onAddPin, onPlayStart, onUserSeek, onUserPlay, onPlayingChange, autoPlay = true, onReady, initialTime = null, seam = false, overlay, className = "h-[48vh]", startMuted = true, compact = false, loop = true, preload = "auto", onMetadata, flags, onFlagClick, fullscreen = false, rememberRate }, ref) {
   const { t } = useUiText();
   const video = useRef<HTMLVideoElement | null>(null);
   const frameBox = useRef<HTMLDivElement | null>(null);
@@ -117,7 +119,28 @@ export const MediaVideoPlayer = forwardRef<
   const [time, setTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [rate, setRate] = useState<(typeof RATES)[number]>(1);
+  // Owner TG 4844: a viewer's chosen speed is remembered in this browser under `rememberRate` (absent: every clip starts at 1x). The
+  // player is drawn in the browser only (after its screen loaded), so the first value can be read here.
+  const [rate, setRateState] = useState<PlaybackRate>(() => {
+    if (!rememberRate || typeof window === "undefined") return 1;
+    try {
+      return storedRate(window.localStorage.getItem(rememberRate)) ?? 1;
+    } catch {
+      return 1;
+    }
+  });
+  const setRate = useCallback(
+    (next: PlaybackRate) => {
+      setRateState(next);
+      if (!rememberRate) return;
+      try {
+        window.localStorage.setItem(rememberRate, String(next));
+      } catch {
+        // storage unavailable: kept while the page is open
+      }
+    },
+    [rememberRate]
+  );
   const [muted, setMuted] = useState(startMuted);
   const [range, setRange] = useState<{ start: number; end: number } | null>(null);
   const [hover, setHover] = useState<number | null>(null);
@@ -233,7 +256,13 @@ export const MediaVideoPlayer = forwardRef<
   }, [measured, playing, rate, reportedFps]);
 
   useEffect(() => {
-    if (video.current) video.current.playbackRate = rate;
+    // Owner TG 4844: faster or slower, the sound keeps its pitch (the default in browsers; set explicitly, Safari's prefixed name too).
+    for (const el of [video.current, second.current] as Array<(HTMLVideoElement & { webkitPreservesPitch?: boolean }) | null>) {
+      if (!el) continue;
+      el.preservesPitch = true;
+      el.webkitPreservesPitch = true;
+      el.playbackRate = rate;
+    }
     if (second.current) second.current.playbackRate = rate;
   }, [rate]);
   // §E: paused, the second clip shows the same frame (a step, a seek); playing, the tick keeps it there.
@@ -282,12 +311,26 @@ export const MediaVideoPlayer = forwardRef<
   };
 
   // Review fix 4: in full screen, Space (or K) plays and pauses, as the browser's own controls did; a click on the frame already does.
+  // Owner TG 4844: `<` / `>` step the speed -- in full screen, or once this player has the focus (a click on its frame gives it), so two
+  // players on one page never both react. Never while typing.
+  const rateRef = useRef<PlaybackRate>(rate);
+  useEffect(() => {
+    rateRef.current = rate;
+  }, [rate]);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (!root.current || document.fullscreenElement !== root.current) return;
-      if (event.key !== " " && event.key.toLowerCase() !== "k") return;
+      const box = root.current;
+      if (!box) return;
       const tag = (event.target as HTMLElement | null)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      const full = document.fullscreenElement === box;
+      if (event.key === "<" || event.key === ">") {
+        if (!full && !box.contains(document.activeElement)) return;
+        event.preventDefault();
+        setRate(stepRate(rateRef.current, event.key === ">" ? 1 : -1));
+        return;
+      }
+      if (!full || (event.key !== " " && event.key.toLowerCase() !== "k")) return;
       event.preventDefault();
       const v = video.current;
       if (!v) return;
@@ -296,7 +339,7 @@ export const MediaVideoPlayer = forwardRef<
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [play]);
+  }, [play, setRate]);
 
   useImperativeHandle(ref, () => ({
     togglePlay() {
@@ -421,7 +464,7 @@ export const MediaVideoPlayer = forwardRef<
   const pct = (seconds: number) => (duration > 0 ? `${(seconds / duration) * 100}%` : "0%");
 
   return (
-    <div ref={root} className="space-y-2 [&:fullscreen]:flex [&:fullscreen]:flex-col [&:fullscreen]:justify-center [&:fullscreen]:bg-black [&:fullscreen]:p-4">
+    <div ref={root} tabIndex={-1} className="space-y-2 outline-none [&:fullscreen]:flex [&:fullscreen]:flex-col [&:fullscreen]:justify-center [&:fullscreen]:bg-black [&:fullscreen]:p-4">
       <div
         ref={frameBox}
         className={`relative ${onAddPin || overlay ? "touch-none" : ""} select-none overflow-hidden rounded-lg bg-black ${className} [:fullscreen>&]:aspect-auto [:fullscreen>&]:h-auto [:fullscreen>&]:max-h-none [:fullscreen>&]:w-full [:fullscreen>&]:min-h-0 [:fullscreen>&]:flex-1`}
@@ -430,6 +473,8 @@ export const MediaVideoPlayer = forwardRef<
         onPointerUp={onFrameUp}
         onClick={(event) => {
           if (!event.shiftKey) toggleHere();
+          // Owner TG 4844: the player takes the focus, so its keys (`<` / `>`) work.
+          root.current?.focus({ preventScroll: true });
         }}
       >
         {failed ? (
@@ -450,6 +495,7 @@ export const MediaVideoPlayer = forwardRef<
               setBox({ naturalWidth: event.currentTarget.videoWidth, naturalHeight: event.currentTarget.videoHeight });
               onMetadata?.({ width: event.currentTarget.videoWidth, height: event.currentTarget.videoHeight, duration: event.currentTarget.duration });
               event.currentTarget.playbackRate = rate;
+              event.currentTarget.preservesPitch = true;
               // Phase 2 (§E): a question about a spot opens paused there, so its pin shows.
               if (initialTime !== null) {
                 event.currentTarget.currentTime = Math.min(initialTime, event.currentTarget.duration || initialTime);
@@ -648,7 +694,7 @@ export const MediaVideoPlayer = forwardRef<
           {formatPlayerTime(time)} / {formatPlayerTime(duration)}
         </span>
         <span className="text-zinc-500">{fps !== null ? t("review.visual.frame", { frame: frameAt(time, fps), fps: Math.round(fps * 100) / 100 }) : t("review.visual.frameUnknown")}</span>
-        <span className="inline-flex gap-0.5 rounded-md bg-zinc-950 p-0.5" role="group" aria-label={t("review.visual.speed")}>
+        <span className="inline-flex flex-wrap gap-0.5 rounded-md bg-zinc-950 p-0.5" role="group" aria-label={t("review.visual.speed")} title={t("review.visual.speed")}>
           {RATES.map((r) => (
             <button key={r} type="button" onClick={() => setRate(r)} aria-pressed={rate === r} className={`rounded px-1.5 py-0.5 ${rate === r ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`}>
               {/* ui-text-ignore: a playback speed */}

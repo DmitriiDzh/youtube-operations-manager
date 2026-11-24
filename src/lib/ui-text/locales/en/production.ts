@@ -407,7 +407,7 @@ export const production = {
   "review.visual.frameForward": "One frame forward (.)",
   "review.visual.frame": "frame {frame} · {fps} fps",
   "review.visual.frameUnknown": "frame rate not known yet",
-  "review.visual.speed": "Speed",
+  "review.visual.speed": "Speed (keys < and >)",
   "review.visual.soundOff": "Sound off",
   "review.visual.soundOn": "Sound on",
   "review.visual.loopRange": "Looping {start}–{end}",

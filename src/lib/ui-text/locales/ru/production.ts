@@ -408,7 +408,7 @@ export const production: Record<keyof typeof en, string> = {
   "review.visual.frameForward": "Кадр вперёд (.)",
   "review.visual.frame": "кадр {frame} · {fps} к/с",
   "review.visual.frameUnknown": "частота кадров пока неизвестна",
-  "review.visual.speed": "Скорость",
+  "review.visual.speed": "Скорость (клавиши < и >)",
   "review.visual.soundOff": "Звук выкл.",
   "review.visual.soundOn": "Звук вкл.",
   "review.visual.loopRange": "По кругу {start}–{end}",

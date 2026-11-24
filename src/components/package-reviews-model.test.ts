@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { actionsOf, decisionBody, decisionReady, durationLabel, frameOf, mediaSrcOf, newCommentId, nextMoment, oneLineText, returnCommentReady, withComment, withEditedComment, withoutComment } from "./package-reviews-model";
-import { flagPlaces } from "./visual-review-model";
+import { flagPlaces, PLAYBACK_RATES, stepRate, storedRate } from "./visual-review-model";
 
 // BL-257 (PACKAGE_REVIEW_PLAN.md AC-PR-04/05/09/15; ADR 0070 §4, §6): the screen asks for the media by the manifest hash only; the
 // owner may change his mind until the upload; approval needs the manifest's video checksum; a return needs a comment; a vertical
@@ -91,4 +91,18 @@ test("AC-TC-02: flag places on the timeline", () => {
 
 test("AC-PR-15: the frame follows the video's own size", () => {
   assert.deepEqual([frameOf(1080, 1920), frameOf(1920, 1080), frameOf(0, 0)], ["vertical", "horizontal", "horizontal"]);
+});
+
+// Owner TG 4844: the speeds 0.25x / 0.5x (frame checks), 1x, 1.25x, 1.5x, 2x, 3x; `<` / `>` step one speed and stop at the ends; a
+// remembered speed is used only when it is one of the list.
+test("TG 4844: playback speeds, stepping and the remembered speed", () => {
+  assert.deepEqual([...PLAYBACK_RATES], [0.25, 0.5, 1, 1.25, 1.5, 2, 3]);
+  assert.equal(stepRate(1, 1), 1.25);
+  assert.equal(stepRate(1.5, 1), 2);
+  assert.equal(stepRate(2, 1), 3);
+  assert.equal(stepRate(3, 1), 3, "the fastest stays");
+  assert.equal(stepRate(1, -1), 0.5);
+  assert.equal(stepRate(0.25, -1), 0.25, "the slowest stays");
+  assert.equal(stepRate(1.75, 1), 1.25, "an unknown speed counts as 1x");
+  assert.deepEqual([storedRate("1.5"), storedRate("3"), storedRate("4"), storedRate("abc"), storedRate(""), storedRate(null)], [1.5, 3, null, null, null, null]);
 });
