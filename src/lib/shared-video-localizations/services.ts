@@ -88,6 +88,19 @@ function readBackProblem(after: FreshLiveVideo, before: FreshLiveVideo, set: Rec
   return problems.length > 0 ? problems.join("; ") : null;
 }
 
+/** The languages whose entry on the video is not what the caller's check saw (null: absent then); [] when it still is. */
+function unexpectedLanguages(video: FreshLiveVideo, expected: Record<string, LiveLocalizationEntry | null> | undefined): string[] {
+  if (!expected) return [];
+  return Object.entries(expected)
+    .filter(([language, value]) => {
+      const key = localeKeyFor(video.localizations, language);
+      const now = key === null ? null : video.localizations[key];
+      if (value === null || now === null) return value !== now;
+      return now.title !== value.title || now.description !== value.description;
+    })
+    .map(([language]) => language);
+}
+
 export function createLiveLocalizationsWriter(deps: LiveLocalizationsWriterDependencies) {
   const { attempts, delayMs } = deps.readBack ?? LIVE_LOCALIZATIONS_READ_BACK;
   // BL-225 stage 3: which writer the audit names (`live_localizations` for BL-207, `upload_localizations` for BL-225).
@@ -109,6 +122,17 @@ export function createLiveLocalizationsWriter(deps: LiveLocalizationsWriterDepen
       const { channelId, videoId, localizations } = input;
       const languages = Object.keys(localizations);
       if (languages.length === 0) return { verified: true };
+      const context = input.auditContext ?? {};
+      const changedSinceCheck = (video: FreshLiveVideo) => {
+        const changed = unexpectedLanguages(video, input.expectedCurrent);
+        if (changed.length > 0) {
+          throw new DomainError({
+            code: "video_details_conflict",
+            message: `The video's translations ${changed.join(", ")} changed on YouTube since they were checked, so nothing was sent: check again.`,
+            details: { videoId, languages: changed },
+          });
+        }
+      };
 
       // 1. Identity: the account is the channel's (fails closed).
       const credentials = await deps.auth.resolve({ credentialRef: input.credentialRef, requiredScopes: [YOUTUBE_WRITE_SCOPE] });
@@ -125,6 +149,8 @@ export function createLiveLocalizationsWriter(deps: LiveLocalizationsWriterDepen
       if (expectedProblems(fresh, expected).length > 0) {
         throw new DomainError({ code: "update_failed", message: "The video's fields do not read back as just written yet, so the translations were not sent (they would undo them)", details: { videoId } });
       }
+
+      changedSinceCheck(fresh);
 
       // 3. A video without a default language is never written (and never given one here).
       const defaultLanguage = checkDefaultLanguage(fresh.snippet);
@@ -149,7 +175,7 @@ export function createLiveLocalizationsWriter(deps: LiveLocalizationsWriterDepen
         videoId,
         snapshot: { kind: "localization", defaultLanguage: fresh.snippet.defaultLanguage, existingLocalizations: fresh.localizations, snippetTitle: fresh.snippet.title, snippetDescription: fresh.snippet.description },
       });
-      await deps.audit.record({ channelId, videoId, eventType: "BACKUP", detail: { source, backupPath: backup.path } });
+      await deps.audit.record({ channelId, videoId, eventType: "BACKUP", detail: { ...context, source, backupPath: backup.path } });
 
       // 6. Right before the write: the broadcast is still the stream's running one (a Stop or a segment switch may have landed
       // meanwhile), and the video still reads as the read the payload is built from -- an Edit made since would be undone by the
@@ -162,6 +188,7 @@ export function createLiveLocalizationsWriter(deps: LiveLocalizationsWriterDepen
       if (changedBetweenReads(recheck, fresh)) {
         throw new DomainError({ code: "update_failed", message: "The video changed while the translations were being prepared, so nothing was sent: apply again", details: { videoId } });
       }
+      changedSinceCheck(recheck);
       // The same values; the latest read is the one sent back.
       fresh = recheck;
 
@@ -181,7 +208,7 @@ export function createLiveLocalizationsWriter(deps: LiveLocalizationsWriterDepen
       // 8. Live writes, immediately before the one write.
       await deps.youtube.assertLiveWritesAuthorized();
       await deps.youtube.update(credentials, videoId, payload);
-      await deps.audit.record({ channelId, videoId, eventType: "RESULT", detail: { source, languages } });
+      await deps.audit.record({ channelId, videoId, eventType: "RESULT", detail: { ...context, source, languages } });
 
       // 9. Read-back: every written language exactly, every other kept, the snippet text and fields unchanged.
       const before = fresh;
@@ -194,7 +221,7 @@ export function createLiveLocalizationsWriter(deps: LiveLocalizationsWriterDepen
       }
 
       // 10. Audit.
-      await deps.audit.record({ channelId, videoId, eventType: "VERIFICATION", detail: problem === null ? { source, verified: true } : { source, verified: false, problem } });
+      await deps.audit.record({ channelId, videoId, eventType: "VERIFICATION", detail: problem === null ? { ...context, source, verified: true } : { ...context, source, verified: false, problem } });
       return problem === null ? { verified: true } : { verified: false, detail: problem };
     },
   };

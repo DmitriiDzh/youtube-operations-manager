@@ -28,6 +28,15 @@ export type LiveLocalizationsApplyInput = {
    * switch may land while the step reads and backs up). Absent: not asked.
    */
   isCurrent?: () => Promise<"current" | "stopped" | "replaced">;
+  /**
+   * Package localizations (owner TG 4839/4842, ADR 0072 amendment): what the caller's own three-way check saw for each language it
+   * writes -- the entry as read, or null when the video had no such language. Checked on the fresh read and on the recheck right
+   * before the write; any difference (a Studio edit in between) fails closed with `video_details_conflict`, nothing sent. Absent:
+   * not checked (the live and upload callers).
+   */
+  expectedCurrent?: Record<string, LiveLocalizationEntry | null>;
+  /** Added to every audit row's detail of this write (e.g. the actor and the package); `source` stays the writer's. */
+  auditContext?: Record<string, unknown>;
 };
 
 /**
@@ -62,7 +71,7 @@ export type LiveLocalizationsWriterDependencies = {
   sleep(ms: number): Promise<void>;
   newId(): string;
   /** BL-225 stage 3: the writer named in the audit details (default `live_localizations`). */
-  source?: "live_localizations" | "upload_localizations";
+  source?: "live_localizations" | "upload_localizations" | "package_localizations";
   /** Reads (the first included) while the video does not yet show what was written; the pause between them. */
   readBack?: { attempts: number; delayMs: number };
 };

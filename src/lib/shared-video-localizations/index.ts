@@ -8,7 +8,8 @@ import { createLiveLocalizationsYoutubeAdapter } from "./adapters/youtube-api";
 import { createLiveLocalizationsWriter } from "./services";
 
 // A video's per-language title/description writer, shared (AGENTS.md §M) by the two writers AGENTS.md §F authorizes for a video
-// besides Batches: a live broadcast's translations (BL-207, ADR 0045) and an uploaded planned release package's (BL-225, ADR 0051).
+// besides Batches: a live broadcast's translations (BL-207, ADR 0045), an uploaded planned release package's (BL-225, ADR 0051) and
+// a package's current translations onto its already uploaded video (owner TG 4839/4842, ADR 0072 amendment).
 // Identity, a fresh read, the video's own language never written, a backup, the video unchanged right before the write, the shared
 // safe merge, Live writes immediately before the one `videos.update part=snippet,localizations`, read-back and audit. Which videos
 // each caller may write is that caller's rule.
@@ -24,7 +25,7 @@ export type {
 export { createLiveLocalizationsWriter, LIVE_LOCALIZATIONS_READ_BACK } from "./services";
 
 /** The writer wired to its real adapters; `source` names the caller in the audit. */
-export function createVideoLocalizationsWriterCore(source: "live_localizations" | "upload_localizations") {
+export function createVideoLocalizationsWriterCore(source: "live_localizations" | "upload_localizations" | "package_localizations") {
   return createLiveLocalizationsWriter({
     auth: { resolve: (args) => resolveGoogleCredentials(args as Parameters<typeof resolveGoogleCredentials>[0]) },
     writeContext: {
