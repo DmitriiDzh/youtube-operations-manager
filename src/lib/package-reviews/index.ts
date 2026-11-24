@@ -42,7 +42,7 @@ function service(ports: PackageReviewsCompositionPorts) {
     },
     // The owner's decisions are audited on the computer they were made on (the synced record names the device for the other).
     audit: ({ channelId, video, detail }) => insertVideoEditAuditEvent({ channelId, videoId: `package:${video}`, eventType: "RESULT", detail }),
-    // Owner TG 4817 (AC-TC-03): the owner's drafts of timed comments, device-local (schema 124).
+    // Owner TG 4817 (AC-TC-03): the owner's drafts of timed comments, device-local (schema 126).
     drafts: {
       get: (channelId, manifestSha256) => getPackageReviewDraft(channelId, manifestSha256),
       set: (channelId, manifestSha256, commentsJson, updatedAt) => setPackageReviewDraft(channelId, manifestSha256, commentsJson, updatedAt),

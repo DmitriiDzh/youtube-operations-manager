@@ -2,6 +2,14 @@
 
 ## 4. Статус компонентов
 
+### 2.9bo2 Теги видео только на чтение (BL-273, FO-REQ-0056 часть 2) — **IMPLEMENTED** (dev, 24.11.2026)
+- `channel_sync` сохраняет `snippet.tags` из уже читаемой части `snippet` (без доп. квоты) в `videos.tags_json` (schema v125; `NULL` —
+  ещё не прочитаны, до следующего синка). Проверенная запись video-details (`video_details_update`, «Применить упаковку»,
+  `producer_video_metadata_update`) сразу обновляет теги в локальной копии из read-back.
+- MCP: поле `tags` в `channel_video_list` (выбирается в `fields`) и `metadata.tags` в `agent_get_video_context` (`[]` — тегов нет,
+  `null` — ещё не прочитаны). Agent API 4.28.0, Producer API 1.30.0. Записей в YouTube и изменений писателей нет. Часть 1 запроса
+  (локализации «О канале») вне рамок.
+
 ### 2.9bm2 Мелкие изменения 15.11 (без отдельного BL)
 - Автозагрузка (private): список каналов, которые она пропускает (`auto_private_upload_paused_channels`, app_settings, этот компьютер;
   переключатели «По каналам» в карточке «Запись на YouTube»; owner TG 2298, WWE). Загрузки держат restart-when-idle только в окнах

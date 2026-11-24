@@ -58,8 +58,8 @@ together).
 review player (`MediaVideoPlayer`, as the plan review of clips) instead of the native controls, and the owner may bind comments to moments of
 the video. An approval or a return may carry `timedComments [{ atSeconds, text }]` in the synced decision (never a packaging comment); a
 return without a general comment stores them as `m:ss text` lines in `comment`, so an older build still reads the return. The unsent
-draft is device-local: SQLite schema 124 `package_review_drafts` (the first schema change of this feature). Agents read the batch in the
-wake file («Timed comments») and as `reviewTimedComments` of the plan's package (Factory 1.55.0, Agent 4.26.0, Producer 1.28.0).
+draft is device-local: SQLite schema 126 `package_review_drafts` (the first schema change of this feature). Agents read the batch in the
+wake file («Timed comments») and as `reviewTimedComments` of the plan's package (Factory 1.56.0, Agent 4.29.0, Producer 1.31.0).
 Still no YouTube write and no MCP path that decides.
 
 **Amendment (2026-11-24, owner TG 4836):** an approval may carry a general comment as notes for future videos (non-blocking), also as

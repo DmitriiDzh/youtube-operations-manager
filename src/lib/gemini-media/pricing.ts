@@ -1,5 +1,5 @@
 import { ceil4 } from "@/lib/shared-money";
-import { GEMINI_IMAGE_MODELS, GEMINI_LIMITS, GEMINI_SPEECH, GEMINI_SPEECH_MODELS, GEMINI_SPEECH_PRICE_CHANGE_AT, GEMINI_VIDEO_MODELS, ownEntry } from "./contracts";
+import { GEMINI_IMAGE_MODELS, GEMINI_LIMITS, GEMINI_SPEECH, GEMINI_SPEECH_MODELS, GEMINI_SPEECH_PRICE_CHANGE_AT, GEMINI_VIDEO_MODEL_ALIASES, GEMINI_VIDEO_MODELS, geminiVideoModelSpec, ownEntry } from "./contracts";
 
 // BL-174 (GEMINI_MEDIA_PLAN.md §2.3): estimates before a call and costs after it, from the official price table
 // (`GEMINI_PRICES_AS_OF`). Pure. Every amount goes through `ceil4` (USD, 4 decimals, rounded up).
@@ -15,7 +15,7 @@ export function estimateImageUsd(args: { model: string; size: string; promptChar
 }
 
 export function estimateVideoUsd(args: { model: string; resolution: string; durationSeconds: number; promptChars?: number; inputImages?: number }): number {
-  const spec = ownEntry(GEMINI_VIDEO_MODELS, args.model);
+  const spec = geminiVideoModelSpec(args.model);
   const perSecond = spec ? ownEntry(spec.perSecond, args.resolution) : undefined;
   if (!spec || perSecond === undefined) throw new Error(`no price for ${args.model} ${args.resolution}`);
   const tokens = spec.tokenPricing;
@@ -40,7 +40,7 @@ export function videoCostFromUsage(
   usage: { inputTokens: number; outputTokens: number; thoughtTokens: number; outputByModality: Record<string, number> },
   saved: { resolution: string; durationSeconds: number } | null
 ): number {
-  const tokens = ownEntry(GEMINI_VIDEO_MODELS, model)?.tokenPricing;
+  const tokens = geminiVideoModelSpec(model)?.tokenPricing;
   if (!tokens) throw new Error(`no token prices for ${model}`);
   const splitTotal = Object.values(usage.outputByModality).reduce((sum, n) => sum + n, 0);
   const totalOut = Math.max(usage.outputTokens, splitTotal);
@@ -52,7 +52,7 @@ export function videoCostFromUsage(
 
 /** The table price of a saved Omni video alone: its seconds x the video tokens per second x the video rate. */
 export function videoCostFloor(model: string, resolution: string, durationSeconds: number): number {
-  const tokens = ownEntry(GEMINI_VIDEO_MODELS, model)?.tokenPricing;
+  const tokens = geminiVideoModelSpec(model)?.tokenPricing;
   const perSecond = tokens ? ownEntry(tokens.videoTokensPerSecond, resolution) : undefined;
   if (!tokens || perSecond === undefined) throw new Error(`no token prices for ${model} ${resolution}`);
   return ceil4((perSecond * durationSeconds * tokens.videoOutPerM) / PER_M);
@@ -154,6 +154,9 @@ export function modelCatalog(at: Date = new Date()) {
       // BL-179 (FO-REQ-0021): whether first/last frames are accepted, and Google's announced shutdown date.
       frames: spec.frames,
       retiresOn: spec.retiresOn ?? null,
+      // Owner TG 3700 (Factory API 1.55.0): whole seconds allowed, and the deprecated ids accepted for this model.
+      durationSeconds: spec.durationSeconds,
+      aliases: Object.entries(GEMINI_VIDEO_MODEL_ALIASES).filter(([, target]) => target === model).map(([alias]) => alias),
       ...(spec.tokenPricing
         ? { usdPerMillionTokens: { input: spec.tokenPricing.inputPerM, textAndThinkingOutput: spec.tokenPricing.textOutPerM, videoOutput: spec.tokenPricing.videoOutPerM } }
         : {}),

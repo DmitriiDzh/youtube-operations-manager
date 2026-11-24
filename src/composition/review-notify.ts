@@ -1,6 +1,7 @@
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { decidingRecordOf, wellFormedAttachments } from "@/lib/clip-reviews";
+import { decidingImageRecordOf } from "@/lib/image-reviews";
 import { commentIsTimedText, decisionsOfVideo, issuesOf, issuesReadout, ownerReviewStateOf, standingDecision, timedCommentsReadout, wellFormedTimedComments } from "@/lib/package-reviews";
 import {
   deleteReviewNotifyLedgerBefore,
@@ -37,6 +38,12 @@ import { latestVersion } from "@/lib/storyboards";
 import {
   createClipReviewsCoreForProduction,
   createGenerationPlansShareCoreForProduction,
+  createImageReviewsCoreForProduction,
+  IMAGE_REVIEW_APPROVED_KINDS,
+  IMAGE_REVIEW_OWNER_KINDS,
+  type ImageReviewDecision,
+  type ImageReviewImage,
+  type ImageReviewsSnapshot,
   createPackageReviewsCoreForProduction,
   createPublishingPlansCoreForProduction,
   createStoryboardsCoreForProduction,
@@ -93,6 +100,91 @@ export function clipNoticesOf(channel: Channel, snapshot: ClipReviewsSnapshot, s
       ytmPlace: "Медиа → «Клипы»",
       readTool: `producer_clip_review_get ${json({ channelId: channel.channelId, clipId: decision.clipId })}`,
     });
+  }
+  return out;
+}
+
+// --- master still images (BL-272, ADR 0076) ---------------------------------------------------------------------------------
+
+const IMAGE_NEXT: Record<string, string> = {
+  approved: "the image is approved: make the clip from exactly this file (producer_clip_review_submit with approvedImageId)",
+  approved_with_note: "the image is approved WITH this note: apply the note, then make the clip (approvedImageId may name this image)",
+  returned: "the image is returned: rework it as the comment says and submit the new file (same sceneId)",
+};
+
+/** The Inbox status of the notice that an approval the Producer was told about no longer counts (review: BL-272 item 2). */
+export const IMAGE_APPROVAL_OVERTURNED = "approval_overturned";
+
+const decisionText = (d: ImageReviewDecision) => `${d.id} (${d.kind}, ${d.at}${d.device ? `, on ${d.device}` : ""})`;
+
+/**
+ * An owner `approved` / `approved_with_note` / `returned` record of an image; never the Producer's withdrawal or a submit. Review
+ * (BL-272 item 2): when the deciding record is an owner RETURN and the document also holds a LATER owner approval (the two computers
+ * answered offline; the earlier return decides, ADR 0061 §5), the Producer gets one more notice per such approval
+ * (`approval_overturned`, its own id `<approvalId>-overturned-by-<returnId>`, dated as the approval so it is in the window exactly when
+ * that approval's notice was): the approval does not count and a clip made from the image shows its source as returned. It is written
+ * whichever record reached this computer first (the writer cannot know which notice the Producer read first).
+ */
+export function imageNoticesOf(channel: Channel, snapshot: ImageReviewsSnapshot, sinceMs: number): ReviewDecisionNotice[] {
+  const all = Object.values(snapshot.decisions);
+  const out: ReviewDecisionNotice[] = [];
+  const imageContext = (image: ImageReviewImage | undefined) =>
+    image
+      ? [
+          { label: "Scene", value: image.sceneId },
+          { label: "Image file", value: image.imagePath },
+          { label: "Image sha256", value: `${image.sha256} (${image.width}×${image.height}, ${image.sizeBytes} bytes)` },
+          ...(image.batchId ? [{ label: "Batch", value: image.batchId }] : []),
+          ...(image.note ? [{ label: "Producer's note", value: image.note }] : []),
+        ]
+      : [];
+  /** The owner's approvals of the image that a deciding RETURN overrides (made later, so they do not count). */
+  const overturnedBy = (deciding: ImageReviewDecision | null) =>
+    deciding && deciding.by === "owner" && deciding.kind === "returned"
+      ? all.filter((d) => d.imageId === deciding.imageId && d.id !== deciding.id && d.by === "owner" && IMAGE_REVIEW_APPROVED_KINDS.includes(d.kind))
+      : [];
+  for (const decision of all) {
+    if (decision.by !== "owner" || !IMAGE_REVIEW_OWNER_KINDS.includes(decision.kind)) continue;
+    const image = Object.hasOwn(snapshot.images, decision.imageId) ? snapshot.images[decision.imageId] : undefined;
+    const deciding = decidingImageRecordOf(decision.imageId, all);
+    const common = {
+      kind: "image" as const,
+      channelId: channel.channelId,
+      channelName: channel.name,
+      itemId: decision.imageId,
+      attachments: [] as string[],
+      ytmPlace: "Медиа → «Кадры»",
+      readTool: `producer_image_review_get ${json({ channelId: channel.channelId, imageId: decision.imageId })}`,
+    };
+    // This approval was told to the Producer, and an earlier return synced later decides the image instead.
+    if (deciding && overturnedBy(deciding).some((d) => d.id === decision.id) && after(decision.at, sinceMs)) {
+      out.push({
+        ...common,
+        decisionId: `${decision.id}-overturned-by-${deciding.id}`,
+        status: IMAGE_APPROVAL_OVERTURNED,
+        comment: deciding.comment,
+        decidedAt: decision.at,
+        decidedOn: deciding.device,
+        context: [
+          ...imageContext(image),
+          { label: "Approval that no longer counts", value: decisionText(decision) },
+          { label: "Decided by", value: `an earlier owner return ${decisionText(deciding)} (the two computers answered separately): the earliest owner decision counts` },
+          {
+            label: "Next",
+            value: `the image is RETURNED, not approved: do not make a clip from it (approvedImageId ${decision.imageId} is refused now); a clip already sent with it shows the owner its source as returned -- rework the image as the comment says and submit the new file (same sceneId)`,
+          },
+        ],
+      });
+    }
+    if (!after(decision.at, sinceMs)) continue;
+    const overturned = deciding && deciding.id === decision.id ? overturnedBy(deciding) : [];
+    const context = [
+      ...imageContext(image),
+      ...(IMAGE_NEXT[decision.kind] ? [{ label: "Next", value: IMAGE_NEXT[decision.kind] }] : []),
+      ...(overturned.length > 0 ? [{ label: "Overturns", value: `the later approval${overturned.length > 1 ? "s" : ""} ${overturned.map(decisionText).join("; ")} no longer count${overturned.length > 1 ? "" : "s"}: this earlier return decides the image` }] : []),
+      ...(deciding && deciding.id !== decision.id ? [{ label: "Counts", value: `no: an earlier owner decision (${deciding.id}) decides this image` }] : []),
+    ];
+    out.push({ ...common, decisionId: decision.id, status: decision.kind, comment: decision.comment, decidedAt: decision.at, decidedOn: decision.device, context });
   }
   return out;
 }
@@ -549,6 +641,10 @@ function createProductionReviewNotify(): ReviewNotify {
       {
         name: "clips",
         list: (since) => perChannel(async (ch) => clipNoticesOf(ch, await readDocument(paths.clipReviewsDocDir, ch.channelId, () => createClipReviewsCoreForProduction().read(ch.channelId)), Date.parse(since))),
+      },
+      {
+        name: "images",
+        list: (since) => perChannel(async (ch) => imageNoticesOf(ch, await readDocument(paths.imageReviewsDocDir, ch.channelId, () => createImageReviewsCoreForProduction().read(ch.channelId)), Date.parse(since))),
       },
       {
         name: "storyboards",

@@ -249,6 +249,9 @@ export const videos = sqliteTable("videos", {
   durationSeconds: integer("duration_seconds"),
   // Additive, SCHEMA_MIGRATIONS version 47: YouTube's `snippet.liveBroadcastContent` ("none" | "live" | "upcoming") from the last sync; NULL = unknown.
   liveBroadcastContent: text("live_broadcast_content"),
+  // Additive, SCHEMA_MIGRATIONS version 125 (FO-REQ-0056 part 2): YouTube's `snippet.tags` from the last sync, a JSON array of strings
+  // ("[]" = the sync saw none). Nullable, no default: NULL = not read since this column existed (unknown, never shown as "no tags").
+  tagsJson: text("tags_json"),
   // Additive, schema version 21 (owner instruction, 2026-09-26, Telegram: Content tab's "Publish"
   // column needs a scheduled-publish date for a still-private video, not only its actual
   // `publishedAt`). This is YouTube's own `status.publishAt` -- a distinct field from
@@ -1913,7 +1916,8 @@ export const producerAgentTokens = sqliteTable("producer_agent_tokens", {
 
 /**
  * BL-161, SCHEMA_MIGRATIONS version 72: one row per Producer MCP tool call, allowed or refused (FO-REQ-0012 §2.4: the owner sees
- * what the Producer looked at). Device-local; rows older than 90 days are pruned on insert.
+ * what the Producer looked at). Device-local; rows older than 90 days are pruned on insert. Version 124 (owner TG 4782 review):
+ * `target` and `details_json` say what a playlist write wrote (the playlist, privacy, video ids, the answer's counts); null otherwise.
  */
 export const producerCallLog = sqliteTable("producer_call_log", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -1922,6 +1926,8 @@ export const producerCallLog = sqliteTable("producer_call_log", {
   channelId: text("channel_id"),
   outcome: text("outcome").notNull(),
   errorCode: text("error_code"),
+  target: text("target"),
+  detailsJson: text("details_json"),
 });
 
 /**
@@ -2142,7 +2148,7 @@ export const socialPostJobs = sqliteTable(
 );
 
 /**
- * SCHEMA_MIGRATIONS version 124 (owner TG 4817, PACKAGE_REVIEW_PLAN.md AC-TC-03): the owner's draft of timed comments on one release
+ * SCHEMA_MIGRATIONS version 126 (owner TG 4817, PACKAGE_REVIEW_PLAN.md AC-TC-03): the owner's draft of timed comments on one release
  * package (channel, manifest SHA-256) in Media → «Видео на проверку» -- kept until he sends them with his decision, so a reload, another
  * tab or his phone through remote access finds them. Device-local (the review screen runs on one computer), never synced, never in a
  * snapshot; the row goes when the decision carrying them is stored or the draft is emptied.
@@ -6252,7 +6258,33 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
   {
     version: 124,
     description:
-      "package_review_drafts -- owner TG 4817 (PACKAGE_REVIEW_PLAN.md AC-TC-03): the owner's draft of timed comments per (channel, release-package manifest) until he sends them with his review decision. Additive (one new table), device-local",
+      "producer_call_log.target + details_json -- owner TG 4782 review (ADR 0048 amendment 1): what a Producer playlist write wrote (the playlist, privacy, video ids, the answer's counts). Additive, nullable, no default, device-local",
+    apply: async (client) => {
+      for (const statement of ["ALTER TABLE producer_call_log ADD COLUMN target TEXT", "ALTER TABLE producer_call_log ADD COLUMN details_json TEXT"]) {
+        try {
+          await client.execute(statement);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
+    },
+  },
+  {
+    version: 125,
+    description:
+      "videos.tags_json -- FO-REQ-0056 part 2 (BL-273): YouTube's snippet.tags of each synced video (already in the sync's snippet read, no extra quota), for channel_video_list / agent_get_video_context. Additive, nullable; existing rows stay NULL (unknown) until their next sync. videos is a device-local cache (not transferred)",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE videos ADD COLUMN tags_json TEXT");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
+    },
+  },
+  {
+    version: 126,
+    description:
+      "package_review_drafts -- owner TG 4817 (PACKAGE_REVIEW_PLAN.md AC-TC-03; renumbered from v124 at the merge after v124 producer_call_log and v125 videos.tags_json): the owner's draft of timed comments per (channel, release-package manifest) until he sends them with his review decision. Additive (one new table), device-local",
     apply: async (client) => {
       await client.execute(`CREATE TABLE IF NOT EXISTS package_review_drafts (
         channel_id TEXT NOT NULL,
@@ -7073,6 +7105,8 @@ export type StoredVideo = {
   durationSeconds: number | null;
   /** `snippet.liveBroadcastContent` as of the last sync; absent/null = unknown. */
   liveBroadcastContent?: string | null;
+  /** FO-REQ-0056: `snippet.tags` as of the last sync (`[]` = none); null = not read since the column existed. */
+  tags: string[] | null;
   publishAt: string | null;
   lastSyncedAt: Date;
 };
@@ -7113,6 +7147,7 @@ function mapStoredVideo(row: typeof videos.$inferSelect): StoredVideo {
     likeCount: row.likeCount,
     durationSeconds: row.durationSeconds,
     liveBroadcastContent: row.liveBroadcastContent,
+    tags: row.tagsJson === null ? null : (JSON.parse(row.tagsJson) as string[]),
     publishAt: row.publishAt,
     lastSyncedAt: row.lastSyncedAt,
   };
@@ -8810,6 +8845,10 @@ export type ProducerCallLogEntry = {
   channelId: string | null;
   outcome: "ok" | "error";
   errorCode: string | null;
+  /** v124: a playlist write's playlist (null for every other call). */
+  target: string | null;
+  /** v124: a playlist write's details as JSON, at most 500 characters (a long list is cut and is then no longer JSON). */
+  detailsJson: string | null;
 };
 
 /** How long a Producer call stays in the log (BL-161). */
@@ -8817,11 +8856,12 @@ export const PRODUCER_CALL_LOG_RETENTION_MS = 90 * 24 * 60 * 60_000;
 
 /** BL-161: records one Producer tool call and drops rows older than the retention, in one transaction. */
 export async function insertProducerCallLogEntry(
-  entry: { at: Date; tool: string; channelId: string | null; outcome: "ok" | "error"; errorCode: string | null },
+  entry: { at: Date; tool: string; channelId: string | null; outcome: "ok" | "error"; errorCode: string | null; target?: string | null; details?: string | null },
   database: AppDb = db
 ): Promise<void> {
+  const { details, target, ...row } = entry;
   await database.transaction(async (tx) => {
-    await tx.insert(producerCallLog).values(entry);
+    await tx.insert(producerCallLog).values({ ...row, target: target ?? null, detailsJson: details ?? null });
     await tx.delete(producerCallLog).where(lt(producerCallLog.at, new Date(entry.at.getTime() - PRODUCER_CALL_LOG_RETENTION_MS)));
   });
 }
@@ -8988,9 +9028,9 @@ export async function getGatewayTrafficLast24h(
   }));
 }
 
-export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens" | "live_streams" | "channel_language_settings" | "channel_publishing_settings" | "publishing_uploads" | "storyboards" | "media_jobs" | "gemini_spend" | "gemini_settings" | "video_reservations" | "video_costs" | "live_analytics" | "publishing_plans" | "elevenlabs_spend" | "elevenlabs_settings" | "clip_reviews" | "package_reviews";
+export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens" | "live_streams" | "channel_language_settings" | "channel_publishing_settings" | "publishing_uploads" | "storyboards" | "media_jobs" | "gemini_spend" | "gemini_settings" | "video_reservations" | "video_costs" | "live_analytics" | "publishing_plans" | "elevenlabs_spend" | "elevenlabs_settings" | "clip_reviews" | "package_reviews" | "image_reviews";
 
-const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens", "live_streams", "channel_language_settings", "channel_publishing_settings", "publishing_uploads", "storyboards", "media_jobs", "gemini_spend", "gemini_settings", "video_reservations", "video_costs", "live_analytics", "publishing_plans", "elevenlabs_spend", "elevenlabs_settings", "clip_reviews", "package_reviews"];
+const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens", "live_streams", "channel_language_settings", "channel_publishing_settings", "publishing_uploads", "storyboards", "media_jobs", "gemini_spend", "gemini_settings", "video_reservations", "video_costs", "live_analytics", "publishing_plans", "elevenlabs_spend", "elevenlabs_settings", "clip_reviews", "package_reviews", "image_reviews"];
 
 export type SyncFamilyStatusRow = {
   family: SyncFamily;
@@ -9205,6 +9245,11 @@ export async function upsertVideos(
     likeCount?: number | null;
     durationSeconds?: number | null;
     liveBroadcastContent?: string | null;
+    /**
+     * FO-REQ-0056: `snippet.tags` as read (`[]` = none). Unlike the other columns, an omitted value leaves the stored tags as they
+     * are: a targeted re-upsert that does not carry tags must not erase what the last read stored.
+     */
+    tags?: string[];
     publishAt?: string | null;
   }>,
   syncedAt: Date
@@ -9227,6 +9272,7 @@ export async function upsertVideos(
       likeCount: entry.likeCount ?? null,
       durationSeconds: entry.durationSeconds ?? null,
       liveBroadcastContent: entry.liveBroadcastContent ?? null,
+      ...(entry.tags !== undefined ? { tagsJson: JSON.stringify(entry.tags) } : {}),
       publishAt: entry.publishAt ?? null,
       lastSyncedAt: syncedAt,
       // YouTube just returned this video, so it is not removed (clears a mark left by an earlier sync).
@@ -9376,9 +9422,9 @@ export async function markVideosRemovedOnYoutube(
 }
 
 /** `src/lib/video-details/` (2026-09-20) needs a single stored video's current cached fields to
- * merge a live-write's freshly-verified values onto before re-upserting -- `upsertVideos` always
- * replaces every column of the row it's given, so a caller wanting to update only some columns
- * must first read the rest. `null` when the video was never synced locally at all. */
+ * merge a live-write's freshly-verified values onto before re-upserting -- `upsertVideos`
+ * replaces every column of the row it's given except `tags` (kept as stored when an entry omits it,
+ * FO-REQ-0056), so a caller wanting to update only some columns must first read the rest. `null` when the video was never synced locally at all. */
 export async function getStoredVideo(channelId: string, videoId: string): Promise<StoredVideo | null> {
   const rows = await db
     .select()

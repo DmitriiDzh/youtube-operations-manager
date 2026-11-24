@@ -135,12 +135,23 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // plan's packages gain `captions`. No caption tool for channel agents. Additive.
 // 4.25.0 (BL-271, owner TG 3617/3618, ADR 0075): agent_wait (READ, as factory_wait 1.54.0, this channel only -- another channel's id is
 // not_found) -- wait until one operation is final without polling; not counted as MCP activity. Additive.
-// 4.26.0 (owner TG 4817, PACKAGE_REVIEW_PLAN.md AC-TC-08): agent_publishing_plan_get / _list -- a slot's package gains
-// reviewTimedComments [{ atSeconds, time, text }] (as factory_publishing_plan_get 1.55.0: the owner's comments at moments of the video,
+// 4.26.0 (owner TG 3700): agent_gemini_create_job / agent_gemini_get_status as factory_gemini_* 1.55.0 -- the video model is
+// gemini-omni-1.2-flash (1.1 a deprecated alias, recorded as 1.2), durationSeconds 3-15 (at most 10 with a lastFrame), the catalog's
+// video entries gain durationSeconds and aliases. Additive in shape.
+// 4.27.0 (owner TG 4782, 2026-11-23, ADR 0048 amendment): a channel agent may make its channel's playlist public --
+// playlist_create / playlist_update accept privacyStatus "public", and agent_set_privacy accepts "public" for target playlist (a video
+// is still refused, AGENT_PUBLIC_NOT_ALLOWED, now as a service refusal that reaches the worker log instead of an input error). In a
+// channel session a playlist write's expectedChannelId must be the session's channel (WRITE_CHANNEL_MISMATCH, the same code the
+// guardrail gave, now before any YouTube call). playlist_delete stays owner-only. Additive.
+// 4.28.0 (FO-REQ-0056 part 2, BL-273): channel_video_list gains the selectable field `tags` and agent_get_video_context's metadata gains `tags`
+// -- each video's YouTube snippet.tags as of the last channel sync ([] = none; null = not read yet, until the next sync). Read-only,
+// from the local copy (no YouTube call, no quota). Additive.
+// 4.29.0 (owner TG 4817, PACKAGE_REVIEW_PLAN.md AC-TC-08): agent_publishing_plan_get / _list -- a slot's package gains
+// reviewTimedComments [{ atSeconds, time, text }] (as factory_publishing_plan_get 1.56.0: the owner's comments at moments of the video,
 // sent with his standing package-review decision), reviewComment also for an approval with notes (owner TG 4836) and reviewCommentKind
 // returned | returned_timed | approved_notes; owner TG 4846: reviewIssues (id, time, state, thread per issue) and reviewIssueCounts --
 // answer issues in the next package's yt-release-package/2 reviewReplies. Additive.
-export const AGENT_API_VERSION = "4.26.0";
+export const AGENT_API_VERSION = "4.29.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry
@@ -333,6 +344,8 @@ export type VideoMetadataContext = {
   /** FO-REQ-0015 item 6: the stored length in seconds and YouTube's `liveBroadcastContent`; null when unknown. */
   durationSeconds: number | null;
   liveBroadcastContent: string | null;
+  /** FO-REQ-0056: YouTube's `snippet.tags` as of the last sync (`[]` = none); null = not read yet (synced before tags were stored). */
+  tags: string[] | null;
 };
 
 export type VideoContext = {

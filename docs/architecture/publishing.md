@@ -507,11 +507,11 @@ flags the error as not sent; the mark keeps the retry count, so a failing insert
   `m:ss` spelling, well-formed reading) is the one rule for server and screen. A decision (approved / returned only) may carry
   `timedComments [{ atSeconds, text }]` in the synced document; `wellFormedDecision` keeps the well-formed ones and never drops the decision
   for them; a return without a general comment stores them as `m:ss text` lines in `comment` (an older build drops a return without one).
-  The unsent draft is device-local: table `package_review_drafts` (schema 124, not in snapshots), port `drafts` of the service,
+  The unsent draft is device-local: table `package_review_drafts` (schema 126, not in snapshots), port `drafts` of the service,
   `GET`/`PUT …/package-reviews/draft` under the same session + active-channel guard and the channel's scan; cleared only after the
   decision is stored. Readouts: the wake file's «Timed comments» section (`ReviewDecisionNotice.timedComments`) and
   `PlanSlotPackage.reviewTimedComments` via `mediaReviewReaderOf(...).timedComments`, an approval's notes (owner TG 4836) as `reviewComment` +
-  `reviewCommentKind: approved_notes` via `.approvalComment` (Factory 1.55.0 / Agent 4.26.0 / Producer 1.28.0). The draft is guarded by
+  `reviewCommentKind: approved_notes` via `.approvalComment` (Factory 1.56.0 / Agent 4.29.0 / Producer 1.31.0). The draft is guarded by
   stamps: a save names `baseUpdatedAt`, a decision `draftUpdatedAt`; a mismatch is `package_review_draft_changed` (409); drafts of gone
   packages untouched for 14 days are pruned in `view()`. Issues (owner TG 4846): `package-reviews/issues.ts` (pure: `decisionsOfVideo` by
   video code / recode alias, `issuesOf` builds threads from `timedComments[].id`, `repliesSeen`, `issueActions` and the current

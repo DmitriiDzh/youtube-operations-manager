@@ -1980,6 +1980,12 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
   - the `duration` format (`"8s"`, sent in `response_format`);
   - whether the answer is the inline video (we ask for `delivery: "inline"`);
   - the token count of 1080p (estimated at 2.25 x 720p).
+- **Update 2026-11-23 (owner TG 3700, Omni 1.2):** Google's pages now settle two of the three. The Omni page shows
+  `"response_format": { "type": "video", "duration": "15s" }`, and the pricing page gives 1080p as 8,688 tokens per second (now
+  the estimate). Still open: the page names only `delivery="uri"` ("to retrieve generated videos that are larger than 4MB") and
+  never `"inline"`, which we send. A 15 s or 1080p clip is surely over 4 MB, so the first paid long clip must show whether
+  Google answers inline, answers with a URI (collected by the poll) or refuses the request. The page also shows no usage block in
+  its response example, so the token-count field names stay as BL-179 read them.
 - **Bounds:** a wrong field is a 400, which is not charged and keeps Google's message in the job's `error`. A URI answer is
   collected by the poll. The cost always comes from Google's own counts when they are present. A lost answer counts its
   estimate (`unknown_outcome`), as before.
@@ -2266,6 +2272,21 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
   the computers.
 - **Amended (BL-267, ADR 0073 §5):** decisions are now read by slot id across weeks (a moved slot keeps its veto and approvals); a
   build without BL-267 still reads them by week, which is why a vetoed slot cannot be moved.
+
+## RISK-158 — A channel worker can add any video id, another channel's included, to its own channel's playlist — OPEN, 2026-11-23
+
+- **Affected components:** `src/lib/playlist-management/services.ts` `addVideosToPlaylist` in an agent scope; the worker's
+  `playlist_add_videos` (`src/mcp/server.ts`). Found by the independent review of the playlist rights (owner TG 4782, ADR 0048
+  Amendment 1).
+- **Risk:** in a worker's scope the playlist core checks the write channel (`expectedChannelId` = the token's channel) and that the
+  playlist is that channel's, but not whose the added videos are. A worker can put any public video id -- another of the owner's
+  channels, or someone else's -- into its own channel's playlist. The Producer's wrapper does check (`PRODUCER_OWN_VIDEO_TOOLS`:
+  only the named channel's own synced videos); the worker path does not.
+- **Mitigation:** the playlist is still only the worker's own channel's, every add is a real write with the Live writes check, and
+  every call is in the worker log (Settings → Channels) with its video ids. Restricting it would remove an existing worker
+  capability: an Agent API MAJOR change, the owner's decision -- deliberately not done on the branch that found it.
+- **Gate(s):** none (the write stays on the worker's own channel). **Re-evaluate:** when the owner decides whether workers may add
+  other channels' videos, or if a worker log shows another channel's videos added.
 
 ## RISK-157 — Captions or thumbnail done later: a row dated by the owner's own approval stays undated — OPEN, 2026-11-17
 

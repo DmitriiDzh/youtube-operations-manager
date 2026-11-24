@@ -3,19 +3,26 @@ import { DomainError, parseWithSchema } from "@/lib/shared-domain";
 
 /**
  * BL-216 (docs/roadmap/plans/WORKER_CAPABILITIES_PLAN.md stage 2, ADR 0048): a channel agent hides its own channel's videos and
- * playlists -- private or unlisted, never public, never a scheduled video, never the app's current broadcast. It writes nothing
+ * playlists -- private or unlisted, never a scheduled video, never the app's current broadcast. Owner msg 4782 (2026-11-23, ADR 0048
+ * amendment): a playlist may also be made public; a video never (`AGENT_PUBLIC_NOT_ALLOWED`, before any read). It writes nothing
  * itself: a video goes through `video-details` (identity check, backup, Live writes, read-back, audit), a playlist through the
  * playlist core (write-channel guardrail, ownership, Live writes). Pure: every read and write arrives through `deps`.
  */
 
+/** What a worker may set on a video. */
 export const WORKER_PRIVACY_STATUSES = ["private", "unlisted"] as const;
 export type WorkerPrivacyStatus = (typeof WORKER_PRIVACY_STATUSES)[number];
+/** What a worker may set on a playlist (owner msg 4782): public too. */
+export const WORKER_PLAYLIST_PRIVACY_STATUSES = ["private", "unlisted", "public"] as const;
+export type WorkerPlaylistPrivacyStatus = (typeof WORKER_PLAYLIST_PRIVACY_STATUSES)[number];
 
 export const setPrivacyInputSchema = z
   .object({
     target: z.enum(["video", "playlist"]),
     id: z.string().min(1).max(64),
-    privacyStatus: z.enum(WORKER_PRIVACY_STATUSES),
+    // `public` is accepted by the schema so that a refused video call reaches the service (and the worker log) as
+    // AGENT_PUBLIC_NOT_ALLOWED instead of an input error; only a playlist may be made public.
+    privacyStatus: z.enum(WORKER_PLAYLIST_PRIVACY_STATUSES),
     dryRun: z.boolean().optional(),
   })
   .strict();
@@ -25,14 +32,14 @@ export type SetPrivacyResult = {
   id: string;
   dryRun: boolean;
   previousPrivacyStatus: string | null;
-  privacyStatus: WorkerPrivacyStatus;
+  privacyStatus: WorkerPlaylistPrivacyStatus;
   changed: boolean;
 };
 
 export type WorkerPrivacyDeps = {
   /** The agent session's channel (the token's). */
   channelId: string;
-  /** Throws `AGENT_PUBLIC_NOT_ALLOWED` for "public" in an agent session (channel-access). */
+  /** Throws `AGENT_PUBLIC_NOT_ALLOWED` for "public" in an agent session (channel-access). Asked for a video only. */
   assertMayNotPublish(privacyStatus: string): void;
   /** The video in this channel's local synced mirror, or null. */
   findChannelVideo(channelId: string, videoId: string): Promise<unknown | null>;
@@ -45,7 +52,7 @@ export type WorkerPrivacyDeps = {
   /** This channel's playlists from YouTube. */
   listPlaylists(): Promise<Array<{ id: string; privacyStatus: string }>>;
   /** The real write through the playlist core; returns the playlist as YouTube answered. */
-  writePlaylist(args: { playlistId: string; privacyStatus: WorkerPrivacyStatus }): Promise<{ privacyStatus: string }>;
+  writePlaylist(args: { playlistId: string; privacyStatus: WorkerPlaylistPrivacyStatus }): Promise<{ privacyStatus: string }>;
 };
 
 function notFound(target: "video" | "playlist", id: string): DomainError {
@@ -58,7 +65,15 @@ export function createWorkerPrivacyServices(deps: WorkerPrivacyDeps) {
   return {
     async setPrivacy(input: unknown): Promise<SetPrivacyResult> {
       const parsed = parseWithSchema(setPrivacyInputSchema, input, "set privacy input");
-      deps.assertMayNotPublish(parsed.privacyStatus);
+      if (parsed.target === "video" && parsed.privacyStatus === "public") {
+        // Defence in depth (review of owner msg 4782): the service itself never makes a video public, whatever the injected check does.
+        throw new DomainError({
+          code: "AGENT_PUBLIC_NOT_ALLOWED",
+          message: "A channel agent cannot make a video public -- that stays the owner's. Use private or unlisted.",
+          details: { privacyStatus: parsed.privacyStatus },
+        });
+      }
+      if (parsed.target === "video") deps.assertMayNotPublish(parsed.privacyStatus);
       const dryRun = parsed.dryRun !== false;
       const base = { target: parsed.target, id: parsed.id, dryRun, privacyStatus: parsed.privacyStatus };
 
@@ -101,7 +116,8 @@ export function createWorkerPrivacyServices(deps: WorkerPrivacyDeps) {
       }
       const changed = current.privacyStatus !== parsed.privacyStatus;
       if (dryRun || !changed) return { ...base, previousPrivacyStatus: current.privacyStatus, changed };
-      await deps.writeVideo({ videoId: parsed.id, privacyStatus: parsed.privacyStatus, expectedEtag: current.etag });
+      const videoStatus = parsed.privacyStatus as WorkerPrivacyStatus; // "public" was refused above
+      await deps.writeVideo({ videoId: parsed.id, privacyStatus: videoStatus, expectedEtag: current.etag });
       return { ...base, previousPrivacyStatus: current.privacyStatus, changed: true };
     },
   };

@@ -437,7 +437,11 @@ Key MCP tools:
     (it mutates local state even though it never touches YouTube).
   - `channel_list` — `{ credentialRef? }` → `{ channels: SyncedChannel[] }`. Read-only.
   - `channel_video_list` — `{ channelId, credentialRef? }` → `{ channelId, videos: SyncedVideo[] }`.
-    Read-only.
+    Read-only. **Tags (FO-REQ-0056 part 2, Agent API 4.28.0 / Producer 1.30.0, additive):** every `SyncedVideo` has
+    `tags: string[] | null` -- YouTube's `snippet.tags` as of the last `channel_sync`, in YouTube's order and spelling; `[]` when
+    the video has none; `null` when this copy has not read them yet (rows synced before schema v125 `videos.tags_json`, until
+    the next sync). `"tags"` is selectable in `fields` and is left out when `fields` does not name it. The sync already reads
+    the `snippet` part, so tags cost no extra quota and no tool makes a YouTube call for them.
 - AI Localization tools (BL-075/BL-078, `docs/roadmap/BACKLOG.md`) — wrap the exact same two
   service functions the Web UI's own `POST .../ai-localization/{generate,change-sets}` routes
   already call; no new validation/persistence logic. Neither accepts `credentialRef` (mirrors
@@ -545,7 +549,8 @@ Key MCP tools:
     such check). Local read only.
   - `agent_get_video_context` — `{ channelId, videoId, include? }` → `VideoContext`, section-
     selectable: `"metadata"` (title, description, publish date, privacy status, default
-    language, last sync time) and/or `"localizations"` (every existing per-language
+    language, last sync time, `durationSeconds`, `liveBroadcastContent`, and since Agent API 4.28.0 / Producer 1.30.0
+    `tags` -- the same value as `channel_video_list`'s `tags`: `[]` none, `null` not read yet) and/or `"localizations"` (every existing per-language
     title/description already synced locally). Omitting `include` returns both sections; an
     omitted section is left entirely absent from the response (`undefined`), not an empty
     placeholder, for token efficiency. Requires `channelId` to be the caller's active channel and
@@ -1013,8 +1018,8 @@ Key MCP tools:
     anything at or under that path. It only reads the app's own bootstrap config, for the
     `deviceId`, and never creates it. No MCP tool can set or clear it: `PUT /api/channel-workspaces` (Web UI
     only) is the sole setter. Device-local, never synced or handed off. Error codes
-    (setter only): `CHANNEL_WORKSPACE_PATH_INVALID` (400) and
-    `CHANNEL_WORKSPACE_CHANNEL_NOT_CONNECTED` (404).
+    (setter only): `CHANNEL_WORKSPACE_PATH_INVALID` (400),
+    `CHANNEL_WORKSPACE_CHANNEL_NOT_CONNECTED` (404) and `CHANNEL_WORKSPACE_NESTED` (409).
   - **There is no MCP tool or CLI command to create a hypothesis from scratch, transition an
     experiment's status, or record an outcome** — all Web-UI-only, verified mechanically by
     `decision-engine-agent-approval-inventory.test.ts` (`PHASE10-INV-02`, same scan technique as
@@ -1094,15 +1099,18 @@ nothing. This replaces BL-091's per-capability zones, which are retired in
     writes: `apply` (a real write only with `dryRun: false`), `playlist_create`, `playlist_update`, `playlist_add_videos`,
     `playlist_remove_videos`. `agent_get_capabilities` lists them in the domain `youtube_writes` as `EXECUTE`
     (`grantedPermissions` `READ`, `DRAFT`, `EXECUTE`; never `APPROVE`), and names every other channel tool too (a test ties the
-    list to the registry). `privacyStatus: "public"` on `playlist_create` / `playlist_update` is refused with
-    `AGENT_PUBLIC_NOT_ALLOWED` (403) before any YouTube call; the owner's Web UI still accepts it.
+    list to the registry). Since Agent API 4.27.0 (owner TG 4782, ADR 0048 Amendment 1) `privacyStatus: "public"` on
+    `playlist_create` / `playlist_update` is accepted for the bound channel's playlist (4.0.0–4.25.0 refused it with
+    `AGENT_PUBLIC_NOT_ALLOWED`). A playlist write whose `expectedChannelId` is not the bound channel is refused with
+    `WRITE_CHANNEL_MISMATCH` before any credential or YouTube call; the guardrail and the playlist's owner check still follow.
   - **Worker log (BL-215, schema v107 `worker_action_log`, device-local, 90 days).** One row per call of those five tools that
     would really write (refused ones included): `at`, channel, token id, tool, target (video/playlist id; a created playlist's
     id from YouTube's answer), `detail` (JSON, at most 500 characters: changed fields, `privacyStatus`, `videoIds`,
     `failedVideos`), `outcome` `ok`/`error`, `errorCode`. A failed row write never changes the tool's answer.
     `agent_set_privacy` (BL-216, Agent API 4.1.0, EXECUTE): `{ target: "video" | "playlist", id, privacyStatus: "private" |
-    "unlisted", dryRun? (default true) }` → `{ target, id, dryRun, previousPrivacyStatus, privacyStatus, changed }`. Never
-    public (not accepted). Refused: a scheduled video (`AGENT_SCHEDULE_OWNER_ONLY`, 403), the channel's current live broadcast
+    "unlisted" | "public", dryRun? (default true) }` → `{ target, id, dryRun, previousPrivacyStatus, privacyStatus, changed }`.
+    `public` only for a playlist (Agent API 4.27.0, owner TG 4782); for a video it is refused with `AGENT_PUBLIC_NOT_ALLOWED`
+    (403) before any read (before 4.27.0 `public` was an input error for both). Refused: a scheduled video (`AGENT_SCHEDULE_OWNER_ONLY`, 403), the channel's current live broadcast
     (`AGENT_LIVE_BROADCAST_OWNER_ONLY`, 403), a video not in the channel's synced list or a playlist not of the channel
     (`not_found`). A video is written by `video-details` (identity check, backup, Live writes, read-back, bound to the read
     etag), a playlist by the playlist core; no write when the status is already the asked one. Log rows gain
@@ -1140,10 +1148,13 @@ nothing. This replaces BL-091's per-capability zones, which are retired in
     (READ; not counted as an MCP call for the quiet window); `agent_hold_restart { minutes (whole, 1-60), reason (1-200) }` →
     `{ hold }` with `heldBy: "worker:<bound channel>"` and `agent_release_hold { holdId }` → `{ hold, released }` (DRAFT, local,
     device mutation gate first; another's hold → `not_found`; both logged in the worker log, the hold's id as the target).
-    Timed comments (owner TG 4817, Agent API 4.26.0, additive): `agent_publishing_plan_get` / `_list` packages gain `reviewTimedComments: [{ atSeconds, time, text }]` as in Factory 1.55.0.
+    Timed comments (owner TG 4817, Agent API 4.29.0, additive): `agent_publishing_plan_get` / `_list` packages gain `reviewTimedComments: [{ atSeconds, time, text }]` as in Factory 1.56.0.
     Wait (BL-271, ADR 0075, Agent API 4.25.0, additive): `agent_wait` is `factory_wait` (below) for the bound channel -- `channelId`
     put in when left out, another channel → `CHANNEL_NOT_ACTIVE`, another channel's upload / session / job / request / storyboard /
     render → `not_found` exactly like a missing id. READ; not logged in the worker log; not counted as an MCP call.
+    Video tags (FO-REQ-0056 part 2, Agent API 4.28.0, additive): `channel_video_list` (field `tags`, selectable in `fields`) and
+    `agent_get_video_context`'s `metadata.tags` give each video's YouTube tags as of the last `channel_sync` (`[]` none, `null` not
+    read yet) -- local copy only, no YouTube call.
   - `list` / `transcript` / `preview` / `channel_sync` are confined to the bound channel.
   - Market tools return only records the operator assigned to that channel (below).
   - Channel-less hypotheses are invisible.
@@ -1169,7 +1180,7 @@ A second agent role, separate from the channel agents. Technical contract only (
   POST only (405), the MCP connection switch (403 `MCP_CONNECTION_DISABLED`), a token (401 `AGENT_TOKEN_REQUIRED`), the token (401 `AGENT_TOKEN_INVALID` for an
   unknown, revoked or wrong-type token, including a channel token; 503 `AGENT_ENDPOINT_UNAVAILABLE` if the database cannot answer). The token is re-verified on
   every tool call, so a revocation applies to the next call. A factory token on `/api/mcp` is rejected the same way.
-- **Factory API version:** `1.55.0` since owner TG 4817 (PACKAGE_REVIEW_PLAN.md AC-TC-08, additive: plan packages gain `reviewTimedComments: [{ atSeconds, time, text }]` -- the owner's comments at moments of the video sent with his standing package-review decision -- and `reviewCommentKind` (returned | returned_timed | approved_notes; owner TG 4836: `reviewComment` also carries an approval's notes for future videos, non-blocking, wake file line «Notes: Одобрено с замечаниями на будущее»); owner TG 4846: each timed comment is an ISSUE with id `<decisionId>.<n>` that outlives the package version (key: channel + video code or its recode alias) -- `yt-release-package/2` gains the optional `reviewReplies: [{ issueId, status: fixed | not_fixed | partly, text (1-2000), atSeconds? }]` written by whoever re-packages (read leniently: a malformed entry or an unknown issue is ignored, never a package problem; the replies the owner saw are kept in his next decision), plan packages gain `reviewIssues: [{ id, atSeconds, time, state: open | resolved | noted, thread: [{ by: owner | agent, kind?, status?, text, atSeconds?, time?, at }] }]` and `reviewIssueCounts`, and the wake file gains the section «Issues» (as of its decision); the owner resolves («Исправлено, принимаю») or follows up per issue with his next approve / return (Web UI only; no MCP path writes the review document); the wake file `REVIEW-DECISION-package-…` gains the section «Timed comments», one line `<seconds> s (<m:ss>): <text>` per comment, absent when none); `1.54.0` since BL-271 (ADR 0075, additive: `factory_wait` below); `1.53.0` since BL-269 (FO-REQ-0055, ADR 0074, additive: `yt-release-package/2` `captions: [{ language, file, name, sha256 }]`
+- **Factory API version:** `1.56.0` since owner TG 4817 (PACKAGE_REVIEW_PLAN.md AC-TC-08, additive: plan packages gain `reviewTimedComments: [{ atSeconds, time, text }]` -- the owner's comments at moments of the video sent with his standing package-review decision -- and `reviewCommentKind` (returned | returned_timed | approved_notes; owner TG 4836: `reviewComment` also carries an approval's notes for future videos, non-blocking, wake file line «Notes: Одобрено с замечаниями на будущее»); owner TG 4846: each timed comment is an ISSUE with id `<decisionId>.<n>` that outlives the package version (key: channel + video code or its recode alias) -- `yt-release-package/2` gains the optional `reviewReplies: [{ issueId, status: fixed | not_fixed | partly, text (1-2000), atSeconds? }]` written by whoever re-packages (read leniently: a malformed entry or an unknown issue is ignored, never a package problem; the replies the owner saw are kept in his next decision), plan packages gain `reviewIssues: [{ id, atSeconds, time, state: open | resolved | noted, thread: [{ by: owner | agent, kind?, status?, text, atSeconds?, time?, at }] }]` and `reviewIssueCounts`, and the wake file gains the section «Issues» (as of its decision); the owner resolves («Исправлено, принимаю») or follows up per issue with his next approve / return (Web UI only; no MCP path writes the review document); the wake file `REVIEW-DECISION-package-…` gains the section «Timed comments», one line `<seconds> s (<m:ss>): <text>` per comment, absent when none); `1.55.0` since owner TG 3700 (additive in shape: the Gemini video model is `gemini-omni-1.2-flash` at Google's 1.2 prices, `video.durationSeconds` any whole second 3-15 (at most 10 with a `lastFrame`), `gemini-omni-1.1-flash` a deprecated alias sent and recorded as 1.2, the catalog's video entries gain `durationSeconds` and `aliases`; the default `maxUsdPerJob` is $2 (owner TG 4789, was $1), which every clip fits (the largest, 1080p 15 s, about $1.58); a stored limit, the owner's own or one received through the shared Gemini settings, is kept, and at $1 a 720p 15 s clip ($1.06) and 1080p clips of 10 s or more are refused with `gemini_limit_exceeded` `per_job` until the owner raises it; Agent API `4.26.0` the same through `agent_gemini_*`); `1.54.0` since BL-271 (ADR 0075, additive: `factory_wait` below); `1.53.0` since BL-269 (FO-REQ-0055, ADR 0074, additive: `yt-release-package/2` `captions: [{ language, file, name, sha256 }]`
   is read and checked -- plan / calendar packages gain `captions` and the blocking codes `captions_missing` / `captions_invalid` (reason:
   `channel_disabled`, `not_horizontal`, `orientation_unknown`, `count`, `language`, `name`, `size`, `sha256`, `format`); the upload record
   `yt-release-upload/1` gains `videoSha256` (or null), `videoSizeBytes` and `captions: [{ trackId, language, name, sha256, at, by, verified?, pending? }]` (`pending: true` with `verified: false`: sent, YouTube
@@ -1332,9 +1343,9 @@ A second agent role, separate from the channel agents. Technical contract only (
     - **Sessions and jobs.** `factory_media_start_session` `runtimeId?` (absent = the active runtime, `null` = built-in): an unbuilt runtime is refused with `media_runtime_not_ready` before any row or pod; the pod gets `YTM_RUNTIME_ID` (its only value besides `COMFY_TOKEN`); a session shows `runtimeId` and, once running, `comfyVersion`. A start with `templateId`, and `factory_media_create_job`, are refused with `media_runtime_incompatible` (409, `details.missing`) when the template's graph needs a node type the runtime's test did not find; a runtime with no test, and the built-in one, are not checked.
     - **Settings** (`factory_media_get_settings`, shared between computers): `activeRuntimeId` (changed only by the activate action, never by a settings save), `factoryMayActivateRuntime` (default true), `runtimeSourceAllowlist` (default github.com/comfyanonymous/, Comfy-Org/, kijai/, ltdrdata/, huggingface.co/), `runtimeTestMaxUsd` (default 0.5).
   - **BL-174 Gemini tools (Factory API 1.12.0, ADR 0035, `docs/roadmap/plans/GEMINI_MEDIA_PLAN.md`).** Images (Nano Banana) and video (Veo 3.1 until 1.21.0, Omni since 1.15.0) through Google's hosted Gemini API: no server is rented; each result is paid, only within the owner's switch and limits (Settings → Gemini; none of them is settable from MCP).
-    - **`factory_gemini_get_status`** (READ) `{}` → `{ enabled (off by default), keyConfigured, keyHint (last 4 characters), keyStatus: ok | payment_required | null, gatewayEnabled, limits: { maxUsdPerJob, maxUsdPerDay, maxUsdPerMonth, maxActiveJobs }, spend: { todayUsd, monthUsd, activeUsd, activeJobs, account (1.19.0, BL-193): { todayUsd, monthUsd, keyKnown, otherComputers: [{ deviceId, hostname, todayUsd, monthUsd, updatedAt, stale }] } }, pricesAsOf, models: [{ model, kind: image, label, sizes, usdPerImage, usdPerMillionTokens } | { model, kind: video, label, resolutions, usdPerSecond, referenceImages, frames, retiresOn (YYYY-MM-DD or null), usdPerMillionTokens? (Omni: input, textAndThinkingOutput, videoOutput) }] }`. Omni's `usdPerSecond` is an estimate (it is billed by tokens). Spend = finished jobs' costs + active jobs' estimates, this computer's local day / month; `account` adds every other computer that reports the same Gemini key fingerprint (ADR 0039) -- the per-day and per-month limits are checked against `account`, and the four limits are the same on every computer.
-    - **`factory_gemini_create_job`** (WRITE; device mutation gate first; `dryRun: true` is a read) `{ channelId (connected here, with a workspace), kind: image | video, model, prompt (image ≤ 10 000, video ≤ 4 000 chars), requestId? ([A-Za-z0-9][A-Za-z0-9._-]{0,119}), dryRun?, image?: { size: 1K | 2K | 4K, aspectRatio: 1:1 2:3 3:2 3:4 4:3 4:5 5:4 9:16 16:9 21:9, inputs?: { images: [≤ 14] } }, video?: { resolution: 720p | 1080p, aspectRatio: 16:9 | 9:16, durationSeconds: 4 | 6 | 8, inputs?: { firstFrame?, lastFrame? } } }` (since 1.21.0 the schema still accepts `4k`, `personGeneration` and `referenceImages`, but no model takes them: `gemini_invalid_params` naming the field) → `{ job }` (queued; `replayed: true` for a repeated `requestId` with the same content) or, for a dry-run, `{ dryRun: true, estimateUsd, allowed, refusal: { code, message, details? } | null, spend }` (`details` only for `gemini_limit_exceeded`). A dry-run stores nothing, but may create the channel's `99 Data Exchange` exchange folders (the same workspace check as a real create).
-      - Models: image `gemini-nano-banana-2.1` (1K/2K/4K), `gemini-3.1-flash-lite-image` (1K), `gemini-3-pro-image` (1K/2K/4K); video `gemini-omni-1.1-flash` (since 1.15.0: 720p/1080p, 4/6/8 s, first frame and first + last frame, no reference images, no `personGeneration`; priced by Google's token counts, never below the saved video's table price). The Veo 3.1 previews (`veo-3.1-generate-preview`, `-fast-`, `-lite-`; Google shuts them down 2026-10-22) were removed in 1.21.0 (BL-180). `lastFrame` needs `firstFrame`.
+    - **`factory_gemini_get_status`** (READ) `{}` → `{ enabled (off by default), keyConfigured, keyHint (last 4 characters), keyStatus: ok | payment_required | null, gatewayEnabled, limits: { maxUsdPerJob, maxUsdPerDay, maxUsdPerMonth, maxActiveJobs }, spend: { todayUsd, monthUsd, activeUsd, activeJobs, account (1.19.0, BL-193): { todayUsd, monthUsd, keyKnown, otherComputers: [{ deviceId, hostname, todayUsd, monthUsd, updatedAt, stale }] } }, pricesAsOf, models: [{ model, kind: image, label, sizes, usdPerImage, usdPerMillionTokens } | { model, kind: video, label, resolutions, usdPerSecond, referenceImages, frames, retiresOn (YYYY-MM-DD or null), usdPerMillionTokens? (Omni: input, textAndThinkingOutput, videoOutput), durationSeconds (1.55.0: { min, max, maxWithLastFrame }), aliases (1.55.0: deprecated ids accepted for the model) }] }`; since 1.55.0 the only video entry is `gemini-omni-1.2-flash` (`aliases: ["gemini-omni-1.1-flash"]`). Omni's `usdPerSecond` is an estimate (it is billed by tokens). Spend = finished jobs' costs + active jobs' estimates, this computer's local day / month; `account` adds every other computer that reports the same Gemini key fingerprint (ADR 0039) -- the per-day and per-month limits are checked against `account`, and the four limits are the same on every computer.
+    - **`factory_gemini_create_job`** (WRITE; device mutation gate first; `dryRun: true` is a read) `{ channelId (connected here, with a workspace), kind: image | video, model, prompt (image ≤ 10 000, video ≤ 4 000 chars), requestId? ([A-Za-z0-9][A-Za-z0-9._-]{0,119}), dryRun?, image?: { size: 1K | 2K | 4K, aspectRatio: 1:1 2:3 3:2 3:4 4:3 4:5 5:4 9:16 16:9 21:9, inputs?: { images: [≤ 14] } }, video?: { resolution: 720p | 1080p, aspectRatio: 16:9 | 9:16, durationSeconds: whole seconds 3-15 (1.55.0; 4 | 6 | 8 before; at most 10 with a lastFrame), inputs?: { firstFrame?, lastFrame? } } }` (since 1.21.0 the schema still accepts `4k`, `personGeneration` and `referenceImages`, but no model takes them: `gemini_invalid_params` naming the field) → `{ job }` (queued; `replayed: true` for a repeated `requestId` with the same content) or, for a dry-run, `{ dryRun: true, estimateUsd, allowed, refusal: { code, message, details? } | null, spend }` (`details` only for `gemini_limit_exceeded`). A dry-run stores nothing, but may create the channel's `99 Data Exchange` exchange folders (the same workspace check as a real create).
+      - Models: image `gemini-nano-banana-2.1` (1K/2K/4K), `gemini-3.1-flash-lite-image` (1K), `gemini-3-pro-image` (1K/2K/4K); video `gemini-omni-1.2-flash` (since 1.55.0, owner TG 3700: 720p/1080p, any whole second 3-15 s, first frame (up to 15 s) and first + last frame (3-10 s, Google's limit), no reference images, no `personGeneration`; priced by Google's token counts -- $1.50 input, $9 text and thinking, $12 video per 1M tokens, 5,792 video tokens per second at 720p and 8,688 at 1080p, about $0.07 / $0.104 per second -- never below the saved video's table price). `gemini-omni-1.1-flash` (1.15.0-1.54.0; Google routes it to 1.2 from 2026-12-03) is a deprecated alias: accepted, estimated, recorded on the job and sent as `gemini-omni-1.2-flash`; a repeated `requestId` of a job created since 1.55.0 matches with either id; a job stored as 1.1 earlier is replayed by a retry that names 1.1 and, if still queued, is sent as 1.2. The Veo 3.1 previews (`veo-3.1-generate-preview`, `-fast-`, `-lite-`; Google shuts them down 2026-10-22) were removed in 1.21.0 (BL-180). `lastFrame` needs `firstFrame`.
       - Inputs: paths relative to the channel's `99 Data Exchange/Sent to YTM/`, png/jpg/jpeg/webp, ≤ 7 MB each, ≤ 12 MB together; re-checked by SHA-256 before sending.
       - Refusals: `gemini_disabled`, `gemini_key_missing`, `gemini_limit_exceeded` (409, `details: { limit: per_job | per_day | per_month | active_jobs, limitUsd?, spentUsd?, maxActiveJobs?, activeJobs?, estimateUsd }`), `gemini_invalid_params` (422, `details.field`), `gemini_input_unavailable` (422), `gemini_workspace_unavailable` (409; also a channel not connected here), `gemini_request_exists` (409), `validation_failed`.
     - **`factory_gemini_get_job`** (READ) `{ jobId }` → `{ job }` (unknown: `gemini_job_not_found`, 404) or `{ channelId?, status?, limit? (≤ 50, default 20) }` → `{ jobs }` newest first. Job: `{ jobId, channelId, requestId, kind, model, prompt, params, inputs: [{ role: image | first_frame | last_frame | reference, path, mimeType, bytes, sha256 }], status: queued | submitting | running | done | failed, estimateUsd, costUsd, costBasis: usage | price_table | not_charged | unknown_outcome, outputs: [{ path ("gemini/<jobId>/image-1.png", relative to From YTM), localPath, kind, mimeType, bytes, sha256, assetId, note }], error, errorCode, attempts, createdBy, createdAt, submittedAt, finishedAt }`.
@@ -1563,7 +1574,9 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
 
 - **Transport:** as the factory endpoint, with `Authorization: Bearer ytom_pr_...` (the same checks and codes; a channel or factory token is
   401 `AGENT_TOKEN_INVALID` here, and a producer token on `/api/mcp` and `/api/mcp/factory`). Re-verified on every tool call.
-- **Producer API version:** `1.28.0` (since owner TG 4817, AC-TC-08, additive: `producer_publishing_plan_get` / `_list` packages gain `reviewTimedComments`, the wake file gains «Timed comments»); `1.27.0` (since BL-271, ADR 0075, additive: `producer_wait` below); `1.26.0` (since BL-269, ADR 0074, additive: `producer_video_captions_add` below, permission `CAPTIONS_WRITE`,
+- **Producer API version:** `1.31.0` (since owner TG 4817, AC-TC-08, additive: `producer_publishing_plan_get` / `_list` packages gain `reviewTimedComments`, the wake file gains «Timed comments»); `1.30.0` (FO-REQ-0056 part 2, BL-273, additive: `channel_video_list` / `agent_get_video_context` carry each
+  video's synced `tags`, see the channel-sync tools above); `1.29.0` (owner TG 4782, ADR 0048 Amendment 1, additive: the playlist channel tools below, permission
+  `PLAYLIST_WRITE`, `playlistTools` / `playlistWriteTools` in `producer_get_capabilities`); `1.28.0` (BL-272, ADR 0076, additive: the image review tools below, `imageReviewTools` in `producer_get_capabilities`, `approvedImageId` on `producer_clip_review_submit`); `1.27.0` (BL-271, ADR 0075, additive: `producer_wait` below); `1.26.0` (since BL-269, ADR 0074, additive: `producer_video_captions_add` below, permission `CAPTIONS_WRITE`,
   `captionsTools` in `producer_get_capabilities`; calendar packages gain `captions`); `1.25.0` (BL-267, ADR 0073, additive: the weekly-plan tools below, permission `PLAN_MOVE`,
   `planTools` / `planMoveTools` in `producer_get_capabilities`); `1.24.0` (BL-265, ADR 0072, additive: `producer_video_metadata_update`, permission `METADATA_WRITE`
   and `metadataTools` in `producer_get_capabilities`; calendar `warnings`; the media-keyed review gate; the queue add's "tried" rule by
@@ -1589,7 +1602,22 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
 - **DRAFT channel tool (BL-170, owner msg 2485, ADR 0034 Amendment 5):** `create_experiment_proposal`, the channel agent's own input plus the
   REQUIRED `channelId`, in that channel's agent scope: an experiment for a hypothesis of that channel, always `proposed` -- only the owner
   approves, runs or abandons it in the Web UI. The only DRAFT channel tool (pinned by the test).
-- **Own tools:** `producer_get_capabilities` `{}` → `{ role: "producer", producerApiVersion, permissions: ["READ", "DRAFT"], channelRequired: true, tools, draftTools: ["producer_propose", "producer_mark_proposals_done", "create_experiment_proposal"] }`;
+- **Playlist channel tools (owner TG 4782, 2026-11-23, ADR 0048 Amendment 1; Producer 1.29.0, `PLAYLIST_WRITE`):** `playlist_list`
+  (READ), `playlist_create`, `playlist_update` (title, description, `privacyStatus` `private` | `unlisted` | `public`),
+  `playlist_add_videos`, `playlist_remove_videos` -- the channel agent's own tools with its own input and output (no `credentialRef`) plus the
+  REQUIRED `channelId` (any channel connected here), in that channel's agent scope: the write's `expectedChannelId` must be that channel
+  (`WRITE_CHANNEL_MISMATCH` otherwise, before any credential or YouTube call), the playlist must be that channel's (read first;
+  `WRITE_CHANNEL_MISMATCH` / `not_found`), every write goes through the write gateway with Live writes right before it
+  (`live_writes_disabled`). `playlist_add_videos` adds only that channel's own videos in its local synced list: any other id → `not_found`
+  for the whole call, nothing called. Real YouTube writes (no dry run), in the Producer call log like every call; a write's row also stores its playlist (`target`) and its details
+  (privacy, video ids, the answer's counts) since schema v124, shown on the Producer card in Settings. Not on this endpoint:
+  `playlist_delete` and `agent_set_privacy`.
+- **Own tools:** `producer_get_capabilities` `{}` → `{ role: "producer", producerApiVersion, permissions: ["READ", "DRAFT", "UPLOAD_QUEUE",
+  "THUMBNAIL_WRITE", "METADATA_WRITE", "PLAN_MOVE", "CAPTIONS_WRITE", "PLAYLIST_WRITE"], channelRequired: true, tools, draftTools:
+  ["producer_propose", "producer_mark_proposals_done", "create_experiment_proposal", "producer_clip_review_submit",
+  "producer_clip_review_withdraw", "producer_week_template_propose"], uploadQueueTools, clipReviewTools, thumbnailTools, metadataTools,
+  captionsTools, planTools, planMoveTools, playlistTools: ["playlist_list", "playlist_create", "playlist_update", "playlist_add_videos",
+  "playlist_remove_videos"], playlistWriteTools: [the four writes] }` (the lists are `src/mcp/producer-tools.ts`, pinned by its test);
   `producer_list_channels` `{}` → `{ channels: [{ channelId, title, workspace: string | null }] }` (Settings → Channels on this device, this
   device's folder); `producer_portfolio_overview` `{ startDate, endDate }` (YYYY-MM-DD, at most 366 days) → `{ startDate, endDate, source: "local",
   channels: [{ channelId, title, analytics: { daysWithData, views, watchMinutes, subscribersGained, subscribersLost }, reach: { state, impressions,
@@ -1693,7 +1721,11 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
     `forChannelId`.
 - **Clip review tools (BL-241, `docs/roadmap/plans/CLIP_REVIEWS_PLAN.md`, ADR 0061).** `producer-only`; submit and withdraw are DRAFT, list and
   get READ. Only the owner approves or returns a clip (Web UI, Контент → «Клипы»); no tool here can. Nothing reaches YouTube.
-  - `producer_clip_review_submit` `{ channelId, sceneId (1-80), clipPath, note (1-2000), startSec?, endSec? }` → `{ clip, forChannelId }`.
+  - `producer_clip_review_submit` `{ channelId, sceneId (1-80), clipPath, note (1-2000), startSec?, endSec?, approvedImageId? }` → `{ clip, forChannelId }`.
+    `approvedImageId` (1.28.0, BL-272, ADR 0076): the approved master still the clip was made from -- an image of the same channel's
+    image reviews whose status is `approved` or `approved_with_note`; else `clip_review_image_not_found` (422: no such image in this
+    channel) or `clip_review_image_not_approved` (409, `details.status`). The clip then carries `approvedImageId` (the key is absent on a
+    clip submitted without one).
     `clipPath` relative to the channel workspace (`/` between folders, no `..`, not absolute; the real path inside the workspace, a regular
     file), `.mp4` / `.webm`, 5-300 s by ffprobe (±0.5 s), any size; `0 <= startSec < endSec <= duration`. Errors:
     `CHANNEL_NOT_ACTIVE`, `clip_review_workspace_unavailable`, `clip_review_not_video`, `clip_review_file_unavailable` (`details.reason`),
@@ -1718,7 +1750,37 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
   `DELETE .../uploads/[uploadId]`; the decision body takes `attachments: [uploadId]` (≤ 10); `GET .../[clipId]/attachments/[decisionId]/
   [index]` (loopback only; 404 `clip_attachment_missing` / `clip_attachment_not_found`, 409 `clip_attachment_changed`). Codes:
   `clip_attachment_too_many` 422, `_too_large` 413, `_type_not_allowed` / `_type_mismatch` 415, `_upload_unknown` 404,
-  `_upload_offset` / `_upload_incomplete` 409, `_upload_corrupt` 422, `_write_failed` 500.
+  `_upload_offset` / `_upload_incomplete` 409, `_upload_corrupt` 422, `_write_failed` 500. BL-272: a clip with `approvedImageId` also
+  carries `approvedImage: { imageId, sceneId, imagePath, status } | null` (that image now; null when it is gone).
+- **Image review tools (BL-272, ADR 0076; Producer 1.28.0).** `producer-only`; submit and withdraw are DRAFT, list and get READ. Only the
+  owner approves, approves with a note, or returns an image (Web UI, Медиа → «Кадры»); no tool here can. Nothing reaches YouTube.
+  - `producer_image_review_submit` `{ channelId, sceneId (1-80), imagePath, note? (1-2000), batchId?, requestId? }` → `{ image, replayed,
+    forChannelId }`. `imagePath` relative to the channel workspace (`/` between folders, no `..`, not absolute; the real path inside that
+    channel's workspace -- a symlink out of it or into another channel's folder is refused -- a regular file); `.png` / `.jpg` / `.jpeg`
+    whose header is that format, 16-16384 px a side, at most 50 MiB; size and SHA-256 stored (approval needs the same file). `batchId` /
+    `requestId`: `[A-Za-z0-9_.:-]{1,80}`. A known `requestId` with the same request answers the stored image with `replayed: true` (even
+    after the file changed or the owner answered); with another request `image_review_request_conflict` (`details.imageId`). Errors:
+    `CHANNEL_NOT_ACTIVE`, `image_review_workspace_unavailable`, `image_review_not_image`, `image_review_file_unavailable`
+    (`details.reason`), `image_review_duplicate` (`details.imageId`), `image_review_too_many_pending` (200 per channel),
+    `image_review_batch_full` (40 per batch), `validation_failed`, `operation_lock_held` / `device_in_recovery_mode`.
+  - `producer_image_review_list` `{ channelId, status?, batchId?, limit? (1-200, default 50) }` → `{ images, pending, forChannelId }`,
+    pending first (oldest first), then the rest newest first; `pending` counts within the batch when `batchId` is given.
+    `producer_image_review_get` `{ channelId, imageId }` → `{ image, forChannelId }` (`image_review_not_found`).
+    `producer_image_review_withdraw` `{ channelId, imageId }` → `{ image, forChannelId }` (pending only: `image_review_not_pending`).
+  - An image: `{ imageId, channelId, sceneId, imagePath, note ('' when none), batchId, requestId, width, height, sizeBytes, sha256,
+    submittedAt, device, status: pending | approved | approved_with_note | returned | withdrawn, comment, decidedAt, decidedOn }`;
+    `comment` is the owner's words, always on `approved_with_note` (approved; apply the note) and `returned`, null otherwise. Shared by
+    both computers (sync family `image_reviews`); the earliest owner answer counts, a withdrawal only without one. Each owner answer
+    also writes `REVIEW-DECISION-image-<imageId>-<decisionId>.md` into the Producer's Inbox (ADR 0066, kind `image`). When an
+    owner return decides an image that also has a later owner approval (two computers answered separately; either arrival order), it also writes
+    `REVIEW-DECISION-image-<imageId>-<approvalId>-overturned-by-<returnId>.md` with status `approval_overturned` (the approval no
+    longer counts; the image is returned).
+- **Image review owner routes (Web session + active channel):** `GET /api/channels/[channelId]/image-reviews` → `{ images (each also
+  `file: ok | missing | changed` while pending, `null` once answered or withdrawn -- not checked), waiting }`; `?view=count` →
+  `{ waiting }` only, from the document (no file work); `POST .../image-reviews/[imageId]/decision` `{ action: approve | approve_with_note | return,
+  comment? }` (a note-approval and a return need a comment, a plain approval takes none; 409 `image_review_not_pending` /
+  `image_review_file_missing` / `image_review_file_changed`); `GET .../[imageId]/image` (full size) and `.../[imageId]/preview` (a JPEG up
+  to 960 px, else the original) -- this computer's copy, to the owner's browser only (403 otherwise; 404 `image_review_file_missing`).
 
 ### Owner review of final release packages (BL-257, ADR 0070, `docs/roadmap/plans/PACKAGE_REVIEW_PLAN.md`)
 
@@ -1897,6 +1959,8 @@ Both are operator-only and require a NextAuth session. The mutating methods are 
   - The channel must be connected (`CHANNEL_WORKSPACE_CHANNEL_NOT_CONNECTED`, 404).
   - The path must be absolute, exist, be a directory, and not overlap app-data
     (`CHANNEL_WORKSPACE_PATH_INVALID`, 400).
+  - It must not be inside, equal to or around another connected channel's folder on this device
+    (`CHANNEL_WORKSPACE_NESTED`, 409; BL-272, ADR 0076 §3).
   - Gated by the `proxy.ts` mutation gate.
 - Both require a NextAuth session. They are not active-channel-scoped: the Settings → Channels
   card manages every connected channel.

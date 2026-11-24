@@ -1,4 +1,4 @@
-import { assertAgentMayNotPublish } from "@/lib/channel-access";
+import { assertAgentScopeWriteChannel } from "@/lib/channel-access";
 import { setSelectedChannelId } from "@/lib/db";
 import { createWriteContextCore } from "@/lib/write-context";
 import { resolveGoogleCredentials } from "@/lib/google-credentials";
@@ -22,7 +22,7 @@ export function createPlaylistManagementCore() {
     channelSelectionStore: {
       setSelectedChannelId,
     },
-    assertMayNotPublish: assertAgentMayNotPublish,
+    assertScopeChannel: assertAgentScopeWriteChannel,
   });
 
   return withPlaylistListMemo(services);

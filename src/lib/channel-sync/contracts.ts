@@ -56,6 +56,8 @@ export type SyncedVideo = {
   durationSeconds?: number | null;
   /** FO-REQ-0015 item 6: YouTube's own `snippet.liveBroadcastContent` (`none` | `live` | `upcoming`), null when unknown. */
   liveBroadcastContent?: string | null;
+  /** FO-REQ-0056: YouTube's `snippet.tags` as of the last sync (`[]` = none); null = not read yet (synced before tags were stored). */
+  tags: string[] | null;
 };
 
 export type ChannelForSync = {
@@ -86,6 +88,8 @@ export type VideoSyncMetadata = {
   durationSeconds: number | null;
   /** `snippet.liveBroadcastContent` from the sync read; absent/null = unknown. */
   liveBroadcastContent?: string | null;
+  /** FO-REQ-0056: `snippet.tags` from the sync read; `[]` when the video has none. */
+  tags: string[];
   publishAt: string | null;
 };
 

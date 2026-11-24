@@ -90,6 +90,7 @@ const KIND_TITLE: Record<ReviewNoticeKind, string> = {
   slot: "weekly-plan slot",
   package: "final release package (owner's package review)",
   template: "week template (dates by template)",
+  image: "master still image",
 };
 
 function frontMatter(fields: Array<[string, string | number | null]>): string {

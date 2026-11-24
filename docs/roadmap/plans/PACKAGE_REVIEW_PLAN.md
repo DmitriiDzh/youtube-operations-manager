@@ -53,7 +53,7 @@ its own note, sent with the verdict). No YouTube call; the same routes, session 
 - AC-TC-02 Every comment is a flag on the player's timeline at its time with its number; the list under the player shows number,
   m:ss (h:mm:ss past an hour) and the text; a click on a flag or a time seeks there, paused. Works at phone width (< 768 px).
 - AC-TC-03 Until he sends, the comments are a server-side draft per (channel, manifest SHA-256) on this computer (device-local table,
-  schema 124): a reload, another tab or his phone through remote access shows the same draft. Edit and delete work before sending.
+  schema 126): a reload, another tab or his phone through remote access shows the same draft. Edit and delete work before sending.
   An empty draft is no row.
 - AC-TC-04 The draft routes (`GET`/`PUT …/package-reviews/draft?manifest=`) need the Web session and the ACTIVE channel, and only
   accept a manifest of a package of that channel (else `package_review_not_found`); a draft of channel A is never read through B.
@@ -67,7 +67,7 @@ its own note, sent with the verdict). No YouTube call; the same routes, session 
 - AC-TC-08 The Producer reads the batch: the wake file `REVIEW-DECISION-package-…` gains a section «Timed comments» with one line per
   comment `<seconds> s (<m:ss>): <text>` (absent when there are none, so older notices stay byte-identical), and the weekly plan's
   package (`factory_/agent_/producer_publishing_plan_get`) gains `reviewTimedComments: [{ atSeconds, time, text }]` of the standing
-  decision (approved or returned; absent when none). Factory 1.55.0, Agent 4.26.0, Producer 1.28.0 (additive).
+  decision (approved or returned; absent when none). Factory 1.56.0, Agent 4.29.0, Producer 1.31.0 (additive).
 - AC-TC-09 The card shows the standing decision's timed comments (time and text) after it is sent.
 - AC-TC-10 (owner TG 4836) An approval carries an optional general comment — notes for future videos — together with the timed
   comments, in one action. An approved video offers «Одобрить ещё раз с замечаниями» (a new approval; it needs a comment or a timed
@@ -104,8 +104,8 @@ mp4, same video code), answers each issue in the new manifest, and the owner see
 - AC-IS-06 Re-review: issues are violet flags at their current time; each shows the thread (owner and agent turns, the agent's
   status). The card shows the open / resolved counts.
 - AC-IS-07 Agents read per issue id, time, state and thread: the wake file section «Issues» (as of that decision, the same bytes on
-  either computer; absent without issues) and the plan package `reviewIssues` + `reviewIssueCounts` (Factory 1.55.0 / Agent 4.26.0 /
-  Producer 1.28.0, unreleased).
+  either computer; absent without issues) and the plan package `reviewIssues` + `reviewIssueCounts` (Factory 1.56.0 / Agent 4.29.0 /
+  Producer 1.31.0, unreleased).
 - AC-IS-08 Old builds: additive fields only (`timedComments[].id`, `issueActions`, `repliesSeen`, `reviewReplies`); a decision carrying
   them reads exactly as before.
 
