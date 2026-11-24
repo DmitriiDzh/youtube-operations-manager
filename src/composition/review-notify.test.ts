@@ -311,6 +311,25 @@ test("AC-TC-08: package notices carry the timed comments of an approval or a ret
   ]);
 });
 
+// Owner TG 4846 (AC-IS-07, AC-RN-16): each package notice carries the video's issues AS OF its own decision -- a later decision never
+// changes an earlier file.
+test("AC-IS-07: package notices carry the issues as of their own decision", () => {
+  const M = "a".repeat(64);
+  const base = { manifestSha256: M, video: "V11", thumbnailSha256: null, by: "owner" as const, device: "Mac" };
+  const snapshot: PackageReviewsSnapshot = {
+    exists: true,
+    required: { value: true, updatedAt: "2026-11-15T08:00:00Z", by: "owner", device: "Mac" },
+    decisions: {
+      pr_1: { ...base, id: "pr_1", kind: "returned", comment: "0:03 black frame", at: "2026-11-24T10:00:00Z", seq: 1, timedComments: [{ atSeconds: 3, text: "black frame", id: "pr_1.1" }] },
+      pr_2: { ...base, id: "pr_2", kind: "approved", comment: null, at: "2026-11-25T10:00:00Z", seq: 2, repliesSeen: [{ issueId: "pr_1.1", status: "fixed", text: "cut" }], issueActions: [{ issueId: "pr_1.1", kind: "resolved" }] },
+    },
+  };
+  const notices = packageNoticesOf(CH, snapshot, SINCE);
+  const of = (id: string) => notices.find((n) => n.decisionId === id)!.issues!;
+  assert.deepEqual(of("pr_1").map((i) => [i.id, i.state, i.thread.length]), [["pr_1.1", "open", 1]]);
+  assert.deepEqual(of("pr_2").map((i) => [i.id, i.state, i.thread.map((t) => t.by)]), [["pr_1.1", "resolved", ["owner", "agent", "owner"]]]);
+});
+
 // Owner TG 4836: an approval with a comment or timed comments is labelled as notes for the future (non-blocking); a plain approval is
 // not. Review fix 7: a return whose comment is only its timed comments written out shows them once -- no fenced copy.
 test("TG 4836 / review fix 7: approval notes are labelled; a generated return comment is not repeated", () => {

@@ -159,7 +159,7 @@ test("AC-TC-07: a decision from the other computer keeps its timed comments; mal
 
 test("AC-TC-03: the draft is replaced whole, read back sorted by time, and an empty draft is no row", async () => {
   const h = harness();
-  assert.deepEqual(await h.service.draft(CH, MANIFEST), { manifestSha256: MANIFEST, comments: [], updatedAt: null });
+  assert.deepEqual(await h.service.draft(CH, MANIFEST), { manifestSha256: MANIFEST, comments: [], issueActions: [], updatedAt: null });
   const saved = await h.service.saveDraft(CH, {
     manifestSha256: MANIFEST,
     comments: [
@@ -171,7 +171,7 @@ test("AC-TC-03: the draft is replaced whole, read back sorted by time, and an em
     { id: "a", atSeconds: 12.3, text: "cut the pause" },
     { id: "b", atSeconds: 95.3, text: "music too loud" },
   ];
-  assert.deepEqual(saved, { manifestSha256: MANIFEST, comments: expected, updatedAt: "2026-11-24T10:00:00.000Z" });
+  assert.deepEqual(saved, { manifestSha256: MANIFEST, comments: expected, issueActions: [], updatedAt: "2026-11-24T10:00:00.000Z" });
   // A reload (a new read) finds the same draft.
   assert.deepEqual(await h.service.draft(CH, MANIFEST), saved);
   // Edit and delete: the screen sends the whole list again.
@@ -223,8 +223,9 @@ test("AC-TC-05/09: an approval sends the timed comments as one batch sorted by t
     ],
   });
   const expected = [
-    { atSeconds: 4, text: "nice start" },
-    { atSeconds: 61.3, text: "logo late, fine" },
+    // AC-IS-02 (owner TG 4846, a new requirement): each timed comment is stored with its issue id `<decisionId>.<n>`.
+    { atSeconds: 4, text: "nice start", id: "pr_id1.1" },
+    { atSeconds: 61.3, text: "logo late, fine", id: "pr_id1.2" },
   ];
   assert.deepEqual(decision.timedComments, expected);
   assert.equal(decision.comment, null);
@@ -239,8 +240,8 @@ test("AC-TC-06: a return with only timed comments is stored with them as its com
   const only = await h.service.decide(CH, { manifestSha256: MANIFEST, kind: "returned", timedComments: [{ atSeconds: 125, text: "wrong map" }, { atSeconds: 3, text: "black frame" }] });
   assert.equal(only.decision.comment, "0:03 black frame\n2:05 wrong map");
   assert.deepEqual(only.decision.timedComments, [
-    { atSeconds: 3, text: "black frame" },
-    { atSeconds: 125, text: "wrong map" },
+    { atSeconds: 3, text: "black frame", id: "pr_id1.1" },
+    { atSeconds: 125, text: "wrong map", id: "pr_id1.2" },
   ]);
   // An older build reads the return (it needs a non-empty comment).
   assert.equal(wellFormedDecision(only.decision)?.kind, "returned");
@@ -345,10 +346,10 @@ test("TG 4836: an approval carries a general comment with timed comments; approv
   const again = await h.service.decide(CH, { manifestSha256: MANIFEST, kind: "approved", comment: "  Next time a shorter intro  ", timedComments: [{ atSeconds: 12, text: "intro drags" }] });
   assert.equal(again.decision.kind, "approved");
   assert.equal(again.decision.comment, "Next time a shorter intro");
-  assert.deepEqual(again.decision.timedComments, [{ atSeconds: 12, text: "intro drags" }]);
+  assert.deepEqual(again.decision.timedComments, [{ atSeconds: 12, text: "intro drags", id: "pr_id2.1" }]);
   assert.equal(again.view.items[0].state, "approved");
   assert.equal(again.view.items[0].comment, "Next time a shorter intro");
-  assert.deepEqual(again.view.items[0].timedComments, [{ atSeconds: 12, text: "intro drags" }]);
+  assert.deepEqual(again.view.items[0].timedComments, [{ atSeconds: 12, text: "intro drags", id: "pr_id2.1" }]);
   assert.equal(h.decisions().length, 2);
 });
 
@@ -388,4 +389,16 @@ test("review fix 7: a comment that is only the timed comments written out is rec
   assert.equal(commentIsTimedText("redo the ending", timed), false);
   assert.equal(commentIsTimedText("0:03 black frame", []), false);
   assert.equal(commentIsTimedText(null, timed), false);
+});
+
+// Owner TG 4846 (AC-IS-04): the owner's issue actions wait in the same draft (and the same stamps guard them); an empty draft is no row.
+test("AC-IS-04: issue actions are kept in the draft with the comments", async () => {
+  const h = harness();
+  const saved = await h.service.saveDraft(CH, { manifestSha256: MANIFEST, comments: [], issueActions: [{ issueId: "pr_a.1", kind: "resolved" }, { issueId: "pr_a.2", kind: "follow_up", text: " still there " }] });
+  assert.deepEqual(saved.issueActions, [{ issueId: "pr_a.1", kind: "resolved" }, { issueId: "pr_a.2", kind: "follow_up", text: "still there" }]);
+  assert.deepEqual((await h.service.draft(CH, MANIFEST)).issueActions, saved.issueActions);
+  await refusedWith(h.service.saveDraft(CH, { manifestSha256: MANIFEST, comments: [], issueActions: [{ issueId: "pr_a.2", kind: "follow_up" }] }), "validation_failed");
+  await refusedWith(h.service.saveDraft(CH, { manifestSha256: MANIFEST, comments: [], issueActions: [{ issueId: "pr_a.1", kind: "resolved" }, { issueId: "pr_a.1", kind: "resolved" }] }), "validation_failed");
+  await h.service.saveDraft(CH, { manifestSha256: MANIFEST, comments: [], issueActions: [] });
+  assert.equal(h.drafts.size, 0);
 });

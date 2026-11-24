@@ -100,3 +100,4 @@ export type { MediaKey, OwnerReviewProblem, TriedRuleRow } from "./model";
 export * from "./contracts";
 export * from "./schemas";
 export * from "./timed-comments";
+export * from "./issues";

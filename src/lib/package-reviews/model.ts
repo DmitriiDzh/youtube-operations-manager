@@ -1,5 +1,5 @@
 import type { OwnerReviewState, PackageReviewDecision, PackageReviewsSnapshot, ReviewKey } from "./contracts";
-import { wellFormedTimedComments } from "./timed-comments";
+import { wellFormedIssueActions, wellFormedReplies, wellFormedTimedComments } from "./timed-comments";
 
 // BL-257 (ADR 0070 §1, §3, §4), BL-265 (ADR 0072 §1, §2, §6): pure rules. Which decision stands is derived from the decisions, never
 // stored, so two computers' documents merge without a conflict and read the same answer.
@@ -18,7 +18,11 @@ export function wellFormedDecision(value: unknown): PackageReviewDecision | null
   // BL-265: the media identity counts only whole -- a hash without a size (or a malformed one) is dropped, and the decision then
   // stands for its manifest only (stricter, never wider).
   // Owner TG 4817 (AC-TC-07): only an approval or a return carries timed comments; malformed ones are dropped, never the decision.
-  const timed = d.kind === "approved" || d.kind === "returned" ? wellFormedTimedComments(d.timedComments) : [];
+  const gate = d.kind === "approved" || d.kind === "returned";
+  const timed = gate ? wellFormedTimedComments(d.timedComments) : [];
+  // Owner TG 4846 (AC-IS-08): issue actions and the replies seen, the same way -- malformed entries dropped, never the decision.
+  const actions = gate ? wellFormedIssueActions(d.issueActions) : [];
+  const replies = gate ? wellFormedReplies(d.repliesSeen) : [];
   const media =
     typeof d.videoSha256 === "string" && HEX64.test(d.videoSha256) && typeof d.videoSizeBytes === "number" && Number.isSafeInteger(d.videoSizeBytes) && d.videoSizeBytes >= 0
       ? { videoSha256: d.videoSha256, videoSizeBytes: d.videoSizeBytes }
@@ -38,6 +42,8 @@ export function wellFormedDecision(value: unknown): PackageReviewDecision | null
     ...(typeof d.carriedFrom === "string" && HEX64.test(d.carriedFrom) ? { carriedFrom: d.carriedFrom } : {}),
     ...media,
     ...(timed.length > 0 ? { timedComments: timed } : {}),
+    ...(actions.length > 0 ? { issueActions: actions } : {}),
+    ...(replies.length > 0 ? { repliesSeen: replies } : {}),
   };
 }
 

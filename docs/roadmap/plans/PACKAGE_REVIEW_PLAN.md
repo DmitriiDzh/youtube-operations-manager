@@ -81,3 +81,30 @@ its own note, sent with the verdict). No YouTube call; the same routes, session 
   one is refused; the screen writes nothing and offers no decision until the draft has loaded; playing on or seeking drops a taken
   moment; full screen holds the whole player (frame, flags, timeline, controls) with Space / click to play and pause; drafts of gone
   packages are pruned when the list is read; a failed draft removal is audited.
+
+## Issues across package versions (owner TG 4846/4848; written before the code)
+
+Each timed comment is an ISSUE that outlives the package version it was made on: the factory fixes, re-packages (new manifest, new
+mp4, same video code), answers each issue in the new manifest, and the owner sees the old flags with the answers on the next review.
+
+- AC-IS-01 Key across versions: the channel's review document plus the video code (or its BL-263 recode alias), the rule packaging
+  comments already use -- never the manifest or the mp4 (a fix changes both) and never the slot (it can change or be absent).
+- AC-IS-02 Issue id: stored on each timed comment at decide time, `<decisionId>.<n>` (n = 1.. in time order), so two offline
+  computers never mint the same one; a timed comment without an id (stage 1) reads with the same derived id. A carried copy of a
+  decision (recode) adds no second issue: issues and thread turns are deduplicated by id and content.
+- AC-IS-03 Agent replies: `yt-release-package/2` gains optional `reviewReplies: [{ issueId, status: fixed | not_fixed | partly, text
+  (1-2000), atSeconds? (the moment after the edit) }]`, written by whoever re-packages. Read leniently: a malformed entry or a reply to
+  an unknown issue is ignored, never a package problem. The replies the owner saw are snapshotted into his next decision
+  (`repliesSeen`), so the thread survives the next re-package and syncs. No MCP tool writes the review document (AC-PR-08 holds).
+- AC-IS-04 Owner actions per issue, in the draft and sent with the next approve / return: «Исправлено, принимаю» (`resolved`) or a
+  follow-up text (`follow_up`, the issue stays open). An action naming an issue that is not this channel's for this video is refused
+  (`package_review_issue_unknown`), nothing decided. New timed comments are new issues.
+- AC-IS-05 State: `open` (made with a return, or followed up), `resolved` (the owner's last action), `noted` (made with an approval:
+  notes for the future, not counted as open). Its time: the agent's latest `atSeconds`, else the original.
+- AC-IS-06 Re-review: issues are violet flags at their current time; each shows the thread (owner and agent turns, the agent's
+  status). The card shows the open / resolved counts.
+- AC-IS-07 Agents read per issue id, time, state and thread: the wake file section «Issues» (as of that decision, the same bytes on
+  either computer; absent without issues) and the plan package `reviewIssues` + `reviewIssueCounts` (Factory 1.55.0 / Agent 4.26.0 /
+  Producer 1.28.0, unreleased).
+- AC-IS-08 Old builds: additive fields only (`timedComments[].id`, `issueActions`, `repliesSeen`, `reviewReplies`); a decision carrying
+  them reads exactly as before.

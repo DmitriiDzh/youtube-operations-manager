@@ -1,7 +1,7 @@
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { decidingRecordOf, wellFormedAttachments } from "@/lib/clip-reviews";
-import { commentIsTimedText, ownerReviewStateOf, standingDecision, timedCommentsReadout, wellFormedTimedComments } from "@/lib/package-reviews";
+import { commentIsTimedText, decisionsOfVideo, issuesOf, issuesReadout, ownerReviewStateOf, standingDecision, timedCommentsReadout, wellFormedTimedComments } from "@/lib/package-reviews";
 import {
   deleteReviewNotifyLedgerBefore,
   getReviewNotifySettingsJson,
@@ -279,6 +279,11 @@ export function packageNoticesOf(channel: Channel, snapshot: PackageReviewsSnaps
     const timed = d.kind === "packaging_comment" ? [] : timedCommentsReadout(wellFormedTimedComments(d.timedComments));
     // Review fix 7: a return whose comment is only its timed comments written out shows them once (in their own section).
     const generated = commentIsTimedText(d.comment, timed);
+    // Owner TG 4846 (AC-IS-07): the video's issues AS OF this decision (its decisions up to this one, the answers they saw) -- the same
+    // bytes on either computer, whatever was decided later.
+    const ofVideo = d.kind === "packaging_comment" || !d.video ? [] : decisionsOfVideo(gate.decisions, d.video, new Map());
+    const upTo = ofVideo.findIndex((x) => x.id === d.id);
+    const issues = upTo === -1 ? [] : issuesReadout(issuesOf(ofVideo.slice(0, upTo + 1)));
     out.push({
       kind: "package",
       channelId: channel.channelId,
@@ -309,6 +314,7 @@ export function packageNoticesOf(channel: Channel, snapshot: PackageReviewsSnaps
       ytmPlace: "Медиа → «Видео на проверку»",
       readTool: `agent_get_publishing_calendar ${json({ channelId: channel.channelId })}`,
       ...(timed.length > 0 ? { timedComments: timed } : {}),
+      ...(issues.length > 0 ? { issues } : {}),
     });
   }
   return out;

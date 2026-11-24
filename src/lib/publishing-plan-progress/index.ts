@@ -1,5 +1,5 @@
 import { createPackageScanCore, createPublishingSettingsCore, listChannelUploads, ownerReviewStateFor, packageScanFilesSignature, packageScanSignature, removedVideosOf } from "@/lib/publishing";
-import { standingDecision, timedCommentsReadout } from "@/lib/package-reviews";
+import { decisionsOfVideo, issueCounts, issuesOf, issuesReadout, standingDecision, timedCommentsReadout, wellFormedReplies } from "@/lib/package-reviews";
 import type { PlanProgressResult, PlanSlotProgress, PublishingPlansPorts } from "@/lib/publishing-plans";
 import { createPackagesReader, invalidatePackagesEntry, type PackagesEntry } from "./packages-cache";
 import { deletedVideosBySlot, progressOfSlots, progressWithUploads, type MediaReviewOf } from "./progress";
@@ -21,6 +21,11 @@ export async function mediaReviewReaderOf(channelId: string, read: (channelId: s
         }
       : () => "not_required";
     reader.timedComments = timedComments;
+    // Owner TG 4846 (AC-IS-07): the video's issues across its package versions, with this package's answers (read leniently).
+    reader.issues = (video, rawReplies) => {
+      const issues = issuesOf(decisionsOfVideo(state.decisions, video, state.aliases), wellFormedReplies(rawReplies));
+      return { issues: issuesReadout(issues), counts: issueCounts(issues) };
+    };
     // Owner TG 4836: the notes of a standing approval (an approval with a comment), for the plan's package.
     reader.approvalComment = (key) => {
       const standing = standingDecision(state, key);

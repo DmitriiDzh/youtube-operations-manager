@@ -2,7 +2,7 @@
 // composition between `publishing` (the scan) and `publishing-plans` (the plan), so neither feature module imports the other. Pure:
 // the scanned packages and the channel's AI-flag setting come in; the slot statuses go out.
 
-import type { PlanMediaReview, PlanSlotProgress } from "@/lib/publishing-plans";
+import type { PlanMediaReview, PlanReviewIssue, PlanSlotProgress } from "@/lib/publishing-plans";
 
 /** BL-267 (plan §3.4): the owner's media review of a package by its key, as the composition computes it (package-reviews' rule). */
 export type MediaReviewKey = { manifestSha256: string | null; video: string; videoSha256: string | null; videoSizeBytes: number | null };
@@ -11,6 +11,8 @@ export type MediaReviewOf = ((key: MediaReviewKey) => PlanMediaReview) & {
   timedComments?: (key: MediaReviewKey) => Array<{ atSeconds: number; time: string; text: string }>;
   /** Owner TG 4836: the general comment of the owner's standing APPROVAL (notes for future videos), else null. */
   approvalComment?: (key: MediaReviewKey) => string | null;
+  /** Owner TG 4846 (AC-IS-07): the video's issues across its package versions, with this package's raw `reviewReplies`. */
+  issues?: (video: string, rawReplies: unknown) => { issues: PlanReviewIssue[]; counts: { open: number; resolved: number; noted: number } };
 };
 import { uploadTimeOf, VIDEO_DELETED_ON_YOUTUBE } from "@/lib/shared-video-presence";
 import type { ScannedPackage } from "@/lib/publishing";
@@ -61,6 +63,7 @@ export function progressOfPackage(scanned: ScannedPackage, channelSyntheticMedia
   const videoSha256 = typeof pkg.sha256 === "string" ? pkg.sha256.toLowerCase() : null;
   const reviewKey = { manifestSha256: scanned.manifestSha256, video: pkg.video, videoSha256, videoSizeBytes: pkg.sizeBytes ?? null };
   const timed = reviewOf?.timedComments?.(reviewKey) ?? [];
+  const issues = reviewOf?.issues?.(pkg.video, pkg.reviewReplies) ?? null;
   // BL-257: a return's comment (gate on); owner TG 4836: else the standing approval's notes for future videos.
   const returnComment = reviewCommentOf(scanned);
   const approvalNotes = returnComment === null ? (reviewOf?.approvalComment?.(reviewKey) ?? null) : null;
@@ -94,6 +97,8 @@ export function progressOfPackage(scanned: ScannedPackage, channelSyntheticMedia
       ...(approvalNotes ? { reviewComment: approvalNotes, reviewCommentKind: "approved_notes" as const } : {}),
       // Owner TG 4817 (AC-TC-08): the owner's timed comments of his standing decision, only when there are some.
       ...(timed.length > 0 ? { reviewTimedComments: timed } : {}),
+      // Owner TG 4846 (AC-IS-07): the issues with their threads and counts, only when there are some.
+      ...(issues && issues.issues.length > 0 ? { reviewIssues: issues.issues, reviewIssueCounts: issues.counts } : {}),
     },
   };
 }

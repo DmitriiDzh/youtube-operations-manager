@@ -16,7 +16,8 @@ import {
 } from "./contracts";
 import { isMediaKeyed, latestOwnerDecision, ownerReviewStateOf, standingDecision, wellFormedDecision } from "./model";
 import { manifestSha256Schema, packageDecisionInputSchema, packageReviewDraftInputSchema, packageReviewSwitchInputSchema } from "./schemas";
-import { roundSeconds, timedCommentsAsText, wellFormedDraft, wellFormedTimedComments } from "./timed-comments";
+import { decisionsOfVideo, issueCounts, issuesOf } from "./issues";
+import { roundSeconds, timedCommentsAsText, wellFormedDraft, wellFormedIssueActions, wellFormedTimedComments, withIssueIds, type DraftTimedComment, type IssueAction } from "./timed-comments";
 
 // BL-257 (ADR 0070, PACKAGE_REVIEW_PLAN.md stage 1): the owner's review of a channel's final release packages. Every port is
 // injected: the store (the synced family), the channel's packages (the publishing scan, wired by the composition layer), files and
@@ -69,6 +70,13 @@ const extensionOf = (p: string) => (/\.([A-Za-z0-9]+)$/.exec(p)?.[1] ?? "").toLo
 /** Drafts of packages the channel no longer lists are removed once untouched this long. */
 const DRAFT_PRUNE_DAYS = 14;
 
+/** A stored draft row: stage 1 wrote the comments as an array; with issue actions (owner TG 4846) it is `{ comments, issueActions }`. */
+function draftOfJson(value: unknown): { comments: DraftTimedComment[]; issueActions: IssueAction[] } {
+  if (Array.isArray(value)) return { comments: wellFormedDraft(value), issueActions: [] };
+  const v = (value ?? {}) as { comments?: unknown; issueActions?: unknown };
+  return { comments: wellFormedDraft(v.comments), issueActions: wellFormedIssueActions(v.issueActions) };
+}
+
 const STATE_ORDER: Record<PackageReviewItemState, number> = { pending: 0, returned: 1, approved: 2, uploaded: 3 };
 
 export function createPackageReviewsService(deps: PackageReviewsDeps) {
@@ -105,6 +113,8 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
     else if (latest?.kind === "approved") state = "approved";
     else state = "pending";
     const own = comments.filter((c) => c.manifestSha256 === pkg.manifestSha256 || (c.video !== "" && (c.video === pkg.video || gate.aliases.get(c.video) === pkg.video)));
+    // Owner TG 4846 (AC-IS-01): the video's issues across its package versions, with this package's answers.
+    const issues = issuesOf(decisionsOfVideo(gate.decisions, pkg.video, gate.aliases), pkg.reviewReplies ?? []);
     return {
       manifestSha256: pkg.manifestSha256,
       manifestPath: pkg.manifestPath,
@@ -120,6 +130,8 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
       decision: latest?.kind === "approved" || latest?.kind === "returned" ? latest.kind : null,
       comment: latest?.comment ?? null,
       timedComments: latest?.timedComments ?? [],
+      issues,
+      issueCounts: issueCounts(issues),
       decidedAt: latest?.at ?? null,
       decidedOn: latest?.device ?? null,
       hasVideoSha256: pkg.videoSha256 !== null,
@@ -218,10 +230,23 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
     const thumbnailSha256 = await thumbnailHashOf(channelId, pkg);
     // Owner TG 4817 (AC-TC-05/06): the draft's timed comments go with an approval or a return as one batch, sorted by time; a return
     // without a general comment states them as its comment too (an older build drops a return without one).
-    const timed = parsed.kind === "packaging_comment" ? [] : wellFormedTimedComments((parsed.timedComments ?? []).map((c) => ({ atSeconds: roundSeconds(c.atSeconds), text: c.text })));
-    const comment = (parsed.comment ?? "").trim() || (parsed.kind === "returned" && timed.length > 0 ? timedCommentsAsText(timed, PACKAGE_REVIEW_LIMITS.comment) : null);
+    const decisionId = `pr_${deps.randomId()}`.slice(0, 40);
+    // Owner TG 4846 (AC-IS-02): each new timed comment is an issue, `<decisionId>.<n>`.
+    const timed = parsed.kind === "packaging_comment" ? [] : withIssueIds(decisionId, wellFormedTimedComments((parsed.timedComments ?? []).map((c) => ({ atSeconds: roundSeconds(c.atSeconds), text: c.text }))));
+    // AC-IS-04: actions only on this channel's issues of this video (any of its package versions); another one refuses everything.
+    const gateNow = await ownerReviewState(channelId);
+    const known = issuesOf(decisionsOfVideo(gateNow.decisions, pkg.video, gateNow.aliases), pkg.reviewReplies ?? []);
+    const actions = parsed.kind === "packaging_comment" ? [] : wellFormedIssueActions(parsed.issueActions ?? []);
+    const unknown = actions.filter((a) => !known.some((i) => i.id === a.issueId)).map((a) => a.issueId);
+    if (unknown.length > 0) throw refuse("package_review_issue_unknown", `No issue of ${pkg.video} in this channel has these ids: ${unknown.join(", ")} (reload the video's comments)`, { video: pkg.video, issueIds: unknown });
+    // AC-IS-03: the factory's answers the owner saw, so the thread survives the next re-package (only answers to known issues).
+    const repliesSeen = parsed.kind === "packaging_comment" ? [] : (pkg.reviewReplies ?? []).filter((r) => known.some((i) => i.id === r.issueId));
+    // A return without a general comment states its timed comments and follow-ups as `m:ss text` lines (an older build needs one).
+    const followUps = actions.flatMap((a) => (a.kind === "follow_up" ? [{ atSeconds: known.find((i) => i.id === a.issueId)!.atSeconds, text: a.text ?? "" }] : []));
+    const spoken = [...timed, ...followUps].sort((a, b) => a.atSeconds - b.atSeconds);
+    const comment = (parsed.comment ?? "").trim() || (parsed.kind === "returned" && spoken.length > 0 ? timedCommentsAsText(spoken, PACKAGE_REVIEW_LIMITS.comment) : null);
     const decision: PackageReviewDecision = {
-      id: `pr_${deps.randomId()}`.slice(0, 40),
+      id: decisionId,
       manifestSha256: pkg.manifestSha256,
       video: pkg.video,
       thumbnailSha256,
@@ -232,6 +257,8 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
       at: deps.now().toISOString(),
       ...(media ?? {}),
       ...(timed.length > 0 ? { timedComments: timed } : {}),
+      ...(actions.length > 0 ? { issueActions: actions } : {}),
+      ...(repliesSeen.length > 0 ? { repliesSeen } : {}),
     };
     // Review fix 1 (AC-TC-05): the stored draft goes only when it is the one this decision was made from (`draftUpdatedAt` = its stamp;
     // null = the screen saw none). Another stored draft -- saved from the phone, or not loaded in this tab -- refuses the decision
@@ -275,14 +302,14 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
     const store = draftsStore();
     await findPackage(channelId, sha, true);
     const row = await store.get(channelId, sha);
-    let comments: PackageReviewDraft["comments"] = [];
+    let stored: { comments: PackageReviewDraft["comments"]; issueActions: PackageReviewDraft["issueActions"] } = { comments: [], issueActions: [] };
     try {
-      comments = row ? wellFormedDraft(JSON.parse(row.commentsJson)) : [];
+      stored = row ? draftOfJson(JSON.parse(row.commentsJson)) : stored;
     } catch {
-      comments = [];
+      // an unreadable row reads as an empty draft (its stamp still guards the next save)
     }
     // The stamp is the stored row's (null: no row): the screen sends it back with its next save and with its decision (review fixes 1-2).
-    return { manifestSha256: sha, comments, updatedAt: row ? row.updatedAt.toISOString() : null };
+    return { manifestSha256: sha, ...stored, updatedAt: row ? row.updatedAt.toISOString() : null };
   }
 
   /** AC-TC-03/04: replaces the draft whole (`comments: []` removes it). Only for a package of this channel. Local: no sync, no gate. */
@@ -291,6 +318,7 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
     const store = draftsStore();
     await findPackage(channelId, parsed.manifestSha256, true);
     const comments = wellFormedDraft(parsed.comments);
+    const issueActions = wellFormedIssueActions(parsed.issueActions ?? []);
     return deps.withLock(async () => {
       // Review fix 2: a save made on a stale base (`baseUpdatedAt` is not the stored draft's stamp) is refused, never written over it.
       if (parsed.baseUpdatedAt !== undefined) {
@@ -299,13 +327,14 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
           throw refuse("package_review_draft_changed", "Your comments at moments changed meanwhile (another tab or the phone): reload them", { manifestSha256: parsed.manifestSha256 });
         }
       }
-      if (comments.length === 0) {
+      if (comments.length === 0 && issueActions.length === 0) {
         await store.remove(channelId, parsed.manifestSha256);
-        return { manifestSha256: parsed.manifestSha256, comments: [], updatedAt: null };
+        return { manifestSha256: parsed.manifestSha256, comments: [], issueActions: [], updatedAt: null };
       }
       const at = deps.now();
-      await store.set(channelId, parsed.manifestSha256, JSON.stringify(comments), at);
-      return { manifestSha256: parsed.manifestSha256, comments, updatedAt: at.toISOString() };
+      // Stage 1 stored the comments as an array; with issue actions the row is an object (both are read).
+      await store.set(channelId, parsed.manifestSha256, JSON.stringify(issueActions.length > 0 ? { comments, issueActions } : comments), at);
+      return { manifestSha256: parsed.manifestSha256, comments, issueActions, updatedAt: at.toISOString() };
     });
   }
 

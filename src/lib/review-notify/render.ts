@@ -133,6 +133,22 @@ export function renderDecisionNotice(notice: ReviewDecisionNotice): string {
     ...((notice.timedComments ?? []).length > 0
       ? ["## Timed comments (moments of the video, in seconds and m:ss)", "", ...(notice.timedComments ?? []).map((c) => `- ${c.atSeconds} s (${c.time}): ${oneLine(c.text)}`), ""]
       : []),
+    // Owner TG 4846 (AC-IS-07): the issues, only when there are some (every other notice stays byte-identical).
+    ...((notice.issues ?? []).length > 0
+      ? [
+          "## Issues (each owner comment at a moment; answer them in the next package's `reviewReplies`)",
+          "",
+          ...(notice.issues ?? []).flatMap((issue) => [
+            `- ${code(issue.id)} at ${issue.atSeconds} s (${issue.time}) -- ${oneLine(issue.state)}`,
+            ...issue.thread.map((t) =>
+              t.by === "owner"
+                ? `  - owner (${oneLine(t.kind ?? "")}${t.at ? `, ${utcOf(t.at)}` : ""})${t.text ? `: ${oneLine(t.text)}` : ""}`
+                : `  - agent (${oneLine(t.status ?? "")}${t.atSeconds !== undefined ? `, now ${t.atSeconds} s (${t.time ?? ""})` : ""}): ${oneLine(t.text ?? "")}`
+            ),
+          ]),
+          "",
+        ]
+      : []),
     "## Attachments (relative to the channel folder)",
     "",
     ...(notice.attachments.length > 0 ? notice.attachments.map((p) => `- ${code(p)}`) : ["(none)"]),

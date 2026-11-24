@@ -35,12 +35,12 @@ function make(options: { session?: { user: { id: string } } | null; refuse?: Dom
       draft: async (...args) => {
         calls.push(["draft", ...args]);
         if (options.refuse) throw options.refuse;
-        return { manifestSha256: MANIFEST, comments: [], updatedAt: null };
+        return { manifestSha256: MANIFEST, comments: [], issueActions: [], updatedAt: null };
       },
       saveDraft: async (...args) => {
         calls.push(["saveDraft", ...args]);
         if (options.refuse) throw options.refuse;
-        return { manifestSha256: MANIFEST, comments: [], updatedAt: null };
+        return { manifestSha256: MANIFEST, comments: [], issueActions: [], updatedAt: null };
       },
     }),
     isOwnerBrowser: () => options.ownerBrowser ?? true,

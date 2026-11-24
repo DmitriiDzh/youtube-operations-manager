@@ -72,6 +72,32 @@ test("AC-TC-08: timed comments get their own section with seconds and m:ss; with
   assert.ok(timed.includes("## Timed comments (moments of the video, in seconds and m:ss)\n\n- 5 s (0:05): black frame\n- 3725.5 s (1:02:05): music too loud\n\n## Attachments"));
 });
 
+// Owner TG 4846 (AC-IS-07): the issues, one line per issue (id, moment, state) and one per thread turn; absent without issues.
+test("AC-IS-07: the Issues section lists id, moment, state and the thread; without issues the bytes do not change", () => {
+  assert.equal(renderDecisionNotice({ ...notice, issues: [] }), renderDecisionNotice(notice));
+  const text = renderDecisionNotice({
+    ...notice,
+    issues: [
+      {
+        id: "pr_a.2",
+        atSeconds: 64,
+        time: "1:04",
+        state: "open",
+        thread: [
+          { by: "owner", kind: "opened", text: "wrong map", at: "2026-11-24T10:00:00Z" },
+          { by: "agent", status: "partly", text: "redrawn", atSeconds: 64, time: "1:04", at: "2026-11-25T10:00:00Z" },
+          { by: "owner", kind: "follow_up", text: "label\nstill overlaps", at: "2026-11-25T10:00:00Z" },
+        ],
+      },
+    ],
+  });
+  assert.ok(
+    text.includes(
+      "- `pr_a.2` at 64 s (1:04) -- open\n  - owner (opened, 2026-11-24T10:00:00.000Z): wrong map\n  - agent (partly, now 64 s (1:04)): redrawn\n  - owner (follow_up, 2026-11-25T10:00:00.000Z): label still overlaps\n\n## Attachments"
+    )
+  );
+});
+
 test("a decision without a comment says (none)", () => {
   assert.ok(renderDecisionNotice({ ...notice, comment: null }).includes("## Owner's comment\n\n(none)"));
 });

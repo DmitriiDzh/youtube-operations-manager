@@ -336,6 +336,32 @@ test("AC-TC-08: the standing decision's timed comments reach the plan's package 
   assert.equal(without.get("s1")?.package && "reviewTimedComments" in without.get("s1")!.package!, false);
 });
 
+// Owner TG 4846 (AC-IS-07): the plan's package carries the video's issues (any package version) with this package's own answers
+// (pending: at null) and the counts; none -> no fields.
+test("AC-IS-07: reviewIssues and reviewIssueCounts on the plan's package", async () => {
+  const { mediaReviewReaderOf } = await import("./index");
+  const ret = { id: "pr_1", kind: "returned", video: "V1", manifestSha256: "c".repeat(64), videoSha256: "9".repeat(64), videoSizeBytes: 5, by: "owner", device: null, at: "2026-11-24T10:00:00Z", seq: 1, comment: "0:03 black frame", timedComments: [{ atSeconds: 3, text: "black frame", id: "pr_1.1" }] };
+  const reader = await mediaReviewReaderOf("UC", async () => ({ required: true, decisions: [ret], aliases: new Map() }) as never);
+  // The re-packaged V1 (another manifest and mp4) answers in its manifest.
+  const pkgOver = { sha256: "1".repeat(64), sizeBytes: 1000, reviewReplies: [{ issueId: "pr_1.1", status: "fixed", text: "cut", atSeconds: 2.5 }] };
+  const p = progressOfSlots([scanned("V1", "s1", { manifestSha256: "a".repeat(64) }, pkgOver)], ["s1"], false, [], reader).get("s1")?.package;
+  assert.deepEqual(p?.reviewIssueCounts, { open: 1, resolved: 0, noted: 0 });
+  assert.deepEqual(p?.reviewIssues, [
+    {
+      id: "pr_1.1",
+      atSeconds: 2.5,
+      time: "0:02",
+      state: "open",
+      thread: [
+        { by: "owner", kind: "opened", text: "black frame", at: "2026-11-24T10:00:00Z" },
+        { by: "agent", status: "fixed", text: "cut", atSeconds: 2.5, time: "0:02", at: null },
+      ],
+    },
+  ]);
+  const none = progressOfSlots([scanned("V2", "s2")], ["s2"], false, [], reader).get("s2")?.package;
+  assert.equal(none && "reviewIssues" in none, false);
+});
+
 // Owner TG 4836: the standing approval's comment reaches the plan's package as reviewComment with reviewCommentKind approved_notes
 // (non-blocking notes for future videos); a return keeps kind returned, or returned_timed when its comment is only the timed comments
 // written out (review fix 7). No comment: neither field.

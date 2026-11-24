@@ -73,6 +73,17 @@ export type ReviewDecisionNotice = {
    * file then has no such section, as before).
    */
   timedComments?: Array<{ atSeconds: number; time: string; text: string }>;
+  /**
+   * Owner TG 4846 (PACKAGE_REVIEW_PLAN.md AC-IS-07): the video's issues as of this decision -- id, the moment now, state (open |
+   * resolved | noted) and the thread (owner and agent turns, oldest first). Absent or [] when none (no such section).
+   */
+  issues?: Array<{
+    id: string;
+    atSeconds: number;
+    time: string;
+    state: string;
+    thread: Array<{ by: "owner" | "agent"; kind?: string; status?: string; text: string | null; atSeconds?: number; time?: string; at: string | null }>;
+  }>;
 };
 
 export type PlanEntryType = "verdict" | "pick" | "none_fits";
