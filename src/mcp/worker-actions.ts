@@ -126,3 +126,24 @@ export function fromToolResult(
     changed: privacy && typeof result.changed === "boolean" ? result.changed : null,
   };
 }
+
+/**
+ * A write call's log target and detail fields, from its description and its answer -- the one recipe of the worker log and of the
+ * Producer's call log for the same tools (owner TG 4782 review: the Producer's playlist writes are logged with what they wrote).
+ */
+export function describeWriteOutcome(
+  tool: string,
+  write: WorkerWriteDescription,
+  structured: unknown
+): { target: string | null; fields: Record<string, unknown> } {
+  const answered = fromToolResult(tool, structured);
+  return {
+    target: write.target ?? answered.target,
+    fields: {
+      ...write.detail,
+      ...(answered.failedVideos === null ? {} : { failedVideos: answered.failedVideos }),
+      ...(answered.previousPrivacyStatus === null ? {} : { previousPrivacyStatus: answered.previousPrivacyStatus }),
+      ...(answered.changed === null ? {} : { changed: answered.changed }),
+    },
+  };
+}

@@ -8,8 +8,8 @@ import { createVideoMetadataCore } from "@/lib/video-metadata";
 import { calendarDateSchema, DomainError, isDomainError } from "@/lib/shared-domain";
 import type { VideoMetadataCore } from "@/lib/video-metadata";
 import { createCliAuthService, type CliAuthService } from "@/lib/cli-auth";
-import { insertWorkerActionLogEntry, listWorkerActionLogEntries, recordGatewayCallOutcome } from "@/lib/db";
-import { describeWorkerWrite, fromToolResult, serializeWorkerDetail } from "./worker-actions";
+import { getStoredVideo, insertWorkerActionLogEntry, listWorkerActionLogEntries, recordGatewayCallOutcome } from "@/lib/db";
+import { describeWorkerWrite, describeWriteOutcome, serializeWorkerDetail } from "./worker-actions";
 import { createWorkerPrivacyCore, setPrivacyInputSchema } from "@/lib/worker-privacy";
 import { createRestartWhenIdleCore } from "@/lib/restart-when-idle";
 import { createFactoryChannelDeps } from "./factory-channel-deps";
@@ -29,7 +29,7 @@ import { createChangeSetCore, type ChangeSetCore } from "@/lib/changesets";
 import { getChangeSetInputSchema, listChangeSetsInputSchema, proposeLanguageMoveInputSchema } from "@/lib/changesets/schemas";
 import { createBatchCore, type BatchCore } from "@/lib/batches";
 import { createChannelSyncCore, type ChannelSyncCore } from "@/lib/channel-sync";
-import { createChannelAccessCore, type ChannelAccessCore } from "@/lib/channel-access";
+import { assertAgentScopeVideo, createChannelAccessCore, type ChannelAccessCore } from "@/lib/channel-access";
 import {
   listChannelsInputSchema,
   listSyncedVideosInputSchema,
@@ -89,6 +89,9 @@ import {
   PRODUCER_CHANNEL_TOOLS,
   PRODUCER_DRAFT_CHANNEL_TOOLS,
   PRODUCER_DRAFT_TOOLS,
+  PRODUCER_OWN_VIDEO_TOOLS,
+  PRODUCER_PLAYLIST_CHANNEL_TOOLS,
+  PRODUCER_PLAYLIST_WRITE_TOOLS,
   PRODUCER_RENAMED_CHANNEL_FIELD,
   PRODUCER_TOOL_NAMES,
   PRODUCER_UPLOAD_QUEUE_TOOLS,
@@ -498,7 +501,18 @@ export type ProducerSession = {
   reverify(): Promise<void>;
   /** The Google account the channel is connected under on THIS device, or null when it is not connected here. */
   resolveChannelUser(channelId: string): Promise<string | null>;
-  recordCall(entry: { tool: string; channelId: string | null; outcome: "ok" | "error"; errorCode: string | null }): Promise<void>;
+  /**
+   * One call-log row. `target` / `details` (a JSON string, at most 500 characters) are set only for the Producer's playlist writes:
+   * which playlist, what was sent, and the counts YouTube's answer gave (owner TG 4782 review).
+   */
+  recordCall(entry: {
+    tool: string;
+    channelId: string | null;
+    outcome: "ok" | "error";
+    errorCode: string | null;
+    target?: string | null;
+    details?: string | null;
+  }): Promise<void>;
   listChannels(): Promise<Array<{ channelId: string; title: string; workspace: string | null }>>;
   portfolioOverview(input: { startDate: string; endDate: string }): Promise<Record<string, unknown>>;
   /** BL-166: every connected channel's uploads in the range with their day-7 / day-28 milestones and Reach (stored data only). */
@@ -751,7 +765,7 @@ export const producerVideoMetadataUpdateInputSchema = z
     localizations: z
       .boolean()
       .optional()
-      .describe("1.30.0: true -- this call fixes the package's TRANSLATIONS (per-language title/description from its manifest's `localizations`) instead of the default-language title/description/tags; one YouTube write per call, so fix the texts and the translations in two calls."),
+      .describe("1.31.0: true -- this call fixes the package's TRANSLATIONS (per-language title/description from its manifest's `localizations`) instead of the default-language title/description/tags; one YouTube write per call, so fix the texts and the translations in two calls."),
   })
   .strict();
 
@@ -763,6 +777,16 @@ function toolErrorCode(result: ToolResponse): string | null {
   } catch {
     return null;
   }
+}
+
+/** Owner TG 4782 review: the counts a playlist add / remove answered with (attempted, added; requested, removed), for its log row. */
+function playlistWriteCounts(result: ToolResponse): Record<string, number> {
+  const answer = result.isError ? undefined : (result.structuredContent as Record<string, unknown> | undefined);
+  const counts: Record<string, number> = {};
+  for (const key of ["attempted", "added", "requested", "removed"]) {
+    if (typeof answer?.[key] === "number") counts[key] = answer[key] as number;
+  }
+  return counts;
 }
 
 /** BL-161 (AC-PR-06): every Producer answer names the channel it is for, as `forChannelId` (a tool's own `channelId` may mean
@@ -3107,20 +3131,14 @@ export function createMcpServer(
     write: NonNullable<ReturnType<typeof describeWorkerWrite>>,
     result: ToolResponse
   ): Promise<void> {
-    const answered = fromToolResult(name, result.structuredContent);
-    const detail = serializeWorkerDetail({
-      ...write.detail,
-      ...(answered.failedVideos === null ? {} : { failedVideos: answered.failedVideos }),
-      ...(answered.previousPrivacyStatus === null ? {} : { previousPrivacyStatus: answered.previousPrivacyStatus }),
-      ...(answered.changed === null ? {} : { changed: answered.changed }),
-    });
+    const outcome = describeWriteOutcome(name, write, result.structuredContent);
     await insertWorkerActionLogEntry({
       at: new Date(),
       channelId: session.channelId,
       tokenId: session.tokenId,
       tool: name,
-      target: write.target ?? answered.target,
-      detail,
+      target: outcome.target,
+      detail: serializeWorkerDetail(outcome.fields),
       outcome: result.isError ? "error" : "ok",
       errorCode: result.isError ? toolErrorCode(result) : null,
     }).catch((error: unknown) => {
@@ -3139,9 +3157,20 @@ export function createMcpServer(
     config: { description: string; inputSchema: z.ZodTypeAny },
     handler: (args: never) => Promise<ToolResponse> | ToolResponse | ReturnType<typeof handlers.whoami>
   ): { config: { description: string; inputSchema: z.ZodTypeAny }; handler: (args: never) => Promise<ToolResponse> } | null {
-    const record = async (entry: { channelId: string | null; result: ToolResponse }) => {
+    // Owner TG 4782 review: a playlist write's row also says what it wrote -- the worker log's own description of the call (playlistId,
+    // privacy, video ids) and the counts of the answer; refused calls keep their target. Every other call: tool, channel, outcome.
+    const describesWrite = (PRODUCER_PLAYLIST_WRITE_TOOLS as readonly string[]).includes(name);
+    const record = async (entry: { channelId: string | null; result: ToolResponse; args?: unknown }) => {
+      const write = describesWrite ? describeWorkerWrite(name, entry.args) : null;
+      const outcome = write ? describeWriteOutcome(name, write, entry.result.structuredContent) : null;
       await session
-        .recordCall({ tool: name, channelId: entry.channelId, outcome: entry.result.isError ? "error" : "ok", errorCode: entry.result.isError ? toolErrorCode(entry.result) : null })
+        .recordCall({
+          tool: name,
+          channelId: entry.channelId,
+          outcome: entry.result.isError ? "error" : "ok",
+          errorCode: entry.result.isError ? toolErrorCode(entry.result) : null,
+          ...(outcome ? { target: outcome.target, details: serializeWorkerDetail({ ...playlistWriteCounts(entry.result), ...outcome.fields }) } : {}),
+        })
         .catch(() => undefined);
     };
     if (toolClass === "producer-only") {
@@ -3171,7 +3200,9 @@ export function createMcpServer(
       };
       return { config, handler: wrapped };
     }
-    if (toolClass !== "bound" || !(name in PRODUCER_CHANNEL_TOOLS || name in PRODUCER_DRAFT_CHANNEL_TOOLS)) return null;
+    if (toolClass !== "bound" || !(name in PRODUCER_CHANNEL_TOOLS || name in PRODUCER_DRAFT_CHANNEL_TOOLS || name in PRODUCER_PLAYLIST_CHANNEL_TOOLS)) {
+      return null;
+    }
     if (!(config.inputSchema instanceof z.ZodObject)) {
       throw new Error(`Producer tool "${name}" needs an object input schema`);
     }
@@ -3198,7 +3229,7 @@ export function createMcpServer(
       const refuse = async (error: unknown) => {
         await recordGatewayCallOutcome("mcp_tool_calls", "blocked");
         const result = toolErrorResult(error);
-        await record({ channelId, result });
+        await record({ channelId, result, args });
         return withForChannel(result, channelId);
       };
       let userId: string | null;
@@ -3229,12 +3260,16 @@ export function createMcpServer(
       try {
         result = (await runInAgentSession({ tokenId: session.tokenId, channelId, userId }, async () => {
           assertAgentSession(session.tokenId);
+          // Owner msg 4782: the Producer adds only the named channel's own videos (its local synced list), before anything else runs.
+          if (PRODUCER_OWN_VIDEO_TOOLS.includes(name) && Array.isArray(forwarded.videoIds)) {
+            for (const videoId of forwarded.videoIds) await assertAgentScopeVideo(String(videoId), getStoredVideo);
+          }
           return handler(forwarded as never);
         })) as ToolResponse;
       } catch (error) {
         result = toolErrorResult(error);
       }
-      await record({ channelId, result });
+      await record({ channelId, result, args });
       return withForChannel(result, channelId);
     };
     return { config: { description, inputSchema }, handler: wrapped as (args: never) => Promise<ToolResponse> };
@@ -3244,14 +3279,14 @@ export function createMcpServer(
     "producer_get_capabilities",
     {
       description:
-        "The Producer role's own report: its API version, its permissions (READ; DRAFT for its proposals only; UPLOAD_QUEUE for this computer's upload queue) and the tools it can call. Every channel tool needs `channelId` -- one of producer_list_channels -- and answers with `forChannelId`. No tool here writes to YouTube or spends money by itself: the DRAFT tools (draftTools) store a proposal or mark one read, and a proposal changes nothing until the owner approves it in YT Manager; the UPLOAD_QUEUE tools (uploadQueueTools) list, order, cancel and add rows of this computer's upload queue -- the app's own uploader then uploads a queued row as private, with its identity check, and only while the owner's Live writes switch is on; a date comes only from a weekly-plan slot the owner approved. The clip review tools (clipReviewTools) submit a clip already in a channel's folder for the owner to watch, and read his answer: only the owner approves or returns a clip, in YT Manager. The image review tools (imageReviewTools, since 1.28.0) do the same for a scene's master still image: only the owner approves it, approves it with a note, or returns it. THUMBNAIL_WRITE (thumbnailTools, since 1.20.0): producer_video_thumbnail_replace writes a video's custom thumbnail on YouTube (owner's decision, any video of a connected channel), with backup, identity check, Live writes, read-back and audit. METADATA_WRITE (metadataTools, since 1.24.0): producer_video_metadata_update writes an uploaded video's title / description / tags from its package's current manifest -- or, with localizations: true (since 1.30.0), its translations -- refusing any conflict, with the same safety steps. PLAN_MOVE (planMoveTools, since 1.25.0): producer_publishing_plan_move_slot moves a weekly-plan slot anywhere at once and, for a video already dated, writes the new date on YouTube with the same safety steps. CAPTIONS_WRITE (captionsTools, since 1.26.0): producer_video_captions_add puts a package's English captions onto its uploaded video (overwrite: true replaces the video's one English standard track), with the same safety steps. These four are the only YouTube writes a Producer tool makes itself; producer_week_template_propose is a DRAFT the owner decides.",
+        "The Producer role's own report: its API version, its permissions (READ; DRAFT for its proposals only; UPLOAD_QUEUE for this computer's upload queue) and the tools it can call. Every channel tool needs `channelId` -- one of producer_list_channels -- and answers with `forChannelId`. No tool here writes to YouTube or spends money by itself: the DRAFT tools (draftTools) store a proposal or mark one read, and a proposal changes nothing until the owner approves it in YT Manager; the UPLOAD_QUEUE tools (uploadQueueTools) list, order, cancel and add rows of this computer's upload queue -- the app's own uploader then uploads a queued row as private, with its identity check, and only while the owner's Live writes switch is on; a date comes only from a weekly-plan slot the owner approved. The clip review tools (clipReviewTools) submit a clip already in a channel's folder for the owner to watch, and read his answer: only the owner approves or returns a clip, in YT Manager. The image review tools (imageReviewTools, since 1.28.0) do the same for a scene's master still image: only the owner approves it, approves it with a note, or returns it. THUMBNAIL_WRITE (thumbnailTools, since 1.20.0): producer_video_thumbnail_replace writes a video's custom thumbnail on YouTube (owner's decision, any video of a connected channel), with backup, identity check, Live writes, read-back and audit. METADATA_WRITE (metadataTools, since 1.24.0): producer_video_metadata_update writes an uploaded video's title / description / tags from its package's current manifest -- or, with localizations: true (since 1.31.0), its translations -- refusing any conflict, with the same safety steps. PLAN_MOVE (planMoveTools, since 1.25.0): producer_publishing_plan_move_slot moves a weekly-plan slot anywhere at once and, for a video already dated, writes the new date on YouTube with the same safety steps. CAPTIONS_WRITE (captionsTools, since 1.26.0): producer_video_captions_add puts a package's English captions onto its uploaded video (overwrite: true replaces the video's one English standard track), with the same safety steps. PLAYLIST_WRITE (playlistTools / playlistWriteTools, since 1.29.0): the channel's own playlist tools -- playlist_list reads; playlist_create, playlist_update (title, description, privacy: public, unlisted or private), playlist_add_videos (only the channel's own synced videos) and playlist_remove_videos write to YouTube on that channel's playlists, with the write-channel guardrail (expectedChannelId = channelId), the playlist's owner check and Live writes; no playlist delete. These are the only YouTube writes a Producer tool makes itself; producer_week_template_propose is a DRAFT the owner decides.",
       inputSchema: z.object({}).strict(),
     },
     async () =>
       toolSuccessResult({
         role: "producer",
         producerApiVersion: PRODUCER_API_VERSION,
-        permissions: ["READ", "DRAFT", "UPLOAD_QUEUE", "THUMBNAIL_WRITE", "METADATA_WRITE", "PLAN_MOVE", "CAPTIONS_WRITE"],
+        permissions: ["READ", "DRAFT", "UPLOAD_QUEUE", "THUMBNAIL_WRITE", "METADATA_WRITE", "PLAN_MOVE", "CAPTIONS_WRITE", "PLAYLIST_WRITE"],
         channelRequired: true,
         tools: [...PRODUCER_TOOL_NAMES],
         draftTools: [...PRODUCER_DRAFT_TOOLS],
@@ -3263,6 +3298,8 @@ export function createMcpServer(
         captionsTools: [...PRODUCER_CAPTIONS_TOOLS],
         planTools: [...PRODUCER_PLAN_TOOLS],
         planMoveTools: [...PRODUCER_PLAN_MOVE_TOOLS],
+        playlistTools: Object.keys(PRODUCER_PLAYLIST_CHANNEL_TOOLS),
+        playlistWriteTools: [...PRODUCER_PLAYLIST_WRITE_TOOLS],
       })
   );
 
@@ -3453,7 +3490,7 @@ export function createMcpServer(
     "producer_video_metadata_update",
     {
       description:
-        "Fix the default-language title, description and tags of a video already on YouTube from its release package's CURRENT manifest (1.24.0) -- e.g. after the factory re-packaged it for a packaging test. Only those three fields, only the values the package states (never text of yours; a package without its own tags uses the channel's common tags, as the upload did), only the fields that differ; never translations (those only with localizations: true, below), privacy, date, category or languages, and never automatically. Input: channelId, video (V61 or S14), dryRun (optional; call it first), expectedManifestSha256 (optional: the dry run's manifestSha256 -- refused with package_metadata_manifest_changed when the package was re-packaged since). Three-way check per field: YouTube now / what this video's upload sent (this computer's finished upload row, or the latest earlier fix here) / the package. A field equal on YouTube and in the package is not written; one YouTube still has as uploaded is written; one that differs from both (changed in Studio, or the upload ran on the other computer so what it sent is unknown here) is a conflict -- refused for you (package_metadata_conflict, details.conflicts): only the owner may overwrite it in YT Manager. dryRun returns { dryRun: true, video, videoId, manifestSha256, etag, baseline (upload_row | metadata_apply | unknown), fields: [{ field, youtube, uploaded, manifest, status: same | write | conflict }], changed, audioLanguageLeftOut, quotaUnits (54), thumbnail: { path, differs } | null } -- no backup and no write. Otherwise, with no conflict: the device gate, the channel identity check, a backup of the current snippet, the owner's Live writes switch immediately before videos.update (a full snippet read-merge-write: category and languages sent back exactly as read just before; an audio language read as zxx is left out), then a read-back of the written fields and of the untouched ones (category, languages, privacy, publishAt) and the localization languages; audited with source package_metadata, actor producer. Returns { dryRun: false, video, videoId, manifestSha256, changed, written, skippedConflicts, verified, backupPath, audioLanguageLeftOut } and forChannelId. A thumbnail that differs is replaced with producer_video_thumbnail_replace. TRANSLATIONS (1.30.0, owner TG 4839/4842): with localizations: true the call fixes instead the video's per-language titles/descriptions from the package's current manifest `localizations` (the set the upload's translations step sent; never text of yours; never the video's own default language, which is the title/description above; a language the video has and the package lacks is kept, never removed; nothing else changes). One YouTube write per call: run it without the flag for the texts and with it for the translations. Three-way check per language and field: YouTube now / what this computer's upload sent (its finished upload row when its translations step read back verified, or 'none sent' when the package had none then; or the latest earlier translations fix here) / the package -- same, write, or conflict (unknown, e.g. uploaded from the other computer, makes every difference a conflict). Any conflict refuses the whole call (package_localizations_conflict, details.conflicts [{ language, fields }]). dryRun returns { dryRun: true, kind: 'localizations', video, videoId, manifestSha256, etag, baseline (upload_row | localizations_apply | unknown), defaultLanguage, languages: [{ language, status, uploadedKnown, fields: [{ field, youtube, uploaded, package, status }] }], kept, ownLanguageSkipped, changed, quotaUnits (56) }. Otherwise: the same gates, then the shared translations writer (identity check, backup of the current translations, a recheck that the languages it writes still read as checked -- else video_details_conflict, nothing sent -- the owner's Live writes switch immediately before videos.update part=snippet,localizations with every other language kept and the snippet sent back as read, read-back of the written and the kept languages and the snippet) and a read-back of privacy and publishAt; audited with source package_localizations, actor producer. Returns { dryRun: false, kind: 'localizations', video, videoId, manifestSha256, changed, written, kept, verified }; a read-back that differs is update_failed (details.problem / details.changedUntouched). Errors: upload_package_not_ready (no package of that video here), package_metadata_manifest_changed, package_metadata_not_uploaded (not on YouTube yet: no upload record), package_metadata_invalid (the package's texts break YouTube's limits: details.problems), upload_steps_pending (this computer's upload of it has not finished its read-back), video_missing (not on YouTube any more), video_not_in_channel, package_metadata_conflict, video_details_conflict (the video changed while it was written: run again), CHANNEL_NOT_ACTIVE, WRITE_CHANNEL_MISMATCH, live_writes_disabled, update_failed (the read-back differs: details), operation_lock_held / device_in_recovery_mode.",
+        "Fix the default-language title, description and tags of a video already on YouTube from its release package's CURRENT manifest (1.24.0) -- e.g. after the factory re-packaged it for a packaging test. Only those three fields, only the values the package states (never text of yours; a package without its own tags uses the channel's common tags, as the upload did), only the fields that differ; never translations (those only with localizations: true, below), privacy, date, category or languages, and never automatically. Input: channelId, video (V61 or S14), dryRun (optional; call it first), expectedManifestSha256 (optional: the dry run's manifestSha256 -- refused with package_metadata_manifest_changed when the package was re-packaged since). Three-way check per field: YouTube now / what this video's upload sent (this computer's finished upload row, or the latest earlier fix here) / the package. A field equal on YouTube and in the package is not written; one YouTube still has as uploaded is written; one that differs from both (changed in Studio, or the upload ran on the other computer so what it sent is unknown here) is a conflict -- refused for you (package_metadata_conflict, details.conflicts): only the owner may overwrite it in YT Manager. dryRun returns { dryRun: true, video, videoId, manifestSha256, etag, baseline (upload_row | metadata_apply | unknown), fields: [{ field, youtube, uploaded, manifest, status: same | write | conflict }], changed, audioLanguageLeftOut, quotaUnits (54), thumbnail: { path, differs } | null } -- no backup and no write. Otherwise, with no conflict: the device gate, the channel identity check, a backup of the current snippet, the owner's Live writes switch immediately before videos.update (a full snippet read-merge-write: category and languages sent back exactly as read just before; an audio language read as zxx is left out), then a read-back of the written fields and of the untouched ones (category, languages, privacy, publishAt) and the localization languages; audited with source package_metadata, actor producer. Returns { dryRun: false, video, videoId, manifestSha256, changed, written, skippedConflicts, verified, backupPath, audioLanguageLeftOut } and forChannelId. A thumbnail that differs is replaced with producer_video_thumbnail_replace. TRANSLATIONS (1.31.0, owner TG 4839/4842): with localizations: true the call fixes instead the video's per-language titles/descriptions from the package's current manifest `localizations` (the set the upload's translations step sent; never text of yours; never the video's own default language, which is the title/description above; a language the video has and the package lacks is kept, never removed; nothing else changes). One YouTube write per call: run it without the flag for the texts and with it for the translations. Three-way check per language and field: YouTube now / what this computer's upload sent (its finished upload row when its translations step read back verified, or 'none sent' when the package had none then; or the latest earlier translations fix here) / the package -- same, write, or conflict (unknown, e.g. uploaded from the other computer, makes every difference a conflict). Any conflict refuses the whole call (package_localizations_conflict, details.conflicts [{ language, fields }]). dryRun returns { dryRun: true, kind: 'localizations', video, videoId, manifestSha256, etag, baseline (upload_row | localizations_apply | unknown), defaultLanguage, languages: [{ language, status, uploadedKnown, fields: [{ field, youtube, uploaded, package, status }] }], kept, ownLanguageSkipped, changed, quotaUnits (56) }. Otherwise: the same gates, then the shared translations writer (identity check, backup of the current translations, a recheck that the languages it writes still read as checked -- else video_details_conflict, nothing sent -- the owner's Live writes switch immediately before videos.update part=snippet,localizations with every other language kept and the snippet sent back as read, read-back of the written and the kept languages and the snippet) and a read-back of privacy and publishAt; audited with source package_localizations, actor producer. Returns { dryRun: false, kind: 'localizations', video, videoId, manifestSha256, changed, written, kept, verified }; a read-back that differs is update_failed (details.problem / details.changedUntouched). Errors: upload_package_not_ready (no package of that video here), package_metadata_manifest_changed, package_metadata_not_uploaded (not on YouTube yet: no upload record), package_metadata_invalid (the package's texts break YouTube's limits: details.problems), upload_steps_pending (this computer's upload of it has not finished its read-back), video_missing (not on YouTube any more), video_not_in_channel, package_metadata_conflict, video_details_conflict (the video changed while it was written: run again), CHANNEL_NOT_ACTIVE, WRITE_CHANNEL_MISMATCH, live_writes_disabled, update_failed (the read-back differs: details), operation_lock_held / device_in_recovery_mode.",
       inputSchema: producerVideoMetadataUpdateInputSchema,
     },
     async (args: z.infer<typeof producerVideoMetadataUpdateInputSchema>) => toolSuccessResult(await producerSession!.packageMetadata.update(args))
@@ -3685,7 +3722,7 @@ export function createMcpServer(
     "playlist_create",
     {
       description:
-        "Create a YouTube playlist. credentialRef is OPTIONAL and falls back to active local auth context.",
+        "Create a YouTube playlist (privacyStatus private by default; unlisted or public too -- a channel agent may create a public playlist since Agent API 4.27.0, owner msg 4782). In a channel session expectedChannelId, when given, must be the session's channel (WRITE_CHANNEL_MISMATCH). credentialRef is OPTIONAL and falls back to active local auth context.",
       inputSchema: playlistCreateInputSchema.partial({ credentialRef: true }),
     },
     (args) => handlers.playlistCreate(args)
@@ -3715,7 +3752,7 @@ export function createMcpServer(
     "playlist_update",
     {
       description:
-        "Update playlist metadata with strict patch validation and write-channel guardrails. credentialRef is OPTIONAL and falls back to active local auth context.",
+        "Update playlist metadata (title, description, privacyStatus private/unlisted/public) with strict patch validation and write-channel guardrails. A channel agent may make its channel's playlist public since Agent API 4.27.0 (owner msg 4782). In a channel session expectedChannelId must be the session's channel (WRITE_CHANNEL_MISMATCH, before any YouTube call). credentialRef is OPTIONAL and falls back to active local auth context.",
       inputSchema: playlistUpdateToolInputSchema,
     },
     (args) => handlers.playlistUpdate(args)
@@ -4463,7 +4500,7 @@ export function createMcpServer(
     "agent_set_privacy",
     {
       description:
-        "BL-216 (ADR 0048): hide one of THIS channel's videos or playlists: { target: video|playlist, id, privacyStatus: private|unlisted, dryRun? } -> { target, id, dryRun, previousPrivacyStatus, privacyStatus, changed }. dryRun defaults to true (shows the change, writes nothing); pass dryRun:false to write. Never public (not accepted). Refused: a scheduled video (AGENT_SCHEDULE_OWNER_ONLY -- its date is the owner's), the channel's current live broadcast (AGENT_LIVE_BROADCAST_OWNER_ONLY; finished recordings are fine), a video not in this channel's synced list or a playlist not of this channel (not_found). A video is written through the app's video-details write (identity check, backup, Live writes, read-back), a playlist through the playlist write (Live writes); a target already at that status is not written (changed:false). About 51 quota units for a video, about 51 for a playlist. Logged in the worker log.",
+        "BL-216 (ADR 0048): hide one of THIS channel's videos or playlists, or make a playlist public: { target: video|playlist, id, privacyStatus: private|unlisted|public, dryRun? } -> { target, id, dryRun, previousPrivacyStatus, privacyStatus, changed }. dryRun defaults to true (shows the change, writes nothing); pass dryRun:false to write. public only for a playlist (owner msg 4782, Agent API 4.27.0): a video is never made public by an agent (AGENT_PUBLIC_NOT_ALLOWED, before any read). Refused: a scheduled video (AGENT_SCHEDULE_OWNER_ONLY -- its date is the owner's), the channel's current live broadcast (AGENT_LIVE_BROADCAST_OWNER_ONLY; finished recordings are fine), a video not in this channel's synced list or a playlist not of this channel (not_found). A video is written through the app's video-details write (identity check, backup, Live writes, read-back), a playlist through the playlist write (Live writes); a target already at that status is not written (changed:false). About 51 quota units for a video, about 51 for a playlist. Logged in the worker log.",
       inputSchema: setPrivacyInputSchema,
     },
     async (args: z.infer<typeof setPrivacyInputSchema>) => {

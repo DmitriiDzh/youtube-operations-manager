@@ -255,7 +255,7 @@ export const errors: Record<keyof typeof en, string> = {
   "errors.AGENT_TOKEN_IDENTITY_MISMATCH": "Аккаунт Google этого канала больше им не владеет. Сначала переподключите канал.",
   "errors.AGENT_SESSION_CREDENTIAL_OVERRIDE": "Агент не может использовать собственные учётные данные.",
   "errors.AGENT_SESSION_OPERATOR_ONLY": "Это может сделать только оператор.",
-  "errors.AGENT_PUBLIC_NOT_ALLOWED": "Агент канала не может сделать что-либо публичным. Это может только владелец.",
+  "errors.AGENT_PUBLIC_NOT_ALLOWED": "Агент канала не может сделать видео публичным. Это может только владелец.",
   "errors.AGENT_SCHEDULE_OWNER_ONLY": "У видео назначена дата публикации. Менять его доступ может только владелец.",
   "errors.AGENT_LIVE_BROADCAST_OWNER_ONLY": "Это текущий эфир канала. Менять его доступ может только владелец.",
   "errors.AGENT_TOKEN_IMPORT_MALFORMED": "Это не токен этого вида.",

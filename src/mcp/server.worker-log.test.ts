@@ -7,7 +7,7 @@ import { createPlaylistManagementCore } from "@/lib/playlist-management";
 import { createVideoMetadataCore } from "@/lib/video-metadata";
 import { createMcpServer } from "./server";
 
-// WORKER_CAPABILITIES_PLAN.md AC-WK-04/06/07/09 (ADR 0048). Expected rows are written from the plan: one row per worker call that
+// WORKER_CAPABILITIES_PLAN.md AC-WK-04/06/07/09 (ADR 0048; its rule 2 amended by owner msg 4782). Expected rows are written from the plan: one row per worker call that
 // would really write to YouTube (apply only with dryRun:false; every call of the four playlist tools), refused calls included,
 // nothing for previews and reads, and a failing log never changes the tool's answer. Each test uses its own channel id, because the
 // test database is shared by the whole file.
@@ -91,19 +91,71 @@ test("AC-WK-06: a refused write is logged with its error code", async () => {
   await inSession(
     channelId,
     async (tools) => {
-      const result = await tools.playlist_update.handler({ playlistId: "p1", expectedChannelId: channelId, privacyStatus: "public" });
+      const result = await tools.playlist_update.handler({ playlistId: "p1", expectedChannelId: channelId, privacyStatus: "private" });
       assert.equal(result.isError, true);
     },
     {
+      // Owner msg 4782 lifted the playlist "never public" refusal this test used; any refusal of the core serves (here the guardrail's).
       updatePlaylist: async () => {
-        throw new DomainError({ code: "AGENT_PUBLIC_NOT_ALLOWED", message: "no" });
+        throw new DomainError({ code: "WRITE_CHANNEL_MISMATCH", message: "no" });
       },
     }
   );
   const rows = await listWorkerActionLogEntries(channelId, 100);
   assert.equal(rows.length, 1);
   assert.equal(rows[0].outcome, "error");
-  assert.equal(rows[0].errorCode, "AGENT_PUBLIC_NOT_ALLOWED");
+  assert.equal(rows[0].errorCode, "WRITE_CHANNEL_MISMATCH");
+});
+
+test("msg 4782: a worker makes its channel's playlist public -- accepted and logged with the status", async () => {
+  const channelId = "UC_WL_PUBLIC";
+  const sent: unknown[] = [];
+  await inSession(
+    channelId,
+    async (tools) => {
+      const result = await tools.playlist_update.handler({ playlistId: "p1", expectedChannelId: channelId, privacyStatus: "public" });
+      assert.notEqual(result.isError, true);
+      const created = await tools.playlist_create.handler({ title: "Open", expectedChannelId: channelId, privacyStatus: "public" });
+      assert.notEqual(created.isError, true);
+    },
+    {
+      updatePlaylist: async (input: unknown) => {
+        sent.push(input);
+        return { playlist: { ...playlist, privacyStatus: "public" } };
+      },
+    }
+  );
+  assert.equal((sent[0] as { privacyStatus: string }).privacyStatus, "public");
+  const rows = (await listWorkerActionLogEntries(channelId, 100)).reverse();
+  assert.deepEqual(
+    rows.map((row) => [row.tool, row.target, row.outcome, JSON.parse(row.detail ?? "{}").privacyStatus]),
+    [
+      ["playlist_update", "p1", "ok", "public"],
+      ["playlist_create", "p-new", "ok", "public"],
+    ]
+  );
+});
+
+test("msg 4782: with Live writes off a worker's playlist write is refused and logged", async () => {
+  const channelId = "UC_WL_LIVE_OFF";
+  await inSession(
+    channelId,
+    async (tools) => {
+      const result = await tools.playlist_add_videos.handler({ playlistId: "p1", expectedChannelId: channelId, videoIds: ["v1"] });
+      assert.equal(result.isError, true);
+      assert.equal(JSON.parse(result.content[0].text).error.code, "live_writes_disabled");
+    },
+    {
+      addVideosToPlaylist: async () => {
+        throw new DomainError({ code: "live_writes_disabled", message: "Live writes are off" });
+      },
+    }
+  );
+  const rows = await listWorkerActionLogEntries(channelId, 100);
+  assert.deepEqual(
+    rows.map((row) => [row.tool, row.outcome, row.errorCode]),
+    [["playlist_add_videos", "error", "live_writes_disabled"]]
+  );
 });
 
 test("AC-WK-07: a log row that cannot be written does not change the tool's answer", async () => {
@@ -165,27 +217,41 @@ test("AC-WK-06: a write refused because the token was revoked is logged too", as
   );
 });
 
-test("AC-WK-01/02 end to end: through the MCP tools and the real playlist core, public is refused and the refusal is logged", async () => {
+// AC-WK-01/02 changed by the owner, Telegram msg 4782 (2026-11-23): `public` is no longer refused for a worker's playlist. What the
+// real core still refuses in a channel session before any credential or YouTube call: another channel.
+test("msg 4782 end to end: through the MCP tools and the real playlist core, another channel is refused and logged", async () => {
   const channelId = "UC_WL_REAL";
   const real = { ...createVideoMetadataCore(), ...createPlaylistManagementCore() };
   const server = createMcpServer(real, { connectionEnabled: true, agentSession: { tokenId: `tok-${channelId}`, channelId, reverify: async () => {} } });
   const tools = (server as unknown as { _registeredTools: Tools })._registeredTools;
   await runInAgentSession({ tokenId: `tok-${channelId}`, channelId, userId: "u-1" }, async () => {
-    for (const result of [
-      await tools.playlist_create.handler({ title: "X", expectedChannelId: channelId, privacyStatus: "public" }),
-      await tools.playlist_update.handler({ playlistId: "p1", expectedChannelId: channelId, privacyStatus: "public" }),
-    ]) {
-      assert.equal(result.isError, true);
-      assert.equal(JSON.parse(result.content[0].text).error.code, "AGENT_PUBLIC_NOT_ALLOWED");
-    }
+    const otherChannel = await tools.playlist_update.handler({ playlistId: "p-other", expectedChannelId: "UC_SOMEONE_ELSE", privacyStatus: "public" });
+    assert.equal(JSON.parse(otherChannel.content[0].text).error.code, "WRITE_CHANNEL_MISMATCH");
+    const otherAdd = await tools.playlist_add_videos.handler({ playlistId: "p-other", expectedChannelId: "UC_SOMEONE_ELSE", videoIds: ["v1"] });
+    assert.equal(JSON.parse(otherAdd.content[0].text).error.code, "WRITE_CHANNEL_MISMATCH");
   });
   const rows = (await listWorkerActionLogEntries(channelId, 100)).reverse();
   assert.deepEqual(
-    rows.map((row) => [row.tool, row.outcome, row.errorCode]),
+    rows.map((row) => [row.tool, row.target, row.outcome, row.errorCode]),
     [
-      ["playlist_create", "error", "AGENT_PUBLIC_NOT_ALLOWED"],
-      ["playlist_update", "error", "AGENT_PUBLIC_NOT_ALLOWED"],
+      ["playlist_update", "p-other", "error", "WRITE_CHANNEL_MISMATCH"],
+      ["playlist_add_videos", "p-other", "error", "WRITE_CHANNEL_MISMATCH"],
     ]
+  );
+});
+
+test("msg 4782: agent_set_privacy refuses making a video public and logs the refusal; playlist_delete stays unregistered", async () => {
+  const channelId = "UC_WL_VIDEO_PUBLIC";
+  await inSession(channelId, async (tools) => {
+    assert.equal(tools.playlist_delete, undefined);
+    const refused = await tools.agent_set_privacy.handler({ target: "video", id: "v1", privacyStatus: "public", dryRun: false });
+    assert.equal(refused.isError, true);
+    assert.equal(JSON.parse(refused.content[0].text).error.code, "AGENT_PUBLIC_NOT_ALLOWED");
+  });
+  const rows = await listWorkerActionLogEntries(channelId, 100);
+  assert.deepEqual(
+    rows.map((row) => [row.tool, row.target, row.errorCode, JSON.parse(row.detail ?? "{}")]),
+    [["agent_set_privacy", "v1", "AGENT_PUBLIC_NOT_ALLOWED", { target: "video", privacyStatus: "public" }]]
   );
 });
 

@@ -142,4 +142,4 @@ translations only; `docs/WRITE_AUTHORIZATIONS.md` «Package metadata after uploa
    read-back, never automatic; public videos as §5 (allowed on a person's click or the Producer's deliberate call). Dry run: every
    read, no backup, no write. Quota about 56 units. A scheduled video that publishes during the call (private with a due `publishAt` ->
    public) is not a status change made by the write.
-6. **API:** Producer 1.30.0 (additive; 1.28.0 went to BL-272, 1.29.0 is reserved for playlist-rights). Factory and Agent unchanged.
+6. **API:** Producer 1.31.0 (additive; 1.28.0 went to BL-272, 1.29.0 to playlist-rights, 1.30.0 is reserved for the tags branch). Factory and Agent unchanged.

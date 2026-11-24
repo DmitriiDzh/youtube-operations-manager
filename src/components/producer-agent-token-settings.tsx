@@ -4,8 +4,19 @@ import { useCallback, useEffect, useState } from "react";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { RoleAgentTokenSettings } from "./role-agent-token-settings";
 import { useT } from "./ui-text-provider";
+import { WriteLogDetail } from "./write-log-detail";
 
-type ProducerCall = { at: string; tool: string; channelId: string | null; channelTitle: string | null; outcome: "ok" | "error"; errorCode: string | null };
+type ProducerCall = {
+  at: string;
+  tool: string;
+  channelId: string | null;
+  channelTitle: string | null;
+  outcome: "ok" | "error";
+  errorCode: string | null;
+  /** A playlist write's playlist and details (owner TG 4782 review); null for every other call. */
+  target: string | null;
+  details: string | null;
+};
 
 /** BL-161 (FO-REQ-0012 §2.4): the Producer's newest calls on this computer -- what it looked at, for which channel, refused or not. */
 function ProducerCallLog() {
@@ -45,6 +56,7 @@ function ProducerCallLog() {
               <span className="text-zinc-500">{formatDisplayDateTime(call.at)}</span>
               <span className="text-zinc-200">{call.tool}</span>
               <span>{call.channelId ? (call.channelTitle ?? call.channelId) : "—"}</span>
+              <WriteLogDetail target={call.target} detail={call.details} />
               {call.outcome === "error" && (
                 <span className="text-red-400">
                   {t("settingsCards.producerCalls.failed")}

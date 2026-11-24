@@ -138,7 +138,12 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // 4.26.0 (owner TG 3700): agent_gemini_create_job / agent_gemini_get_status as factory_gemini_* 1.55.0 -- the video model is
 // gemini-omni-1.2-flash (1.1 a deprecated alias, recorded as 1.2), durationSeconds 3-15 (at most 10 with a lastFrame), the catalog's
 // video entries gain durationSeconds and aliases. Additive in shape.
-export const AGENT_API_VERSION = "4.26.0";
+// 4.27.0 (owner TG 4782, 2026-11-23, ADR 0048 amendment): a channel agent may make its channel's playlist public --
+// playlist_create / playlist_update accept privacyStatus "public", and agent_set_privacy accepts "public" for target playlist (a video
+// is still refused, AGENT_PUBLIC_NOT_ALLOWED, now as a service refusal that reaches the worker log instead of an input error). In a
+// channel session a playlist write's expectedChannelId must be the session's channel (WRITE_CHANNEL_MISMATCH, the same code the
+// guardrail gave, now before any YouTube call). playlist_delete stays owner-only. Additive.
+export const AGENT_API_VERSION = "4.27.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry
