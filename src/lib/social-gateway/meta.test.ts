@@ -94,10 +94,11 @@ test("errors: OAuth error 190 -> social_token_invalid, code 4 -> social_rate_lim
   await assert.rejects(createMetaClient({ fetchImpl: failing }).listPages("T"), (e: unknown) => e instanceof DomainError && e.code === "social_unavailable");
 });
 
-test("inspectPageToken: debug_token with the APP token (never the Page token as caller), then the Page with its Instagram", async () => {
+test("inspectPageToken: debug_token with the APP token (never the Page token as caller), then the Page, then its Instagram", async () => {
   const { calls, impl } = fakeFetch([
     { status: 200, body: { data: { is_valid: true, scopes: ["pages_manage_posts", "instagram_content_publish"], expires_at: 0 } } },
-    { status: 200, body: { id: "111", name: "WWE", instagram_business_account: { id: "1784", username: "w" } } },
+    { status: 200, body: { id: "111", name: "WWE" } },
+    { status: 200, body: { id: "111", instagram_business_account: { id: "1784", username: "w" } } },
   ]);
   const out = await createMetaClient({ fetchImpl: impl }).inspectPageToken({ appId: "1", appSecret: "S", pageId: "111", pageToken: "PT" });
   assert.deepEqual(out, { valid: true, scopes: ["pages_manage_posts", "instagram_content_publish"], expiresAt: null, page: { pageId: "111", pageName: "WWE" }, instagram: { igUserId: "1784", username: "w" } });
@@ -106,6 +107,57 @@ test("inspectPageToken: debug_token with the APP token (never the Page token as 
   assert.equal(calls[0].url.searchParams.get("access_token"), "1|S");
   assert.match(calls[1].url.pathname, /\/111$/);
   assert.equal(calls[1].url.searchParams.get("access_token"), "PT");
+  assert.equal(calls[1].url.searchParams.get("fields"), "id,name");
+  assert.match(calls[2].url.pathname, /\/111$/);
+  assert.equal(calls[2].url.searchParams.get("fields"), "instagram_business_account{id,username}");
+  assert.equal(calls.length, 3);
+});
+
+// 2026-11-23 (owner TG 4779: one network failing never stops another; review of 23.11): the Page and its Instagram are separate reads.
+// Any failure of the Instagram read makes only Instagram unreadable -- a refusal (4xx) definitely, a 5xx / no answer as transient (ask
+// again); the Page read failing still fails the whole inspection (both networks post with that Page).
+test("inspectPageToken: the Instagram read failing (4xx, 5xx, no answer) marks only Instagram unreadable; the Page is still answered", async () => {
+  const debug = () => ({ status: 200, body: { data: { is_valid: true, scopes: ["pages_manage_posts"], expires_at: 0 } } });
+  const page = () => ({ status: 200, body: { id: "111", name: "WWE" } });
+  const cases: Array<[string, { status: number; body: unknown }, Record<string, unknown>]> = [
+    ["4xx refusal", { status: 400, body: { error: { message: "Unsupported get request", code: 100 } } }, { instagramUnreadable: true }],
+    ["5xx", { status: 503, body: {} }, { instagramUnreadable: true, instagramReadTransient: true }],
+    ["rate limit", { status: 429, body: { error: { message: "limit", code: 4 } } }, { instagramUnreadable: true, instagramReadTransient: true }],
+  ];
+  for (const [name, igAnswer, extra] of cases) {
+    const f = fakeFetch([debug(), page(), igAnswer]);
+    const out = await createMetaClient({ fetchImpl: f.impl }).inspectPageToken({ appId: "1", appSecret: "S", pageId: "111", pageToken: "PT" });
+    assert.deepEqual(out, { valid: true, scopes: ["pages_manage_posts"], expiresAt: null, page: { pageId: "111", pageName: "WWE" }, instagram: null, ...extra }, name);
+    assert.equal(f.calls.length, 3, name);
+  }
+  // No answer at all (the fetch itself throws, e.g. a timeout).
+  let n = 0;
+  const answers = [debug(), page()];
+  const timeout = (async () => {
+    const next = answers[n++];
+    if (!next) throw new Error("The operation was aborted due to timeout");
+    return new Response(JSON.stringify(next.body), { status: next.status, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  const out = await createMetaClient({ fetchImpl: timeout }).inspectPageToken({ appId: "1", appSecret: "S", pageId: "111", pageToken: "PT" });
+  assert.equal(out.page?.pageId, "111");
+  assert.equal(out.instagram, null);
+  assert.equal(out.instagramUnreadable, true);
+  assert.equal(out.instagramReadTransient, true);
+});
+
+test("inspectPageToken: the Page read failing fails the whole inspection (no Instagram read)", async () => {
+  const debug = { status: 200, body: { data: { is_valid: true, scopes: ["pages_manage_posts"], expires_at: 0 } } };
+  const down = fakeFetch([debug, { status: 503, body: {} }]);
+  await assert.rejects(createMetaClient({ fetchImpl: down.impl }).inspectPageToken({ appId: "1", appSecret: "S", pageId: "111", pageToken: "PT" }), (e: unknown) => e instanceof DomainError && e.code === "social_request_rejected");
+  assert.equal(down.calls.length, 2);
+});
+
+test("inspectPageToken: debug_token's profile_id (the token's Page) is passed on as a string", async () => {
+  for (const id of ["222", 222]) {
+    const f = fakeFetch([{ status: 200, body: { data: { is_valid: true, scopes: [], expires_at: 0, profile_id: id } } }, { status: 200, body: { id: "111", name: "WWE" } }, { status: 200, body: { id: "111" } }]);
+    const out = await createMetaClient({ fetchImpl: f.impl }).inspectPageToken({ appId: "1", appSecret: "S", pageId: "111", pageToken: "PT" });
+    assert.equal(out.profileId, "222");
+  }
 });
 
 test("inspectPageToken: an invalid token stops after debug_token (no Page read)", async () => {

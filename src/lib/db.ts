@@ -2128,6 +2128,15 @@ export const socialPostJobs = sqliteTable(
     errorMessage: text("error_message"),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+    /**
+     * v123 (owner TG 4780): when the owner asked in the Web UI to retry this failed job; null = no retry pending. Set only on a
+     * `failed` job that never sent a publishing call and has no post id (`markSocialPostJobOwnerRetry`, a conditional update). The
+     * runner starts it again however late but never before its planned time (the 12 h window binds only the automatic start), and
+     * sets it back to null when it takes the job over, when the retry is refused (identity, slot no longer approved, network
+     * blocked: each with its own error code) or when the mark is older than 48 h (`retry_expired`). While the network's 24 h limit
+     * is reached it stays set (error code `retry_waiting_quota`).
+     */
+    ownerRetryAt: integer("owner_retry_at", { mode: "timestamp_ms" }),
   },
   (table) => [index("social_post_jobs_channel_idx").on(table.channelId, table.slotId)]
 );
@@ -6208,6 +6217,18 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         updated_at INTEGER NOT NULL
       )`);
       await client.execute("CREATE INDEX IF NOT EXISTS social_post_jobs_channel_idx ON social_post_jobs (channel_id, slot_id)");
+    },
+  },
+  {
+    version: 123,
+    description:
+      "social_post_jobs.owner_retry_at -- BL-252 (ADR 0068 amendment 2, owner TG 4780): the owner's explicit retry of a failed social job is recorded on the job (the runner then posts it however late). Additive, nullable, device-local",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE social_post_jobs ADD COLUMN owner_retry_at INTEGER");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
     },
   },
 ];
@@ -17127,6 +17148,20 @@ export async function insertSocialPostJob(row: typeof socialPostJobs.$inferInser
 
 export async function updateSocialPostJob(jobId: string, set: Partial<typeof socialPostJobs.$inferInsert>, database: AppDb = db): Promise<void> {
   await database.update(socialPostJobs).set(set).where(eq(socialPostJobs.jobId, jobId));
+}
+
+/**
+ * The owner's retry mark (owner TG 4780, review 23.11): set only while the job is still `failed`, never sent a publishing call and
+ * has no post id -- in one conditional update, so a runner pass that took the job over (or published it) in between is never
+ * marked for another post. False when the row no longer qualifies.
+ */
+export async function markSocialPostJobOwnerRetry(jobId: string, at: Date, database: AppDb = db): Promise<boolean> {
+  const marked = await database
+    .update(socialPostJobs)
+    .set({ ownerRetryAt: at })
+    .where(and(eq(socialPostJobs.jobId, jobId), eq(socialPostJobs.status, "failed"), eq(socialPostJobs.publishAttempted, false), isNull(socialPostJobs.remotePostId)))
+    .returning({ jobId: socialPostJobs.jobId });
+  return marked.length === 1;
 }
 
 export async function deleteSocialPostJob(jobId: string, database: AppDb = db): Promise<void> {
