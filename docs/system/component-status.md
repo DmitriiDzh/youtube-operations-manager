@@ -2,7 +2,7 @@
 
 ## 4. Статус компонентов
 
-### 2.9bo2 Теги видео только на чтение (BL-273, FO-REQ-0056 часть 2) — **IMPLEMENTED на ветке** `feature/fo-req-0056-video-tags-read` (не в dev)
+### 2.9bo2 Теги видео только на чтение (BL-273, FO-REQ-0056 часть 2) — **IMPLEMENTED** (dev, 24.11.2026)
 - `channel_sync` сохраняет `snippet.tags` из уже читаемой части `snippet` (без доп. квоты) в `videos.tags_json` (schema v125; `NULL` —
   ещё не прочитаны, до следующего синка). Проверенная запись video-details (`video_details_update`, «Применить упаковку»,
   `producer_video_metadata_update`) сразу обновляет теги в локальной копии из read-back.
