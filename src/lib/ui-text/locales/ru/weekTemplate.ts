@@ -77,6 +77,7 @@ export const weekTemplate: Record<keyof typeof en, string> = {
   "weekTemplate.ghost.long": "пусто · длинное видео",
   "weekTemplate.ghost.longHours": "пусто · видео на {hours} ч",
   "weekTemplate.date.action": "Дать дату вне шаблона",
+  "weekTemplate.date.actionShort": "Дать дату",
   "weekTemplate.date.title": "Дать этому слоту свою дату?",
   "weekTemplate.date.text": "Когда видео загрузится, оно получит дату {day} {local} ({utc} UTC, пояс канала {zone}). Только этот слот.",
   "weekTemplate.date.textUploaded": "Видео на YouTube получит дату {day} {local} ({utc} UTC, пояс канала {zone}) в течение минуты (около {units} единиц квоты). Только этот слот.",
