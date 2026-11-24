@@ -82,7 +82,7 @@ function harness(row: StoredPublishingUpload, options: { owners?: Record<string,
   const store = new Map([[row.id, { ...row }]]);
   const clock = { at: NOW };
   /** What YouTube holds: playlist id -> its videos. */
-  const playlists = new Map<string, Set<string>>();
+  const playlistContents = new Map<string, Set<string>>();
   /** Every call in order: identity checks, ownership reads, membership reads, inserts, the date. */
   const calls: string[] = [];
   const inserts: string[] = [];
@@ -129,7 +129,7 @@ function harness(row: StoredPublishingUpload, options: { owners?: Record<string,
         if (fault?.kind === "refuse") throw new DomainError({ code: "update_failed", message: "forbidden", details: { status: 403, reason: "playlistForbidden" } });
         calls.push(`insert ${playlistId}`);
         inserts.push(playlistId);
-        if (!invisible.has(playlistId)) (playlists.get(playlistId) ?? playlists.set(playlistId, new Set()).get(playlistId)!).add(videoId);
+        if (!invisible.has(playlistId)) (playlistContents.get(playlistId) ?? playlistContents.set(playlistId, new Set()).get(playlistId)!).add(videoId);
         if (fault?.kind === "lose_answer") throw Object.assign(new Error("read ETIMEDOUT"), { code: "ETIMEDOUT" });
       },
     },
@@ -138,7 +138,7 @@ function harness(row: StoredPublishingUpload, options: { owners?: Record<string,
       recentUploads: async () => [],
       playlistHasVideo: async (_c, playlistId, videoId) => {
         calls.push(`has ${playlistId}`);
-        return playlists.get(playlistId)?.has(videoId) ?? false;
+        return playlistContents.get(playlistId)?.has(videoId) ?? false;
       },
       ...(options.withOwnerRead === false
         ? {}
@@ -201,7 +201,7 @@ function harness(row: StoredPublishingUpload, options: { owners?: Record<string,
     inserts,
     audits,
     publishAtWrites,
-    playlists,
+    playlistContents,
     invisible,
     faults,
     setLiveWrites: (on: boolean) => (liveWrites = on),
@@ -219,7 +219,7 @@ test("AC-PP-10: the video goes into every package playlist and the settings play
   assert.equal(h.row().status, "done");
   assert.equal(h.row().errorCode, null);
   assert.deepEqual(h.inserts, ["PL_set", "PL_a", "PL_b"], "the settings playlist first, then the package's in its order");
-  for (const id of ["PL_set", "PL_a", "PL_b"]) assert.ok(h.playlists.get(id)?.has("vid1"), id);
+  for (const id of ["PL_set", "PL_a", "PL_b"]) assert.ok(h.playlistContents.get(id)?.has("vid1"), id);
   const steps = h.steps();
   assert.equal(steps.playlist, "added", "steps.playlist keeps meaning the settings playlist");
   assert.deepEqual(entries(steps), [
@@ -263,8 +263,8 @@ test("AC-PP-12: an id in both the package and the settings is written once, as t
 
 test("AC-PP-13: a playlist that already holds the video is already_there -- nothing written", async () => {
   const h = harness(finishingRow({ playlists: ["PL_a"] }));
-  h.playlists.set("PL_a", new Set(["vid1"]));
-  h.playlists.set("PL_set", new Set(["vid1"]));
+  h.playlistContents.set("PL_a", new Set(["vid1"]));
+  h.playlistContents.set("PL_set", new Set(["vid1"]));
   await h.runAll();
   assert.deepEqual(h.inserts, []);
   const steps = h.steps();
