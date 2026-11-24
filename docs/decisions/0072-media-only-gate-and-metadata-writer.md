@@ -99,3 +99,36 @@ There is no SQLite schema change: the upload row's existing `manifest_sha256` / 
 sync family gains additive fields and one kind. An older build is stricter: it reads approvals as manifest-keyed and still fails a
 queued row on re-package. Both computers update together, and the upload computer is the Mac. Existing approvals carry over while
 their manifest is on disk.
+
+## Amendment 1 — the package's translations after upload (2026-11-24)
+
+**Requirement:** owner TG 4839/4842, 2026-11-24 («согласовываю»), relayed by the Producer (TG 2578) for a Japan packaging A/B test
+(B variants on scheduled videos). It reverses §8's "Translations of an uploaded video stay out for now" for the package's own
+translations only; `docs/WRITE_AUTHORIZATIONS.md` «Package metadata after upload» carries the amendment.
+
+1. **What.** A video a release package already put on YouTube may get that package's **current manifest** `localizations` (title and
+   description per language, `packageLocalizationSet` -- the set the upload's translations step sends), descriptions in YouTube's
+   form (§7). Never free text, never YouTube's own `snippet.defaultLanguage` (listed as `ownLanguageSkipped`; that text is §5's
+   snippet path), never a removal: a language the video has and the package lacks is kept (`kept`). A video with no default language
+   on YouTube is refused.
+2. **Writer.** No new writer and no new gateway function: `src/lib/publishing/package-localizations.ts` decides, the shared video
+   translations writer `src/lib/shared-video-localizations/` writes (ADR 0051 §8, ADR 0045: identity check, backup of the current
+   translations, safe merge, Live writes immediately before `videos.update part=snippet,localizations`, read-back, audit), with
+   source `package_localizations`. Two additive writer inputs: `expectedCurrent` (each language written must still read as this
+   check saw it, on the fresh read and on the recheck after the backup; otherwise `video_details_conflict`, nothing sent) and
+   `auditContext` (actor, package). The service reads privacy and `publishAt` before and after (the writer reads only snippet and
+   localizations); a change, or the writer's `verified: false`, is `update_failed`.
+3. **Three-way check per language and field** (YouTube now Y / what the upload sent U / the package P; absent is a value): Y = P
+   same; U known and Y = U write; otherwise conflict. U comes from the latest verified `package_localizations.applied` audit here
+   (`afterLocalizations`), else this computer's finished upload row of the video when its translations step is `verified` (its frozen
+   set, a language not in it was not sent) or `none` (nothing sent); otherwise unknown. The upload record file (`V<n>_youtube.json`)
+   does not hold the translations, so an upload from the other computer is unknown: every difference is a conflict. **Any conflict
+   refuses the whole call, for the owner as well** (no per-language override; the screen shows which language and field).
+4. **One YouTube write per call.** `producer_video_metadata_update { localizations: true }` and the owner's route `{ localizations:
+   true }` fix the translations instead of title/description/tags. Doing both in one call would need two writes, and the
+   translations writer sends the snippet back from its own read: a stale replica could echo the old title just written. The flag
+   (not a sibling tool) keeps one tool, one permission (`METADATA_WRITE`) and one session surface.
+5. **Gates as §5:** the device gate, `snippet.channelId`, refused while this computer's upload of the video has not finished its
+   read-back, never automatic; public videos as §5 (allowed on a person's click or the Producer's deliberate call). Dry run: every
+   read, no backup, no write. Quota about 56 units.
+6. **API:** Producer 1.28.0 (additive). Factory and Agent unchanged.

@@ -8,7 +8,9 @@ import { useUiText } from "./ui-text-provider";
 // BL-265 (ADR 0072 §2, §5, §8; MEDIA_GATE_PLAN.md §3.1 "Entry point", §3.4): on an uploaded package's own row in «Ролики и релизы», on
 // every channel -- «Упаковка отличается от YouTube» when the package's texts differ from the synced copy, «Упаковка» (a preview of the
 // three-way diff from a fresh read, then «Применить упаковку» with a per-field «перезаписать» for a conflict; the thumbnail through
-// the existing thumbnail writer) and «Комментарий к упаковке» (to the Producer, it blocks nothing).
+// the existing thumbnail writer) and «Комментарий к упаковке» (to the Producer, it blocks nothing). «Переводы упаковки» (owner TG
+// 4839/4842, ADR 0072 amendment): the package's translations per language against YouTube and the upload, then «Применить переводы»
+// -- no override: any conflict blocks the write (the screen shows which language and field).
 
 type Field = "title" | "description" | "tags";
 type Preview = {
@@ -22,6 +24,19 @@ type Preview = {
   audioLanguageLeftOut: boolean;
   quotaUnits: number;
   thumbnail: { path: string; differs: boolean | null } | null;
+};
+
+type TranslationStatus = "same" | "write" | "conflict";
+type TranslationsPreview = {
+  video: string;
+  manifestSha256: string;
+  etag: string | null;
+  baseline: "upload_row" | "localizations_apply" | "unknown";
+  languages: Array<{ language: string; status: TranslationStatus; fields: Array<{ field: "title" | "description"; youtube: string | null; uploaded: string | null; package: string; status: TranslationStatus }> }>;
+  kept: string[];
+  ownLanguageSkipped: string[];
+  changed: boolean;
+  quotaUnits: number;
 };
 
 const FIELD_KEYS: Record<Field, UiTextKey> = {
@@ -38,7 +53,8 @@ const shown = (value: string | string[] | null) => (value === null ? null : Arra
 
 export function PackagingActions({ channelId, video, manifestSha256, differs, onChanged }: { channelId: string; video: string; manifestSha256: string; differs: Field[] | null; onChanged: () => void }) {
   const { t } = useUiText();
-  const [open, setOpen] = useState<"metadata" | "comment" | null>(null);
+  const [open, setOpen] = useState<"metadata" | "comment" | "translations" | null>(null);
+  const [translations, setTranslations] = useState<TranslationsPreview | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [overwrite, setOverwrite] = useState<Field[]>([]);
   const [busy, setBusy] = useState(false);
@@ -86,6 +102,37 @@ export function PackagingActions({ channelId, video, manifestSha256, differs, on
     }
   }
 
+  async function openTranslations() {
+    setOpen("translations");
+    setTranslations(null);
+    setError(null);
+    setNotice(null);
+    setBusy(true);
+    try {
+      setTranslations((await post("/publishing/package-metadata", { video, dryRun: true, localizations: true })) as unknown as TranslationsPreview);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t("packagingActions.failed"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function applyTranslations() {
+    if (!translations) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = (await post("/publishing/package-metadata", { video, localizations: true, expectedEtag: translations.etag ?? "", expectedManifestSha256: translations.manifestSha256 })) as { changed?: boolean; written?: string[] };
+      setOpen(null);
+      setNotice(result.changed ? t("packagingActions.translationsApplied", { count: result.written?.length ?? 0 }) : t("packagingActions.translationsNothing"));
+      onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t("packagingActions.failed"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function replaceThumbnail() {
     if (!preview?.thumbnail) return;
     setBusy(true);
@@ -117,6 +164,8 @@ export function PackagingActions({ channelId, video, manifestSha256, differs, on
   }
 
   const toWrite = preview ? preview.fields.filter((f) => f.status === "write" || (f.status === "conflict" && overwrite.includes(f.field))) : [];
+  const translationConflict = translations ? translations.languages.some((l) => l.status === "conflict") : false;
+  const translationsToWrite = translations && !translationConflict ? translations.languages.filter((l) => l.status === "write") : [];
   return (
     <div className="flex flex-wrap items-center gap-2 text-xs">
       {differs && differs.length > 0 && (
@@ -126,6 +175,9 @@ export function PackagingActions({ channelId, video, manifestSha256, differs, on
       )}
       <button type="button" onClick={() => void openMetadata()} className="rounded border border-zinc-700 px-2 py-0.5 text-zinc-300 hover:bg-zinc-800">
         {t("packagingActions.open")}
+      </button>
+      <button type="button" onClick={() => void openTranslations()} className="rounded border border-zinc-700 px-2 py-0.5 text-zinc-300 hover:bg-zinc-800">
+        {t("packagingActions.translations")}
       </button>
       <button
         type="button"
@@ -199,6 +251,70 @@ export function PackagingActions({ channelId, video, manifestSha256, differs, on
                     </button>
                   </div>
                 )}
+              </>
+            )}
+            {error && <p className="text-red-400">{error}</p>}
+          </div>
+        </ConfirmDialog>
+      )}
+      {open === "translations" && (
+        <ConfirmDialog
+          title={t("packagingActions.translationsTitle", { video })}
+          description={t("packagingActions.translationsDescription")}
+          cancelLabel={t("packagingActions.cancel")}
+          confirmLabel={t("packagingActions.translationsApply")}
+          confirmVariant="danger"
+          size="wide"
+          confirmDisabled={busy || !translations || translationsToWrite.length === 0}
+          confirmBusyLabel={busy && translations ? t("packagingActions.applying") : null}
+          onCancel={() => {
+            if (!busy) setOpen(null);
+          }}
+          onConfirm={() => void applyTranslations()}
+        >
+          <div className="max-h-[55vh] space-y-3 overflow-y-auto text-xs text-zinc-300">
+            {!translations && busy && <p className="text-zinc-400">{t("packagingActions.reading")}</p>}
+            {translations && (
+              <>
+                {translations.baseline === "unknown" && <p className="text-amber-300">{t("packagingActions.translationsBaselineUnknown")}</p>}
+                {translationConflict && <p className="text-red-300">{t("packagingActions.translationsConflict")}</p>}
+                {translations.languages.length === 0 && <p className="text-zinc-400">{t("packagingActions.translationsNone")}</p>}
+                <ul className="space-y-2">
+                  {translations.languages.map((l) => (
+                    <li key={l.language} className="rounded border border-zinc-800 p-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-mono font-medium text-zinc-100">{l.language}</span>
+                        <span className={l.status === "conflict" ? "text-red-300" : l.status === "write" ? "text-amber-200" : "text-zinc-500"}>{t(STATUS_KEYS[l.status])}</span>
+                      </div>
+                      {l.status !== "same" && (
+                        <ul className="mt-1 space-y-1">
+                          {l.fields
+                            .filter((f) => f.status !== "same")
+                            .map((f) => (
+                              <li key={f.field}>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-zinc-400">{t(FIELD_KEYS[f.field])}</span>
+                                  <span className={f.status === "conflict" ? "text-red-300" : "text-amber-200"}>{t(STATUS_KEYS[f.status])}</span>
+                                </div>
+                                <dl className="mt-0.5 grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5">
+                                  <dt className="text-zinc-500">{t("packagingActions.onYoutube")}</dt>
+                                  <dd className="whitespace-pre-wrap break-words">{f.youtube ?? t("packagingActions.notOnVideo")}</dd>
+                                  <dt className="text-zinc-500">{t("packagingActions.uploaded")}</dt>
+                                  <dd className="whitespace-pre-wrap break-words">{f.uploaded ?? (translations.baseline === "unknown" ? t("packagingActions.unknown") : t("packagingActions.notOnVideo"))}</dd>
+                                  <dt className="text-zinc-500">{t("packagingActions.inPackage")}</dt>
+                                  <dd className="whitespace-pre-wrap break-words text-zinc-100">{f.package}</dd>
+                                </dl>
+                              </li>
+                            ))}
+                        </ul>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+                {translations.languages.length > 0 && !translations.changed && <p className="text-zinc-400">{t("packagingActions.translationsAllSame")}</p>}
+                {translations.kept.length > 0 && <p className="text-zinc-400">{t("packagingActions.translationsKept", { languages: translations.kept.join(", ") })}</p>}
+                {translations.ownLanguageSkipped.length > 0 && <p className="text-zinc-400">{t("packagingActions.translationsOwnLanguage", { languages: translations.ownLanguageSkipped.join(", ") })}</p>}
+                <p className="text-zinc-400">{t("packagingActions.quota", { units: translations.quotaUnits })}</p>
               </>
             )}
             {error && <p className="text-red-400">{error}</p>}

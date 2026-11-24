@@ -266,7 +266,7 @@ test("conflict: ja's title edited in Studio (neither the upload's nor the packag
     assert.deepEqual(ja.fields.map((f) => f.status), ["conflict", "write"]);
     await assert.rejects(
       h.service.apply(CH, { video: "V25", expectedEtag: preview.etag ?? "", expectedManifestSha256: M }, actor),
-      (error: unknown) => refusedWith("package_metadata_conflict")(error) && JSON.stringify((error as DomainError).details.conflicts) === JSON.stringify([{ language: "ja", fields: ["title"] }])
+      (error: unknown) => refusedWith("package_metadata_conflict")(error) && JSON.stringify(((error as DomainError).details as Record<string, unknown>).conflicts) === JSON.stringify([{ language: "ja", fields: ["title"] }])
     );
     assert.ok(!h.calls.includes("backup") && !h.calls.includes("videos.update"));
   }
@@ -364,7 +364,7 @@ test("a Studio edit of a language being written between the check and the write:
 
 test("read-back mismatch is reported: update_failed with the problem, audit verified false, no baseline left", async () => {
   const h = harness({ storeInstead: (payload, video) => (video.localizations = { ...structuredClone(payload.localizations), ja: { title: "ジャズ ?", description: "説明 B" } }) });
-  await assert.rejects(h.service.apply(CH, { video: "V25" }, PRODUCER), (error: unknown) => refusedWith("update_failed")(error) && /text differs: ja/.test(String((error as DomainError).details.problem)));
+  await assert.rejects(h.service.apply(CH, { video: "V25" }, PRODUCER), (error: unknown) => refusedWith("update_failed")(error) && /text differs: ja/.test(String(((error as DomainError).details as Record<string, unknown>).problem)));
   const applied = h.audits.find((a) => a.detail.event === "package_localizations.applied")!;
   assert.equal(applied.detail.verified, false);
   assert.equal((await h.service.preview(CH, { video: "V25" }, PRODUCER)).baseline, "upload_row", "an unverified fix is never a baseline");
@@ -372,7 +372,7 @@ test("read-back mismatch is reported: update_failed with the problem, audit veri
 
 test("privacy or publishAt changed after the write: reported (update_failed, changedUntouched)", async () => {
   const h = harness({ afterUpdate: (video) => (video.publishAt = null) });
-  await assert.rejects(h.service.apply(CH, { video: "V25" }, PRODUCER), (error: unknown) => refusedWith("update_failed")(error) && JSON.stringify((error as DomainError).details.changedUntouched) === JSON.stringify(["publishAt"]));
+  await assert.rejects(h.service.apply(CH, { video: "V25" }, PRODUCER), (error: unknown) => refusedWith("update_failed")(error) && JSON.stringify(((error as DomainError).details as Record<string, unknown>).changedUntouched) === JSON.stringify(["publishAt"]));
 });
 
 test("this computer's upload of the video has not finished its read-back: refused before any YouTube read", async () => {
