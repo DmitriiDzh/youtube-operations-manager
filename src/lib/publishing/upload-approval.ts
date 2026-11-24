@@ -126,6 +126,8 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
           deferredPublishAt: isDeferredPublishAt(c.item.publishAt),
           // BL-269 (AC-CAP-28): the captions step's budget for a package with captions.
           captions: Boolean(c.pkg.captions && c.pkg.captions.length > 0),
+          // Package playlists (owner TG 4858/4859): each one besides the settings playlist.
+          packagePlaylists: (c.pkg.playlists ?? []).filter((id) => id !== view.settings.playlistId).length,
         }),
       0
     );

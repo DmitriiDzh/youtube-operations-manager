@@ -40,12 +40,14 @@ export function approvedPackageOf(
     // BL-269 (ADR 0074 §7): the package's one caption file (the checks allow exactly one) and the frame the scan knew.
     ...(caption ? { captions: { language: caption.language, file: `${place.folder}/${caption.file}`, name: caption.name, sha256: caption.sha256 } } : {}),
     ...(place.orientation !== undefined ? { orientation: place.orientation } : {}),
+    // Package playlists (owner TG 4858/4859): the playlist step adds the video to each (the channel's own only).
+    ...(pkg.playlists && pkg.playlists.length > 0 ? { playlists: [...pkg.playlists] } : {}),
   };
 }
 
 /** Which packaging fields of two frozen packages differ (the refresh's audit): texts, translations, thumbnail file, AI flag, languages. */
 export function changedPackageFields(before: ApprovedPackage, after: ApprovedPackage): string[] {
   // BL-269: captions are packaging too (ADR 0074 §3, ADR 0072 §1): a re-package that adds or fixes them is taken by a queued row.
-  const keys: Array<keyof ApprovedPackage> = ["title", "description", "tags", "localizations", "thumbnailFile", "containsSyntheticMedia", "defaultLanguage", "defaultAudioLanguage", "manifestPath", "videoFile", "captions"];
+  const keys: Array<keyof ApprovedPackage> = ["title", "description", "tags", "localizations", "thumbnailFile", "containsSyntheticMedia", "defaultLanguage", "defaultAudioLanguage", "manifestPath", "videoFile", "captions", "playlists"];
   return keys.filter((key) => JSON.stringify(before[key] ?? null) !== JSON.stringify(after[key] ?? null));
 }

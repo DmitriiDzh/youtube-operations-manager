@@ -82,6 +82,7 @@ function harness(start: StoredPublishingUpload, writeCaptions?: UploadRunnerDeps
   const order: string[] = [];
   const records: Array<Record<string, unknown>> = [];
   const clock = { at: NOW };
+  const playlistItems = new Set<string>();
   const deps: UploadRunnerDeps = {
     store: {
       listActive: async () => (["queued", "uploading", "processing", "finishing", "paused"].includes(current.status) ? [{ ...current }] : []),
@@ -101,12 +102,13 @@ function harness(start: StoredPublishingUpload, writeCaptions?: UploadRunnerDeps
       putChunk: async () => assert.fail("no upload"),
       queryOffset: async () => assert.fail("no upload"),
       setThumbnail: async () => void order.push("thumbnail"),
-      addToPlaylist: async () => void order.push("playlist"),
+      // A playlist item YouTube made is listed afterwards (package playlists: every add is read back).
+      addToPlaylist: async (_c, videoId, playlistId) => void (order.push("playlist"), playlistItems.add(`${playlistId} ${videoId}`)),
     },
     reads: {
       uploadState: async () => ({ uploadStatus: "processed", rejectionReason: null, failureReason: null, hasCustomThumbnail: true }),
       recentUploads: async () => [],
-      playlistHasVideo: async () => false,
+      playlistHasVideo: async (_c, playlistId, videoId) => playlistItems.has(`${playlistId} ${videoId}`),
       snapshot: async () => {
         order.push("read");
         return {

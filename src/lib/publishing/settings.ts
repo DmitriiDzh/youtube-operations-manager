@@ -89,7 +89,8 @@ export function uploadTagsSummary(packageTags: readonly string[], channelTags: r
   return { tags, fromPackage: packageTags.length, fromChannel: tags.length - packageTags.length, characters: tagsLength(tags) };
 }
 
-const PLAYLIST_ID_PATTERN = /^[A-Za-z0-9_-]{2,64}$/;
+/** A YouTube playlist id as the settings and a release package's `playlists` accept it (one pattern, owner TG 4858/4859). */
+export const PLAYLIST_ID_PATTERN = /^[A-Za-z0-9_-]{2,64}$/;
 
 /** Why `value` is not a valid value of `field`, or null when it is. */
 export function publishingSettingProblem(field: PublishingSettingField, value: unknown): string | null {

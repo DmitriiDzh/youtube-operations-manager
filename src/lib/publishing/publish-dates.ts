@@ -51,10 +51,16 @@ export function isDeferredPublishAt(publishAt: string | null): boolean {
  * identity check per pass, the processing polls, the read-back, the sync after it). `videos.insert` itself comes from its own
  * bucket, not the pool.
  */
-export function estimateUploadUnits(args: { playlist: boolean; deferredPublishAt: boolean; captions?: boolean }): number {
+export function estimateUploadUnits(args: { playlist: boolean; deferredPublishAt: boolean; captions?: boolean; packagePlaylists?: number }): number {
   // BL-269 (ADR 0074 §7): a package with captions adds the captions step's 550 (list, insert, read-back, one re-read).
-  return 50 + 45 + (args.playlist ? 51 : 0) + (args.deferredPublishAt ? 55 : 0) + (args.captions ? CAPTIONS_STEP_UNITS : 0);
+  // Package playlists (owner TG 4858/4859): each playlist the package names besides the settings one adds 53 (its ownership read 1,
+  // the membership check 1, the insert 50, the read-back 1).
+  const packagePlaylists = Math.max(0, Math.trunc(args.packagePlaylists ?? 0));
+  return 50 + 45 + (args.playlist ? 51 : 0) + (args.deferredPublishAt ? 55 : 0) + (args.captions ? CAPTIONS_STEP_UNITS : 0) + packagePlaylists * PACKAGE_PLAYLIST_UNITS;
 }
+
+/** Package playlists: one package playlist's budget (ownership read 1 + membership check 1 + `playlistItems.insert` 50 + read-back 1). */
+export const PACKAGE_PLAYLIST_UNITS = 53;
 
 /** BL-269: the captions step's budget (`video-captions`' insert budget: list 50 + insert 400 + read-back 50 + one re-read 50). */
 export const CAPTIONS_STEP_UNITS = 550;

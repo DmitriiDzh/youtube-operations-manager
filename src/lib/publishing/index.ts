@@ -72,7 +72,7 @@ import { detectFfmpeg, probeMedia, type FfmpegTools } from "@/lib/ffmpeg-host";
 import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
 import { createWriteContextCore } from "@/lib/write-context";
-import { createYoutubeClient, getVideoMetadataContext, getVideoUploadState, listPlaylistItemIdsByVideo, listUploadsPlaylistFirstPage } from "@/lib/youtube-read-gateway";
+import { createYoutubeClient, getPlaylistForUpdate, getVideoMetadataContext, getVideoUploadState, listUploadsPlaylistFirstPage, playlistContainsVideo } from "@/lib/youtube-read-gateway";
 import { createWorkspaceExchangeFsForPublishing, isRealVideoFolder, resolveWorkspaceFileForPublishing, writeVideoFolderFile } from "./adapters/files";
 import { createWorkspaceVideoFiles, videoNumberOfFolder, videosFolderSignature, writeUploadRecordFile } from "@/lib/workspace-videos";
 import { reportVersionFor } from "@/lib/shared-video-code";
@@ -486,8 +486,11 @@ export function createUploadRunnerCore(options: { slotDecisions?: (channelId: st
     reads: {
       uploadState: async (credentials, videoId) => getVideoUploadState(await createYoutubeClient(authorizedOAuth(credentials as ResolvedCredentials)), videoId),
       recentUploads: async (credentials, channelId) => listUploadsPlaylistFirstPage(await createYoutubeClient(authorizedOAuth(credentials as ResolvedCredentials)), uploadsPlaylistOf(channelId)),
-      playlistHasVideo: async (credentials, playlistId, videoId) =>
-        (await listPlaylistItemIdsByVideo(await createYoutubeClient(authorizedOAuth(credentials as ResolvedCredentials)), playlistId)).has(videoId),
+      // Package playlists (owner TG 4858/4859): one `playlistItems.list` filtered by the video (1 unit, never a full walk) -- the
+      // check before an insert and its read-back.
+      playlistHasVideo: async (credentials, playlistId, videoId) => playlistContainsVideo(await createYoutubeClient(authorizedOAuth(credentials as ResolvedCredentials)), playlistId, videoId),
+      // The channel a package playlist belongs to (`playlists.list` by id, 1 unit); null when YouTube does not return it.
+      playlistChannel: async (credentials, playlistId) => (await getPlaylistForUpdate(await createYoutubeClient(authorizedOAuth(credentials as ResolvedCredentials)), playlistId))?.channelId ?? null,
       snapshot: async ({ channelId, videoId, credentialRef }) => videoDetails.getSnapshot({ credentialRef, expectedChannelId: channelId, videoId }),
     },
     async setPublishAt({ channelId, videoId, publishAt, containsSyntheticMedia, credentialRef }) {
@@ -682,6 +685,16 @@ export function createUploadApprovalCore() {
             return {};
           }
         })();
+        // Package playlists (owner TG 4858/4859): a row whose playlist step has not run budgets each package playlist.
+        const packagePlaylists = (() => {
+          try {
+            if ((JSON.parse(row.stepsJson) as { playlist?: unknown }).playlist !== undefined) return 0;
+            const ids = (JSON.parse(row.packageJson) as { playlists?: unknown }).playlists;
+            return Array.isArray(ids) ? ids.filter((id) => id !== settings.playlistId).length : 0;
+          } catch {
+            return 0;
+          }
+        })();
         // BL-269 (AC-CAP-28): a queued row whose package has captions (and whose captions step has not run yet) budgets the step.
         const captions = (() => {
           try {
@@ -690,7 +703,7 @@ export function createUploadApprovalCore() {
             return false;
           }
         })();
-        units += estimateUploadUnits({ playlist: Boolean(settings.playlistId), deferredPublishAt: !row.publishAtAtInsert && isDeferredPublishAt(row.publishAt), captions });
+        units += estimateUploadUnits({ playlist: Boolean(settings.playlistId), deferredPublishAt: !row.publishAtAtInsert && isDeferredPublishAt(row.publishAt), captions, packagePlaylists });
       }
       return { inserts: rows.filter((row) => row.videoId === null).length, units };
     },

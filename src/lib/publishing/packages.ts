@@ -9,6 +9,10 @@ import { DESCRIPTION_MAX_BYTES, hasAngleBrackets, TAGS_MAX_CHARACTERS, tagsLengt
 import { validateLocalizationSet, type LocalizationSetLimits } from "@/lib/shared-localization-set";
 import { isReadableVideoCode, READABLE_VIDEO_CODE_SOURCE } from "@/lib/shared-video-code";
 import { CAPTIONS_LANGUAGE, CAPTIONS_MAX_BYTES, captionFormatOfName, captionNameProblem, type CaptionFileCheck } from "@/lib/video-captions/caption-file";
+import { PLAYLIST_ID_PATTERN } from "./settings";
+
+/** Package playlists (owner TG 4858/4859): at most this many playlist ids in a v2 package's `playlists`. */
+export const RELEASE_PACKAGE_MAX_PLAYLISTS = 10;
 
 export const RELEASE_PACKAGE_SCHEMA = "yt-release-package/1";
 /**
@@ -77,6 +81,11 @@ export type ReleasePackage = {
   thumbnails?: PackageThumbnail[];
   /** BL-269: v2 `captions` as written (null: none; the rules are `captionsProblems`'). */
   captions?: PackageCaption[] | null;
+  /**
+   * Package playlists (owner TG 4858/4859): v2 `playlists` -- 1..10 playlist ids (the settings pattern, no repeats) the upload adds
+   * the video to besides the settings playlist; each must be the channel's own (checked at the playlist step). Absent: none.
+   */
+  playlists?: string[];
 };
 
 /** Why a package cannot be uploaded; `params` fill the interface text (`publishingPackages.problem.<code>`). */
@@ -172,6 +181,12 @@ export function parseReleasePackage(raw: unknown): { pkg: ReleasePackage | null;
   // BL-269 (ADR 0074 §3): `captions` exists only in v2; a v1 manifest carrying it is refused, never silently read without it.
   if (!v2 && raw.captions !== undefined && raw.captions !== null) problems.push({ code: "field_invalid", params: { field: "captions" } });
   if (v2 && raw.captions !== undefined && raw.captions !== null) captions = parseCaptions(raw.captions, problems);
+  // Package playlists (owner TG 4858/4859): v2 only, as `captions` -- a v1 manifest carrying them is refused.
+  let playlists: string[] | null = null;
+  if (raw.playlists !== undefined && raw.playlists !== null) {
+    if (v2) playlists = parsePlaylists(raw.playlists, problems);
+    else problems.push({ code: "field_invalid", params: { field: "playlists" } });
+  }
   if (v2) {
     if (raw.slotId !== undefined && raw.slotId !== null) {
       if (typeof raw.slotId === "string" && /^[A-Za-z0-9_-]{1,40}$/.test(raw.slotId)) slotId = raw.slotId;
@@ -212,9 +227,19 @@ export function parseReleasePackage(raw: unknown): { pkg: ReleasePackage | null;
       containsSyntheticMedia,
       thumbnails,
       captions,
+      ...(playlists ? { playlists } : {}),
     },
     problems: [],
   };
+}
+
+/** v2 `playlists`: a list of at most 10 distinct playlist ids of the settings pattern; [] is none. */
+function parsePlaylists(value: unknown, problems: PackageProblem[]): string[] | null {
+  const invalid = () => (problems.push({ code: "field_invalid", params: { field: "playlists" } }), null);
+  if (!Array.isArray(value) || value.length > RELEASE_PACKAGE_MAX_PLAYLISTS) return invalid();
+  if (!value.every((id): id is string => typeof id === "string" && PLAYLIST_ID_PATTERN.test(id))) return invalid();
+  if (new Set(value).size !== value.length) return invalid();
+  return value.length > 0 ? [...value] : null;
 }
 
 /** v2 `captions`: a list of { language, file (inside the folder, .srt/.vtt), name, sha256 (64 hex) }; [] is none. */
