@@ -106,6 +106,7 @@ export const errors = {
   "errors.package_metadata_invalid": "The package's title, description or tags break YouTube's limits: fix the package first.",
   "errors.video_missing": "The video is not on YouTube (deleted, or not visible to this account).",
   "errors.upload_steps_pending": "This video's upload on this computer has not finished yet. Try again once it is done.",
+  "errors.package_localizations_conflict": "A translation on YouTube was changed since the upload (in Studio or elsewhere): nothing was written. It must match the upload or the package first.",
   "errors.package_metadata_conflict": "A field on YouTube was changed since the upload: only the owner can overwrite it, field by field.",
   "errors.package_metadata_manifest_changed": "The package was re-packaged since you looked at it: open «Packaging» again.",
   "errors.thumbnail_step_pending": "This video's upload has not set its own thumbnail yet. Try again once the upload has finished.",

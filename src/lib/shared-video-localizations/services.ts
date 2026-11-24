@@ -185,10 +185,11 @@ export function createLiveLocalizationsWriter(deps: LiveLocalizationsWriterDepen
         if (state !== "current") return { sent: false, reason: state };
       }
       const recheck = await read(credentials, videoId);
+      // A language the caller checked edited meanwhile is named as such first (expectedCurrent); any other change is the generic refusal.
+      changedSinceCheck(recheck);
       if (changedBetweenReads(recheck, fresh)) {
         throw new DomainError({ code: "update_failed", message: "The video changed while the translations were being prepared, so nothing was sent: apply again", details: { videoId } });
       }
-      changedSinceCheck(recheck);
       // The same values; the latest read is the one sent back.
       fresh = recheck;
 

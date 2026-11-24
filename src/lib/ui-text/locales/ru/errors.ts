@@ -104,6 +104,7 @@ export const errors: Record<keyof typeof en, string> = {
   "errors.package_metadata_invalid": "Название, описание или теги пакета нарушают пределы YouTube: сначала исправьте пакет.",
   "errors.video_missing": "Видео нет на YouTube (удалено или не видно этому аккаунту).",
   "errors.upload_steps_pending": "Загрузка этого видео на этом компьютере ещё не закончена. Повторите, когда она завершится.",
+  "errors.package_localizations_conflict": "Перевод на YouTube изменили после загрузки (в Studio или иначе): ничего не записано. Сначала он должен совпасть с загрузкой или пакетом.",
   "errors.package_metadata_conflict": "Поле на YouTube изменили после загрузки: перезаписать его может только владелец, по полю.",
   "errors.package_metadata_manifest_changed": "Пакет перепаковали после просмотра: откройте «Упаковка» снова.",
   "errors.thumbnail_step_pending": "Загрузка этого видео ещё не поставила свою обложку. Попробуйте, когда загрузка закончится.",

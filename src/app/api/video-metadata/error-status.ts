@@ -323,6 +323,7 @@ const DOMAIN_ERROR_STATUS = {
   video_missing: 404,
   upload_steps_pending: 409,
   package_metadata_conflict: 409,
+  package_localizations_conflict: 409,
   package_metadata_manifest_changed: 409,
   captions_invalid: 400,
   captions_missing: 400,

@@ -123,7 +123,8 @@ translations only; `docs/WRITE_AUTHORIZATIONS.md` «Package metadata after uploa
    (`afterLocalizations`), else this computer's finished upload row of the video when its translations step is `verified` (its frozen
    set, a language not in it was not sent) or `none` (nothing sent); otherwise unknown. The upload record file (`V<n>_youtube.json`)
    does not hold the translations, so an upload from the other computer is unknown: every difference is a conflict. **Any conflict
-   refuses the whole call, for the owner as well** (no per-language override; the screen shows which language and field).
+   refuses the whole call, for the owner as well** (`package_localizations_conflict`, `details.conflicts`; no per-language override; the
+   screen shows which language and field).
 4. **One YouTube write per call.** `producer_video_metadata_update { localizations: true }` and the owner's route `{ localizations:
    true }` fix the translations instead of title/description/tags. Doing both in one call would need two writes, and the
    translations writer sends the snippet back from its own read: a stale replica could echo the old title just written. The flag

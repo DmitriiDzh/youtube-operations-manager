@@ -43,8 +43,9 @@ const PACKAGE_JA: Entry = { title: "ジャズ B", description: "説明 B" };
 const baseVideo = (): Video => ({
   channelId: CH,
   snippet: { title: "Jazz A (en)", description: "Desc A", defaultLanguage: "en", defaultAudioLanguage: "zxx", tags: ["jazz"], categoryId: "10" },
-  // ja and de as the upload sent them; fr added later by someone else (the package has no fr).
-  localizations: { ja: { ...UPLOADED_JA }, de: { ...UPLOADED_DE }, fr: { title: "Jazz FR", description: "Desc FR" } },
+  // ja and de as the upload sent them; fr added later by someone else (the package has no fr). YouTube also returns the default
+  // language's own entry (en) inside `localizations`: it is the snippet, never a translation, never "kept" or written.
+  localizations: { en: { title: "Jazz A (en)", description: "Desc A" }, ja: { ...UPLOADED_JA }, de: { ...UPLOADED_DE }, fr: { title: "Jazz FR", description: "Desc FR" } },
   privacyStatus: "private",
   publishAt: "2026-11-25T13:00:00Z",
   version: 1,
@@ -266,7 +267,7 @@ test("conflict: ja's title edited in Studio (neither the upload's nor the packag
     assert.deepEqual(ja.fields.map((f) => f.status), ["conflict", "write"]);
     await assert.rejects(
       h.service.apply(CH, { video: "V25", expectedEtag: preview.etag ?? "", expectedManifestSha256: M }, actor),
-      (error: unknown) => refusedWith("package_metadata_conflict")(error) && JSON.stringify(((error as DomainError).details as Record<string, unknown>).conflicts) === JSON.stringify([{ language: "ja", fields: ["title"] }])
+      (error: unknown) => refusedWith("package_localizations_conflict")(error) && JSON.stringify(((error as DomainError).details as Record<string, unknown>).conflicts) === JSON.stringify([{ language: "ja", fields: ["title"] }])
     );
     assert.ok(!h.calls.includes("backup") && !h.calls.includes("videos.update"));
   }
@@ -278,7 +279,7 @@ test("unknown upload baseline (the translations step did not read back verified)
     const preview = await h.service.preview(CH, { video: "V25" }, PRODUCER);
     assert.equal(preview.baseline, "unknown");
     assert.deepEqual(statusOf(preview), { ja: "conflict", de: "same" });
-    await assert.rejects(h.service.apply(CH, { video: "V25" }, PRODUCER), refusedWith("package_metadata_conflict"));
+    await assert.rejects(h.service.apply(CH, { video: "V25" }, PRODUCER), refusedWith("package_localizations_conflict"));
     assert.equal(h.updates.length, 0);
   }
   // No finished upload row here at all (uploaded from the other computer): unknown too.
@@ -302,7 +303,7 @@ test("a language YouTube lacks: added when the upload sent none of it; a conflic
   const removed = harness({ video: structuredClone(video) });
   const p2 = await removed.service.preview(CH, { video: "V25" }, PRODUCER);
   assert.equal(p2.languages.find((l) => l.language === "ja")!.status, "conflict");
-  await assert.rejects(removed.service.apply(CH, { video: "V25" }, PRODUCER), refusedWith("package_metadata_conflict"));
+  await assert.rejects(removed.service.apply(CH, { video: "V25" }, PRODUCER), refusedWith("package_localizations_conflict"));
 });
 
 test("a language the video has and the package lacks is kept exactly through the write and the read-back", async () => {
@@ -358,7 +359,8 @@ test("a Studio edit of a language being written between the check and the write:
   assert.equal(h.updates.length, 0);
   // The same edit landing on the writer's recheck read (after the backup): still refused, nothing sent.
   const late = harness({ changeBeforeWriterRead: { read: 2, change: (video) => (video.localizations.ja = { title: "ジャズ Studio", description: "説明 A" }) } });
-  await assert.rejects(late.service.apply(CH, { video: "V25" }, PRODUCER));
+  await assert.rejects(late.service.apply(CH, { video: "V25" }, PRODUCER), refusedWith("video_details_conflict"));
+  assert.ok(late.calls.includes("backup"), "the late edit lands after the backup");
   assert.equal(late.updates.length, 0);
 });
 

@@ -1663,7 +1663,7 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
   and field: YouTube = package same; YouTube = what the upload sent write; otherwise conflict. What the upload sent: the latest verified translations
   fix here, else this computer's finished upload row when its translations step is `verified` (its frozen set) or `none` (nothing sent); otherwise
   unknown (e.g. uploaded from the other computer: the upload record file does not hold translations) -- every difference a conflict. Any conflict
-  refuses the whole call (`package_metadata_conflict`, `details.kind: "localizations"`, `details.conflicts: [{ language, fields }]`), for the owner too.
+  refuses the whole call (`package_localizations_conflict`, `details.conflicts: [{ language, fields }]`), for the owner too.
   The write is the shared video translations writer (identity check, backup of the current translations, the languages written re-checked right
   before the write -- else `video_details_conflict`, nothing sent --, Live writes immediately before `videos.update part=snippet,localizations` with
   every other language kept and the snippet as read, read-back), then privacy and `publishAt` read back; audit `source: package_localizations`, actor.

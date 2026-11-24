@@ -98,13 +98,18 @@ function harness(opts: {
     backups,
     updates,
     video: () => video,
-    apply: (localizations: Record<string, { title: string; description: string }> = SET, expected: Record<string, unknown> = {}) =>
+    apply: (
+      localizations: Record<string, { title: string; description: string }> = SET,
+      expected: Record<string, unknown> = {},
+      extra: Pick<Parameters<typeof writer.apply>[0], "expectedCurrent" | "auditContext"> = {}
+    ) =>
       writer.apply({
         credentialRef: { userId: "u1" },
         channelId: "UC1",
         videoId: "BC1",
         localizations,
         expected,
+        ...extra,
         ...(opts.current ? { isCurrent: async () => (calls.push("isCurrent"), opts.current!) } : {}),
       }),
   };
@@ -379,4 +384,31 @@ test("BL-225: the shared writer names its caller in the audit -- upload_localiza
   const live = harness();
   await live.apply();
   assert.deepEqual([...new Set(live.audit.map((a) => a.detail.source))], ["live_localizations"]);
+});
+
+// ADR 0072 amendment 1 (owner TG 4839/4842): a caller may name what its own check saw per language it writes (`expectedCurrent`,
+// null = the video had no such language). The writer refuses before the backup when the fresh read differs, and after the backup
+// when the recheck differs -- video_details_conflict, nothing sent. Its audit rows carry the caller's `auditContext`.
+test("expectedCurrent: a language expected absent but present now -> video_details_conflict before any backup, nothing sent", async () => {
+  // de is absent on the base video, so make it present: expected absent, now present.
+  const video = baseVideo();
+  video.localizations.de = { title: "Studio", description: "Studio" };
+  const h2 = harness({ video });
+  await assert.rejects(h2.apply(SET, {}, { expectedCurrent: { de: null } }), (error: unknown) => error instanceof DomainError && error.code === "video_details_conflict");
+  assert.ok(!h2.calls.includes("backup") && h2.updates.length === 0);
+});
+
+test("expectedCurrent: a language edited between the backup and the write (the recheck) -> video_details_conflict, nothing sent", async () => {
+  const h = harness({ changeBeforeRead: { read: 2, change: (video) => (video.localizations.fr = { title: "Studio", description: "Fd" }) } });
+  await assert.rejects(h.apply(SET, {}, { expectedCurrent: { de: null, fr: { title: "Fo", description: "Fd" } } }), (error: unknown) => error instanceof DomainError && error.code === "video_details_conflict");
+  assert.ok(h.calls.includes("backup"));
+  assert.equal(h.updates.length, 0);
+});
+
+test("expectedCurrent as read and auditContext: written as usual, every audit row carries the context and the writer's source", async () => {
+  const h = harness();
+  assert.deepEqual(await h.apply(SET, {}, { expectedCurrent: { de: null, fr: { title: "Fo", description: "Fd" } }, auditContext: { actor: "producer", source: "spoofed" } }), { verified: true });
+  assert.equal(h.updates.length, 1);
+  assert.deepEqual(h.audit.map((a) => a.eventType), ["BACKUP", "RESULT", "VERIFICATION"]);
+  assert.ok(h.audit.every((a) => a.detail.actor === "producer" && a.detail.source === "live_localizations"), "the context never replaces the writer's own source");
 });

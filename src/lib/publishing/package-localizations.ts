@@ -226,9 +226,9 @@ export function createPackageLocalizations(deps: PackageLocalizationsDeps) {
       const conflicts = seen.languages.filter((l) => l.status === "conflict").map((l) => ({ language: l.language, fields: l.fields.filter((f) => f.status === "conflict").map((f) => f.field) }));
       if (conflicts.length > 0) {
         throw refuse(
-          "package_metadata_conflict",
+          "package_localizations_conflict",
           `${video}: the translations ${conflicts.map((c) => c.language).join(", ")} on YouTube differ from both what the upload sent and the package (changed in Studio, by Batches, or uploaded from the other computer): nothing was written.`,
-          { channelId, video, kind: "localizations", conflicts, baseline: seen.baseline }
+          { channelId, video, conflicts, baseline: seen.baseline }
         );
       }
       const toWrite = seen.languages.filter((l) => l.status === "write").map((l) => l.language);
