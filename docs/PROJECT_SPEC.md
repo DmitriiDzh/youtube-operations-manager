@@ -845,8 +845,9 @@ veto of the slot removes an uploaded video's date (still private). Agents draft 
 **Package playlists at upload (added 2026-11-24, owner, Telegram msgs 4858/4859, ADR 0051 amendment).** The upload's playlist step
 also adds the video it made to each playlist its `yt-release-package/2` names in `playlists` (0-10 ids), each once, only a playlist of
 the same channel (read before), identity check and Live writes before each insert, read back, per-playlist results in the upload row
-and the audit; nothing removed or created. "Playlist passed" above means the publishing (settings) playlist: a failed package playlist
-is reported but does not withhold the date (`docs/WRITE_AUTHORIZATIONS.md`).
+and the audit; nothing removed or created; never inserted twice (a lost answer is only re-read). "Playlist passed" above means the
+publishing (settings) playlist, whose accepted insert counts as passed as before even when the read-back does not show it: a failed
+package playlist is reported but does not withhold the date (`docs/WRITE_AUTHORIZATIONS.md`).
 
 **Thumbnail writer (added 2026-11-15, owner, Telegram msgs 4380/4383, BL-255, ADR 0069).** `src/lib/video-thumbnails/` may replace
 the custom thumbnail (`thumbnails.set`) of a video already on YouTube, any video of the channel, for the owner (Web UI) and the

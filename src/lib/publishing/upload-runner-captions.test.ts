@@ -284,7 +284,8 @@ test("pending (YouTube still syncing) is read again later with the track as ours
 
 test("AC-CAP-28 estimateUploadUnits adds 550 for a package with captions (and nothing otherwise)", () => {
   const base = estimateUploadUnits({ playlist: true, deferredPublishAt: true });
-  assert.equal(base, 50 + 45 + 51 + 55);
+  // The settings playlist item is 52 since its read-back (check 1 + insert 50 + read-back 1; 51 before, TG 4858/4859).
+  assert.equal(base, 50 + 45 + 52 + 55);
   assert.equal(estimateUploadUnits({ playlist: true, deferredPublishAt: true, captions: true }), base + 550);
   assert.equal(estimateUploadUnits({ playlist: true, deferredPublishAt: true, captions: false }), base);
 });

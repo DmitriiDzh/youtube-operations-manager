@@ -1072,7 +1072,13 @@ export function uploadPlaylistRecordOf(row: Pick<StoredPublishingUpload, "id" | 
   const playlists = Array.isArray(steps.playlists)
     ? (steps.playlists as Array<Record<string, unknown>>)
         .filter((e) => e && typeof e.playlistId === "string")
-        .map((e) => ({ playlistId: String(e.playlistId), source: String(e.source ?? ""), result: String(e.result ?? ""), ...(typeof e.reason === "string" ? { reason: e.reason } : {}) }))
+        .map((e) => ({
+          playlistId: String(e.playlistId),
+          source: String(e.source ?? ""),
+          result: String(e.result ?? ""),
+          ...(typeof e.reason === "string" ? { reason: e.reason } : {}),
+          ...(typeof e.at === "string" ? { at: e.at } : {}),
+        }))
     : [];
   return {
     uploadId: row.id,

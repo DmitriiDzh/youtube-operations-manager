@@ -91,6 +91,12 @@ function harness(row: StoredPublishingUpload, options: { owners?: Record<string,
   /** Playlists whose inserts YouTube answers 200 but never shows (read-back stays empty). */
   const invisible = new Set<string>();
   const faults = new Map<string, Fault[]>();
+  /** Ownership reads that throw: `refuse` a 403 (given up at once), `timeout` an ambiguous error (retried, then given up). */
+  const ownerFaults = new Map<string, "refuse" | "timeout">();
+  /** Membership reads of a playlist that answer "not there" although the item exists (YouTube's lag), counted down per read. */
+  const lagReads = new Map<string, number>();
+  /** Membership reads that throw an ambiguous error (counted down; Infinity: always). */
+  const readFaults = new Map<string, number>();
   let liveWrites = true;
   let datePublished: string | null = null;
   const owners = options.owners ?? {};
@@ -138,13 +144,27 @@ function harness(row: StoredPublishingUpload, options: { owners?: Record<string,
       recentUploads: async () => [],
       playlistHasVideo: async (_c, playlistId, videoId) => {
         calls.push(`has ${playlistId}`);
-        return playlistContents.get(playlistId)?.has(videoId) ?? false;
+        const failing = readFaults.get(playlistId) ?? 0;
+        if (failing > 0) {
+          readFaults.set(playlistId, failing - 1);
+          throw Object.assign(new Error("read ETIMEDOUT"), { code: "ETIMEDOUT" });
+        }
+        const present = playlistContents.get(playlistId)?.has(videoId) ?? false;
+        const lag = lagReads.get(playlistId) ?? 0;
+        if (present && lag > 0) {
+          lagReads.set(playlistId, lag - 1);
+          return false;
+        }
+        return present;
       },
       ...(options.withOwnerRead === false
         ? {}
         : {
             playlistChannel: async (_c: unknown, playlistId: string) => {
               calls.push(`owner ${playlistId}`);
+              const ownerFault = ownerFaults.get(playlistId);
+              if (ownerFault === "refuse") throw new DomainError({ code: "update_failed", message: "forbidden", details: { status: 403, reason: "forbidden" } });
+              if (ownerFault === "timeout") throw Object.assign(new Error("read ETIMEDOUT"), { code: "ETIMEDOUT" });
               return playlistId in owners ? owners[playlistId] : CHANNEL;
             },
           }),
@@ -203,6 +223,9 @@ function harness(row: StoredPublishingUpload, options: { owners?: Record<string,
     publishAtWrites,
     playlistContents,
     invisible,
+    ownerFaults,
+    lagReads,
+    readFaults,
     faults,
     setLiveWrites: (on: boolean) => (liveWrites = on),
     runAll,
@@ -317,19 +340,96 @@ test("AC-PP-16: a package playlist whose read-back never shows the video is re-r
   assert.equal(h.row().errorCode, "step_failed");
 });
 
-test("AC-PP-17: the settings playlist's read-back failure withholds the date (the settings rule is unchanged)", async () => {
+// Changed after the independent review (coordinator's decision, AGENTS.md §D -- keep today's behaviour for the owner's own playlist):
+// for the SETTINGS playlist a 200 from playlistItems.insert counts as added, as it did before this branch; the read-back still runs
+// and, when it never shows the item, records `added_unverified` with a note -- never a failure, never a withheld date. The first
+// version of this test (read-back failure withholds the date) asserted a rule the requirement does not make for this playlist.
+test("AC-PP-17: the settings playlist's read-back that never shows the item is added_unverified -- a note, the date goes on", async () => {
   const h = harness(finishingRow({ playlists: ["PL_a"] }));
   h.invisible.add("PL_set");
   await h.runAll();
-  assert.deepEqual(h.inserts, ["PL_set", "PL_a"], "the package playlist still runs");
+  assert.deepEqual(h.inserts, ["PL_set", "PL_a"], "one insert each");
+  assert.equal(h.calls.filter((c) => c === "has PL_set").length, 1 + 1 + READ_BACK_RETRIES, "the check before, the read-back, the re-reads");
   const steps = h.steps();
-  assert.equal(steps.playlist, "failed");
+  assert.equal(steps.playlist, "added", "the date rule sees the settings playlist as added (the 200)");
   assert.deepEqual(entries(steps), [
-    ["PL_set", "settings", "failed", "read_back_missing"],
+    ["PL_set", "settings", "added_unverified", null],
     ["PL_a", "package", "added", null],
   ]);
-  assert.equal(steps.publishAt, "withheld");
-  assert.deepEqual(h.publishAtWrites, []);
+  assert.ok(steps.notes.some((n: string) => n.includes("PL_set")), "a note says the read-back did not show it");
+  assert.equal(steps.publishAt, "set");
+  assert.deepEqual(h.publishAtWrites, [PUBLISH_AT]);
+  assert.equal(h.row().errorCode, null, "not a failed step");
+});
+
+test("AC-PP-23: an ownership read refused (4xx) fails that playlist only (ownership_unreadable); the next package playlist still runs", async () => {
+  const h = harness(finishingRow({ playlists: ["PL_a", "PL_b"] }));
+  h.ownerFaults.set("PL_a", "refuse");
+  await h.runAll();
+  assert.equal(h.row().status, "done");
+  assert.deepEqual(h.inserts, ["PL_set", "PL_b"], "PL_a never written, PL_b tried");
+  const steps = h.steps();
+  assert.deepEqual(entries(steps), [
+    ["PL_set", "settings", "added", null],
+    ["PL_a", "package", "failed", "ownership_unreadable"],
+    ["PL_b", "package", "added", null],
+  ]);
+  assert.equal(steps.playlist, "added");
+  assert.equal(steps.publishAt, "set", "a package playlist's failure never withholds the date");
+  assert.equal(h.row().errorCode, "step_failed");
+  assert.ok(h.audits.some((a) => a.event === "publishing.upload_playlist" && a.playlistId === "PL_a" && a.reason === "ownership_unreadable"));
+});
+
+test("AC-PP-24: an ownership read that times out past the retries fails that playlist only; the next package playlist still runs", async () => {
+  const h = harness(finishingRow({ playlists: ["PL_a", "PL_b"] }));
+  h.ownerFaults.set("PL_a", "timeout");
+  await h.runAll(400);
+  assert.equal(h.row().status, "done");
+  assert.ok(h.calls.filter((c) => c === "owner PL_a").length > 1, "retried before giving up");
+  assert.deepEqual(h.inserts, ["PL_set", "PL_b"]);
+  assert.deepEqual(entries(h.steps()), [
+    ["PL_set", "settings", "added", null],
+    ["PL_a", "package", "failed", "ownership_unreadable"],
+    ["PL_b", "package", "added", null],
+  ]);
+  assert.equal(h.steps().publishAt, "set");
+});
+
+test("AC-PP-25: a lost insert answer followed by lagging reads is re-read, never inserted twice; seen in time it is added", async () => {
+  const h = harness(finishingRow({ playlists: ["PL_a"] }));
+  h.faults.set("PL_a", [{ kind: "lose_answer" }]);
+  h.lagReads.set("PL_a", READ_BACK_RETRIES); // the item shows only on the last allowed read
+  await h.runAll(200);
+  assert.deepEqual(h.inserts, ["PL_set", "PL_a"], "one insert");
+  assert.deepEqual(entries(h.steps()).at(-1), ["PL_a", "package", "added", null]);
+  assert.equal(h.steps().publishAt, "set");
+});
+
+test("AC-PP-26: a lost insert answer never seen within the re-reads is unknown_outcome -- no second insert; the date goes on", async () => {
+  const h = harness(finishingRow({ playlists: ["PL_a"] }));
+  h.faults.set("PL_a", [{ kind: "lose_answer" }]);
+  h.lagReads.set("PL_a", 1000);
+  await h.runAll(200);
+  assert.deepEqual(h.inserts, ["PL_set", "PL_a"], "one insert");
+  assert.equal(h.calls.filter((c) => c === "has PL_a").length, 1 + 1 + READ_BACK_RETRIES, "the check before, then 1 + READ_BACK_RETRIES reads after the lost answer");
+  assert.deepEqual(entries(h.steps()).at(-1), ["PL_a", "package", "failed", "unknown_outcome"]);
+  assert.equal(h.steps().publishAt, "set");
+  assert.equal(h.row().errorCode, "step_failed");
+});
+
+test("AC-PP-27: a package read-back that keeps failing to read past the retries is read_back_unreadable (one insert)", async () => {
+  const h = harness(finishingRow({ playlists: ["PL_a"] }));
+  // The check before the insert passes; every read after it throws.
+  const realInsert = h.deps.gateway.addToPlaylist;
+  h.deps.gateway.addToPlaylist = async (c, v, p) => {
+    await realInsert(c, v, p);
+    if (p === "PL_a") h.readFaults.set("PL_a", Number.POSITIVE_INFINITY);
+  };
+  await h.runAll(400);
+  assert.equal(h.row().status, "done");
+  assert.deepEqual(h.inserts, ["PL_set", "PL_a"]);
+  assert.deepEqual(entries(h.steps()).at(-1), ["PL_a", "package", "failed", "read_back_unreadable"]);
+  assert.equal(h.steps().publishAt, "set");
 });
 
 test("AC-PP-18: a refused insert of a package playlist fails it only; the date goes on. A refused settings playlist withholds it.", async () => {

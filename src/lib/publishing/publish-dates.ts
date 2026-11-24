@@ -46,7 +46,7 @@ export function isDeferredPublishAt(publishAt: string | null): boolean {
 }
 
 /**
- * The pool units one upload needs: the thumbnail (50), a playlist item (50 + 1 to check it is not there yet), a deferred publish
+ * The pool units one upload needs: the thumbnail (50), a playlist item (50 + 1 to check it is not there yet + 1 to read it back), a deferred publish
  * time (videos.update 50 + video-details' own 3 reads + the runner's read before and after it = 55), and about 45 reads (the
  * identity check per pass, the processing polls, the read-back, the sync after it). `videos.insert` itself comes from its own
  * bucket, not the pool.
@@ -56,7 +56,8 @@ export function estimateUploadUnits(args: { playlist: boolean; deferredPublishAt
   // Package playlists (owner TG 4858/4859): each playlist the package names besides the settings one adds 53 (its ownership read 1,
   // the membership check 1, the insert 50, the read-back 1).
   const packagePlaylists = Math.max(0, Math.trunc(args.packagePlaylists ?? 0));
-  return 50 + 45 + (args.playlist ? 51 : 0) + (args.deferredPublishAt ? 55 : 0) + (args.captions ? CAPTIONS_STEP_UNITS : 0) + packagePlaylists * PACKAGE_PLAYLIST_UNITS;
+  // The settings playlist item: the check 1 + the insert 50 + its read-back 1 = 52 (51 before the read-back, TG 4858/4859).
+  return 50 + 45 + (args.playlist ? 52 : 0) + (args.deferredPublishAt ? 55 : 0) + (args.captions ? CAPTIONS_STEP_UNITS : 0) + packagePlaylists * PACKAGE_PLAYLIST_UNITS;
 }
 
 /** Package playlists: one package playlist's budget (ownership read 1 + membership check 1 + `playlistItems.insert` 50 + read-back 1). */

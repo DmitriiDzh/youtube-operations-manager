@@ -865,14 +865,17 @@ Key MCP tools:
     An approved slot's package uploads with the slot's date (written last), its translations and its AI flag (stage 3); audit events
     `publishing.upload_auto_queued` gain `slotId` and the date; `publishing.plan_scheduled` / `publishing.plan_unscheduled` record the
     plan's later date changes on an uploaded video.
-    `playlists?` (owner TG 4858/4859, Producer 1.28.0; v2 only -- a `/1` manifest carrying it is `field_invalid`): `["PL…", …]`, 0-10
+    `playlists?` (owner TG 4858/4859, Producer 1.33.0; v2 only -- a `/1` manifest carrying it is `field_invalid`): `["PL…", …]`, 0-10
     playlist ids of the settings pattern (`[A-Za-z0-9_-]{2,64}`), none twice, `[]` = none; anything else -> `field_invalid` (field
     `playlists`). The upload adds the video to each besides the publishing playlist (each once, after the thumbnail, before the date);
     each must be a playlist of the package's channel (else that playlist `failed`, never written). Upload rows' `steps.playlists`:
-    `[{ playlistId, source: settings | package, result: added | already_there | failed (| adding | inserted while running), reason?:
-    not_found | other_channel | ownership_unchecked | read_back_missing | write_failed, at }]`; audit `publishing.upload_playlist`
-    per playlist. A failed package playlist leaves the date as it is (the done row's `errorCode` is `step_failed`); a failed publishing
-    playlist withholds it as before.
+    `[{ playlistId, source: settings | package, result: added | added_unverified (settings only) | already_there | failed (| adding |
+    inserted | sent_unknown while running), reason?: not_found | other_channel | ownership_unchecked | ownership_unreadable |
+    membership_unreadable | write_failed | read_back_missing | read_back_unreadable | unknown_outcome, at }]`; audit
+    `publishing.upload_playlist` per playlist. Never inserted twice: an insert whose answer was lost is only re-read (3 times, 10 s
+    apart) and, never seen, is `unknown_outcome`. A failed package playlist leaves the date as it is (the done row's `errorCode` is
+    `step_failed`); a failed publishing playlist withholds it as before -- but its 200 counts as added even when the read-back never
+    shows it (`added_unverified`, a note, not a failure).
   - Web only (BL-182 stage 2): `GET/PUT /api/channels/[id]/publishing-settings` (the channel's publishing defaults, synced; PUT the
     changed fields), `GET/POST .../publishing-settings/conflicts` (choose a computer's value), `GET .../publishing/packages` (the
     release packages with state and problems), `GET .../publishing/packages/thumbnail?path=`, `GET/POST .../publishing/uploads` (the
@@ -1570,7 +1573,7 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
 
 - **Transport:** as the factory endpoint, with `Authorization: Bearer ytom_pr_...` (the same checks and codes; a channel or factory token is
   401 `AGENT_TOKEN_INVALID` here, and a producer token on `/api/mcp` and `/api/mcp/factory`). Re-verified on every tool call.
-- **Producer API version:** `1.28.0` (package playlists, owner TG 4858/4859, ADR 0051 amendment 2026-11-24, additive: `producer_video_playlists`
+- **Producer API version:** `1.33.0` (package playlists, owner TG 4858/4859, ADR 0051 amendment 2026-11-24; 1.29.0-1.32.0 are other branches' numbers; additive: `producer_video_playlists`
   below; release packages may name `playlists`); `1.27.0` (since BL-271, ADR 0075, additive: `producer_wait` below); `1.26.0` (since BL-269, ADR 0074, additive: `producer_video_captions_add` below, permission `CAPTIONS_WRITE`,
   `captionsTools` in `producer_get_capabilities`; calendar packages gain `captions`); `1.25.0` (BL-267, ADR 0073, additive: the weekly-plan tools below, permission `PLAN_MOVE`,
   `planTools` / `planMoveTools` in `producer_get_capabilities`); `1.24.0` (BL-265, ADR 0072, additive: `producer_video_metadata_update`, permission `METADATA_WRITE`
@@ -1636,15 +1639,17 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
   `factory_wait` limited to this computer's uploads (any channel, `uploadId` or the video code with `channelId`) and restart requests
   (Q6); any other target → `invalid_request` (logged). READ; in the call log; the Producer's only call not counted as MCP activity.
   Example: `producer_wait { "target": "upload", "id": "V61", "channelId": "UC…", "timeoutSeconds": 50 }`.
-- **Playlist read (owner TG 4858/4859; Producer 1.28.0):** `producer_video_playlists { channelId, videoId, refresh? }` (strict; READ) ->
+- **Playlist read (owner TG 4858/4859; Producer 1.33.0):** `producer_video_playlists { channelId, videoId, refresh? }` (strict; READ) ->
   `{ channelId, videoId, playlists: [{ id, title, privacyStatus }], checkedPlaylists, truncated (over 200 playlists), readAt, cached,
-  quotaUnits, uploads: [{ uploadId, video, status, finishedAt, settingsPlaylist, playlists: [{ playlistId, source, result, reason? }] }] }`
+  quotaUnits, note?, uploads: [{ uploadId, video, status, finishedAt, settingsPlaylist, playlists: [{ playlistId, source, result, reason?, at? }] }] }`
   plus `forChannelId`. Checks in order, each failing closed: the channel is connected here (`CHANNEL_NOT_ACTIVE`), the video is that
   channel's by local data -- its synced videos or this computer's uploads (`video_not_in_channel`), both before any YouTube call; then the
   identity check on the channel's sign-in (`WRITE_CHANNEL_MISMATCH` / `WRITE_CHANNEL_UNRESOLVED`). Live reads through the read gateway
-  (`src/lib/video-playlist-membership/`): cost 1 (identity) + 1 per 50 playlists listed + 1 per playlist checked (`playlistItems.list` by
-  video); the answer is kept 10 minutes per channel and video and the playlist list 10 minutes per channel (`cached: true`, 0 units;
-  `refresh: true` reads now). `uploads` is local (0 units). In the call log.
+  (`src/lib/video-playlist-membership/`): cost 1 (identity) + the playlist list when not kept (its channels.list 1 + 1 per 50 playlists)
+  + 1 per playlist checked (`playlistItems.list` by video); the answer is kept 10 minutes per channel and video and the playlist list 10
+  minutes per channel (`cached: true`, 0 units); a kept answer older than an upload playlist result of the video is not used; `refresh:
+  true` reads now, at most once a minute per channel and video (sooner: the kept answer with `note`). `uploads` is local (0 units). In
+  the call log.
 - **Captions tool (BL-269, ADR 0074, owner TG 4590/4592/4660; Producer 1.26.0):** `producer_video_captions_add` `{ channelId, video, dryRun?,
   overwrite?, expectedManifestSha256?, expectedTrackId? }` (strict: no file path) → the English captions the package's CURRENT manifest states,
   onto the video its upload record names, through `src/lib/video-captions/` (device gate, quota guard 550 / 800, backup -- an overwrite also

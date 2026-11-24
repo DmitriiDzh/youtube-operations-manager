@@ -153,11 +153,18 @@ Trigger: long WWE videos stayed out of their playlists because adding them was a
   settings playlist), one per pass: the identity check before it, the ownership read for a package playlist (`playlists.list` by id
   through the read gateway; unknown or another channel's: that playlist `failed`, never written), the membership read
   (`already_there`), Live writes immediately before `playlistItems.insert`, then a read-back (`playlistItems.list` by video; re-read up
-  to READ_BACK_RETRIES times, never inserted twice). Per-playlist results go to `steps.playlists` and the audit
+  to READ_BACK_RETRIES times, READ_BACK_RETRY_DELAY_MS apart). Never inserted twice: an insert whose answer was lost (a timeout, a
+  5xx, a dropped connection) is marked `sent_unknown` and from then on only read -- seen within the re-reads: `added`; never seen:
+  `failed (unknown_outcome)`. A read given up on settles that playlist only (`ownership_unreadable`, `membership_unreadable`,
+  `read_back_unreadable`) and the step goes on with the next one. Per-playlist results go to `steps.playlists` and the audit
   (`publishing.upload_playlist`).
+- **The settings playlist keeps today's behaviour** (after the independent review; AGENTS.md §D): a 200 from `playlistItems.insert`
+  counts as added. Its read-back runs; when it never shows the item (or cannot be read) the entry is `added_unverified` with a note --
+  not a failure, the date is not withheld and `checksPassed` is unchanged. A refused insert, or a lost answer never seen, still
+  fails it and withholds the date.
 - **The date rule changes for package playlists only.** §7 and §12 said any failed step, the playlist included, withholds the date.
-  That still holds for the settings playlist (`steps.playlist`, the owner's own choice and today's rule). A failed *package* playlist
-  does not withhold it: the ids are chosen by agents, and one bad id must not stop a release the owner scheduled. It is reported
-  instead -- `steps.playlists` with the reason, a note, `errorCode step_failed` on the done row, and the Producer's
-  `producer_video_playlists` read (Producer API 1.28.0).
+  That still holds for the settings playlist (`steps.playlist`). A failed *package* playlist does not withhold it: the ids are chosen
+  by agents, and one bad id must not stop a release the owner scheduled. It is reported instead -- `steps.playlists` with the
+  reason, a note, `errorCode step_failed` on the done row, and the Producer's `producer_video_playlists` read (Producer API 1.33.0).
+- The upload budget: the settings playlist item 52 units (check 1, insert 50, read-back 1; 51 before), each package playlist 53.
 - `docs/WRITE_AUTHORIZATIONS.md` paragraph «Package playlists at upload».

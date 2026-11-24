@@ -65,10 +65,10 @@
 // problem codes captions_missing / captions_invalid (details.reason); uploads gain steps.captions. Additive.
 // 1.27.0 (BL-271, owner TG 3617/3618, ADR 0075): producer_wait (READ) -- wait until one upload of this computer or a restart is final
 // (timeoutSeconds default 50, clamped 1-240); not counted as MCP activity; any other target is invalid_request. Additive.
-// 1.28.0 (package playlists, owner TG 4858/4859): producer_video_playlists (READ) -- { channelId, videoId, refresh? } -> the channel's
+// 1.33.0 (package playlists, owner TG 4858/4859): producer_video_playlists (READ) -- { channelId, videoId, refresh? } -> the channel's
 // playlists that hold the video (live through the read gateway, kept 10 minutes) and this computer's upload rows of it with each
 // playlist's outcome; release packages (yt-release-package/2) may name `playlists` (0..10 ids) the upload adds the video to. Additive.
-export const PRODUCER_API_VERSION = "1.28.0";
+export const PRODUCER_API_VERSION = "1.33.0";
 
 /** The channel agent's READ tools the Producer gets; each call names its channel and runs in that channel's agent scope. */
 export const PRODUCER_CHANNEL_TOOLS: Readonly<Record<string, { capability: string }>> = Object.freeze({

@@ -80,9 +80,10 @@ test("AC-PP-05: the upload row freezes the playlists; a change of them is a pack
 });
 
 test("AC-PP-06: the quota budget adds 53 units per package playlist (ownership 1, membership 1, insert 50, read-back 1)", () => {
-  // The pinned values stay: 95 without anything, 201 with the settings playlist and a deferred date.
+  // 95 without anything; 202 with the settings playlist (check 1 + insert 50 + read-back 1 = 52; 51 before its read-back) and a
+  // deferred date.
   assert.equal(estimateUploadUnits({ playlist: false, deferredPublishAt: false }), 95);
-  assert.equal(estimateUploadUnits({ playlist: true, deferredPublishAt: true }), 201);
-  assert.equal(estimateUploadUnits({ playlist: true, deferredPublishAt: true, packagePlaylists: 2 }), 201 + 106);
+  assert.equal(estimateUploadUnits({ playlist: true, deferredPublishAt: true }), 202);
+  assert.equal(estimateUploadUnits({ playlist: true, deferredPublishAt: true, packagePlaylists: 2 }), 202 + 106);
   assert.equal(estimateUploadUnits({ playlist: false, deferredPublishAt: false, packagePlaylists: 0 }), 95);
 });

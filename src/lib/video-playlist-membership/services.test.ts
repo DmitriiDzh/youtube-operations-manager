@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DomainError } from "@/lib/shared-domain";
-import { MEMBERSHIP_CACHE_TTL_MS, createVideoPlaylistMembership, type VideoPlaylistMembershipDeps } from "./services";
+import { MEMBERSHIP_CACHE_TTL_MS, MEMBERSHIP_MIN_REFRESH_MS, createVideoPlaylistMembership, type VideoPlaylistMembershipDeps } from "./services";
 
 // Package playlists (owner, Telegram 4858/4859): the Producer's read of a video's playlists. Requirements, written before the code:
 // - scoping fails closed, in order, before any credential or YouTube call: a channel not connected here -> CHANNEL_NOT_ACTIVE; a
@@ -61,8 +61,9 @@ test("AC-PP-30: the channel's playlists that hold the video, with the units spen
   assert.equal(result.checkedPlaylists, 3);
   assert.equal(result.truncated, false);
   assert.equal(result.cached, false);
-  // identity 1 + one page of the list 1 + three membership reads 3.
-  assert.equal(result.quotaUnits, 5);
+  // identity 1 + the list (its own channels.list 1 + one page 1) + three membership reads 3. (The first version said 5: it left out
+  // the list's channels.list call -- the independent review found the unit the read really spends.)
+  assert.equal(result.quotaUnits, 6);
   assert.equal(result.readAt, NOW.toISOString());
   assert.deepEqual(result.uploads.map((u) => [u.uploadId, u.settingsPlaylist, u.playlists[0]?.reason]), [["u1", "added", "other_channel"]]);
   assert.ok(h.calls.indexOf("identity UC_wwe") < h.calls.indexOf("list"), "the identity check before any read");
@@ -104,10 +105,30 @@ test("AC-PP-34: the answer is kept 10 minutes (0 units, the upload records still
   assert.equal(other.quotaUnits, 4);
   assert.deepEqual(other.playlists.map((p) => p.id), ["PL_c"]);
   h.calls.length = 0;
+  // A refresh within a minute of the last live read returns the kept answer, with a note, and calls nothing.
+  const tooSoon = await h.reader.videoPlaylists({ channelId: "UC_wwe", videoId: "vid1", refresh: true });
+  assert.equal(tooSoon.cached, true);
+  assert.equal(tooSoon.quotaUnits, 0);
+  assert.match(tooSoon.note ?? "", /refresh ignored/);
+  assert.deepEqual(h.calls, []);
+  h.clock.at = new Date(NOW.getTime() + MEMBERSHIP_MIN_REFRESH_MS);
   const refreshed = await h.reader.videoPlaylists({ channelId: "UC_wwe", videoId: "vid1", refresh: true });
   assert.equal(refreshed.cached, false);
-  assert.equal(refreshed.quotaUnits, 5);
-  h.clock.at = new Date(NOW.getTime() + MEMBERSHIP_CACHE_TTL_MS);
+  assert.equal(refreshed.quotaUnits, 6);
+  h.clock.at = new Date(NOW.getTime() + MEMBERSHIP_MIN_REFRESH_MS + MEMBERSHIP_CACHE_TTL_MS);
   const expired = await h.reader.videoPlaylists({ channelId: "UC_wwe", videoId: "vid1" });
   assert.equal(expired.cached, false);
+});
+
+test("AC-PP-36: a kept answer older than an upload's playlist result of the video is not used (read live again)", async () => {
+  let resultAt = new Date(NOW.getTime() - 60_000).toISOString();
+  const h = harness({
+    uploadRecords: async () => [{ uploadId: "u1", video: "V70", status: "finishing", finishedAt: null, settingsPlaylist: null, playlists: [{ playlistId: "PL_b", source: "package", result: "added", at: resultAt }] }],
+  });
+  await h.reader.videoPlaylists({ channelId: "UC_wwe", videoId: "vid1" });
+  h.clock.at = new Date(NOW.getTime() + 120_000);
+  assert.equal((await h.reader.videoPlaylists({ channelId: "UC_wwe", videoId: "vid1" })).cached, true, "no newer upload result: kept");
+  resultAt = new Date(NOW.getTime() + 60_000).toISOString(); // the upload settled a playlist after that read
+  const after = await h.reader.videoPlaylists({ channelId: "UC_wwe", videoId: "vid1" });
+  assert.equal(after.cached, false);
 });
