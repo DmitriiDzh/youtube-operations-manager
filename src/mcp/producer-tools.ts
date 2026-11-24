@@ -65,7 +65,11 @@
 // problem codes captions_missing / captions_invalid (details.reason); uploads gain steps.captions. Additive.
 // 1.27.0 (BL-271, owner TG 3617/3618, ADR 0075): producer_wait (READ) -- wait until one upload of this computer or a restart is final
 // (timeoutSeconds default 50, clamped 1-240); not counted as MCP activity; any other target is invalid_request. Additive.
-export const PRODUCER_API_VERSION = "1.27.0";
+// 1.28.0 (BL-272, owner TG 2547 via the Producer, ADR 0076): the master still image review tools producer_image_review_submit /
+// _list / _get / _withdraw (submit and withdraw DRAFT; the owner approves, approves with a note or returns, in the Web UI);
+// producer_get_capabilities lists imageReviewTools; producer_clip_review_submit takes an optional approvedImageId (an image of the
+// same channel the owner approved) and the clip then carries it in _get / _list. Additive.
+export const PRODUCER_API_VERSION = "1.28.0";
 
 /** The channel agent's READ tools the Producer gets; each call names its channel and runs in that channel's agent scope. */
 export const PRODUCER_CHANNEL_TOOLS: Readonly<Record<string, { capability: string }>> = Object.freeze({
@@ -142,6 +146,10 @@ export const PRODUCER_ONLY_TOOLS = [
   "producer_clip_review_list",
   "producer_clip_review_get",
   "producer_clip_review_withdraw",
+  "producer_image_review_submit",
+  "producer_image_review_list",
+  "producer_image_review_get",
+  "producer_image_review_withdraw",
   "producer_video_thumbnail_replace",
   "producer_video_metadata_update",
   "producer_video_captions_add",
@@ -193,12 +201,28 @@ export const PRODUCER_CAPTIONS_TOOLS = ["producer_video_captions_add"] as const;
 export const PRODUCER_CLIP_REVIEW_TOOLS = ["producer_clip_review_submit", "producer_clip_review_list", "producer_clip_review_get", "producer_clip_review_withdraw"] as const;
 
 /**
+ * BL-272 (ADR 0076): the Producer's master still image review tools -- exactly these four, the test pins the list. Submit and withdraw
+ * store a request or take it back; only the owner approves, approves with a note or returns an image, in the Web UI.
+ */
+export const PRODUCER_IMAGE_REVIEW_TOOLS = ["producer_image_review_submit", "producer_image_review_list", "producer_image_review_get", "producer_image_review_withdraw"] as const;
+
+/**
  * BL-163 (FO-REQ-0014 §C, ADR 0034 Amendment 1): the Producer's DRAFT tools -- exactly these two, the test pins the list. They store
  * a proposal, or mark a decided one read; neither changes the watchlist or the hypotheses. Approving, rejecting and applying are
  * Web-UI-only (`agent-proposal-approval-inventory.test.ts`). BL-241 adds the clip review submit and withdraw: a request for the owner,
  * taken back while still pending; only the owner decides it (`clip-reviews/boundaries.test.ts`).
  */
-export const PRODUCER_DRAFT_TOOLS = ["producer_propose", "producer_mark_proposals_done", "create_experiment_proposal", "producer_clip_review_submit", "producer_clip_review_withdraw", "producer_week_template_propose"] as const;
+export const PRODUCER_DRAFT_TOOLS = [
+  "producer_propose",
+  "producer_mark_proposals_done",
+  "create_experiment_proposal",
+  "producer_clip_review_submit",
+  "producer_clip_review_withdraw",
+  "producer_week_template_propose",
+  // BL-272 (ADR 0076): a master still image for the owner's review, taken back while pending; only the owner decides it.
+  "producer_image_review_submit",
+  "producer_image_review_withdraw",
+] as const;
 
 /** Every tool the Producer endpoint lists, in order. */
 export const PRODUCER_TOOL_NAMES: readonly string[] = Object.freeze([

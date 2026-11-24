@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createPathValidationFsAdapter } from "@/lib/local-path-validation/adapters/fs";
@@ -55,6 +55,7 @@ function createServices(appDataDir: string, connected = ["UC_A", "UC_B"]) {
     store: memory.store,
     listConnectedChannelIds: async () => connected,
     validatePath: (candidate) => validateWorkspacePath(candidate, { appDataDir, ...createPathValidationFsAdapter() }),
+    realpath: (candidate) => realpath(candidate),
   });
   return { services, memory };
 }
@@ -113,19 +114,78 @@ test("AC-P11-03: a channel that is not connected is rejected before any validati
     assert.equal(memory.setCallCount(), 0);
   }));
 
+// BL-272 (review): two channels may no longer share one folder (CHANNEL_WORKSPACE_NESTED below), so UC_B has a folder of its own;
+// what the test checks -- clearing touches only that channel's value -- is unchanged.
 test("AC-P11-04/05: clearing with null or blank removes only that channel's value", () =>
-  withDirs(async ({ workspace, appData }) => {
+  withDirs(async ({ root, workspace, appData }) => {
     const { services } = createServices(appData);
+    const workspaceB = path.join(root, "workspace-b");
+    await mkdir(workspaceB);
     await services.setWorkspace({ channelId: "UC_A", path: workspace });
-    await services.setWorkspace({ channelId: "UC_B", path: workspace });
+    await services.setWorkspace({ channelId: "UC_B", path: workspaceB });
 
     assert.deepEqual(await services.setWorkspace({ channelId: "UC_A", path: null }), { configured: false });
     assert.deepEqual(await services.getWorkspace({ channelId: "UC_A" }), { configured: false });
-    assert.deepEqual(await services.getWorkspace({ channelId: "UC_B" }), { configured: true, path: workspace });
+    assert.deepEqual(await services.getWorkspace({ channelId: "UC_B" }), { configured: true, path: workspaceB });
 
     await services.setWorkspace({ channelId: "UC_A", path: workspace });
     assert.deepEqual(await services.setWorkspace({ channelId: "UC_A", path: "   " }), { configured: false });
     assert.deepEqual(await services.getWorkspace({ channelId: "UC_A" }), { configured: false });
+  }));
+
+// BL-272 (review, ADR 0076 §3): a channel's folder is a folder of its own -- a path inside another connected channel's folder, around
+// it, or the same folder (also through a symlink) is refused and nothing is stored; a sibling whose name only starts the same is fine,
+// and so is re-setting a channel's own folder. A disconnected channel's stale row never blocks (it cannot be cleared in Settings).
+test("BL-272: a workspace inside, around or equal to another connected channel's workspace is refused; siblings pass", () =>
+  withDirs(async ({ root: tmp, appData }) => {
+    const { services, memory } = createServices(appData, ["UC_A", "UC_B", "UC_C"]);
+    // The channels' parent folder (the temp root itself holds the app-data folder, refused for its own reason).
+    const root = path.join(tmp, "YouTube");
+    const tropico = path.join(root, "01 Tropico");
+    const inner = path.join(tropico, "Scenes");
+    const sibling = path.join(root, "01 Tropico Jazz");
+    const link = path.join(root, "tropico-link");
+    await mkdir(inner, { recursive: true });
+    await mkdir(sibling);
+    await symlink(tropico, link);
+    await services.setWorkspace({ channelId: "UC_A", path: tropico });
+
+    for (const candidate of [inner, tropico, link, root]) {
+      await assert.rejects(services.setWorkspace({ channelId: "UC_B", path: candidate }), (error: unknown) => isDomainError(error) && error.code === "CHANNEL_WORKSPACE_NESTED" && (error.details as { otherChannelId?: string }).otherChannelId === "UC_A", candidate);
+    }
+    assert.deepEqual(await services.getWorkspace({ channelId: "UC_B" }), { configured: false });
+
+    // The other direction: UC_B's folder first, then UC_C around it.
+    assert.deepEqual(await services.setWorkspace({ channelId: "UC_B", path: sibling }), { configured: true, path: sibling });
+    await assert.rejects(services.setWorkspace({ channelId: "UC_C", path: root }), (error: unknown) => isDomainError(error) && error.code === "CHANNEL_WORKSPACE_NESTED");
+    assert.deepEqual(await services.getWorkspace({ channelId: "UC_C" }), { configured: false });
+
+    // A channel may set its own folder again, or a folder inside its own.
+    assert.deepEqual(await services.setWorkspace({ channelId: "UC_A", path: tropico }), { configured: true, path: tropico });
+    assert.deepEqual(await services.setWorkspace({ channelId: "UC_A", path: inner }), { configured: true, path: inner });
+
+    // A disconnected channel's row and another device's row are not compared.
+    await memory.store.set(DEVICE, "UC_GONE", root);
+    await memory.store.set("device-other", "UC_C", root);
+    const elsewhere = path.join(root, "03 Elsewhere");
+    await mkdir(elsewhere);
+    assert.deepEqual(await services.setWorkspace({ channelId: "UC_C", path: elsewhere }), { configured: true, path: elsewhere });
+  }));
+
+test("BL-272: another channel's folder that cannot be resolved now (disk not mounted) is compared as written", () =>
+  withDirs(async ({ root: tmp, appData }) => {
+    const { services, memory } = createServices(appData);
+    const root = path.join(tmp, "YouTube");
+    await mkdir(root);
+    const real = await realpath(root);
+    await memory.store.set(DEVICE, "UC_A", path.join(real, "unmounted", "01 Tropico"));
+    await mkdir(path.join(root, "unmounted", "01 Tropico", "inner"), { recursive: true });
+    // Now it exists again and UC_B tries a folder inside it: refused (realpath of both sides).
+    await assert.rejects(services.setWorkspace({ channelId: "UC_B", path: path.join(root, "unmounted", "01 Tropico", "inner") }), (error: unknown) => isDomainError(error) && error.code === "CHANNEL_WORKSPACE_NESTED");
+    await memory.store.set(DEVICE, "UC_A", path.join(real, "gone", "01 Tropico"));
+    // Its folder is gone: a candidate around where it was is still refused (path.resolve comparison), a sibling passes.
+    await assert.rejects(services.setWorkspace({ channelId: "UC_B", path: root }), (error: unknown) => isDomainError(error) && error.code === "CHANNEL_WORKSPACE_NESTED");
+    assert.deepEqual(await services.setWorkspace({ channelId: "UC_B", path: path.join(root, "unmounted") }), { configured: true, path: path.join(root, "unmounted") });
   }));
 
 test("AC-P11-09: the read never touches the workspace path -- a deleted directory still reads back as stored", () =>
@@ -174,6 +234,7 @@ test("reads never create the device identity; only the operator write does", () 
       store: memory.store,
       listConnectedChannelIds: async () => ["UC_A"],
       validatePath: (candidate) => validateWorkspacePath(candidate, { appDataDir: appData, ...createPathValidationFsAdapter() }),
+      realpath: (candidate) => realpath(candidate),
     });
 
     assert.deepEqual(await services.getWorkspace({ channelId: "UC_A" }), { configured: false });

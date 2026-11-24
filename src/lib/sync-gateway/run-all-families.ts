@@ -22,6 +22,7 @@ import { createElevenlabsSpendSyncRunnerForProduction } from "./elevenlabs-spend
 import { createElevenlabsSettingsSyncRunnerForProduction } from "./elevenlabs-settings-sync";
 import { createClipReviewsSyncRunnerForProduction } from "./clip-reviews-sync";
 import { createPackageReviewsSyncRunnerForProduction } from "./package-reviews-sync";
+import { createImageReviewsSyncRunnerForProduction } from "./image-reviews-sync";
 
 /** Runs one family's cycle and unconditionally records its outcome to `sync_family_status`
  * (2026-09-23, Merge-tab redesign) -- regardless of whether it resolved or threw, so the
@@ -52,7 +53,7 @@ async function runAndRecord<T>(
  * process-wide guard in `runAllSyncFamiliesOnce` below.
  */
 async function runAllOnce() {
-  const [changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards, mediaJobs, geminiSpend, geminiSettings, videoReservations, videoCosts, liveAnalytics, publishingPlans, elevenlabsSpend, elevenlabsSettings, clipReviews, packageReviews] = await Promise.all([
+  const [changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards, mediaJobs, geminiSpend, geminiSettings, videoReservations, videoCosts, liveAnalytics, publishingPlans, elevenlabsSpend, elevenlabsSettings, clipReviews, packageReviews, imageReviews] = await Promise.all([
     runAndRecord("change_drafts", () => createChangeDraftsSyncCoreForProduction().runSyncCycle()),
     runAndRecord("editorial_profile", () => createEditorialProfileSyncRunnerForProduction().runSyncCycle()),
     runAndRecord("ai_connections", () => createAiConnectionsCatalogSyncRunnerForProduction().runSyncCycle()),
@@ -96,8 +97,10 @@ async function runAllOnce() {
     runAndRecord("clip_reviews", () => createClipReviewsSyncRunnerForProduction().runSyncCycle()),
     // BL-257 (ADR 0070): each channel's owner review of the final release packages (the switch, the owner's decisions), the same everywhere.
     runAndRecord("package_reviews", () => createPackageReviewsSyncRunnerForProduction().runSyncCycle()),
+    // BL-272 (ADR 0076): each channel's master still images for review (the Producer's submissions, the owner's decisions), the same everywhere.
+    runAndRecord("image_reviews", () => createImageReviewsSyncRunnerForProduction().runSyncCycle()),
   ]);
-  return { changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards, mediaJobs, geminiSpend, geminiSettings, videoReservations, videoCosts, liveAnalytics, publishingPlans, elevenlabsSpend, elevenlabsSettings, clipReviews, packageReviews };
+  return { changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens, liveStreams, channelLanguageSettings, channelPublishingSettings, publishingUploads, storyboards, mediaJobs, geminiSpend, geminiSettings, videoReservations, videoCosts, liveAnalytics, publishingPlans, elevenlabsSpend, elevenlabsSettings, clipReviews, packageReviews, imageReviews };
 }
 
 type AllFamiliesResult = Awaited<ReturnType<typeof runAllOnce>>;

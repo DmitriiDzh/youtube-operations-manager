@@ -193,6 +193,10 @@ export { createClipReviewsSyncRunnerForProduction } from "./clip-reviews-sync";
 export { createPackageReviewsCoreForProduction, createPackageReviewsCore, emptyDocument as emptyPackageReviewsDocument } from "./package-reviews";
 export type { PackageReviewDecision, PackageReviewDecisionKind, PackageReviewRequired, PackageReviewsCore, PackageReviewsDocument, PackageReviewsSnapshot } from "./package-reviews";
 export { createPackageReviewsSyncRunnerForProduction } from "./package-reviews-sync";
+// BL-272 (ADR 0076): a channel's master still images for review (the Producer's submissions, the owner's three answers), one document per channel.
+export { createImageReviewsCoreForProduction, createImageReviewsCore, emptyDocument as emptyImageReviewsDocument, IMAGE_REVIEW_APPROVED_KINDS, IMAGE_REVIEW_OWNER_KINDS } from "./image-reviews";
+export type { ImageReviewDecision, ImageReviewDecisionKind, ImageReviewImage, ImageReviewsCore, ImageReviewsDocument, ImageReviewsSnapshot } from "./image-reviews";
+export { createImageReviewsSyncRunnerForProduction } from "./image-reviews-sync";
 
 // BL-194 (ADR 0040): the video numbers each computer reserved, as a per-device report (the list and its conflicts: video-projects).
 export {
