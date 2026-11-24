@@ -36,9 +36,16 @@ function snippetDifferences(video: FreshLiveVideo, reference: FreshLiveVideo): s
 }
 
 /** Which of the fields step's values the snippet does not show (only the fields it sent). */
+/** The default-language text a caller may expect (ADR 0072 amendment 1): checked only when named, never part of the between-reads set. */
+const youtubeText = (value: unknown) => (typeof value === "string" ? value.replace(/\r\n?/g, "\n").trimEnd() : null);
+const TEXT_FIELDS = [
+  { field: "title", label: "title not as expected", same: (a: unknown, b: unknown) => (a ?? null) === (b ?? null) },
+  { field: "description", label: "description not as expected", same: (a: unknown, b: unknown) => youtubeText(a) === youtubeText(b) },
+] as const;
+
 function expectedProblems(video: FreshLiveVideo, expected: ExpectedSnippet): string[] {
   const snippet = video.snippet as Snippet;
-  return SNIPPET_FIELDS.filter(({ field, same }) => field in expected && !same(snippet[field], (expected as Snippet)[field])).map(({ label }) => label);
+  return [...SNIPPET_FIELDS, ...TEXT_FIELDS].filter(({ field, same }) => field in expected && !same(snippet[field], (expected as Snippet)[field])).map(({ label }) => label);
 }
 
 const localizationsJson = (localizations: Record<string, LiveLocalizationEntry>) =>

@@ -571,7 +571,9 @@ flags the error as not sent; the mark keeps the retry count, so a failing insert
   `afterLocalizations`, else the done row's frozen `localizations` when `steps.localizations` is `verified`, or empty and complete when
   `none`; else unknown). Any conflict refuses. `apply` calls `createVideoLocalizationsWriterCore("package_localizations")` with only the
   languages to write, `expectedCurrent` (the entries this check read; the writer re-checks them on its fresh read and recheck) and
-  `auditContext`, then reads the snapshot again for privacy / publishAt. One write per call (the writer echoes the snippet from its read).
+  `auditContext`, then reads the snapshot again for privacy / publishAt. One write per call; against the writer's stale snippet echo it
+  passes `expected` texts (`expectedSnippetOf`: the checked texts, or a `package_metadata` fix of the last 15 minutes) and both fixes
+  take `withPackageVideoLock` (package-metadata.ts). Baseline parsing is `localizationBaselineOf` (pure, over `auditEvents`).
 - **video-details.** `adapters/youtube-api.ts` takes injectable I/O; order client -> read -> refusal checks -> Live writes -> write;
   `snippetPartOf` (full snippet read-merge-write); snapshot `channelId`; `applyFieldsUpdate` input `verifyUnchanged` / `auditContext`;
   `read-back.ts` `youtubeDescriptionText` in `sameFieldValue`.

@@ -14,8 +14,13 @@ export type FreshLiveVideo = FreshVideoContext & {
   snippet: FreshVideoContext["snippet"] & { defaultAudioLanguage?: string | null; tags?: string[] | null; categoryId?: string | null };
 };
 
-/** The fields step's snippet values (the same run wrote them seconds earlier): the fresh read must already show them. */
-export type ExpectedSnippet = { tags?: unknown; categoryId?: unknown; defaultLanguage?: unknown; defaultAudioLanguage?: unknown };
+/**
+ * The fields step's snippet values (the same run wrote them seconds earlier): the fresh read must already show them. `title` /
+ * `description` (ADR 0072 amendment 1, review): the default-language text a package fix just wrote -- the snippet is sent back from
+ * the fresh read, so a lagging replica's older text would otherwise be echoed back over it (description compared with CR made LF and
+ * trailing line breaks dropped, as YouTube keeps it).
+ */
+export type ExpectedSnippet = { title?: unknown; description?: unknown; tags?: unknown; categoryId?: unknown; defaultLanguage?: unknown; defaultAudioLanguage?: unknown };
 
 export type LiveLocalizationsApplyInput = {
   credentialRef: unknown;

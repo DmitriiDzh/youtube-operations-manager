@@ -1346,31 +1346,22 @@ export function createPackageLocalizationsCore() {
   const resolved = (userId: string, scopes: readonly string[]) => resolveGoogleCredentials({ credentialRef: { userId }, requiredScopes: scopes });
   return createPackageLocalizations({
     ...uploadedPackageDeps(createPackageScanCore(), createVideoDetailsCore()),
-    async readLocalizations({ credentialRef, videoId }) {
-      const youtube = await createYoutubeClient(authorizedOAuth(await resolved(credentialRef.userId, [YOUTUBE_READ_SCOPE])));
-      const context = await getVideoMetadataContext(youtube, videoId);
-      return context ? { defaultLanguage: context.snippet.defaultLanguage ?? null, localizations: context.localizations } : null;
-    },
-    async lastApplied(channelId, videoId) {
-      const events = (await listVideoEditAuditEventsByVideo(videoId)).filter((e) => e.channelId === channelId && e.eventType === "VERIFICATION");
-      for (const event of events.reverse()) {
-        const detail = event.detail as { event?: unknown; verified?: unknown; afterLocalizations?: { entries?: unknown; complete?: unknown } };
-        // Only a fix that read back verified leaves a baseline; a malformed one is unknown (every difference a conflict).
-        if (detail?.event !== "package_localizations.applied" || detail.verified !== true) continue;
-        const after = detail.afterLocalizations;
-        if (!after || typeof after.entries !== "object" || after.entries === null || typeof after.complete !== "boolean") return null;
-        const entries: Record<string, { title: string; description: string }> = {};
-        for (const [language, value] of Object.entries(after.entries as Record<string, unknown>)) {
-          const v = value as { title?: unknown; description?: unknown } | null;
-          if (!v || typeof v.title !== "string" || typeof v.description !== "string") return null;
-          entries[language] = { title: v.title, description: v.description };
-        }
-        return { entries, complete: after.complete };
+    async readLocalizations({ credentialRef, channelId, videoId }) {
+      try {
+        const youtube = await createYoutubeClient(authorizedOAuth(await resolved(credentialRef.userId, [YOUTUBE_READ_SCOPE])));
+        const context = await getVideoMetadataContext(youtube, videoId);
+        return context ? { defaultLanguage: context.snippet.defaultLanguage ?? null, localizations: context.localizations } : null;
+      } catch (error) {
+        // A domain refusal (the reads switch off, the account) as it is; any raw client error as update_failed with its message.
+        if (isDomainError(error)) throw error;
+        throw new DomainError({ code: "update_failed", message: `The video's translations could not be read: ${error instanceof Error ? error.message : String(error)}`, details: { channelId, videoId } });
       }
-      return null;
     },
-    writeLocalizations: ({ credentialRef, channelId, videoId, localizations, expectedCurrent, auditContext }) =>
-      createVideoLocalizationsWriterCore("package_localizations").apply({ credentialRef, channelId, videoId, localizations, expectedCurrent, auditContext }),
+    // The parsing is the service's own (`localizationBaselineOf`, `expectedSnippetOf`); this is only the read.
+    auditEvents: async (channelId, videoId) =>
+      (await listVideoEditAuditEventsByVideo(videoId)).filter((e) => e.channelId === channelId).map((e) => ({ channelId: e.channelId, eventType: e.eventType, detail: e.detail, occurredAt: e.occurredAt })),
+    writeLocalizations: ({ credentialRef, channelId, videoId, localizations, expectedCurrent, expected, auditContext }) =>
+      createVideoLocalizationsWriterCore("package_localizations").apply({ credentialRef, channelId, videoId, localizations, expectedCurrent, expected, auditContext }),
     audit: ({ channelId, videoId, eventType, detail }) => insertVideoEditAuditEvent({ channelId, videoId, eventType, detail }),
   });
 }

@@ -412,3 +412,14 @@ test("expectedCurrent as read and auditContext: written as usual, every audit ro
   assert.deepEqual(h.audit.map((a) => a.eventType), ["BACKUP", "RESULT", "VERIFICATION"]);
   assert.ok(h.audit.every((a) => a.detail.actor === "producer" && a.detail.source === "live_localizations"), "the context never replaces the writer's own source");
 });
+
+// ADR 0072 amendment 1, review: an expected default-language title/description (a texts fix just wrote it) is waited for like the
+// fields step's values and checked on the read-back; a description is compared as YouTube keeps it (LF, no trailing line breaks).
+test("expected title/description: never shown -> nothing sent; shown (description with CRLF and a trailing break) -> written and verified", async () => {
+  const h = harness();
+  await assert.rejects(h.apply(SET, { title: "T2" }));
+  assert.equal(h.updates.length, 0);
+  const ok = harness();
+  assert.deepEqual(await ok.apply(SET, { title: "T", description: "D\r\n" }), { verified: true });
+  assert.equal(ok.updates[0].payload.snippet.title, "T");
+});

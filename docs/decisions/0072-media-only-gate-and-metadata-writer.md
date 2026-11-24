@@ -119,17 +119,27 @@ translations only; `docs/WRITE_AUTHORIZATIONS.md` «Package metadata after uploa
    `auditContext` (actor, package). The service reads privacy and `publishAt` before and after (the writer reads only snippet and
    localizations); a change, or the writer's `verified: false`, is `update_failed`.
 3. **Three-way check per language and field** (YouTube now Y / what the upload sent U / the package P; absent is a value): Y = P
-   same; U known and Y = U write; otherwise conflict. U comes from the latest verified `package_localizations.applied` audit here
-   (`afterLocalizations`), else this computer's finished upload row of the video when its translations step is `verified` (its frozen
-   set, a language not in it was not sent) or `none` (nothing sent); otherwise unknown. The upload record file (`V<n>_youtube.json`)
-   does not hold the translations, so an upload from the other computer is unknown: every difference is a conflict. **Any conflict
-   refuses the whole call, for the owner as well** (`package_localizations_conflict`, `details.conflicts`; no per-language override; the
-   screen shows which language and field).
-4. **One YouTube write per call.** `producer_video_metadata_update { localizations: true }` and the owner's route `{ localizations:
-   true }` fix the translations instead of title/description/tags. Doing both in one call would need two writes, and the
-   translations writer sends the snippet back from its own read: a stale replica could echo the old title just written. The flag
-   (not a sibling tool) keeps one tool, one permission (`METADATA_WRITE`) and one session surface.
+   same; U known and Y = U write; otherwise conflict. U comes from this computer's audit of the video, newest first
+   (`localizationBaselineOf`): the newest `package_localizations.applied` whose translations read back verified (`writerVerified`, also
+   when a status field changed afterwards) gives `afterLocalizations` -- malformed: unknown; a newer attempt that did not read back
+   verified (an applied row with the writer unverified, or the writer's RESULT row with no applied row after it) makes the languages it
+   tried unknown. Otherwise this computer's finished upload row of the video when its translations step is `verified` (its frozen set, a
+   language not in it was not sent) or `none` (nothing sent); otherwise unknown. The upload record file (`V<n>_youtube.json`) does not
+   hold the translations, so an upload from the other computer is unknown: every difference is a conflict. **Any conflict refuses the
+   whole call, for the owner as well** (`package_localizations_conflict`, `details.conflicts`; no per-language override; the screen
+   shows which language and field).
+4. **One YouTube write per call, and no stale snippet echo.** `producer_video_metadata_update { localizations: true }` and the owner's
+   route `{ localizations: true }` fix the translations instead of title/description/tags (the flag, not a sibling tool, keeps one tool,
+   one permission `METADATA_WRITE` and one session surface). One write per call alone does not stop a stale echo (review of 1c515813):
+   the translations writer sends the snippet back from its own read, so a lagging replica could echo an older title over a texts fix
+   just made, and its read-back -- against that same read -- would pass. So the call passes `expected` title / description / tags
+   (`ExpectedSnippet` gains `title` / `description`): YouTube's texts as this check read them, overridden by what the latest
+   `package_metadata` fix here sent when it is at most 15 minutes old. The writer waits for them (its bounded re-read loop) or refuses
+   with nothing sent, and its read-back checks them. Both package fixes of one video also run one at a time on this computer
+   (`withPackageVideoLock`, in-process). A texts fix made on the other computer within seconds is not covered by the lock; the
+   expected texts then come only from this check's read.
 5. **Gates as §5:** the device gate, `snippet.channelId`, refused while this computer's upload of the video has not finished its
    read-back, never automatic; public videos as §5 (allowed on a person's click or the Producer's deliberate call). Dry run: every
-   read, no backup, no write. Quota about 56 units.
+   read, no backup, no write. Quota about 56 units. A scheduled video that publishes during the call (private with a due `publishAt` ->
+   public) is not a status change made by the write.
 6. **API:** Producer 1.28.0 (additive). Factory and Agent unchanged.

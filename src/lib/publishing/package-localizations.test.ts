@@ -3,7 +3,16 @@ import test from "node:test";
 import { DomainError, isDomainError } from "@/lib/shared-domain";
 import { createLiveLocalizationsWriter } from "@/lib/shared-video-localizations/services";
 import type { VideoDetailsSnapshot } from "@/lib/video-details/contracts";
-import { createPackageLocalizations, PACKAGE_LOCALIZATIONS_QUOTA_UNITS, type LocalizationBaseline, type PackageLocalizationsDeps } from "./package-localizations";
+import {
+  createPackageLocalizations,
+  expectedSnippetOf,
+  localizationBaselineOf,
+  PACKAGE_LOCALIZATIONS_QUOTA_UNITS,
+  type AuditEventLike,
+  type LocalizationBaseline,
+  type PackageLocalizationsDeps,
+} from "./package-localizations";
+import { withPackageVideoLock } from "./package-metadata";
 import type { PackageMetadataActor, PackageMetadataUploadRow } from "./package-metadata";
 import type { ReleasePackage } from "./packages";
 
@@ -93,19 +102,29 @@ function harness(options: {
   changeBeforeWriterRead?: { read: number; change: (video: Video) => void };
   /** A change to the status right after the update (the status read-back). */
   afterUpdate?: (video: Video) => void;
+  /** Audit rows already on this computer (oldest first), before the harness's own. */
+  events?: AuditEventLike[];
+  /** The first n writer reads (and, with `snapshotLags`, the snapshot) come from a lagging replica showing this older snippet text. */
+  lagging?: { reads: number; title: string; description?: string; snapshotLags?: boolean };
 } = {}) {
   const video = options.video ?? baseVideo();
   const calls: string[] = [];
   const updates: Array<{ snippet: Record<string, unknown>; localizations: Record<string, Entry> }> = [];
-  const audits: Array<{ eventType: string; detail: Record<string, unknown> }> = [];
+  const audits: Array<{ channelId: string; eventType: string; detail: Record<string, unknown>; occurredAt: Date }> = (options.events ?? []).map((e) => ({
+    channelId: e.channelId,
+    eventType: e.eventType,
+    detail: e.detail as Record<string, unknown>,
+    occurredAt: e.occurredAt ?? new Date(),
+  }));
+  let lagReads = options.lagging?.reads ?? 0;
   let writerReads = 0;
 
   const snapshotOf = (): VideoDetailsSnapshot => ({
     videoId: VIDEO_ID,
     etag: `etag-${video.version}`,
     channelId: video.channelId,
-    title: video.snippet.title,
-    description: video.snippet.description,
+    title: options.lagging?.snapshotLags ? options.lagging.title : video.snippet.title,
+    description: options.lagging?.snapshotLags ? (options.lagging.description ?? video.snippet.description) : video.snippet.description,
     tags: [...video.snippet.tags],
     categoryId: video.snippet.categoryId,
     defaultLanguage: video.snippet.defaultLanguage,
@@ -137,7 +156,13 @@ function harness(options: {
           options.changeBeforeWriterRead.change(video);
           video.version += 1;
         }
-        return structuredClone({ snippet: video.snippet, localizations: video.localizations });
+        const read = structuredClone({ snippet: video.snippet, localizations: video.localizations });
+        if (lagReads > 0 && options.lagging) {
+          lagReads -= 1;
+          read.snippet.title = options.lagging.title;
+          if (options.lagging.description !== undefined) read.snippet.description = options.lagging.description;
+        }
+        return read;
       },
       assertLiveWritesAuthorized: async () => {
         calls.push("liveWrites");
@@ -160,11 +185,11 @@ function harness(options: {
         return { path: "/backups/v25.json", capturedAt: "2026-11-24T10:00:00Z" };
       },
     },
-    audit: { record: async ({ eventType, detail }) => void audits.push({ eventType, detail: detail as Record<string, unknown> }) },
+    audit: { record: async ({ channelId, eventType, detail }) => void audits.push({ channelId, eventType, detail: detail as Record<string, unknown>, occurredAt: new Date() }) },
     sleep: async () => undefined,
     newId: () => "op1",
     source: "package_localizations",
-    readBack: { attempts: 1, delayMs: 0 },
+    readBack: { attempts: 3, delayMs: 0 },
   });
 
   const deps: PackageLocalizationsDeps = {
@@ -183,11 +208,11 @@ function harness(options: {
       calls.push("readLocalizations");
       return { defaultLanguage: video.snippet.defaultLanguage, localizations: structuredClone(video.localizations) };
     },
-    // As production: the latest verified package_localizations.applied audit's afterLocalizations.
-    lastApplied: async () =>
-      (audits.filter((a) => a.detail.event === "package_localizations.applied" && a.detail.verified === true).at(-1)?.detail.afterLocalizations as LocalizationBaseline | undefined) ?? null,
-    writeLocalizations: (args) => writer.apply({ credentialRef: args.credentialRef, channelId: args.channelId, videoId: args.videoId, localizations: args.localizations, expectedCurrent: args.expectedCurrent, auditContext: args.auditContext }),
-    audit: async ({ eventType, detail }) => void audits.push({ eventType, detail }),
+    // As production: this computer's audit rows of the video (the service parses them itself).
+    auditEvents: async (channelId) => audits.filter((a) => a.channelId === channelId).map((a) => ({ ...a })),
+    writeLocalizations: (args) =>
+      writer.apply({ credentialRef: args.credentialRef, channelId: args.channelId, videoId: args.videoId, localizations: args.localizations, expectedCurrent: args.expectedCurrent, expected: args.expected, auditContext: args.auditContext }),
+    audit: async ({ channelId, eventType, detail }) => void audits.push({ channelId, eventType, detail, occurredAt: new Date() }),
   };
   return { service: createPackageLocalizations(deps), video, calls, updates, audits };
 }
@@ -408,4 +433,129 @@ test("a package without translations writes nothing; an invalid set is refused; 
   const invalid = harness({ pkg: manifest({ ja: { title: "", description: "x" } }) });
   await assert.rejects(invalid.service.preview(CH, { video: "V25" }, PRODUCER), refusedWith("package_metadata_invalid"));
   await assert.rejects(harness().service.preview(CH, { video: "V99" }, PRODUCER), refusedWith("upload_package_not_ready"));
+});
+
+// Review of 1c515813, should-fix 1: the writer sends the snippet back from its own read, so a lagging replica's older title would be
+// echoed over a texts fix just written (and its read-back, against the same read, would say verified). The call names the texts the
+// snippet must show; the writer waits for them and refuses when they never come.
+const metadataFix = (title: string, minutesAgo: number): AuditEventLike => ({
+  channelId: CH,
+  eventType: "VERIFICATION",
+  detail: { source: "package_metadata", event: "package_metadata.applied", sent: { title }, verified: true },
+  occurredAt: new Date(Date.now() - minutesAgo * 60_000),
+});
+
+test("stale echo: a texts fix just wrote T2, the writer's first read lags (T1) -- it waits, then sends T2 back, never T1", async () => {
+  const video = baseVideo();
+  video.snippet.title = "T2";
+  const h = harness({ video, events: [metadataFix("T2", 1)], lagging: { reads: 1, title: "T1" } });
+  const result = await h.service.apply(CH, { video: "V25" }, PRODUCER);
+  assert.deepEqual(result.written, ["ja"]);
+  assert.equal(h.updates.length, 1);
+  assert.equal(h.updates[0].snippet.title, "T2");
+});
+
+test("stale echo: the check's own snapshot lags too (T1) -- the recent fix's T2 is still what the snippet must show", async () => {
+  const video = baseVideo();
+  video.snippet.title = "T2";
+  const h = harness({ video, events: [metadataFix("T2", 1)], lagging: { reads: 1, title: "T1", snapshotLags: true } });
+  await h.service.apply(CH, { video: "V25" }, PRODUCER);
+  assert.equal(h.updates[0].snippet.title, "T2");
+});
+
+test("stale echo: the lag outlasts the writer's reads -- refused, nothing sent (the old title is never written back)", async () => {
+  const video = baseVideo();
+  video.snippet.title = "T2";
+  const h = harness({ video, events: [metadataFix("T2", 1)], lagging: { reads: 10, title: "T1" } });
+  await assert.rejects(h.service.apply(CH, { video: "V25" }, PRODUCER), refusedWith("update_failed"));
+  assert.equal(h.updates.length, 0);
+  assert.equal(h.video.snippet.title, "T2");
+});
+
+test("expectedSnippetOf: the checked texts; a texts fix within 15 minutes overrides them; an older one or another channel's does not", () => {
+  const now = { title: "T1", description: "D1", tags: ["a"] };
+  const at = Date.now();
+  assert.deepEqual(expectedSnippetOf([], CH, now, at), { title: "T1", description: "D1", tags: ["a"] });
+  assert.deepEqual(expectedSnippetOf([metadataFix("T2", 5)], CH, now, at), { title: "T2", description: "D1", tags: ["a"] });
+  assert.deepEqual(expectedSnippetOf([metadataFix("T2", 20)], CH, now, at), { title: "T1", description: "D1", tags: ["a"] });
+  assert.deepEqual(expectedSnippetOf([{ ...metadataFix("T2", 1), channelId: "UC_other" }], CH, now, at), { title: "T1", description: "D1", tags: ["a"] });
+});
+
+test("the texts fix and the translations fix of one video run one at a time on this computer", async () => {
+  const order: string[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const first = withPackageVideoLock(CH, "V25", async () => {
+    order.push("texts start");
+    await gate;
+    order.push("texts end");
+  });
+  const second = withPackageVideoLock(CH, "V25", async () => void order.push("translations"));
+  const other = withPackageVideoLock(CH, "V26", async () => void order.push("other video"));
+  await other;
+  release();
+  await Promise.all([first, second]);
+  assert.deepEqual(order, ["texts start", "other video", "texts end", "translations"]);
+  // A failure in one does not block the next.
+  await assert.rejects(withPackageVideoLock(CH, "V25", async () => Promise.reject(new Error("boom"))));
+  assert.equal(await withPackageVideoLock(CH, "V25", async () => "next"), "next");
+});
+
+// Review minor 2: the REAL parsing of this computer's audit (no copy in the harness).
+const fromRow: LocalizationBaseline = { entries: { ja: UPLOADED_JA, de: UPLOADED_DE }, complete: true };
+const applied = (detail: Record<string, unknown>, channelId = CH): AuditEventLike => ({ channelId, eventType: "VERIFICATION", detail: { source: "package_localizations", event: "package_localizations.applied", ...detail } });
+const writerResult = (languages: string[]): AuditEventLike => ({ channelId: CH, eventType: "RESULT", detail: { source: "package_localizations", languages } });
+const goodAfter = { entries: { ja: PACKAGE_JA, de: UPLOADED_DE }, complete: true };
+
+test("baseline parsing: a verified fix's afterLocalizations; nothing here -> the upload row; nothing at all -> unknown", () => {
+  assert.deepEqual(localizationBaselineOf([writerResult(["ja"]), applied({ verified: true, languages: ["ja"], afterLocalizations: goodAfter })], CH, fromRow), { baseline: goodAfter, kind: "localizations_apply" });
+  assert.deepEqual(localizationBaselineOf([], CH, fromRow), { baseline: fromRow, kind: "upload_row" });
+  assert.deepEqual(localizationBaselineOf([], CH, null), { baseline: { entries: {}, complete: false }, kind: "unknown" });
+});
+
+test("baseline parsing: a malformed latest fix is unknown -- never the older upload row", () => {
+  for (const detail of [{ verified: true, afterLocalizations: { entries: { ja: { title: 5 } }, complete: true } }, { verified: true, afterLocalizations: null }, { verified: "yes", afterLocalizations: goodAfter }]) {
+    assert.deepEqual(localizationBaselineOf([applied(detail)], CH, fromRow), { baseline: { entries: {}, complete: false }, kind: "unknown" }, JSON.stringify(detail));
+  }
+});
+
+test("baseline parsing: a newer attempt that did not read back verified makes the languages it tried unknown", () => {
+  // An applied row with the writer unverified, newer than a verified fix.
+  const r1 = localizationBaselineOf(
+    [writerResult(["ja"]), applied({ verified: true, languages: ["ja"], afterLocalizations: goodAfter }), writerResult(["de"]), applied({ verified: false, writerVerified: false, languages: ["de"], afterLocalizations: goodAfter })],
+    CH,
+    fromRow
+  );
+  assert.equal(r1.kind, "localizations_apply");
+  assert.deepEqual(r1.baseline, { entries: { ja: PACKAGE_JA }, complete: true, unknown: ["de"] });
+  // The writer's RESULT with no applied row after it (the call died after the update): over the upload row.
+  const r2 = localizationBaselineOf([writerResult(["ja"])], CH, fromRow);
+  assert.equal(r2.kind, "upload_row");
+  assert.deepEqual(r2.baseline, { entries: { de: UPLOADED_DE }, complete: true, unknown: ["ja"] });
+  // Status changed after a writer-verified write (review minor 3): the baseline holds.
+  const r3 = localizationBaselineOf([writerResult(["ja"]), applied({ verified: false, writerVerified: true, languages: ["ja"], afterLocalizations: goodAfter })], CH, fromRow);
+  assert.deepEqual(r3, { baseline: goodAfter, kind: "localizations_apply" });
+});
+
+test("baseline parsing: only this channel's rows count", () => {
+  const foreign = [writerResult(["ja"]), applied({ verified: true, languages: ["ja"], afterLocalizations: goodAfter }, "UC_other")].map((e) => ({ ...e, channelId: "UC_other" }));
+  assert.deepEqual(localizationBaselineOf(foreign, CH, fromRow), { baseline: fromRow, kind: "upload_row" });
+});
+
+test("an explicitly unknown language is a conflict even over a complete baseline", async () => {
+  const h = harness({ events: [writerResult(["ja"])] });
+  const preview = await h.service.preview(CH, { video: "V25" }, PRODUCER);
+  assert.deepEqual(statusOf(preview), { ja: "conflict", de: "same" });
+});
+
+test("a scheduled video publishing during the call is not a failure; a status change after a verified write still leaves the baseline", async () => {
+  const video = baseVideo();
+  video.publishAt = new Date(Date.now() - 1000).toISOString();
+  const published = harness({ video, afterUpdate: (v) => ((v.privacyStatus = "public"), (v.publishAt = null)) });
+  assert.equal((await published.service.apply(CH, { video: "V25" }, PRODUCER)).verified, true);
+  const moved = harness({ afterUpdate: (v) => (v.publishAt = "2026-11-26T13:00:00Z") });
+  await assert.rejects(moved.service.apply(CH, { video: "V25" }, PRODUCER), refusedWith("update_failed"));
+  const again = await moved.service.preview(CH, { video: "V25" }, PRODUCER);
+  assert.equal(again.baseline, "localizations_apply");
+  assert.deepEqual(statusOf(again), { ja: "same", de: "same" });
 });

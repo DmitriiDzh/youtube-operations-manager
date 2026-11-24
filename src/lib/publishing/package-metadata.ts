@@ -162,6 +162,26 @@ export async function readUploadedVideo(
   return { rows, credentialRef, now };
 }
 
+/** The fixes of a video in progress on this computer, by channel and video code: each waits for the one before it. */
+const videoLocks = new Map<string, Promise<unknown>>();
+
+/**
+ * Runs one package-driven fix of a video (texts or translations) after any other one of the same video on this computer has ended
+ * (review of 1c515813: the translations write echoes the snippet it read, so a texts fix landing in between could be reverted).
+ */
+export async function withPackageVideoLock<T>(channelId: string, video: string, run: () => Promise<T>): Promise<T> {
+  const key = `${channelId}\u0000${String(video ?? "")}`;
+  const before = videoLocks.get(key) ?? Promise.resolve();
+  const mine = before.catch(() => undefined).then(run);
+  const tail = mine.catch(() => undefined);
+  videoLocks.set(key, tail);
+  try {
+    return await mine;
+  } finally {
+    if (videoLocks.get(key) === tail) videoLocks.delete(key);
+  }
+}
+
 type Texts = { title: string; description: string; tags: string[] };
 /**
  * What this computer knows the video got from the package side, per field (the next fix's baseline b): null where it is not known --
@@ -284,6 +304,8 @@ export function createPackageMetadata(deps: PackageMetadataDeps) {
         throw refuse("validation_failed", "expectedManifestSha256 is required: apply the package the preview showed");
       }
       const overwrite = actor.kind === "owner" ? (input.overwrite ?? []).filter((f): f is PackagingField => (PACKAGING_FIELDS as readonly string[]).includes(f)) : [];
+      // One package fix of a video at a time on this computer (the translations fix takes the same lock, review of 1c515813).
+      return withPackageVideoLock(channelId, input?.video, async () => {
       const seen = await inspect(channelId, input?.video, actor);
       if (input.expectedManifestSha256 !== undefined && input.expectedManifestSha256 !== seen.found.manifestSha256) {
         throw refuse("package_metadata_manifest_changed", `${seen.found.pkg.video}'s package was re-packaged since the preview: preview it again.`, {
@@ -352,6 +374,7 @@ export function createPackageMetadata(deps: PackageMetadataDeps) {
         throw refuse("update_failed", "The write went through, but the video's translation languages could not be confirmed unchanged afterwards: check them in Studio.", { channelId, video: base.video, before: languagesBefore, after: languagesAfter });
       }
       return { ...base, changed: true, written, skippedConflicts, verified: true, backupPath: result.backupPath };
+      });
     },
   };
 }
