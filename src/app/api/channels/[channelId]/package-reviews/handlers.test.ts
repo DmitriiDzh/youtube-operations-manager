@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { DomainError } from "@/lib/shared-domain";
-import { createPackageReviewRouteHandlers, type PackageReviewRouteDeps } from "./handlers";
+import { createPackageReviewAlertsHandler, createPackageReviewRouteHandlers, type PackageReviewRouteDeps } from "./handlers";
 
 // BL-257 (PACKAGE_REVIEW_PLAN.md AC-PR-08 / AC-PR-09 / AC-PR-15; AGENTS.md §F): the owner's package-review routes need a Web session
 // (401) and the ACTIVE channel (403); the media go only to the owner's browser (403 otherwise) and honour HTTP Range (RFC 9110 §14:
@@ -32,6 +32,7 @@ function make(options: { session?: { user: { id: string } } | null; refuse?: Dom
         return { decision: {} as never, view: {} as never };
       },
       mediaFile: async (...args) => (calls.push(["media", ...args]), options.file ?? null),
+      waiting: async (...args) => (calls.push(["waiting", ...args]), 0),
       draft: async (...args) => {
         calls.push(["draft", ...args]);
         if (options.refuse) throw options.refuse;
@@ -116,4 +117,36 @@ test("AC-TC-04: the draft routes need the session and the active channel; they p
   const res = await missing.handlers.draft(req("GET", `?manifest=${MANIFEST}`), ctx("UC_active"));
   assert.equal(res.status, 404);
   assert.equal((await res.json()).error, "package_review_not_found");
+});
+
+// Fix (owner report 2026-11-24, WWE V31/V32 waited unseen): `GET /api/package-review-alerts` -- a session is required (401, nothing
+// read); every connected channel is asked, the active one named, only channels with something waiting listed; one channel that cannot
+// be read never hides the others (the storyboard alerts' rule).
+test("package-review alerts: 401 without a session; per connected channel the waiting count, a failing channel skipped", async () => {
+  const asked: string[] = [];
+  const make = (session: { user: { id: string } } | null) =>
+    createPackageReviewAlertsHandler({
+      getSession: async () => session,
+      activeChannelId: async () => "UC_wwe",
+      connectedChannelIds: async () => ["UC_wwe", "UC_other", "UC_broken", "UC_quiet"],
+      service: () => ({
+        waiting: async (channelId) => {
+          asked.push(channelId);
+          if (channelId === "UC_broken") throw new Error("unreadable");
+          return channelId === "UC_wwe" ? 2 : channelId === "UC_other" ? 1 : 0;
+        },
+      }),
+    });
+  assert.equal((await make(null)()).status, 401);
+  assert.deepEqual(asked, []);
+  const response = await make({ user: { id: "owner" } })();
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    activeChannelId: "UC_wwe",
+    channels: [
+      { channelId: "UC_wwe", waiting: 2 },
+      { channelId: "UC_other", waiting: 1 },
+    ],
+  });
+  assert.deepEqual(asked.sort(), ["UC_broken", "UC_other", "UC_quiet", "UC_wwe"]);
 });

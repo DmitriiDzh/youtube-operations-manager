@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { packageReviewsForRoutes } from "@/composition/package-reviews";
 import { authOptions } from "@/lib/auth";
 import { createChannelAccessCore } from "@/lib/channel-access";
+import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { streamLocalFile } from "@/lib/local-file-response";
 import { isOwnerBrowserRequest } from "@/lib/loopback-guard";
 import type { PackageReviewsOwnerSurface } from "@/lib/package-reviews";
@@ -87,5 +88,43 @@ export function createPackageReviewRouteHandlers(deps: PackageReviewRouteDeps = 
     video: media("video"),
     /** GET `?manifest=<sha256>`: the package's default thumbnail. */
     thumbnail: media("thumbnail"),
+  };
+}
+
+export type PackageReviewAlertsDeps = {
+  getSession: () => Promise<{ user?: { id?: string | null } } | null>;
+  activeChannelId: (userId: string) => Promise<string | null>;
+  connectedChannelIds: (userId: string) => Promise<string[]>;
+  service: () => Pick<PackageReviewsOwnerSurface, "waiting">;
+};
+
+const defaultAlertsDeps = (): PackageReviewAlertsDeps => ({
+  getSession: () => getServerSession(authOptions),
+  activeChannelId: (userId) => createChannelAccessCore().getActiveChannelId(userId),
+  connectedChannelIds: async (userId) => (await createChannelConnectionsCore().listConnectedChannels(userId)).map((c) => c.channelId),
+  service: packageReviewsForRoutes,
+});
+
+/**
+ * Fix of BL-257 (owner report 2026-11-24: WWE V31/V32 waited and neither the Media menu nor the bell said so): `GET
+ * /api/package-review-alerts` -- per connected channel, the packages waiting for the owner (the review screen's own count) for the
+ * Media menu badge (the active channel) and the bell (the others), the family of `GET /api/storyboard-alerts`. Read-only; a session is
+ * required; one channel that cannot be read never hides the others. Here, next to the screen's handlers, because the owner's surface
+ * is reached only from this file (AC-PR-08).
+ */
+export function createPackageReviewAlertsHandler(deps: PackageReviewAlertsDeps = defaultAlertsDeps()) {
+  return async (): Promise<NextResponse> => {
+    const session = await deps.getSession();
+    const userId = session?.user?.id;
+    if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    try {
+      const [activeChannelId, channelIds] = await Promise.all([deps.activeChannelId(userId), deps.connectedChannelIds(userId)]);
+      const service = deps.service();
+      const settled = await Promise.allSettled(channelIds.map(async (channelId) => ({ channelId, waiting: await service.waiting(channelId) })));
+      const channels = settled.flatMap((r) => (r.status === "fulfilled" && r.value.waiting > 0 ? [r.value] : []));
+      return NextResponse.json({ activeChannelId, channels });
+    } catch (error) {
+      return errorResponse(error);
+    }
   };
 }

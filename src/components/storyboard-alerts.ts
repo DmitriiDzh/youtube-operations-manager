@@ -33,10 +33,16 @@ export function otherChannelStoryboardEntries(t: Translate, channels: readonly S
 
 /**
  * The Media badge's hover text: the plans' split (as before) and, when storyboards wait too, their count -- so a badge of 3 says
- * what the 3 are. Undefined when the plain number says it all.
+ * what the 3 are. Undefined when the plain number says it all. BL-257 fix: the final videos waiting for review are named the same way.
  */
-export function mediaBadgeTitle(t: Translate, plansWaiting: number, plansRejected: number, storyboardsWaiting: number): string | undefined {
+export function mediaBadgeTitle(t: Translate, plansWaiting: number, plansRejected: number, storyboardsWaiting: number, packagesWaiting = 0): string | undefined {
   const plans = plansRejected > 0 ? t("plans.badgeSplit", { passed: plansWaiting - plansRejected, rejected: plansRejected }) : null;
-  if (storyboardsWaiting === 0) return plans ?? undefined;
-  return [plans ?? (plansWaiting > 0 ? t("storyboards.alert.plans", { count: plansWaiting }) : null), t("storyboards.alert.waiting", { count: storyboardsWaiting })].filter(Boolean).join(" · ");
+  if (storyboardsWaiting === 0 && packagesWaiting === 0) return plans ?? undefined;
+  return [
+    plans ?? (plansWaiting > 0 ? t("storyboards.alert.plans", { count: plansWaiting }) : null),
+    storyboardsWaiting > 0 ? t("storyboards.alert.waiting", { count: storyboardsWaiting }) : null,
+    packagesWaiting > 0 ? t("channelWork.packagesWaiting", { count: packagesWaiting }) : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }

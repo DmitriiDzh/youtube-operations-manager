@@ -78,7 +78,8 @@
 // playlist_create, must equal `channelId`); permission PLAYLIST_WRITE and playlistTools in producer_get_capabilities. No playlist delete. Additive.
 // 1.30.0 (FO-REQ-0056 part 2, BL-273): channel_video_list gains the selectable field `tags` and agent_get_video_context's metadata gains
 // `tags` (snippet.tags as of the last channel sync; [] = none; null = not read yet). Read-only, local copy. Additive; no tool added.
-// 1.31.0 (owner TG 4817, PACKAGE_REVIEW_PLAN.md AC-TC-08): producer_publishing_plan_get / _list -- a slot's package gains
+// 1.31.0 (BL-274): package translations (feature/package-localizations-update, merged into dev before this branch).
+// 1.32.0 (owner TG 4817, PACKAGE_REVIEW_PLAN.md AC-TC-08): producer_publishing_plan_get / _list -- a slot's package gains
 // reviewTimedComments [{ atSeconds, time, text }] (the comments the owner bound to moments of the video in package review, sent with
 // his standing approval or return), and the wake file REVIEW-DECISION-package-<video>-<decisionId>.md gains the section «Timed
 // comments» (one line per comment: `<seconds> s (<m:ss>): <text>`; absent when none); owner TG 4836: an approval may carry notes for
@@ -86,7 +87,7 @@
 // reviewCommentKind approved_notes (returned | returned_timed for a return); owner TG 4846: reviewIssues + reviewIssueCounts on the
 // plan's package and the wake file section «Issues» (each owner comment an issue with an id; the factory answers in the next
 // package's reviewReplies). Additive; no tool added.
-export const PRODUCER_API_VERSION = "1.31.0";
+export const PRODUCER_API_VERSION = "1.32.0";
 
 /** The channel agent's READ tools the Producer gets; each call names its channel and runs in that channel's agent scope. */
 export const PRODUCER_CHANNEL_TOOLS: Readonly<Record<string, { capability: string }>> = Object.freeze({

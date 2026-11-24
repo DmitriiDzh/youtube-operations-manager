@@ -67,7 +67,7 @@ its own note, sent with the verdict). No YouTube call; the same routes, session 
 - AC-TC-08 The Producer reads the batch: the wake file `REVIEW-DECISION-package-…` gains a section «Timed comments» with one line per
   comment `<seconds> s (<m:ss>): <text>` (absent when there are none, so older notices stay byte-identical), and the weekly plan's
   package (`factory_/agent_/producer_publishing_plan_get`) gains `reviewTimedComments: [{ atSeconds, time, text }]` of the standing
-  decision (approved or returned; absent when none). Factory 1.56.0, Agent 4.29.0, Producer 1.31.0 (additive).
+  decision (approved or returned; absent when none). Factory 1.56.0, Agent 4.29.0, Producer 1.32.0 (additive).
 - AC-TC-09 The card shows the standing decision's timed comments (time and text) after it is sent.
 - AC-TC-10 (owner TG 4836) An approval carries an optional general comment — notes for future videos — together with the timed
   comments, in one action. An approved video offers «Одобрить ещё раз с замечаниями» (a new approval; it needs a comment or a timed
@@ -105,7 +105,7 @@ mp4, same video code), answers each issue in the new manifest, and the owner see
   status). The card shows the open / resolved counts.
 - AC-IS-07 Agents read per issue id, time, state and thread: the wake file section «Issues» (as of that decision, the same bytes on
   either computer; absent without issues) and the plan package `reviewIssues` + `reviewIssueCounts` (Factory 1.56.0 / Agent 4.29.0 /
-  Producer 1.31.0, unreleased).
+  Producer 1.32.0, unreleased).
 - AC-IS-08 Old builds: additive fields only (`timedComments[].id`, `issueActions`, `repliesSeen`, `reviewReplies`); a decision carrying
   them reads exactly as before.
 

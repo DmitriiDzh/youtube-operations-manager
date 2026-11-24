@@ -502,7 +502,11 @@ flags the error as not sent; the mark keeps the retry count, so a failing insert
   (no re-queue loop).
 - **Surfaces:** owner routes `/api/channels/[channelId]/package-reviews` (`GET`/`PUT`, `/decision`, `/video`, `/thumbnail` via
   `local-file-response`, `isOwnerBrowserRequest`); Media → «Видео на проверку» (`MEDIA_TABS` value `packages`); the week-plan slot line
-  from `PlanSlotPackage.reviewComment` and the problem codes; review-notify kind `package` (`packageNoticesOf`).
+  from `PlanSlotPackage.reviewComment` and the problem codes; review-notify kind `package` (`packageNoticesOf`). Notices (fix
+  2026-11-24): `GET /api/package-review-alerts` (`createPackageReviewAlertsHandler` in the same `handlers.ts`, so AC-PR-08's single
+  composer holds) -- per connected channel the owner surface's `waiting(channelId)` (= `view().waiting`; 0 without a scan when the gate
+  is off), the Media menu badge for the active channel and a bell entry (group `packages`, `/media/packages`) for the others
+  (`src/components/package-review-alerts.ts`, the storyboard-alerts pattern).
 - **Timed comments (owner TG 4817, PACKAGE_REVIEW_PLAN.md AC-TC-01..09):** `package-reviews/timed-comments.ts` (pure, import-free: limits,
   `m:ss` spelling, well-formed reading) is the one rule for server and screen. A decision (approved / returned only) may carry
   `timedComments [{ atSeconds, text }]` in the synced document; `wellFormedDecision` keeps the well-formed ones and never drops the decision
@@ -511,7 +515,7 @@ flags the error as not sent; the mark keeps the retry count, so a failing insert
   `GET`/`PUT …/package-reviews/draft` under the same session + active-channel guard and the channel's scan; cleared only after the
   decision is stored. Readouts: the wake file's «Timed comments» section (`ReviewDecisionNotice.timedComments`) and
   `PlanSlotPackage.reviewTimedComments` via `mediaReviewReaderOf(...).timedComments`, an approval's notes (owner TG 4836) as `reviewComment` +
-  `reviewCommentKind: approved_notes` via `.approvalComment` (Factory 1.56.0 / Agent 4.29.0 / Producer 1.31.0). The draft is guarded by
+  `reviewCommentKind: approved_notes` via `.approvalComment` (Factory 1.56.0 / Agent 4.29.0 / Producer 1.32.0). The draft is guarded by
   stamps: a save names `baseUpdatedAt`, a decision `draftUpdatedAt`; a mismatch is `package_review_draft_changed` (409); drafts of gone
   packages untouched for 14 days are pruned in `view()`. Issues (owner TG 4846): `package-reviews/issues.ts` (pure: `decisionsOfVideo` by
   video code / recode alias, `issuesOf` builds threads from `timedComments[].id`, `repliesSeen`, `issueActions` and the current
