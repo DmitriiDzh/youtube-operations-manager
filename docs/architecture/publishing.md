@@ -409,6 +409,26 @@ FO-REQ-0040; owner msgs 3511/3534; plan `docs/roadmap/plans/WEEKLY_PUBLISHING_PL
     audit `publishing.plan_scheduled` / `plan_unscheduled`. Live writes / reads off or the quota: the pass stops, nothing recorded;
     another refusal is recorded and retried after an hour.
 
+### BL-225 amendment: package playlists (owner TG 4858/4859, ADR 0051 amendment 2026-11-24)
+
+- The package carries the ids; the runner's playlist step is the only writer (the existing `addToPlaylist` adapter: Live writes
+  immediately before `playlistItems.insert` in the write gateway). One playlist per runner pass, so `identity(job)` runs before each
+  write (the step stays open -- `steps.playlist` undefined -- until every playlist is settled).
+- Never twice: `adding` is stored before the insert and `inserted` right after its 200; an ambiguous error on the insert (a timeout, a
+  5xx) stores `sent_unknown`. A retry of `adding` reads first; `inserted` and `sent_unknown` are only re-read (READ_BACK_RETRIES times,
+  READ_BACK_RETRY_DELAY_MS apart), never sent again; `sent_unknown` never seen is `failed (unknown_outcome)`.
+- `currentPlaylist` is set before the first read, so anything the runner gives up on (`giveUp`) settles only the current playlist,
+  its reason by phase (`ownership_unreadable`, `membership_unreadable`, `write_failed`, `read_back_unreadable`, `unknown_outcome`),
+  and the next pass takes the next playlist; pauses still pause the job.
+- The settings playlist after a 200 whose read-back never shows the item (or cannot be read) is `added_unverified` -- `steps.playlist`
+  `added`, a note, no failure (today's behaviour kept, AGENTS.md §D). Package playlists keep the strict read-back.
+- Ownership: a package id is written only when the read gateway says the playlist's `snippet.channelId` is the upload's channel; the
+  settings playlist (the owner's own choice) is written as before, without that read.
+- The date rule reads `steps.playlist` (settings) only; package failures surface through `steps.playlists`, notes and `step_failed`.
+- The Producer's read lives in its own module `src/lib/video-playlist-membership/` (not `playlist-management`): it imports the read
+  gateway and write-context's identity check; publishing's upload records reach it through the composition (`session-deps.ts`), so
+  neither module imports the other (AGENTS.md §M).
+
 ## BL-238 — local video cleanup after upload (FO-REQ-0051, ADR 0058)
 
 - **Module:** `src/lib/local-video-cleanup/`.

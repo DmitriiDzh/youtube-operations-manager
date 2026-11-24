@@ -74,6 +74,7 @@ function fakeYoutube() {
   /** `publishAtAtInsert`: a video from before owner msgs 3510/3511 whose old insert carried the date (the insert type has none now). */
   const videos: Array<{ videoId: string; title: string; resource: InsertResource; publishAtAtInsert?: string }> = [];
   const log: string[] = [];
+  const playlistItems = new Set<string>();
   let faults: Array<"lose_answer" | "network_before" | "expire" | "live_writes_off" | "quota" | "upload_limit"> = [];
   let liveWrites = true;
   const take = () => faults.shift();
@@ -121,10 +122,13 @@ function fakeYoutube() {
     },
     async addToPlaylist(_c, videoId, playlistId) {
       log.push(`playlist ${playlistId} ${videoId}`);
+      // A playlist item YouTube made is listed afterwards (package playlists, owner TG 4858/4859: every add is read back).
+      playlistItems.add(`${playlistId} ${videoId}`);
     },
   };
   return {
     gateway,
+    hasPlaylistItem: (playlistId: string, videoId: string) => playlistItems.has(`${playlistId} ${videoId}`),
     sessions,
     videos,
     log,
@@ -187,7 +191,7 @@ function harness(rows: StoredPublishingUpload[], over: Partial<UploadRunnerDeps>
         hasPaidProductPlacement: paidPromotionDropped ? false : (yt.videos[0]?.resource.paidProductPlacementDetails?.hasPaidProductPlacement ?? null),
       }),
       recentUploads: async () => yt.videos.map((v) => ({ videoId: v.videoId, title: v.title })),
-      playlistHasVideo: async () => false,
+      playlistHasVideo: async (_c, playlistId, videoId) => yt.hasPlaylistItem(playlistId, videoId),
       snapshot: async ({ videoId }) => {
         order.push("read");
         const video = yt.videos.find((v) => v.videoId === videoId)!;

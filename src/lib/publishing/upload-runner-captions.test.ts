@@ -82,6 +82,7 @@ function harness(start: StoredPublishingUpload, writeCaptions?: UploadRunnerDeps
   const order: string[] = [];
   const records: Array<Record<string, unknown>> = [];
   const clock = { at: NOW };
+  const playlistItems = new Set<string>();
   const deps: UploadRunnerDeps = {
     store: {
       listActive: async () => (["queued", "uploading", "processing", "finishing", "paused"].includes(current.status) ? [{ ...current }] : []),
@@ -101,12 +102,13 @@ function harness(start: StoredPublishingUpload, writeCaptions?: UploadRunnerDeps
       putChunk: async () => assert.fail("no upload"),
       queryOffset: async () => assert.fail("no upload"),
       setThumbnail: async () => void order.push("thumbnail"),
-      addToPlaylist: async () => void order.push("playlist"),
+      // A playlist item YouTube made is listed afterwards (package playlists: every add is read back).
+      addToPlaylist: async (_c, videoId, playlistId) => void (order.push("playlist"), playlistItems.add(`${playlistId} ${videoId}`)),
     },
     reads: {
       uploadState: async () => ({ uploadStatus: "processed", rejectionReason: null, failureReason: null, hasCustomThumbnail: true }),
       recentUploads: async () => [],
-      playlistHasVideo: async () => false,
+      playlistHasVideo: async (_c, playlistId, videoId) => playlistItems.has(`${playlistId} ${videoId}`),
       snapshot: async () => {
         order.push("read");
         return {
@@ -282,7 +284,8 @@ test("pending (YouTube still syncing) is read again later with the track as ours
 
 test("AC-CAP-28 estimateUploadUnits adds 550 for a package with captions (and nothing otherwise)", () => {
   const base = estimateUploadUnits({ playlist: true, deferredPublishAt: true });
-  assert.equal(base, 50 + 45 + 51 + 55);
+  // The settings playlist item is 52 since its read-back (check 1 + insert 50 + read-back 1; 51 before, TG 4858/4859).
+  assert.equal(base, 50 + 45 + 52 + 55);
   assert.equal(estimateUploadUnits({ playlist: true, deferredPublishAt: true, captions: true }), base + 550);
   assert.equal(estimateUploadUnits({ playlist: true, deferredPublishAt: true, captions: false }), base);
 });

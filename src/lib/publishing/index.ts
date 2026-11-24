@@ -73,7 +73,7 @@ import { detectFfmpeg, probeMedia, type FfmpegTools } from "@/lib/ffmpeg-host";
 import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
 import { createWriteContextCore } from "@/lib/write-context";
-import { createYoutubeClient, getVideoMetadataContext, getVideoUploadState, listPlaylistItemIdsByVideo, listUploadsPlaylistFirstPage } from "@/lib/youtube-read-gateway";
+import { createYoutubeClient, getPlaylistForUpdate, getVideoMetadataContext, getVideoUploadState, listUploadsPlaylistFirstPage, playlistContainsVideo } from "@/lib/youtube-read-gateway";
 import { createWorkspaceExchangeFsForPublishing, isRealVideoFolder, resolveWorkspaceFileForPublishing, writeVideoFolderFile } from "./adapters/files";
 import { createWorkspaceVideoFiles, videoNumberOfFolder, videosFolderSignature, writeUploadRecordFile } from "@/lib/workspace-videos";
 import { reportVersionFor } from "@/lib/shared-video-code";
@@ -487,8 +487,11 @@ export function createUploadRunnerCore(options: { slotDecisions?: (channelId: st
     reads: {
       uploadState: async (credentials, videoId) => getVideoUploadState(await createYoutubeClient(authorizedOAuth(credentials as ResolvedCredentials)), videoId),
       recentUploads: async (credentials, channelId) => listUploadsPlaylistFirstPage(await createYoutubeClient(authorizedOAuth(credentials as ResolvedCredentials)), uploadsPlaylistOf(channelId)),
-      playlistHasVideo: async (credentials, playlistId, videoId) =>
-        (await listPlaylistItemIdsByVideo(await createYoutubeClient(authorizedOAuth(credentials as ResolvedCredentials)), playlistId)).has(videoId),
+      // Package playlists (owner TG 4858/4859): one `playlistItems.list` filtered by the video (1 unit, never a full walk) -- the
+      // check before an insert and its read-back.
+      playlistHasVideo: async (credentials, playlistId, videoId) => playlistContainsVideo(await createYoutubeClient(authorizedOAuth(credentials as ResolvedCredentials)), playlistId, videoId),
+      // The channel a package playlist belongs to (`playlists.list` by id, 1 unit); null when YouTube does not return it.
+      playlistChannel: async (credentials, playlistId) => (await getPlaylistForUpdate(await createYoutubeClient(authorizedOAuth(credentials as ResolvedCredentials)), playlistId))?.channelId ?? null,
       snapshot: async ({ channelId, videoId, credentialRef }) => videoDetails.getSnapshot({ credentialRef, expectedChannelId: channelId, videoId }),
     },
     async setPublishAt({ channelId, videoId, publishAt, containsSyntheticMedia, credentialRef }) {
@@ -683,6 +686,16 @@ export function createUploadApprovalCore() {
             return {};
           }
         })();
+        // Package playlists (owner TG 4858/4859): a row whose playlist step has not run budgets each package playlist.
+        const packagePlaylists = (() => {
+          try {
+            if ((JSON.parse(row.stepsJson) as { playlist?: unknown }).playlist !== undefined) return 0;
+            const ids = (JSON.parse(row.packageJson) as { playlists?: unknown }).playlists;
+            return Array.isArray(ids) ? ids.filter((id) => id !== settings.playlistId).length : 0;
+          } catch {
+            return 0;
+          }
+        })();
         // BL-269 (AC-CAP-28): a queued row whose package has captions (and whose captions step has not run yet) budgets the step.
         const captions = (() => {
           try {
@@ -691,7 +704,7 @@ export function createUploadApprovalCore() {
             return false;
           }
         })();
-        units += estimateUploadUnits({ playlist: Boolean(settings.playlistId), deferredPublishAt: !row.publishAtAtInsert && isDeferredPublishAt(row.publishAt), captions });
+        units += estimateUploadUnits({ playlist: Boolean(settings.playlistId), deferredPublishAt: !row.publishAtAtInsert && isDeferredPublishAt(row.publishAt), captions, packagePlaylists });
       }
       return { inserts: rows.filter((row) => row.videoId === null).length, units };
     },
@@ -1039,6 +1052,44 @@ export { checksPassed, decisionForRow, desiredDate } from "./plan-schedule";
 export { approvalNamesUpload } from "./slot-decision";
 export type { SlotPackageFingerprint } from "./slot-decision";
 export type { SlotDecision } from "./auto-upload";
+
+/**
+ * Package playlists (owner TG 4858/4859): this computer's upload rows of `videoId` on `channelId`, newest first, with their
+ * playlist step as recorded (local, no YouTube call) -- the Producer's `producer_video_playlists` shows them next to the live read.
+ */
+export async function listUploadPlaylistRecords(channelId: string, videoId: string) {
+  const rows = (await listPublishingUploads({ channelId, limit: 500 })).filter((row) => row.videoId === videoId);
+  return rows.map((row) => uploadPlaylistRecordOf(row));
+}
+
+/** One upload row's playlist step as the Producer reads it (a damaged `steps_json` reads as "not run"). */
+export function uploadPlaylistRecordOf(row: Pick<StoredPublishingUpload, "id" | "video" | "status" | "finishedAt" | "stepsJson">) {
+  let steps: { playlist?: unknown; playlists?: unknown } = {};
+  try {
+    steps = (JSON.parse(row.stepsJson) as typeof steps) ?? {};
+  } catch {
+    steps = {};
+  }
+  const playlists = Array.isArray(steps.playlists)
+    ? (steps.playlists as Array<Record<string, unknown>>)
+        .filter((e) => e && typeof e.playlistId === "string")
+        .map((e) => ({
+          playlistId: String(e.playlistId),
+          source: String(e.source ?? ""),
+          result: String(e.result ?? ""),
+          ...(typeof e.reason === "string" ? { reason: e.reason } : {}),
+          ...(typeof e.at === "string" ? { at: e.at } : {}),
+        }))
+    : [];
+  return {
+    uploadId: row.id,
+    video: row.video,
+    status: row.status,
+    finishedAt: row.finishedAt ? row.finishedAt.toISOString() : null,
+    settingsPlaylist: typeof steps.playlist === "string" ? steps.playlist : null,
+    playlists,
+  };
+}
 
 /**
  * BL-255 (ADR 0069 §3): true while this computer's upload of `videoId` has not yet run its own thumbnail step -- an active row

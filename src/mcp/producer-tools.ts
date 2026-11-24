@@ -89,7 +89,10 @@
 // reviewCommentKind approved_notes (returned | returned_timed for a return); owner TG 4846: reviewIssues + reviewIssueCounts on the
 // plan's package and the wake file section «Issues» (each owner comment an issue with an id; the factory answers in the next
 // package's reviewReplies). Additive; no tool added.
-export const PRODUCER_API_VERSION = "1.32.0";
+// 1.33.0 (package playlists, BL-276, owner TG 4858/4859, ADR 0051 amendment 2026-11-24): producer_video_playlists (READ) -- { channelId, videoId, refresh? } -> the channel's
+// playlists that hold the video (live through the read gateway, kept 10 minutes) and this computer's upload rows of it with each
+// playlist's outcome; release packages (yt-release-package/2) may name `playlists` (0..10 ids) the upload adds the video to. Additive.
+export const PRODUCER_API_VERSION = "1.33.0";
 
 /** The channel agent's READ tools the Producer gets; each call names its channel and runs in that channel's agent scope. */
 export const PRODUCER_CHANNEL_TOOLS: Readonly<Record<string, { capability: string }>> = Object.freeze({
@@ -205,6 +208,8 @@ export const PRODUCER_ONLY_TOOLS = [
   "producer_publishing_plan_move_slot",
   // BL-271 (ADR 0075): wait until an upload of this computer or a restart is final (a read; not counted as MCP activity).
   "producer_wait",
+  // Package playlists (owner TG 4858/4859): which playlists of its channel a video is in (a read).
+  "producer_video_playlists",
 ] as const;
 
 /** BL-267 (ADR 0073 §5): the Producer's weekly-plan tools -- exactly these five, the test pins the list. */

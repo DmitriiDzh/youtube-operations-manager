@@ -69,7 +69,58 @@ export type ApprovedPackage = {
   captions?: { language: string; file: string; name: string; sha256: string };
   /** BL-269: the video's frame as the scan knew it when queued (the step re-reads YouTube's own before it writes). */
   orientation?: "vertical" | "horizontal" | null;
+  /**
+   * Package playlists (owner TG 4858/4859): the playlist ids a `yt-release-package/2` names (1..10, checked when queued). The playlist
+   * step adds the video to each besides the settings playlist; each must be the channel's own. Absent: none (every older row).
+   */
+  playlists?: string[];
 };
+
+/**
+ * Package playlists (owner TG 4858/4859): one playlist's outcome in the playlist step. `settings`: the channel's publishing playlist
+ * (also when the package names it too) -- its failure withholds the date as before; `package`: named only by the package -- its
+ * failure is reported, never withholds the date. `adding`: the insert is about to be sent (a retry reads before inserting again);
+ * `inserted`: YouTube answered the insert and the read-back has not shown it yet (only re-read, never inserted again).
+ */
+export type PlaylistStepEntry = {
+  playlistId: string;
+  source: "settings" | "package";
+  /**
+   * Open: `adding` (about to send), `inserted` (answered 200, being read back), `sent_unknown` (the insert's answer was lost: only
+   * read, never sent again). Settled: `added`, `already_there`, `failed`, and -- the settings playlist only -- `added_unverified`
+   * (YouTube answered 200 but the read-back never showed it: counts as added, with a note).
+   */
+  result: "adding" | "inserted" | "sent_unknown" | "added" | "added_unverified" | "already_there" | "failed";
+  /**
+   * Why it failed: not_found / other_channel (the ownership read), ownership_unchecked (no reader here), ownership_unreadable /
+   * membership_unreadable (a read given up on before any insert), write_failed (the insert refused or given up on),
+   * read_back_missing (answered 200, never shown), read_back_unreadable (answered 200, the read-back given up on),
+   * unknown_outcome (the insert's answer was lost and the re-reads never showed it).
+   */
+  reason?: "not_found" | "other_channel" | "ownership_unchecked" | "ownership_unreadable" | "membership_unreadable" | "read_back_missing" | "read_back_unreadable" | "write_failed" | "unknown_outcome";
+  /** Read-backs that did not show the video yet (at most READ_BACK_RETRIES re-reads). */
+  rereads?: number;
+  at: string;
+};
+
+/** A playlist entry still being worked on (the step stays open while one is). */
+export const isOpenPlaylistEntry = (entry: Pick<PlaylistStepEntry, "result">): boolean => entry.result === "adding" || entry.result === "inserted" || entry.result === "sent_unknown";
+
+/** The settings playlist's settled entry as `steps.playlist` (the date rule's): `added_unverified` counts as added (the 200). */
+export function settingsPlaylistOutcome(entry: Pick<PlaylistStepEntry, "result">): "added" | "already_there" | "failed" | "none" {
+  if (entry.result === "added" || entry.result === "added_unverified") return "added";
+  if (entry.result === "already_there" || entry.result === "failed") return entry.result;
+  return "none";
+}
+
+/** The playlists of an upload in the order they are written: the settings playlist first, then the package's, each once. */
+export function playlistTargets(settingsPlaylistId: string | null, packagePlaylists: readonly string[] | undefined): Array<{ playlistId: string; source: "settings" | "package" }> {
+  const targets: Array<{ playlistId: string; source: "settings" | "package" }> = settingsPlaylistId ? [{ playlistId: settingsPlaylistId, source: "settings" }] : [];
+  for (const playlistId of packagePlaylists ?? []) {
+    if (!targets.some((t) => t.playlistId === playlistId)) targets.push({ playlistId, source: "package" });
+  }
+  return targets;
+}
 
 /** The AI flag an upload carries: the package's own, else the channel's setting (BL-225 stage 3). */
 export const syntheticMediaOf = (pkg: Pick<ApprovedPackage, "containsSyntheticMedia">, settings: Pick<PublishingSettings, "containsSyntheticMedia">): boolean =>
@@ -113,7 +164,10 @@ export type UploadSteps = {
   /** BL-267 (ADR 0073 §4): `foreign_date` -- the pass left a date this computer did not set (`youtubePublishAt`: that date). */
   planSync?: { at: string; action: "scheduled" | "unscheduled"; publishAt: string | null; result: "verified" | "mismatch" | "refused" | "video_missing" | "foreign_date"; reason?: string; youtubePublishAt?: string | null };
   thumbnail?: "set" | "failed";
+  /** The settings playlist's outcome (none: no settings playlist) -- the date rule reads only this one (owner TG 4858/4859). */
   playlist?: "added" | "already_there" | "none" | "failed";
+  /** Package playlists (owner TG 4858/4859): every playlist's own outcome, the settings one included; absent when there is none. */
+  playlists?: PlaylistStepEntry[];
   verify?: { result: "verified" | "mismatch"; mismatches: string[] };
   /**
    * Read-backs that differed and were read again later (independent review: YouTube can lag right after processing). The date
@@ -167,6 +221,11 @@ export type UploadRunnerDeps = {
     /** The channel's newest uploads (first page of its uploads playlist, private ones included for its own user). */
     recentUploads(credentials: unknown, channelId: string): Promise<Array<{ videoId: string; title: string }>>;
     playlistHasVideo(credentials: unknown, playlistId: string, videoId: string): Promise<boolean>;
+    /**
+     * Package playlists (owner TG 4858/4859): the channel a playlist belongs to (`playlists.list` by id, 1 unit), null when YouTube
+     * does not return it. Absent: a package playlist fails closed (`ownership_unchecked`) and is never written.
+     */
+    playlistChannel?(credentials: unknown, playlistId: string): Promise<string | null>;
     /** The video as YouTube has it now (video-details' snapshot), for the read-back. */
     snapshot(args: { channelId: string; videoId: string } & UploadCredentials): Promise<VideoReadBack>;
   };
@@ -816,7 +875,64 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
     const note = (text: string) => (steps.notes = [...(steps.notes ?? []), text.slice(0, 300)]);
     const videoId = job.videoId;
     let step: "localizations" | "captions" | "thumbnail" | "playlist" | "verify" | "publishAt" | "record" | "sync" = "thumbnail";
+    // Package playlists (owner TG 4858/4859): the settings playlist and the package's, each once, one per pass.
+    const targets = playlistTargets(settings.playlistId, pkg.playlists);
+    let currentPlaylist: PlaylistStepEntry | null = null;
+    /** What the current playlist was doing when an error came: names the reason `giveUp` records. */
+    let playlistPhase: "ownership" | "membership" | "insert" | "readback" = "membership";
+    const settledPlaylists: PlaylistStepEntry[] = [];
+    const settle = (entry: PlaylistStepEntry, result: "added" | "added_unverified" | "already_there" | "failed", reason?: PlaylistStepEntry["reason"]) => {
+      entry.result = result;
+      if (reason) entry.reason = reason;
+      else delete entry.reason;
+      delete entry.rereads;
+      entry.at = now().toISOString();
+      if (!(steps.playlists ??= []).includes(entry)) steps.playlists.push(entry);
+      settledPlaylists.push(entry);
+      // Every playlist settled: `steps.playlist` takes the settings playlist's outcome (the date rule's), and the step is over.
+      const settledAll = targets.every((t) => {
+        const found = steps.playlists?.find((e) => e.playlistId === t.playlistId);
+        return found !== undefined && !isOpenPlaylistEntry(found);
+      });
+      if (settledAll) {
+        const own = settings.playlistId ? steps.playlists.find((e) => e.playlistId === settings.playlistId) : undefined;
+        steps.playlist = own ? settingsPlaylistOutcome(own) : "none";
+      }
+    };
+    /** Saves the settled playlists' outcome, then audits each (per-playlist results in the row and in the audit). */
+    const savePlaylists = async () => {
+      const saved = await saveSteps(job, steps);
+      if (!saved) return;
+      for (const entry of settledPlaylists.splice(0)) {
+        await deps.audit({ channelId: job.channelId, videoId, detail: { event: "publishing.upload_playlist", uploadId: job.id, video: job.video, playlistId: entry.playlistId, source: entry.source, result: entry.result, ...(entry.reason ? { reason: entry.reason } : {}) } });
+      }
+    };
+    /** Stores the playlist marks before (and right after) an insert, the retry count kept, so a lost answer is read, not re-sent. */
+    const persistPlaylists = async () => {
+      const stepsJson = JSON.stringify(steps);
+      if (!(await deps.store.update(job.id, "finishing", { stepsJson, updatedAt: now() }))) throw new Error("The upload row changed while its playlists were written.");
+      job = { ...job, stepsJson };
+    };
     const giveUp = async (message: string) => {
+      if (step === "playlist" && currentPlaylist) {
+        // A refused (or given-up) playlist read or write settles that playlist only; the next pass goes on with the next playlist.
+        // Whether the date waits is the settings playlist's alone (`steps.playlist`).
+        const entry = currentPlaylist;
+        if (playlistPhase === "readback" && entry.result === "inserted" && entry.source === "settings") {
+          // The settings playlist's insert answered 200: that counts (as before); only the read-back could not be made.
+          settle(entry, "added_unverified");
+        } else {
+          const reason: PlaylistStepEntry["reason"] =
+            playlistPhase === "ownership" ? "ownership_unreadable"
+            : playlistPhase === "membership" ? "membership_unreadable"
+            : playlistPhase === "insert" ? "write_failed"
+            : entry.result === "sent_unknown" ? "unknown_outcome"
+            : "read_back_unreadable";
+          settle(entry, "failed", reason);
+        }
+        note(`playlist ${entry.playlistId}: ${message}`);
+        return savePlaylists();
+      }
       if (step === "publishAt" || step === "thumbnail" || step === "playlist" || step === "localizations" || step === "captions") steps[step] = "failed";
       else if (step === "verify") steps.verify = { result: "mismatch", mismatches: ["unreadable"] };
       else if (step === "record") steps.record = "failed";
@@ -936,13 +1052,100 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
       }
       step = "playlist";
       if (steps.playlist === undefined) {
-        if (!settings.playlistId) steps.playlist = "none";
-        else if (await deps.reads.playlistHasVideo(creds.credentials, settings.playlistId, videoId)) steps.playlist = "already_there";
-        else {
-          await deps.gateway.addToPlaylist(creds.credentials, videoId, settings.playlistId);
-          steps.playlist = "added";
+        if (targets.length === 0) {
+          steps.playlist = "none";
+          return void (await saveSteps(job, steps));
         }
-        return void (await saveSteps(job, steps));
+        // One playlist per pass (the identity check above runs before each write): the first one not settled yet.
+        const list = (steps.playlists ??= []);
+        const target = targets.find((t) => {
+          const found = list.find((e) => e.playlistId === t.playlistId);
+          return found === undefined || isOpenPlaylistEntry(found);
+        });
+        if (!target) {
+          // Every playlist settled but the step not closed (a row saved between): close it now.
+          const own = settings.playlistId ? list.find((e) => e.playlistId === settings.playlistId) : undefined;
+          steps.playlist = own ? settingsPlaylistOutcome(own) : "none";
+          return void (await saveSteps(job, steps));
+        }
+        let entry = list.find((e) => e.playlistId === target.playlistId);
+        if (!entry) {
+          const fresh: PlaylistStepEntry = { playlistId: target.playlistId, source: target.source, result: "adding", at: now().toISOString() };
+          // Set before the first read: a read given up on (a 4xx, or ambiguous errors past MAX_RETRIES) settles THIS playlist
+          // (`giveUp`), and the next pass goes on with the next one (independent review, blocker 1).
+          currentPlaylist = fresh;
+          // A package playlist must be the channel's own (read through the read gateway); unknown, foreign or uncheckable: that
+          // playlist fails and is never written. The settings playlist is the owner's own choice, written as before.
+          if (target.source === "package") {
+            if (!deps.reads.playlistChannel) {
+              settle(fresh, "failed", "ownership_unchecked");
+              note(`playlist ${fresh.playlistId}: its channel cannot be checked on this computer`);
+              return savePlaylists();
+            }
+            playlistPhase = "ownership";
+            const owner = await deps.reads.playlistChannel(creds.credentials, fresh.playlistId);
+            if (owner === null || owner !== job.channelId) {
+              settle(fresh, "failed", owner === null ? "not_found" : "other_channel");
+              note(`playlist ${fresh.playlistId}: ${owner === null ? "not found on YouTube" : "not a playlist of this channel"} -- not added`);
+              return savePlaylists();
+            }
+          }
+          playlistPhase = "membership";
+          if (await deps.reads.playlistHasVideo(creds.credentials, fresh.playlistId, videoId)) {
+            settle(fresh, "already_there");
+            return savePlaylists();
+          }
+          list.push(fresh);
+          entry = fresh;
+        } else {
+          currentPlaylist = entry;
+          // `adding` (stored before an insert that never answered for sure -- a crash, a pause before sending): read before sending.
+          if (entry.result === "adding") {
+            playlistPhase = "membership";
+            if (await deps.reads.playlistHasVideo(creds.credentials, entry.playlistId, videoId)) {
+              settle(entry, "added");
+              return savePlaylists();
+            }
+          }
+        }
+        if (entry.result === "adding") {
+          await persistPlaylists();
+          playlistPhase = "insert";
+          try {
+            await deps.gateway.addToPlaylist(creds.credentials, videoId, entry.playlistId);
+          } catch (error) {
+            // An ambiguous answer (a timeout, a 5xx, a dropped connection) may have made the item: from now on it is only read,
+            // never sent again (a playlist can hold a video twice) -- independent review, should-fix 2.
+            if (classifyUploadError(error, now(), deps.nextQuotaReset).kind === "retry") {
+              entry.result = "sent_unknown";
+              await persistPlaylists().catch(() => undefined);
+            }
+            throw error;
+          }
+          entry.result = "inserted";
+          await persistPlaylists();
+        }
+        // Read back (`inserted`: YouTube answered 200; `sent_unknown`: the answer was lost). A read that does not show it yet is
+        // read again READ_BACK_RETRIES times, READ_BACK_RETRY_DELAY_MS apart -- never inserted again. Still unseen: a package
+        // playlist fails (`read_back_missing`, or `unknown_outcome` after a lost answer); the settings playlist after a 200 is
+        // `added_unverified` (a note -- the 200 counts, as before; coordinator's decision, AGENTS.md §D).
+        playlistPhase = "readback";
+        if (await deps.reads.playlistHasVideo(creds.credentials, entry.playlistId, videoId)) settle(entry, "added");
+        else if ((entry.rereads ?? 0) < READ_BACK_RETRIES) {
+          entry.rereads = (entry.rereads ?? 0) + 1;
+          const stepsJson = JSON.stringify({ ...steps, retries: 0 });
+          return void (await deps.store.update(job.id, "finishing", { stepsJson, nextAttemptAt: new Date(now().getTime() + READ_BACK_RETRY_DELAY_MS), updatedAt: now() }));
+        } else if (entry.result === "sent_unknown") {
+          settle(entry, "failed", "unknown_outcome");
+          note(`playlist ${entry.playlistId}: the insert's answer was lost and the video was not in it when read back -- not sent again`);
+        } else if (entry.source === "settings") {
+          settle(entry, "added_unverified");
+          note(`playlist ${entry.playlistId}: YouTube accepted the insert but the read-back did not show the video yet`);
+        } else {
+          settle(entry, "failed", "read_back_missing");
+          note(`playlist ${entry.playlistId}: the video was not in it when read back`);
+        }
+        return savePlaylists();
       }
       step = "verify";
       if (steps.verify === undefined) {
@@ -1071,7 +1274,7 @@ export function createUploadRunner(deps: UploadRunnerDeps) {
           note(`sync after the upload failed: ${errorInfo(error).message}`);
         }
       }
-      const problem = steps.verify.result === "mismatch" || steps.localizations === "mismatch" || steps.captions === "mismatch" ? "verify_mismatch" : [steps.publishAt, steps.thumbnail, steps.playlist, steps.record, steps.localizations, steps.captions].includes("failed") || steps.captions === "refused" ? "step_failed" : steps.publishAt === "skipped_too_soon" ? "publish_at_too_soon" : null;
+      const problem = steps.verify.result === "mismatch" || steps.localizations === "mismatch" || steps.captions === "mismatch" ? "verify_mismatch" : [steps.publishAt, steps.thumbnail, steps.playlist, steps.record, steps.localizations, steps.captions].includes("failed") || steps.captions === "refused" || (steps.playlists ?? []).some((entry) => entry.result === "failed") ? "step_failed" : steps.publishAt === "skipped_too_soon" ? "publish_at_too_soon" : null;
       if (await deps.store.update(job.id, "finishing", { status: "done", stepsJson: JSON.stringify(steps), errorCode: problem, finishedAt: now(), updatedAt: now() })) {
         await deps.audit({ channelId: job.channelId, videoId, detail: { event: "publishing.upload_done", uploadId: job.id, video: job.video, steps } });
       }

@@ -102,6 +102,7 @@ function setup(initial: { enabled?: boolean; core?: Parameters<typeof createMcpS
   const thumbnailCalls: Array<Record<string, unknown>> = [];
   const metadataCalls: Array<Record<string, unknown>> = [];
   const captionsCalls: Array<Record<string, unknown>> = [];
+  const playlistCalls: Array<Record<string, unknown>> = [];
   const planCalls: Array<[string, unknown]> = [];
   const endpoint = createProducerMcpEndpoint({
     isConnectionEnabled: async () => state.enabled,
@@ -199,11 +200,18 @@ function setup(initial: { enabled?: boolean; core?: Parameters<typeof createMcpS
           move: async (input) => (planCalls.push(["move", input]), { moved: input.dryRun !== true, dryRun: input.dryRun === true }),
         },
         wait: { waitFor: async () => ({ target: "upload", id: "up1", final: true, outcome: "succeeded", status: "done", snapshot: {}, waitedSeconds: 0 }) },
+        videoPlaylists: {
+          get: async (input) => {
+            playlistCalls.push(input);
+            if (input.videoId === "vidNotOurs1") throw new DomainError({ code: "video_not_in_channel", message: "not this channel's" });
+            return { channelId: input.channelId, videoId: input.videoId, playlists: [{ id: "PL_a", title: "A", privacyStatus: "public" }], cached: false, quotaUnits: 3, uploads: [] };
+          },
+        },
       };
       return createMcpServer(initial.core, { connectionEnabled: true, producerSession });
     },
   });
-  return { endpoint, tokens, state, calls, refused, proposalCalls, queueCalls, clipCalls, imageCalls, thumbnailCalls, metadataCalls, captionsCalls, planCalls };
+  return { endpoint, tokens, state, calls, refused, proposalCalls, queueCalls, clipCalls, imageCalls, thumbnailCalls, metadataCalls, captionsCalls, planCalls, playlistCalls };
 }
 
 function rpc(body: unknown, headers: Record<string, string> = {}, method = "POST"): Request {
@@ -820,7 +828,9 @@ test("AC-PR-07 / AC-PR-10: the Producer's own tools -- its channels with their f
   // gains them; producer_clip_review_submit takes an optional approvedImageId.
   // Owner TG 4782 (2026-11-23, ADR 0048 amendment -- the requirement changed: the Producer edits the connected channels' playlists):
   // 1.29.0 adds the five channel playlist tools, PLAYLIST_WRITE and playlistTools / playlistWriteTools.
-  assert.equal(PRODUCER_API_VERSION, "1.32.0"); // 1.32.0 (owner TG 4817, new requirement AC-TC-08): reviewTimedComments, reviewIssues and the wake file sections; 1.31.0 (BL-274, new requirement owner TG 4839/4842, ADR 0072 amendment 1): producer_video_metadata_update localizations: true; 1.30.0 (FO-REQ-0056 part 2, BL-273, new requirement): video tags in channel_video_list / agent_get_video_context; 1.29.0 (owner TG 4782, ADR 0048 amendment): the five channel playlist tools, PLAYLIST_WRITE; 1.28.0 (BL-272): producer_image_review_*; 1.27.0 (BL-271, new requirement owner TG 3617/3618, ADR 0075): producer_wait; 1.26.0 (BL-269): producer_video_captions_add; 1.24.0 (BL-265, new requirement PRD-REQ-0195 B, ADR 0072): producer_video_metadata_update, METADATA_WRITE / metadataTools, calendar warnings, the media-keyed review gate; 1.23.0 (BL-263, new requirement PRD-REQ-0194, ADR 0071): S codes in the calendar, the queue tools and wake file names; 1.22.0 = PRD-REQ-0195 C (queue add after an approved, cancelled-before-approval version); 1.21.0 (BL-257, new requirement ADR 0070): calendar problem codes owner_review_pending / _returned; 1.20.0 (BL-255): producer_video_thumbnail_replace; 1.19.0 (BL-246): clip review answers carry the owner's attachments; 1.18.0 (BL-244): producer_upload_queue_cancel also stops a row being sent before its last chunk; 1.17.0 (BL-243): the calendar read's deleted_on_youtube / missingOnChannel, channel_video_list videoIds; 1.16.0 (BL-242): the add dates only the approved manifest in the packaged stage; 1.14.0 (BL-239): the upload queue tools; 1.13.0 (BL-235): the calendar read's due / gapDates from the daily coverage, published_pending; 1.12.0 (BL-221): a live sample without a count is 0 viewers; 1.10.0 (BL-209): the calendar read's uploads gain automatic / progressPercent / finishedAt; 1.8.0 (BL-182 stage 2): the calendar read lists packages and uploads
+  // Package playlists (owner TG 4858/4859, ADR 0051 amendment -- the requirement changed: release packages name playlists and the
+  // Producer reads a video's playlists): 1.33.0 adds producer_video_playlists.
+  assert.equal(PRODUCER_API_VERSION, "1.33.0"); // 1.33.0 (new requirement owner TG 4858/4859, package playlists, BL-276): producer_video_playlists; 1.32.0 (owner TG 4817, new requirement AC-TC-08): reviewTimedComments, reviewIssues and the wake file sections; 1.31.0 (BL-274, new requirement owner TG 4839/4842, ADR 0072 amendment 1): producer_video_metadata_update localizations: true; 1.30.0 (FO-REQ-0056 part 2, BL-273, new requirement): video tags in channel_video_list / agent_get_video_context; 1.29.0 (owner TG 4782, ADR 0048 amendment): the five channel playlist tools, PLAYLIST_WRITE; 1.28.0 (BL-272): producer_image_review_*; 1.27.0 (BL-271, new requirement owner TG 3617/3618, ADR 0075): producer_wait; 1.26.0 (BL-269): producer_video_captions_add; 1.24.0 (BL-265, new requirement PRD-REQ-0195 B, ADR 0072): producer_video_metadata_update, METADATA_WRITE / metadataTools, calendar warnings, the media-keyed review gate; 1.23.0 (BL-263, new requirement PRD-REQ-0194, ADR 0071): S codes in the calendar, the queue tools and wake file names; 1.22.0 = PRD-REQ-0195 C (queue add after an approved, cancelled-before-approval version); 1.21.0 (BL-257, new requirement ADR 0070): calendar problem codes owner_review_pending / _returned; 1.20.0 (BL-255): producer_video_thumbnail_replace; 1.19.0 (BL-246): clip review answers carry the owner's attachments; 1.18.0 (BL-244): producer_upload_queue_cancel also stops a row being sent before its last chunk; 1.17.0 (BL-243): the calendar read's deleted_on_youtube / missingOnChannel, channel_video_list videoIds; 1.16.0 (BL-242): the add dates only the approved manifest in the packaged stage; 1.14.0 (BL-239): the upload queue tools; 1.13.0 (BL-235): the calendar read's due / gapDates from the daily coverage, published_pending; 1.12.0 (BL-221): a live sample without a count is 0 viewers; 1.10.0 (BL-209): the calendar read's uploads gain automatic / progressPercent / finishedAt; 1.8.0 (BL-182 stage 2): the calendar read lists packages and uploads
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_stored_suggested_sources"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_publishing_calendar"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_video_comments"));
@@ -886,6 +896,7 @@ test("a token revoked mid-session is refused on its next call, before any channe
       captions: { add: async () => ({}) },
       plans: { templateGet: async () => ({}), templatePropose: async () => ({}), get: async () => ({}), list: async () => ({}), move: async () => ({}) },
       wait: { waitFor: async () => ({}) },
+      videoPlaylists: { get: async () => ({}) },
     },
   });
   const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<{ isError?: boolean }> }> })._registeredTools;
@@ -1079,6 +1090,7 @@ test("BL-163 AC-PR-05: no approve, reject or apply tool exists on any endpoint",
       captions: { add: async () => ({}) },
       plans: { templateGet: async () => ({}), templatePropose: async () => ({}), get: async () => ({}), list: async () => ({}), move: async () => ({}) },
       wait: { waitFor: async () => ({}) },
+      videoPlaylists: { get: async () => ({}) },
     },
   });
   const agent = createMcpServer(undefined, { connectionEnabled: true, agentSession: { tokenId: "t", channelId: "UC_PR_X", async reverify() {} } });
@@ -1244,6 +1256,30 @@ test("BL-255 AC-TH-12: producer_video_thumbnail_replace reaches only the session
   }
   assert.deepEqual(thumbnailCalls, [args]);
   assert.deepEqual([calls[0].tool, calls[0].channelId, calls[0].outcome], ["producer_video_thumbnail_replace", "UC_PR_X", "ok"]);
+});
+
+// Package playlists (owner TG 4858/4859): the playlist read reaches only the session's `videoPlaylists`, takes a strict input
+// (channelId, an 11-character video id, optional refresh), names its channel in the answer and the call log; a refusal of the
+// session (a video not of that channel) comes back as that error and is logged as one.
+test("AC-PP-35: producer_video_playlists reaches only the session's videoPlaylists; strict input; logged; a refusal stays an error", async () => {
+  const { endpoint, tokens, calls, playlistCalls } = setup();
+  const token = (await tokens.issueToken({})).token;
+  const args = { channelId: "UC_PR_X", videoId: "ZeRdh3bZlkg", refresh: true };
+  const result = await toolResult(await endpoint.handle(rpc(call("producer_video_playlists", args), bearer(token))));
+  assert.equal(result.isError, false, result.text);
+  const payload = payloadOf(result.text);
+  assert.equal(payload.forChannelId, "UC_PR_X");
+  assert.deepEqual(payload.playlists, [{ id: "PL_a", title: "A", privacyStatus: "public" }]);
+  for (const bad of [{ channelId: "UC_PR_X", videoId: "short" }, { videoId: "ZeRdh3bZlkg" }, { ...args, playlistId: "PL_a" }, { channelId: "UC_PR_X", videoId: "ZeRdh3bZlkg", refresh: "yes" }]) {
+    const refusedResult = await toolResult(await endpoint.handle(rpc(call("producer_video_playlists", bad), bearer(token))));
+    assert.equal(refusedResult.isError, true, JSON.stringify(bad));
+  }
+  const foreign = await toolResult(await endpoint.handle(rpc(call("producer_video_playlists", { channelId: "UC_PR_X", videoId: "vidNotOurs1" }), bearer(token))));
+  assert.equal(foreign.isError, true);
+  assert.match(foreign.text, /video_not_in_channel/);
+  assert.deepEqual(playlistCalls, [args, { channelId: "UC_PR_X", videoId: "vidNotOurs1" }]);
+  assert.deepEqual([calls[0].tool, calls[0].channelId, calls[0].outcome], ["producer_video_playlists", "UC_PR_X", "ok"]);
+  assert.deepEqual([calls.at(-1)!.tool, calls.at(-1)!.outcome, calls.at(-1)!.errorCode], ["producer_video_playlists", "error", "video_not_in_channel"]);
 });
 
 // BL-265 (MEDIA_GATE_PLAN.md AC-MG-34; ADR 0072 §5, §8; owner TG 4578/4581): the packaging-fix tool reaches only the session's
