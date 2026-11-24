@@ -143,7 +143,10 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // is still refused, AGENT_PUBLIC_NOT_ALLOWED, now as a service refusal that reaches the worker log instead of an input error). In a
 // channel session a playlist write's expectedChannelId must be the session's channel (WRITE_CHANNEL_MISMATCH, the same code the
 // guardrail gave, now before any YouTube call). playlist_delete stays owner-only. Additive.
-export const AGENT_API_VERSION = "4.27.0";
+// 4.28.0 (FO-REQ-0056 part 2, BL-273): channel_video_list gains the selectable field `tags` and agent_get_video_context's metadata gains `tags`
+// -- each video's YouTube snippet.tags as of the last channel sync ([] = none; null = not read yet, until the next sync). Read-only,
+// from the local copy (no YouTube call, no quota). Additive.
+export const AGENT_API_VERSION = "4.28.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry
@@ -336,6 +339,8 @@ export type VideoMetadataContext = {
   /** FO-REQ-0015 item 6: the stored length in seconds and YouTube's `liveBroadcastContent`; null when unknown. */
   durationSeconds: number | null;
   liveBroadcastContent: string | null;
+  /** FO-REQ-0056: YouTube's `snippet.tags` as of the last sync (`[]` = none); null = not read yet (synced before tags were stored). */
+  tags: string[] | null;
 };
 
 export type VideoContext = {

@@ -3207,6 +3207,7 @@ test("CLI agent video-context forwards channelId/videoId and parses --include in
           lastSyncedAt: "2026-09-20T00:00:00.000Z",
           durationSeconds: null,
           liveBroadcastContent: null,
+          tags: null,
         },
       };
     },

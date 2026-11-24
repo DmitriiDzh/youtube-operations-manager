@@ -249,6 +249,9 @@ export const videos = sqliteTable("videos", {
   durationSeconds: integer("duration_seconds"),
   // Additive, SCHEMA_MIGRATIONS version 47: YouTube's `snippet.liveBroadcastContent` ("none" | "live" | "upcoming") from the last sync; NULL = unknown.
   liveBroadcastContent: text("live_broadcast_content"),
+  // Additive, SCHEMA_MIGRATIONS version 125 (FO-REQ-0056 part 2): YouTube's `snippet.tags` from the last sync, a JSON array of strings
+  // ("[]" = the sync saw none). Nullable, no default: NULL = not read since this column existed (unknown, never shown as "no tags").
+  tagsJson: text("tags_json"),
   // Additive, schema version 21 (owner instruction, 2026-09-26, Telegram: Content tab's "Publish"
   // column needs a scheduled-publish date for a still-private video, not only its actual
   // `publishedAt`). This is YouTube's own `status.publishAt` -- a distinct field from
@@ -6248,6 +6251,18 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       }
     },
   },
+  {
+    version: 125,
+    description:
+      "videos.tags_json -- FO-REQ-0056 part 2 (BL-273): YouTube's snippet.tags of each synced video (already in the sync's snippet read, no extra quota), for channel_video_list / agent_get_video_context. Additive, nullable; existing rows stay NULL (unknown) until their next sync. videos is a device-local cache (not transferred)",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE videos ADD COLUMN tags_json TEXT");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
+    },
+  },
 ];
 
 /**
@@ -7058,6 +7073,8 @@ export type StoredVideo = {
   durationSeconds: number | null;
   /** `snippet.liveBroadcastContent` as of the last sync; absent/null = unknown. */
   liveBroadcastContent?: string | null;
+  /** FO-REQ-0056: `snippet.tags` as of the last sync (`[]` = none); null = not read since the column existed. */
+  tags: string[] | null;
   publishAt: string | null;
   lastSyncedAt: Date;
 };
@@ -7098,6 +7115,7 @@ function mapStoredVideo(row: typeof videos.$inferSelect): StoredVideo {
     likeCount: row.likeCount,
     durationSeconds: row.durationSeconds,
     liveBroadcastContent: row.liveBroadcastContent,
+    tags: row.tagsJson === null ? null : (JSON.parse(row.tagsJson) as string[]),
     publishAt: row.publishAt,
     lastSyncedAt: row.lastSyncedAt,
   };
@@ -9195,6 +9213,11 @@ export async function upsertVideos(
     likeCount?: number | null;
     durationSeconds?: number | null;
     liveBroadcastContent?: string | null;
+    /**
+     * FO-REQ-0056: `snippet.tags` as read (`[]` = none). Unlike the other columns, an omitted value leaves the stored tags as they
+     * are: a targeted re-upsert that does not carry tags must not erase what the last read stored.
+     */
+    tags?: string[];
     publishAt?: string | null;
   }>,
   syncedAt: Date
@@ -9217,6 +9240,7 @@ export async function upsertVideos(
       likeCount: entry.likeCount ?? null,
       durationSeconds: entry.durationSeconds ?? null,
       liveBroadcastContent: entry.liveBroadcastContent ?? null,
+      ...(entry.tags !== undefined ? { tagsJson: JSON.stringify(entry.tags) } : {}),
       publishAt: entry.publishAt ?? null,
       lastSyncedAt: syncedAt,
       // YouTube just returned this video, so it is not removed (clears a mark left by an earlier sync).
@@ -9366,9 +9390,9 @@ export async function markVideosRemovedOnYoutube(
 }
 
 /** `src/lib/video-details/` (2026-09-20) needs a single stored video's current cached fields to
- * merge a live-write's freshly-verified values onto before re-upserting -- `upsertVideos` always
- * replaces every column of the row it's given, so a caller wanting to update only some columns
- * must first read the rest. `null` when the video was never synced locally at all. */
+ * merge a live-write's freshly-verified values onto before re-upserting -- `upsertVideos`
+ * replaces every column of the row it's given except `tags` (kept as stored when an entry omits it,
+ * FO-REQ-0056), so a caller wanting to update only some columns must first read the rest. `null` when the video was never synced locally at all. */
 export async function getStoredVideo(channelId: string, videoId: string): Promise<StoredVideo | null> {
   const rows = await db
     .select()
