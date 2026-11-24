@@ -54,6 +54,12 @@ export type PlanSlotPackage = {
    * null. Shown on the slot only; not part of the package fingerprint an approval names.
    */
   reviewComment?: string | null;
+  /**
+   * Owner TG 4817 (PACKAGE_REVIEW_PLAN.md AC-TC-08): the comments the owner bound to moments of the video, sent with his standing
+   * package-review decision (approved or returned) -- seconds, the same moment as `m:ss` (`h:mm:ss` past an hour), the text; sorted
+   * by time. Absent when there are none. Not part of the package fingerprint.
+   */
+  reviewTimedComments?: Array<{ atSeconds: number; time: string; text: string }>;
   /** BL-259 (owner msg 4397): the video's frame (vertical / horizontal), null or absent when not known. Not part of the fingerprint. */
   orientation?: "vertical" | "horizontal" | null;
 };

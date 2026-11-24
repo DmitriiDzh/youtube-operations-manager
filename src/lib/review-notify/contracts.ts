@@ -67,6 +67,12 @@ export type ReviewDecisionNotice = {
   ytmPlace: string;
   /** The read tool and its arguments (`producer_clip_review_get <clipId>`). */
   readTool: string;
+  /**
+   * Owner TG 4817 (PACKAGE_REVIEW_PLAN.md AC-TC-08): the owner's comments bound to moments of the video, sent with this decision --
+   * seconds, the same moment as `m:ss` (`h:mm:ss` past an hour) and the text, sorted by time. Absent or [] when there are none (the
+   * file then has no such section, as before).
+   */
+  timedComments?: Array<{ atSeconds: number; time: string; text: string }>;
 };
 
 export type PlanEntryType = "verdict" | "pick" | "none_fits";

@@ -5,7 +5,11 @@
 import type { PlanMediaReview, PlanSlotProgress } from "@/lib/publishing-plans";
 
 /** BL-267 (plan §3.4): the owner's media review of a package by its key, as the composition computes it (package-reviews' rule). */
-export type MediaReviewOf = (key: { manifestSha256: string | null; video: string; videoSha256: string | null; videoSizeBytes: number | null }) => PlanMediaReview;
+export type MediaReviewKey = { manifestSha256: string | null; video: string; videoSha256: string | null; videoSizeBytes: number | null };
+export type MediaReviewOf = ((key: MediaReviewKey) => PlanMediaReview) & {
+  /** Owner TG 4817 (AC-TC-08): the timed comments of the owner's standing decision on this package ([] when none). */
+  timedComments?: (key: MediaReviewKey) => Array<{ atSeconds: number; time: string; text: string }>;
+};
 import { uploadTimeOf, VIDEO_DELETED_ON_YOUTUBE } from "@/lib/shared-video-presence";
 import type { ScannedPackage } from "@/lib/publishing";
 
@@ -53,11 +57,13 @@ export function progressOfPackage(scanned: ScannedPackage, channelSyntheticMedia
   }
   if (!status) return null;
   const videoSha256 = typeof pkg.sha256 === "string" ? pkg.sha256.toLowerCase() : null;
+  const reviewKey = { manifestSha256: scanned.manifestSha256, video: pkg.video, videoSha256, videoSizeBytes: pkg.sizeBytes ?? null };
+  const timed = reviewOf?.timedComments?.(reviewKey) ?? [];
   return {
     status,
     code,
     // BL-267 (plan §3.4): the media key and the owner's review of it, for uploaded packages too (absent without a review reader).
-    ...(reviewOf ? { media: { videoSha256, sizeBytes: pkg.sizeBytes ?? null, review: reviewOf({ manifestSha256: scanned.manifestSha256, video: pkg.video, videoSha256, videoSizeBytes: pkg.sizeBytes ?? null }) } } : {}),
+    ...(reviewOf ? { media: { videoSha256, sizeBytes: pkg.sizeBytes ?? null, review: reviewOf(reviewKey) } } : {}),
     videoId: scanned.youtube?.videoId ?? null,
     publishAt: code === null ? (scanned.youtube?.publishAt ?? null) : null,
     package: {
@@ -79,6 +85,8 @@ export function progressOfPackage(scanned: ScannedPackage, channelSyntheticMedia
       manifestSha256: scanned.manifestSha256,
       // BL-257 (ADR 0070): the owner's return comment from package review, for the slot's status line (only when returned).
       ...(reviewCommentOf(scanned) !== null ? { reviewComment: reviewCommentOf(scanned) } : {}),
+      // Owner TG 4817 (AC-TC-08): the owner's timed comments of his standing decision, only when there are some.
+      ...(timed.length > 0 ? { reviewTimedComments: timed } : {}),
     },
   };
 }

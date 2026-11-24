@@ -1,5 +1,6 @@
 import { DomainError, isDomainError } from "@/lib/shared-domain";
 import type { PackageReviewDecision, PackageReviewDecisionKind, PackageReviewRequired, PackageReviewsSnapshot } from "@/lib/sync-gateway";
+import type { DraftTimedComment, TimedComment } from "./timed-comments";
 
 export { DomainError, isDomainError };
 export type { PackageReviewDecision, PackageReviewDecisionKind, PackageReviewRequired, PackageReviewsSnapshot };
@@ -63,6 +64,8 @@ export type PackageReviewItem = {
   decision: "approved" | "returned" | null;
   /** That decision's comment (a return always has one), else null. */
   comment: string | null;
+  /** Owner TG 4817 (AC-TC-09): that decision's timed comments, sorted by time ([] when none). */
+  timedComments: TimedComment[];
   decidedAt: string | null;
   decidedOn: string | null;
   /** The manifest states the video's `sha256` (without it the package cannot be approved, AC-PR-05). */
@@ -114,6 +117,12 @@ export type ReviewPackage = {
 };
 
 export type ReviewPackagesResult = { status: "ok"; packages: ReviewPackage[] } | { status: "no_workspace" | "workspace_unavailable" };
+
+/**
+ * Owner TG 4817 (AC-TC-03): the owner's draft of timed comments for one package on this computer -- device-local, never synced,
+ * cleared once a decision carrying them is stored. `updatedAt` null: no draft.
+ */
+export type PackageReviewDraft = { manifestSha256: string; comments: DraftTimedComment[]; updatedAt: string | null };
 
 /** A local file the media routes stream (absolute path, size, browser type). */
 export type PackageMediaFile = { path: string; bytes: number; type: string };

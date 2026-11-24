@@ -2142,6 +2142,24 @@ export const socialPostJobs = sqliteTable(
 );
 
 /**
+ * SCHEMA_MIGRATIONS version 124 (owner TG 4817, PACKAGE_REVIEW_PLAN.md AC-TC-03): the owner's draft of timed comments on one release
+ * package (channel, manifest SHA-256) in Media → «Видео на проверку» -- kept until he sends them with his decision, so a reload, another
+ * tab or his phone through remote access finds them. Device-local (the review screen runs on one computer), never synced, never in a
+ * snapshot; the row goes when the decision carrying them is stored or the draft is emptied.
+ */
+export const packageReviewDrafts = sqliteTable(
+  "package_review_drafts",
+  {
+    channelId: text("channel_id").notNull(),
+    manifestSha256: text("manifest_sha256").notNull(),
+    /** `[{ id, atSeconds, text }]`, as the package-reviews module checked it. */
+    commentsJson: text("comments_json").notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.channelId, table.manifestSha256] })]
+);
+
+/**
  * SCHEMA_MIGRATIONS version 45 (BL-118) -- CHANNEL-level daily totals (views, watch time, subscribers...) collected with the per-video
  * metrics, so the agent's channel analytics can be read locally instead of a live Analytics API call every time. Same shape and
  * rules as `video_metrics_daily` (the API omits zero-activity days: absence is not zero), device-local like it.
@@ -6229,6 +6247,20 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       } catch (error) {
         if (!isDuplicateColumnError(error)) throw error;
       }
+    },
+  },
+  {
+    version: 124,
+    description:
+      "package_review_drafts -- owner TG 4817 (PACKAGE_REVIEW_PLAN.md AC-TC-03): the owner's draft of timed comments per (channel, release-package manifest) until he sends them with his review decision. Additive (one new table), device-local",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS package_review_drafts (
+        channel_id TEXT NOT NULL,
+        manifest_sha256 TEXT NOT NULL,
+        comments_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (channel_id, manifest_sha256)
+      )`);
     },
   },
 ];
@@ -10995,6 +11027,30 @@ export async function insertReviewNotifyLedgerEntries(entries: ReadonlyArray<{ k
       .values(chunk.map((e) => ({ entryKey: e.key, kind: e.kind, fileName: e.fileName, recordedAt: at })))
       .onConflictDoNothing();
   }
+}
+
+// --- Owner TG 4817: package-review drafts of timed comments ----------------------------------------------------------------
+
+/** AC-TC-03: the owner's stored draft for one package, or null (the comments are JSON, checked by the package-reviews module). */
+export async function getPackageReviewDraft(channelId: string, manifestSha256: string, database: AppDb = db): Promise<{ commentsJson: string; updatedAt: Date } | null> {
+  const [row] = await database
+    .select({ commentsJson: packageReviewDrafts.commentsJson, updatedAt: packageReviewDrafts.updatedAt })
+    .from(packageReviewDrafts)
+    .where(and(eq(packageReviewDrafts.channelId, channelId), eq(packageReviewDrafts.manifestSha256, manifestSha256)));
+  return row ?? null;
+}
+
+/** AC-TC-03: replaces the draft whole. */
+export async function setPackageReviewDraft(channelId: string, manifestSha256: string, commentsJson: string, updatedAt: Date, database: AppDb = db): Promise<void> {
+  await database
+    .insert(packageReviewDrafts)
+    .values({ channelId, manifestSha256, commentsJson, updatedAt })
+    .onConflictDoUpdate({ target: [packageReviewDrafts.channelId, packageReviewDrafts.manifestSha256], set: { commentsJson, updatedAt } });
+}
+
+/** AC-TC-03/05: the draft is gone (emptied, or sent with a decision). */
+export async function deletePackageReviewDraft(channelId: string, manifestSha256: string, database: AppDb = db): Promise<void> {
+  await database.delete(packageReviewDrafts).where(and(eq(packageReviewDrafts.channelId, channelId), eq(packageReviewDrafts.manifestSha256, manifestSha256)));
 }
 
 /** BL-248: retention -- removes rows recorded before `cutoff`; returns how many. */

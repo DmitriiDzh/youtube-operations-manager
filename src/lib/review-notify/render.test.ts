@@ -56,6 +56,22 @@ test("AC-RN-16: the same decision gives the same bytes; times in UTC; the commen
   assert.ok(!/written|writer/i.test(a));
 });
 
+// Owner TG 4817 (PACKAGE_REVIEW_PLAN.md AC-TC-08): the owner's timed comments are a section of their own, one line per comment
+// `<seconds> s (<m:ss>): <text>`, before the attachments; without them the file is byte-identical to before.
+test("AC-TC-08: timed comments get their own section with seconds and m:ss; without them the bytes do not change", () => {
+  const plain = renderDecisionNotice(notice);
+  assert.equal(renderDecisionNotice({ ...notice, timedComments: [] }), plain);
+  assert.ok(!plain.includes("Timed comments"));
+  const timed = renderDecisionNotice({
+    ...notice,
+    timedComments: [
+      { atSeconds: 5, time: "0:05", text: "black frame" },
+      { atSeconds: 3725.5, time: "1:02:05", text: "music\ntoo loud" },
+    ],
+  });
+  assert.ok(timed.includes("## Timed comments (moments of the video, in seconds and m:ss)\n\n- 5 s (0:05): black frame\n- 3725.5 s (1:02:05): music too loud\n\n## Attachments"));
+});
+
 test("a decision without a comment says (none)", () => {
   assert.ok(renderDecisionNotice({ ...notice, comment: null }).includes("## Owner's comment\n\n(none)"));
 });

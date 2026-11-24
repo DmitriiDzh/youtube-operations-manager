@@ -5,6 +5,7 @@ import {
   type OwnerReviewState,
   type PackageMediaFile,
   type PackageReviewDecision,
+  type PackageReviewDraft,
   type PackageReviewItem,
   type PackageReviewItemState,
   type PackageReviewRequired,
@@ -14,7 +15,8 @@ import {
   type ReviewPackagesResult,
 } from "./contracts";
 import { isMediaKeyed, latestOwnerDecision, ownerReviewStateOf, standingDecision, wellFormedDecision } from "./model";
-import { manifestSha256Schema, packageDecisionInputSchema, packageReviewSwitchInputSchema } from "./schemas";
+import { manifestSha256Schema, packageDecisionInputSchema, packageReviewDraftInputSchema, packageReviewSwitchInputSchema } from "./schemas";
+import { roundSeconds, timedCommentsAsText, wellFormedDraft, wellFormedTimedComments } from "./timed-comments";
 
 // BL-257 (ADR 0070, PACKAGE_REVIEW_PLAN.md stage 1): the owner's review of a channel's final release packages. Every port is
 // injected: the store (the synced family), the channel's packages (the publishing scan, wired by the composition layer), files and
@@ -24,6 +26,13 @@ export type PackageReviewsStore = {
   read(channelId: string): Promise<PackageReviewsSnapshot>;
   setRequired(channelId: string, required: PackageReviewRequired): Promise<void>;
   addDecision(channelId: string, decision: PackageReviewDecision): Promise<void>;
+};
+
+/** Owner TG 4817 (AC-TC-03): this computer's drafts of timed comments, one row per (channel, manifest). */
+export type PackageReviewDraftsStore = {
+  get(channelId: string, manifestSha256: string): Promise<{ commentsJson: string; updatedAt: Date } | null>;
+  set(channelId: string, manifestSha256: string, commentsJson: string, updatedAt: Date): Promise<void>;
+  remove(channelId: string, manifestSha256: string): Promise<void>;
 };
 
 export type PackageReviewsDeps = {
@@ -47,6 +56,8 @@ export type PackageReviewsDeps = {
    * video-projects). Absent or failing: none -- a decision then counts for its own video code only (stricter).
    */
   recodeAliases?(channelId: string): Promise<ReadonlyMap<string, string>>;
+  /** Owner TG 4817 (AC-TC-03): the drafts of timed comments (device-local). Absent: the draft calls refuse, a decision clears nothing. */
+  drafts?: PackageReviewDraftsStore;
 };
 
 const VIDEO_TYPES: Readonly<Record<string, string>> = { mp4: "video/mp4", m4v: "video/mp4", mov: "video/quicktime", webm: "video/webm" };
@@ -103,6 +114,7 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
       state,
       decision: latest?.kind === "approved" || latest?.kind === "returned" ? latest.kind : null,
       comment: latest?.comment ?? null,
+      timedComments: latest?.timedComments ?? [],
       decidedAt: latest?.at ?? null,
       decidedOn: latest?.device ?? null,
       hasVideoSha256: pkg.videoSha256 !== null,
@@ -196,7 +208,10 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
       media = { videoSha256: pkg.videoSha256, videoSizeBytes: pkg.videoSizeBytes };
     }
     const thumbnailSha256 = await thumbnailHashOf(channelId, pkg);
-    const comment = (parsed.comment ?? "").trim() || null;
+    // Owner TG 4817 (AC-TC-05/06): the draft's timed comments go with an approval or a return as one batch, sorted by time; a return
+    // without a general comment states them as its comment too (an older build drops a return without one).
+    const timed = parsed.kind === "packaging_comment" ? [] : wellFormedTimedComments((parsed.timedComments ?? []).map((c) => ({ atSeconds: roundSeconds(c.atSeconds), text: c.text })));
+    const comment = (parsed.comment ?? "").trim() || (parsed.kind === "returned" && timed.length > 0 ? timedCommentsAsText(timed, PACKAGE_REVIEW_LIMITS.comment) : null);
     const decision: PackageReviewDecision = {
       id: `pr_${deps.randomId()}`.slice(0, 40),
       manifestSha256: pkg.manifestSha256,
@@ -208,11 +223,53 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
       device: await deps.deviceLabel(),
       at: deps.now().toISOString(),
       ...(media ?? {}),
+      ...(timed.length > 0 ? { timedComments: timed } : {}),
     };
     await deps.withLock(() => deps.store.addDecision(channelId, decision));
-    await deps.audit({ channelId, video: pkg.video, detail: { event: `package_review.${decision.kind}`, decisionId: decision.id, manifestSha256: decision.manifestSha256, ...(media ?? {}), thumbnailSha256, comment } });
+    // AC-TC-05: the draft goes only once the decision carrying it is stored (a refused decision above keeps it). A packaging comment
+    // never carries the draft, so it keeps it too.
+    if (parsed.kind !== "packaging_comment") await deps.drafts?.remove(channelId, pkg.manifestSha256).catch(() => undefined);
+    await deps.audit({ channelId, video: pkg.video, detail: { event: `package_review.${decision.kind}`, decisionId: decision.id, manifestSha256: decision.manifestSha256, ...(media ?? {}), thumbnailSha256, comment, ...(timed.length > 0 ? { timedComments: timed.length } : {}) } });
     await deps.afterChange(channelId);
     return { decision, view: await view(channelId) };
+  }
+
+  function draftsStore(): PackageReviewDraftsStore {
+    if (!deps.drafts) throw refuse("package_review_workspace_unavailable", "Drafts are not kept on this computer");
+    return deps.drafts;
+  }
+
+  /**
+   * Owner TG 4817 (AC-TC-03/04): the owner's draft of timed comments for one package of THIS channel (found by its manifest in the
+   * channel's scan, else `package_review_not_found`) -- the comments with their ids, sorted by time; none: `[]`.
+   */
+  async function draft(channelId: string, manifestSha256: unknown): Promise<PackageReviewDraft> {
+    const sha = parseWithSchema(manifestSha256Schema, manifestSha256, "package review draft manifest");
+    const store = draftsStore();
+    await findPackage(channelId, sha, true);
+    const row = await store.get(channelId, sha);
+    let comments: PackageReviewDraft["comments"] = [];
+    try {
+      comments = row ? wellFormedDraft(JSON.parse(row.commentsJson)) : [];
+    } catch {
+      comments = [];
+    }
+    return { manifestSha256: sha, comments, updatedAt: row && comments.length > 0 ? row.updatedAt.toISOString() : null };
+  }
+
+  /** AC-TC-03/04: replaces the draft whole (`comments: []` removes it). Only for a package of this channel. Local: no sync, no gate. */
+  async function saveDraft(channelId: string, input: unknown): Promise<PackageReviewDraft> {
+    const parsed = parseWithSchema(packageReviewDraftInputSchema, input, "package review draft");
+    const store = draftsStore();
+    await findPackage(channelId, parsed.manifestSha256, true);
+    const comments = wellFormedDraft(parsed.comments);
+    if (comments.length === 0) {
+      await store.remove(channelId, parsed.manifestSha256);
+      return { manifestSha256: parsed.manifestSha256, comments: [], updatedAt: null };
+    }
+    const at = deps.now();
+    await store.set(channelId, parsed.manifestSha256, JSON.stringify(comments), at);
+    return { manifestSha256: parsed.manifestSha256, comments, updatedAt: at.toISOString() };
   }
 
   /**
@@ -278,6 +335,8 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
         device: latest.device,
         at: latest.at,
         carriedFrom: from,
+        // Owner TG 4817: the owner's timed comments travel with his decision.
+        ...(latest.timedComments && latest.timedComments.length > 0 ? { timedComments: latest.timedComments } : {}),
       };
       await deps.store.addDecision(channelId, copy);
       await deps
@@ -287,13 +346,13 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
     });
   }
 
-  return { ownerReviewState, view, setRequired, decide, mediaFile, carryDecision };
+  return { ownerReviewState, view, setRequired, decide, mediaFile, carryDecision, draft, saveDraft };
 }
 
 export type PackageReviewsService = ReturnType<typeof createPackageReviewsService>;
 
 /** The owner's surface (the Web UI's package-review routes only, AC-PR-08). */
 export function packageReviewsOwnerSurface(service: PackageReviewsService) {
-  return { view: service.view, setRequired: service.setRequired, decide: service.decide, mediaFile: service.mediaFile };
+  return { view: service.view, setRequired: service.setRequired, decide: service.decide, mediaFile: service.mediaFile, draft: service.draft, saveDraft: service.saveDraft };
 }
 export type PackageReviewsOwnerSurface = ReturnType<typeof packageReviewsOwnerSurface>;

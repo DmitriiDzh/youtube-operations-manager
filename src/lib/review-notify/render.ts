@@ -129,6 +129,10 @@ export function renderDecisionNotice(notice: ReviewDecisionNotice): string {
     "",
     notice.comment !== null && notice.comment.length > 0 ? fenced(notice.comment) : "(none)",
     "",
+    // Owner TG 4817 (AC-TC-08): only when the decision carries timed comments, so every other notice stays byte-identical.
+    ...((notice.timedComments ?? []).length > 0
+      ? ["## Timed comments (moments of the video, in seconds and m:ss)", "", ...(notice.timedComments ?? []).map((c) => `- ${c.atSeconds} s (${c.time}): ${oneLine(c.text)}`), ""]
+      : []),
     "## Attachments (relative to the channel folder)",
     "",
     ...(notice.attachments.length > 0 ? notice.attachments.map((p) => `- ${code(p)}`) : ["(none)"]),

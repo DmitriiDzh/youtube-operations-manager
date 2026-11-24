@@ -1,7 +1,7 @@
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { decidingRecordOf, wellFormedAttachments } from "@/lib/clip-reviews";
-import { ownerReviewStateOf, standingDecision } from "@/lib/package-reviews";
+import { ownerReviewStateOf, standingDecision, timedCommentsReadout, wellFormedTimedComments } from "@/lib/package-reviews";
 import {
   deleteReviewNotifyLedgerBefore,
   getReviewNotifySettingsJson,
@@ -275,6 +275,8 @@ export function packageNoticesOf(channel: Channel, snapshot: PackageReviewsSnaps
         : standingDecision(gate, { manifestSha256: d.manifestSha256, video: d.video || null, videoSha256: d.videoSha256 ?? null, videoSizeBytes: d.videoSizeBytes ?? null });
     const later = standing && standing.id !== d.id ? standing : null;
     const media = typeof d.videoSha256 === "string" ? [{ label: "Video sha256", value: `${d.videoSha256} (${d.videoSizeBytes ?? "?"} bytes)` }] : [];
+    // Owner TG 4817 (AC-TC-08): the timed comments sent with an approval or a return, as the package-reviews rule reads them.
+    const timed = d.kind === "packaging_comment" ? [] : timedCommentsReadout(wellFormedTimedComments(d.timedComments));
     out.push({
       kind: "package",
       channelId: channel.channelId,
@@ -299,6 +301,7 @@ export function packageNoticesOf(channel: Channel, snapshot: PackageReviewsSnaps
       attachments: [],
       ytmPlace: "Медиа → «Видео на проверку»",
       readTool: `agent_get_publishing_calendar ${json({ channelId: channel.channelId })}`,
+      ...(timed.length > 0 ? { timedComments: timed } : {}),
     });
   }
   return out;

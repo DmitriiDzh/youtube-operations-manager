@@ -282,3 +282,31 @@ test("BL-265 review fix 4: a later decision on the same mp4 (another manifest) m
   assert.ok(notices[0].context.some((l) => l.label === "Counts" && l.value.includes("pr_r")));
   assert.equal(notices[1].context.some((l) => l.label === "Counts"), false);
 });
+
+// Owner TG 4817 (PACKAGE_REVIEW_PLAN.md AC-TC-08): the Producer's notice of an approval or a return carries the owner's timed comments
+// as seconds + m:ss + text (well-formed only, sorted by time); a decision without them, and a packaging comment, carry none.
+test("AC-TC-08: package notices carry the timed comments of an approval or a return; none otherwise", () => {
+  const M = "a".repeat(64);
+  const base = { manifestSha256: M, video: "V11", thumbnailSha256: null, comment: null, by: "owner" as const, device: "Mac" };
+  const snapshot: PackageReviewsSnapshot = {
+    exists: true,
+    required: { value: true, updatedAt: "2026-11-15T08:00:00Z", by: "owner", device: "Mac" },
+    decisions: {
+      pr_r: { ...base, id: "pr_r", kind: "returned", comment: "0:05 black frame", at: "2026-11-24T10:00:00Z", timedComments: [{ atSeconds: 65.5, text: "map is wrong" }, { atSeconds: 5, text: "black frame" }, { atSeconds: -3, text: "bad" }] },
+      pr_a: { ...base, id: "pr_a", kind: "approved", at: "2026-11-24T11:00:00Z" },
+      pr_c: { ...base, id: "pr_c", kind: "packaging_comment", comment: "title", at: "2026-11-24T12:00:00Z", timedComments: [{ atSeconds: 1, text: "x" }] },
+    },
+  };
+  const notices = packageNoticesOf(CH, snapshot, SINCE);
+  assert.deepEqual(notices.map((n) => [n.decisionId, n.timedComments]), [
+    [
+      "pr_r",
+      [
+        { atSeconds: 5, time: "0:05", text: "black frame" },
+        { atSeconds: 65.5, time: "1:05", text: "map is wrong" },
+      ],
+    ],
+    ["pr_a", undefined],
+    ["pr_c", undefined],
+  ]);
+});

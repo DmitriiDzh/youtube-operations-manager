@@ -1,9 +1,36 @@
 import { z } from "zod";
 import { PACKAGE_REVIEW_LIMITS } from "./contracts";
+import { TIMED_COMMENT_CONTROL, TIMED_COMMENT_LIMITS } from "./timed-comments";
 
 // BL-257 (PACKAGE_REVIEW_PLAN.md stage 2): what the owner sends from the Web UI. Strict: an unknown field is refused.
 
 export const manifestSha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
+
+const CONTROL_CHARACTERS = /[\u0000-\u0009\u000b-\u001f\u007f]/;
+
+/** Owner TG 4817 (AC-TC-01): one comment at a moment of the video -- seconds and a one-line text. */
+export const timedCommentInputSchema = z
+  .object({
+    atSeconds: z.number().finite().min(0).max(TIMED_COMMENT_LIMITS.maxSeconds),
+    text: z
+      .string()
+      .max(TIMED_COMMENT_LIMITS.text)
+      .refine((value) => value.trim().length > 0, "a timed comment needs a text")
+      .refine((value) => !TIMED_COMMENT_CONTROL.test(value), "one line without control characters"),
+  })
+  .strict();
+
+/** Owner TG 4817 (AC-TC-03): the owner's whole draft of timed comments for one package (replaced whole; [] clears it). */
+export const packageReviewDraftInputSchema = z
+  .object({
+    manifestSha256: manifestSha256Schema,
+    comments: z
+      .array(timedCommentInputSchema.extend({ id: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/) }).strict())
+      .max(TIMED_COMMENT_LIMITS.count)
+      .refine((list) => new Set(list.map((c) => c.id)).size === list.length, "comment ids must be unique"),
+  })
+  .strict();
+export type PackageReviewDraftInput = z.infer<typeof packageReviewDraftInputSchema>;
 
 /**
  * The owner's decision: approve the media (a comment optional), return the media (a comment required: what to change), or -- BL-265
@@ -14,12 +41,17 @@ export const packageDecisionInputSchema = z
     manifestSha256: manifestSha256Schema,
     kind: z.enum(["approved", "returned", "packaging_comment"]),
     comment: z.string().max(PACKAGE_REVIEW_LIMITS.comment).nullable().optional(),
+    /** Owner TG 4817 (AC-TC-05): the draft's timed comments, sent with an approval or a return as one batch. */
+    timedComments: z.array(timedCommentInputSchema).max(TIMED_COMMENT_LIMITS.count).optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
-    if (value.kind === "returned" && !(value.comment ?? "").trim()) ctx.addIssue({ code: "custom", path: ["comment"], message: "a return needs a comment" });
+    const timed = value.timedComments ?? [];
+    // AC-TC-06: a return says what to change -- in a general comment or at moments of the video.
+    if (value.kind === "returned" && !(value.comment ?? "").trim() && timed.length === 0) ctx.addIssue({ code: "custom", path: ["comment"], message: "a return needs a comment or a timed comment" });
+    if (value.kind === "packaging_comment" && timed.length > 0) ctx.addIssue({ code: "custom", path: ["timedComments"], message: "a packaging comment carries no timed comments" });
     if (value.kind === "packaging_comment" && !(value.comment ?? "").trim()) ctx.addIssue({ code: "custom", path: ["comment"], message: "a packaging comment needs a comment" });
-    if (/[\u0000-\u0009\u000b-\u001f\u007f]/.test(value.comment ?? "")) ctx.addIssue({ code: "custom", path: ["comment"], message: "must not contain control characters" });
+    if (CONTROL_CHARACTERS.test(value.comment ?? "")) ctx.addIssue({ code: "custom", path: ["comment"], message: "must not contain control characters" });
   });
 export type PackageDecisionInput = z.infer<typeof packageDecisionInputSchema>;
 

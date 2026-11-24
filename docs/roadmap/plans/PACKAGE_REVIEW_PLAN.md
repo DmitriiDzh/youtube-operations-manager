@@ -38,3 +38,34 @@ Owner: TG 2298 (via the Producer), msgs 4514/4516 (2026-11-15). WWE only for now
 - AC-PR-15 (owner msg 4519) The review screen works on a phone (remote access, < 768 px): the player fills the width with native
   controls, `playsInline`, the 16:9 or 9:16 frame kept, streaming by Range (no full download first); the actions stay reachable
   (sticky bar), the texts fold.
+  **Amended (owner TG 4817, 2026-11-24, timed comments):** the screen's player is the app's own review player (`MediaVideoPlayer`,
+  as in the plan review of clips), not the browser's native controls: sound on, no autoplay, no loop, `preload="metadata"` (Range,
+  no full download), `playsInline`, the frame kept, a fullscreen button; page scroll still works over the frame on a phone.
+
+## Timed comments (owner TG 4817, 2026-11-24; written before the code)
+
+The owner pauses the video and writes what is wrong at that moment; the comments are flags on the timeline and go to the factory
+together with his decision, as one batch. Modelled on the audio review screen (`plan-review-screen.tsx`: a mark at the playhead with
+its own note, sent with the verdict). No YouTube call; the same routes, session and active-channel check as the rest of the screen.
+
+- AC-TC-01 Writing a comment fixes the moment: focusing the comment box pauses the video and the comment is stored with that time in
+  seconds (one decimal, 0 ≤ t ≤ 24 h) and its text (1–500 characters, no control characters; at most 200 comments per package).
+- AC-TC-02 Every comment is a flag on the player's timeline at its time with its number; the list under the player shows number,
+  m:ss (h:mm:ss past an hour) and the text; a click on a flag or a time seeks there, paused. Works at phone width (< 768 px).
+- AC-TC-03 Until he sends, the comments are a server-side draft per (channel, manifest SHA-256) on this computer (device-local table,
+  schema 124): a reload, another tab or his phone through remote access shows the same draft. Edit and delete work before sending.
+  An empty draft is no row.
+- AC-TC-04 The draft routes (`GET`/`PUT …/package-reviews/draft?manifest=`) need the Web session and the ACTIVE channel, and only
+  accept a manifest of a package of that channel (else `package_review_not_found`); a draft of channel A is never read through B.
+- AC-TC-05 Sending is one action: «Одобрить» or «Вернуть» sends the decision with all draft comments as one batch (`timedComments` in
+  the decision, sorted by time). The draft is cleared only after the decision is stored; a refused decision keeps it.
+- AC-TC-06 A packaging comment never carries timed comments (`validation_failed`). A return needs a general comment OR at least one
+  timed comment; without a general comment the stored `comment` is the timed comments as lines `m:ss text` (so an older build, which
+  drops a return without a comment, and `reviewComment` still read it).
+- AC-TC-07 A decision read from the other computer keeps its well-formed timed comments; a malformed comment is dropped, never the
+  decision (and never makes a return or approval count differently).
+- AC-TC-08 The Producer reads the batch: the wake file `REVIEW-DECISION-package-…` gains a section «Timed comments» with one line per
+  comment `<seconds> s (<m:ss>): <text>` (absent when there are none, so older notices stay byte-identical), and the weekly plan's
+  package (`factory_/agent_/producer_publishing_plan_get`) gains `reviewTimedComments: [{ atSeconds, time, text }]` of the standing
+  decision (approved or returned; absent when none). Factory 1.55.0, Agent 4.26.0, Producer 1.28.0 (additive).
+- AC-TC-09 The card shows the standing decision's timed comments (time and text) after it is sent.

@@ -135,7 +135,10 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // plan's packages gain `captions`. No caption tool for channel agents. Additive.
 // 4.25.0 (BL-271, owner TG 3617/3618, ADR 0075): agent_wait (READ, as factory_wait 1.54.0, this channel only -- another channel's id is
 // not_found) -- wait until one operation is final without polling; not counted as MCP activity. Additive.
-export const AGENT_API_VERSION = "4.25.0";
+// 4.26.0 (owner TG 4817, PACKAGE_REVIEW_PLAN.md AC-TC-08): agent_publishing_plan_get / _list -- a slot's package gains
+// reviewTimedComments [{ atSeconds, time, text }] (as factory_publishing_plan_get 1.55.0: the owner's comments at moments of the video,
+// sent with his standing package-review decision). Additive.
+export const AGENT_API_VERSION = "4.26.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry

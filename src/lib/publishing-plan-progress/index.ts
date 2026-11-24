@@ -1,5 +1,5 @@
 import { createPackageScanCore, createPublishingSettingsCore, listChannelUploads, ownerReviewStateFor, packageScanFilesSignature, packageScanSignature, removedVideosOf } from "@/lib/publishing";
-import { standingDecision } from "@/lib/package-reviews";
+import { standingDecision, timedCommentsReadout } from "@/lib/package-reviews";
 import type { PlanProgressResult, PlanSlotProgress, PublishingPlansPorts } from "@/lib/publishing-plans";
 import { createPackagesReader, invalidatePackagesEntry, type PackagesEntry } from "./packages-cache";
 import { deletedVideosBySlot, progressOfSlots, progressWithUploads, type MediaReviewOf } from "./progress";
@@ -12,11 +12,16 @@ import { deletedVideosBySlot, progressOfSlots, progressWithUploads, type MediaRe
 export async function mediaReviewReaderOf(channelId: string, read: (channelId: string) => ReturnType<typeof ownerReviewStateFor> = ownerReviewStateFor): Promise<MediaReviewOf> {
   try {
     const state = await read(channelId);
-    if (!state.required) return () => "not_required";
-    return (key) => {
-      const standing = standingDecision(state, key);
-      return standing?.kind === "approved" ? "approved" : standing?.kind === "returned" ? "returned" : "pending";
-    };
+    // Owner TG 4817 (AC-TC-08): the standing decision's timed comments, also on a channel without the gate (he may still decide).
+    const timedComments: MediaReviewOf["timedComments"] = (key) => timedCommentsReadout(standingDecision(state, key)?.timedComments ?? []);
+    const reader: MediaReviewOf = state.required
+      ? (key) => {
+          const standing = standingDecision(state, key);
+          return standing?.kind === "approved" ? "approved" : standing?.kind === "returned" ? "returned" : "pending";
+        }
+      : () => "not_required";
+    reader.timedComments = timedComments;
+    return reader;
   } catch {
     return () => "unreadable";
   }

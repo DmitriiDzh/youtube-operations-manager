@@ -75,6 +75,14 @@ export function createPackageReviewRouteHandlers(deps: PackageReviewRouteDeps = 
     /** POST `{ manifestSha256, kind: approved | returned | packaging_comment (BL-265), comment? }` (a return or a packaging comment needs a comment). */
     decide: (request: Request, context: Context) =>
       guarded(context, async (channelId) => NextResponse.json(await deps.service().decide(channelId, await request.json().catch(() => null)))),
+    /**
+     * Owner TG 4817 (AC-TC-03/04): GET `?manifest=<sha256>` -- the owner's draft of timed comments for a package of the active
+     * channel; PUT `{ manifestSha256, comments: [{ id, atSeconds, text }] }` replaces it whole (`[]` clears it). Local, no sync.
+     */
+    draft: (request: Request, context: Context) =>
+      guarded(context, async (channelId) => NextResponse.json(await deps.service().draft(channelId, new URL(request.url).searchParams.get("manifest")))),
+    saveDraft: (request: Request, context: Context) =>
+      guarded(context, async (channelId) => NextResponse.json(await deps.service().saveDraft(channelId, await request.json().catch(() => null)))),
     /** GET `?manifest=<sha256>`: the package's own video, with HTTP Range (the player seeks in a multi-GB episode); never its path. */
     video: media("video"),
     /** GET `?manifest=<sha256>`: the package's default thumbnail. */

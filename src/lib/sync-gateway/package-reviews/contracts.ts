@@ -51,6 +51,11 @@ export type PackageReviewDecision = {
    * original's. Absent on the owner's own decisions; an older build ignores it.
    */
   carriedFrom?: string;
+  /**
+   * Owner TG 4817 (PACKAGE_REVIEW_PLAN.md AC-TC-05): the owner's comments bound to moments of the video, sent with this approval or
+   * return as one batch -- seconds (one decimal) and text, sorted by time. Absent when there are none; an older build ignores it.
+   */
+  timedComments?: Array<{ atSeconds: number; text: string }>;
 };
 
 /** The owner's switch: review the channel's final packages before they count as ready. Assigned whole. */

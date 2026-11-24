@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
-import { insertVideoEditAuditEvent, rawSqlClient } from "@/lib/db";
+import { deletePackageReviewDraft, getPackageReviewDraft, insertVideoEditAuditEvent, rawSqlClient, setPackageReviewDraft } from "@/lib/db";
 import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 import { createPackageReviewsCoreForProduction } from "@/lib/sync-gateway";
 import { hashPackageFile } from "./adapters/files";
@@ -42,6 +42,12 @@ function service(ports: PackageReviewsCompositionPorts) {
     },
     // The owner's decisions are audited on the computer they were made on (the synced record names the device for the other).
     audit: ({ channelId, video, detail }) => insertVideoEditAuditEvent({ channelId, videoId: `package:${video}`, eventType: "RESULT", detail }),
+    // Owner TG 4817 (AC-TC-03): the owner's drafts of timed comments, device-local (schema 124).
+    drafts: {
+      get: (channelId, manifestSha256) => getPackageReviewDraft(channelId, manifestSha256),
+      set: (channelId, manifestSha256, commentsJson, updatedAt) => setPackageReviewDraft(channelId, manifestSha256, commentsJson, updatedAt),
+      remove: (channelId, manifestSha256) => deletePackageReviewDraft(channelId, manifestSha256),
+    },
   });
 }
 
@@ -76,7 +82,7 @@ export function carryReviewDecisionForRecode(channelId: string, input: { fromSha
 }
 
 export { createPackageReviewsService, packageReviewsOwnerSurface } from "./services";
-export type { PackageReviewsDeps, PackageReviewsService, PackageReviewsOwnerSurface, PackageReviewsStore } from "./services";
+export type { PackageReviewDraftsStore, PackageReviewsDeps, PackageReviewsService, PackageReviewsOwnerSurface, PackageReviewsStore } from "./services";
 export {
   decisionCovers,
   isMediaKeyed,
@@ -92,3 +98,4 @@ export {
 export type { MediaKey, OwnerReviewProblem, TriedRuleRow } from "./model";
 export * from "./contracts";
 export * from "./schemas";
+export * from "./timed-comments";

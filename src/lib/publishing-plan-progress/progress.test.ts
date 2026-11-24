@@ -313,3 +313,25 @@ test("AC-WT-41: mediaReviewReaderOf -- not_required, approved, pending, returned
   });
   assert.equal(broken(key), "unreadable");
 });
+
+// Owner TG 4817 (PACKAGE_REVIEW_PLAN.md AC-TC-08): the plan's package carries the timed comments of the owner's standing decision
+// (approved or returned, also on a channel without the gate) as [{ atSeconds, time 'm:ss', text }]; none -> no field.
+test("AC-TC-08: the standing decision's timed comments reach the plan's package as reviewTimedComments; none -> absent", async () => {
+  const { mediaReviewReaderOf } = await import("./index");
+  const key = { manifestSha256: "a".repeat(64), video: "V1", videoSha256: "1".repeat(64), videoSizeBytes: 1000 };
+  const decision = { id: "d1", kind: "returned", video: "V1", manifestSha256: "a".repeat(64), videoSha256: "1".repeat(64), videoSizeBytes: 1000, by: "owner", device: null, at: "2026-11-24T10:00:00Z", seq: 1, comment: "0:12 cut", timedComments: [{ atSeconds: 12.3, text: "cut" }, { atSeconds: 3725, text: "too loud" }] };
+  const expected = [
+    { atSeconds: 12.3, time: "0:12", text: "cut" },
+    { atSeconds: 3725, time: "1:02:05", text: "too loud" },
+  ];
+  for (const required of [true, false]) {
+    const reader = await mediaReviewReaderOf("UC", async () => ({ required, decisions: [decision], aliases: new Map() }) as never);
+    assert.deepEqual(reader.timedComments?.(key), expected, `gate ${required ? "on" : "off"}`);
+    assert.deepEqual(reader.timedComments?.({ ...key, manifestSha256: "c".repeat(64), videoSha256: "2".repeat(64) }), [], "another mp4: none");
+  }
+  const reviewOf = Object.assign(() => "returned" as const, { timedComments: () => expected });
+  const withComments = progressOfSlots([scanned("V1", "s1", { manifestSha256: "a".repeat(64) }, { sha256: "1".repeat(64), sizeBytes: 1000 })], ["s1"], false, [], reviewOf);
+  assert.deepEqual(withComments.get("s1")?.package?.reviewTimedComments, expected);
+  const without = progressOfSlots([scanned("V1", "s1")], ["s1"], false, [], Object.assign(() => "approved" as const, { timedComments: () => [] }));
+  assert.equal(without.get("s1")?.package && "reviewTimedComments" in without.get("s1")!.package!, false);
+});
