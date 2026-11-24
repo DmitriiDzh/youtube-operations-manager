@@ -4,29 +4,13 @@ import { useCallback, useRef, useState } from "react";
 import { isUiTextKey } from "@/lib/ui-text";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { InfoTooltip } from "./info-tooltip";
+import { WriteLogDetail } from "./write-log-detail";
 import { useT } from "./ui-text-provider";
 
 type WorkerAction = { at: string; tool: string; target: string | null; detail: string | null; outcome: "ok" | "error"; errorCode: string | null };
 
 /** Codes that mean the app refused the call (a rule, not a YouTube or network failure). */
 const REFUSAL_CODES = new Set(["AGENT_PUBLIC_NOT_ALLOWED", "AGENT_TOKEN_INVALID", "CHANNEL_NOT_ACTIVE", "WRITE_CHANNEL_MISMATCH", "live_writes_disabled"]);
-
-/** The few fields of a row's detail the owner reads at a glance; anything else stays out of the list. */
-function readDetail(detail: string | null): { privacyStatus?: string; previousPrivacyStatus?: string; unchanged?: boolean; videoCount?: number; failedVideos?: number } {
-  try {
-    const parsed = detail ? (JSON.parse(detail) as Record<string, unknown>) : {};
-    return {
-      privacyStatus: typeof parsed.privacyStatus === "string" ? parsed.privacyStatus : undefined,
-      previousPrivacyStatus: typeof parsed.previousPrivacyStatus === "string" ? parsed.previousPrivacyStatus : undefined,
-      unchanged: parsed.changed === false,
-      videoCount: Array.isArray(parsed.videoIds) ? parsed.videoIds.length : undefined,
-      failedVideos: typeof parsed.failedVideos === "number" && parsed.failedVideos > 0 ? parsed.failedVideos : undefined,
-    };
-  } catch {
-    // A long list is cut in storage and is no longer JSON: show the row without its detail.
-    return {};
-  }
-}
 
 /**
  * BL-215 (ADR 0048, WORKER_CAPABILITIES_PLAN.md AC-WK-10): what this channel's agent wrote to YouTube on this computer, refused
@@ -83,23 +67,11 @@ export function ChannelWorkerActions({ channelId }: { channelId: string }) {
         <ul className="max-h-56 space-y-0.5 overflow-y-auto rounded-lg border border-zinc-800 p-2 text-[11px] text-zinc-400">
           {actions.map((action, index) => {
             const toolKey = `settingsCards.workerActions.tool.${action.tool}`;
-            const detail = readDetail(action.detail);
             return (
               <li key={`${action.at}-${index}`} className="flex flex-wrap gap-x-2">
                 <span className="text-zinc-500">{formatDisplayDateTime(action.at)}</span>
                 <span className="text-zinc-200">{isUiTextKey(toolKey) ? t(toolKey) : action.tool}</span>
-                {action.target && <span className="font-mono">{action.target}</span>}
-                {detail.privacyStatus &&
-                  (detail.previousPrivacyStatus ? (
-                    <span>{t("settingsCards.workerActions.privacyChange", { from: detail.previousPrivacyStatus, to: detail.privacyStatus })}</span>
-                  ) : (
-                    <span>{t("settingsCards.workerActions.privacy", { status: detail.privacyStatus })}</span>
-                  ))}
-                {detail.unchanged && <span className="text-zinc-500">{t("settingsCards.workerActions.unchanged")}</span>}
-                {detail.videoCount !== undefined && <span>{t("settingsCards.workerActions.videos", { count: String(detail.videoCount) })}</span>}
-                {detail.failedVideos !== undefined && (
-                  <span className="text-amber-400">{t("settingsCards.workerActions.failedVideos", { count: String(detail.failedVideos) })}</span>
-                )}
+                <WriteLogDetail target={action.target} detail={action.detail} />
                 {action.outcome === "ok" ? (
                   <span className="text-emerald-400">{t("settingsCards.workerActions.done")}</span>
                 ) : (

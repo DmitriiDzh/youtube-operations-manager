@@ -56,5 +56,5 @@ export function createWorkerPrivacyCore() {
   };
 }
 
-export { createWorkerPrivacyServices, setPrivacyInputSchema, WORKER_PRIVACY_STATUSES } from "./services";
-export type { SetPrivacyResult, WorkerPrivacyDeps, WorkerPrivacyServices, WorkerPrivacyStatus } from "./services";
+export { createWorkerPrivacyServices, setPrivacyInputSchema, WORKER_PLAYLIST_PRIVACY_STATUSES, WORKER_PRIVACY_STATUSES } from "./services";
+export type { SetPrivacyResult, WorkerPlaylistPrivacyStatus, WorkerPrivacyDeps, WorkerPrivacyServices, WorkerPrivacyStatus } from "./services";

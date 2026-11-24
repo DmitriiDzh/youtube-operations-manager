@@ -8,7 +8,9 @@ const PRODUCER_CALLS_SHOWN = 30;
 
 type ProducerCallsRouteDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;
-  listCalls: (limit: number) => Promise<Array<{ at: Date; tool: string; channelId: string | null; outcome: "ok" | "error"; errorCode: string | null }>>;
+  listCalls: (
+    limit: number
+  ) => Promise<Array<{ at: Date; tool: string; channelId: string | null; outcome: "ok" | "error"; errorCode: string | null; target?: string | null; detailsJson?: string | null }>>;
   channelTitles: () => Promise<Map<string, string>>;
 };
 
@@ -34,6 +36,9 @@ export function createProducerCallsGetHandler(deps: ProducerCallsRouteDeps = def
           channelTitle: call.channelId ? (titles.get(call.channelId) ?? null) : null,
           outcome: call.outcome,
           errorCode: call.errorCode,
+          // Owner TG 4782 review: what a playlist write wrote (the playlist, its details as JSON); null for every other call.
+          target: call.target ?? null,
+          details: call.detailsJson ?? null,
         })),
       });
     } catch (error) {
