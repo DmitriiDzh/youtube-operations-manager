@@ -143,3 +143,17 @@
   `/api/channels/[channelId]/publishing/package-metadata`, кнопки на строке загруженного пакета («План» → «⋯» → пакеты, и на карточке слота; до BL-266 — «Ролики и релизы»)
   (`package-packaging-actions.tsx`), инструмент Продюсера `producer_video_metadata_update` (конфликт — отказ). В `video-details`: Live writes
   прямо перед записью, `channelId` в снимке, `verifyUnchanged`, правило описания в сверке.
+
+### 2.9bp Плейлисты из релиз-пакета (владелец, TG 4858/4859, поправка ADR 0051 от 2026-11-24) — **IMPLEMENTED на ветке** `feature/package-playlists` (ждёт ревью и разрешения на мердж)
+
+- **Пакет:** `yt-release-package/2` — поле `playlists` (0–10 id по шаблону настроек `PLAYLIST_ID_PATTERN`, без повторов; v1 с полем —
+  `field_invalid`), `packages.ts parsePlaylists`; строка загрузки замораживает список (`approved-package.ts`, `changedPackageFields`).
+- **Шаг плейлиста** (`upload-runner.ts`): `playlistTargets` — плейлист настроек, затем плейлисты пакета, без дублей; по одному за
+  проход (проверка канала перед каждой записью). Для плейлиста пакета — чтение владельца (`reads.playlistChannel`, `getPlaylistForUpdate`,
+  1 ед.; нет читателя — `ownership_unchecked`), затем проверка наличия (`playlistContainsVideo`, 1 ед., вместо полного обхода), отметка
+  `adding` до вставки, `inserted` после, чтение обратно (до READ_BACK_RETRIES повторов, без второй вставки). `steps.playlists`, аудит
+  `publishing.upload_playlist`; `steps.playlist` — по-прежнему только плейлист настроек.
+- **Правило даты:** неудачный плейлист настроек держит дату (как раньше, `plan-schedule.checksPassed` не менялся); неудачный плейлист
+  пакета — нет, но строка `done` получает `step_failed` и заметку. Бюджет квоты: +53 ед. на плейлист пакета (`PACKAGE_PLAYLIST_UNITS`).
+- **Чтение Продюсера:** `producer_video_playlists` (Producer 1.28.0), модуль `src/lib/video-playlist-membership/` (кэш 10 мин) +
+  `publishing.listUploadPlaylistRecords` через композицию (`session-deps.ts`).

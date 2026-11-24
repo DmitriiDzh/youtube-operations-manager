@@ -601,3 +601,18 @@ flags the error as not sent; the mark keeps the retry count, so a failing insert
   shared `src/lib/release-recode-journals/` module, so `video-projects` blocks their codes and lists them (`pendingRecodes`) without
   importing publishing. Composition (`src/composition/release-recode.ts`) supplies the video list, package-review approvals, plan slot
   decisions, storyboards, peer rows and the other reports, so publishing imports none of those modules. No YouTube client anywhere.
+
+## Package playlists (owner TG 4858/4859, ADR 0051 amendment 2026-11-24; on its branch, not in dev yet)
+
+- The package carries the ids; the runner's playlist step is the only writer (the existing `addToPlaylist` adapter: Live writes
+  immediately before `playlistItems.insert` in the write gateway). One playlist per runner pass, so `identity(job)` runs before each
+  write (the step stays open -- `steps.playlist` undefined -- until every playlist is settled).
+- Never twice: `adding` is stored before the insert and `inserted` right after it; a retry of `adding` reads first, `inserted` is only
+  re-read. A thrown write that the runner gives up on fails only the current playlist (`giveUp` in the playlist step), pauses still pause
+  the job.
+- Ownership: a package id is written only when the read gateway says the playlist's `snippet.channelId` is the upload's channel; the
+  settings playlist (the owner's own choice) is written as before, without that read.
+- The date rule reads `steps.playlist` (settings) only; package failures surface through `steps.playlists`, notes and `step_failed`.
+- The Producer's read lives in its own module `src/lib/video-playlist-membership/` (not `playlist-management`): it imports the read
+  gateway and write-context's identity check; publishing's upload records reach it through the composition (`session-deps.ts`), so
+  neither module imports the other (AGENTS.md §M).

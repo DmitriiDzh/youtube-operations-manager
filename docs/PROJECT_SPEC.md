@@ -842,6 +842,12 @@ untouched, never the video's own language), with identity check, backup, the Liv
 audit. The date (`status.publishAt`) is written only after the translations, thumbnail, playlist and read-back passed (BL-224); a
 veto of the slot removes an uploaded video's date (still private). Agents draft plans; only the owner approves a slot.
 
+**Package playlists at upload (added 2026-11-24, owner, Telegram msgs 4858/4859, ADR 0051 amendment).** The upload's playlist step
+also adds the video it made to each playlist its `yt-release-package/2` names in `playlists` (0-10 ids), each once, only a playlist of
+the same channel (read before), identity check and Live writes before each insert, read back, per-playlist results in the upload row
+and the audit; nothing removed or created. "Playlist passed" above means the publishing (settings) playlist: a failed package playlist
+is reported but does not withhold the date (`docs/WRITE_AUTHORIZATIONS.md`).
+
 **Thumbnail writer (added 2026-11-15, owner, Telegram msgs 4380/4383, BL-255, ADR 0069).** `src/lib/video-thumbnails/` may replace
 the custom thumbnail (`thumbnails.set`) of a video already on YouTube, any video of the channel, for the owner (Web UI) and the
 Producer (`producer_video_thumbnail_replace`): only an image under `04 Videos/` of the channel's workspace (JPEG/PNG by its first

@@ -130,3 +130,4 @@ Every section below was moved verbatim (2026-11-17, `docs/roadmap/plans/DOCS_SPL
 | BL-267 | the week template replaces slot approval | `docs/architecture/publishing.md` |
 | BL-265 | the media-only gate and packaging fixes after upload | `docs/architecture/publishing.md` |
 | BL-263 | the second video code `S<n>` and the Short recode | `docs/architecture/publishing.md` |
+| TG 4858 | package playlists at upload, the Producer's playlist read | `docs/architecture/publishing.md` |
