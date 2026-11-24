@@ -572,6 +572,13 @@ export type ProducerSession = {
   wait: {
     waitFor(input: unknown, scope: { channelId: string | null }): Promise<Record<string, unknown>>;
   };
+  /**
+   * Package playlists (owner TG 4858/4859): which playlists of its channel a video is in (`session-deps.ts` wires
+   * `src/lib/video-playlist-membership/`); read-only, scoped to a channel connected here and a video of that channel.
+   */
+  videoPlaylists: {
+    get(input: { channelId: string; videoId: string; refresh?: boolean }): Promise<Record<string, unknown>>;
+  };
 };
 
 /** A real calendar date as YYYY-MM-DD (`calendarDateSchema`, shared with the analytics module's tool inputs). */
@@ -662,6 +669,15 @@ export const producerPlanMoveInputSchema = z
     date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     publishAt: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/).describe("Local wall time in the target plan's zone (the source plan's zone when the target week has no plan)."),
     dryRun: z.boolean().optional(),
+  })
+  .strict();
+
+/** Package playlists (owner TG 4858/4859): `producer_video_playlists`' input. */
+export const producerVideoPlaylistsInputSchema = z
+  .object({
+    channelId: z.string().min(1).max(64).describe("The video's channel (one of producer_list_channels)."),
+    videoId: z.string().regex(/^[A-Za-z0-9_-]{11}$/).describe("The YouTube video id."),
+    refresh: z.boolean().optional().describe("true: read YouTube now instead of an answer kept up to 10 minutes."),
   })
   .strict();
 
@@ -3481,6 +3497,17 @@ export function createMcpServer(
       }
       return toolSuccessResult(await producerSession!.wait.waitFor(args, { channelId: null }));
     }
+  );
+
+  // Package playlists (owner TG 4858/4859): a video's playlists on its channel -- the session's `videoPlaylists` only (a read).
+  registerTool(
+    "producer_video_playlists",
+    {
+      description:
+        "Which playlists of its channel a video is in (Producer API 1.28.0, read-only): { channelId, videoId, refresh? } -> { channelId, videoId, playlists: [{ id, title, privacyStatus }] (the channel's playlists that hold the video now), checkedPlaylists, truncated (more than 200 playlists: only the first 200 checked), readAt, cached (true: the answer kept from a read in the last 10 minutes, no YouTube call; refresh: true reads now), quotaUnits (Data API units this call spent: 1 identity check + 1 per 50 playlists listed + 1 per playlist checked; 0 when cached), uploads: [{ uploadId, video, status, finishedAt, settingsPlaylist (the channel's publishing playlist: added | already_there | none | failed; null before the step ran), playlists: [{ playlistId, source: settings | package, result: added | already_there | failed | adding | inserted, reason? (not_found | other_channel | ownership_unchecked | read_back_missing | write_failed) }] }] (this computer's uploads of the video and what their playlist step recorded -- local, 0 units) } and forChannelId. A release package (yt-release-package/2) may name `playlists` (0-10 playlist ids of its own channel): the upload adds the video to each besides the publishing playlist; a failed package playlist never holds back the date. Errors: CHANNEL_NOT_ACTIVE (not connected on this computer), video_not_in_channel (not a synced video of this channel nor one of its uploads here; checked before any YouTube call), WRITE_CHANNEL_MISMATCH / WRITE_CHANNEL_UNRESOLVED (the channel's sign-in is for another channel), validation_failed.",
+      inputSchema: producerVideoPlaylistsInputSchema,
+    },
+    async (args: z.infer<typeof producerVideoPlaylistsInputSchema>) => toolSuccessResult(await producerSession!.videoPlaylists.get(args))
   );
 
   registerTool(

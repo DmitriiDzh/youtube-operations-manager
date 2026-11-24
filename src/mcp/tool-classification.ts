@@ -205,4 +205,6 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   producer_clip_review_withdraw: "producer-only",
   // BL-271 (ADR 0075): the Producer's wait -- uploads and restarts only, on its endpoint only.
   producer_wait: "producer-only",
+  // Package playlists (owner TG 4858/4859): a video's playlists on its channel -- a read, on the Producer's endpoint only.
+  producer_video_playlists: "producer-only",
 });

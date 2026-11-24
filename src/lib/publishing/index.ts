@@ -1053,6 +1053,38 @@ export type { SlotPackageFingerprint } from "./slot-decision";
 export type { SlotDecision } from "./auto-upload";
 
 /**
+ * Package playlists (owner TG 4858/4859): this computer's upload rows of `videoId` on `channelId`, newest first, with their
+ * playlist step as recorded (local, no YouTube call) -- the Producer's `producer_video_playlists` shows them next to the live read.
+ */
+export async function listUploadPlaylistRecords(channelId: string, videoId: string) {
+  const rows = (await listPublishingUploads({ channelId, limit: 500 })).filter((row) => row.videoId === videoId);
+  return rows.map((row) => uploadPlaylistRecordOf(row));
+}
+
+/** One upload row's playlist step as the Producer reads it (a damaged `steps_json` reads as "not run"). */
+export function uploadPlaylistRecordOf(row: Pick<StoredPublishingUpload, "id" | "video" | "status" | "finishedAt" | "stepsJson">) {
+  let steps: { playlist?: unknown; playlists?: unknown } = {};
+  try {
+    steps = (JSON.parse(row.stepsJson) as typeof steps) ?? {};
+  } catch {
+    steps = {};
+  }
+  const playlists = Array.isArray(steps.playlists)
+    ? (steps.playlists as Array<Record<string, unknown>>)
+        .filter((e) => e && typeof e.playlistId === "string")
+        .map((e) => ({ playlistId: String(e.playlistId), source: String(e.source ?? ""), result: String(e.result ?? ""), ...(typeof e.reason === "string" ? { reason: e.reason } : {}) }))
+    : [];
+  return {
+    uploadId: row.id,
+    video: row.video,
+    status: row.status,
+    finishedAt: row.finishedAt ? row.finishedAt.toISOString() : null,
+    settingsPlaylist: typeof steps.playlist === "string" ? steps.playlist : null,
+    playlists,
+  };
+}
+
+/**
  * BL-255 (ADR 0069 §3): true while this computer's upload of `videoId` has not yet run its own thumbnail step -- an active row
  * with that video id and no `steps.thumbnail` (a damaged `steps_json` counts as pending: fail closed). The thumbnail writer refuses
  * then, since the runner would put the package's file over the new one.

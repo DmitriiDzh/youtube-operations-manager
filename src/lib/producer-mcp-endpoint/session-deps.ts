@@ -17,7 +17,8 @@ import { createPortfolioOverviewServices, createUploadMilestonesServices } from 
 import { createReachReportsCore } from "@/lib/reach-reports";
 import { PRODUCER_API_VERSION } from "@/mcp/producer-tools";
 import { createLiveAnalyticsCore } from "@/lib/live-analytics";
-import { createPackageCaptionsCore, createPackageMetadataCore, createUploadQueueControlCore, type SlotDecision } from "@/lib/publishing";
+import { createPackageCaptionsCore, createPackageMetadataCore, createUploadQueueControlCore, listUploadPlaylistRecords, type SlotDecision } from "@/lib/publishing";
+import { createVideoPlaylistMembershipCore } from "@/lib/video-playlist-membership";
 import { createClipReviewsProducerCore } from "@/lib/clip-reviews";
 import type { ProducerMcpSession } from "./index";
 import type { PublishingPlansProducerSurface } from "@/lib/publishing-plans";
@@ -213,6 +214,11 @@ export function createProducerSessionDeps(
       withdraw: async (input) => ({ ...(await createClipReviewsProducerCore().withdraw(input)) }),
       list: async (input) => ({ ...(await createClipReviewsProducerCore().list(input)) }),
       get: async (input) => ({ ...(await createClipReviewsProducerCore().get(input)) }),
+    },
+    // Package playlists (owner TG 4858/4859): a video's playlists on its channel -- read-only; the channel must be connected here
+    // and the video that channel's (checked before any YouTube call), then the identity check on the channel's grant.
+    videoPlaylists: {
+      get: async (input) => ({ ...(await createVideoPlaylistMembershipCore({ channelUser: resolveChannelUser, uploadRecords: listUploadPlaylistRecords }).videoPlaylists(input)) }),
     },
   };
 }
