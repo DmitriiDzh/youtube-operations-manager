@@ -8,7 +8,7 @@ import test from "node:test";
 // its sources. No network and no Google client either.
 
 const SRC = path.resolve(process.cwd(), "src");
-const FEATURE_MODULES = ["clip-reviews", "storyboards", "storyboard-takes", "generation-plans", "publishing", "publishing-plans", "media-generation", "gemini-media", "live-streams", "batches", "changesets", "video-details", "channel-branding", "channel-localizations"];
+const FEATURE_MODULES = ["clip-reviews", "image-reviews", "storyboards", "storyboard-takes", "generation-plans", "publishing", "publishing-plans", "media-generation", "gemini-media", "live-streams", "batches", "changesets", "video-details", "channel-branding", "channel-localizations"];
 
 async function files(dir: string): Promise<string[]> {
   const out: string[] = [];

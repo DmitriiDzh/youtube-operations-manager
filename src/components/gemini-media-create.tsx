@@ -1,15 +1,16 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { UiTextKey } from "@/lib/ui-text";
+import type { UiTextKey, UiTextParams } from "@/lib/ui-text";
 import { ActionButton, BusyOverlay, StatusNotice, useBusyAction } from "./busy-feedback";
 import { ConfirmDialog } from "./confirm-dialog";
 import {
   buildGeminiRequest,
   catalogEstimateUsd,
-  GEMINI_FORM_DURATIONS,
   GEMINI_FORM_IMAGE_ASPECTS,
   GEMINI_FORM_VIDEO_ASPECTS,
+  geminiDurationChoices,
+  geminiDurationProblem,
   type GeminiCatalogModel,
   type GeminiFormProblem,
   type GeminiFormState,
@@ -42,6 +43,7 @@ const PROBLEM_TEXT: Record<GeminiFormProblem, UiTextKey> = {
   aspectRatio: "media.gemini.problem.aspectRatio",
   resolution: "media.gemini.problem.resolution",
   duration: "media.gemini.problem.duration",
+  durationLastFrame: "media.gemini.problem.durationLastFrame",
   path: "media.gemini.problem.path",
   references: "media.gemini.problem.references",
   frames: "media.gemini.problem.frames",
@@ -123,11 +125,25 @@ export function GeminiCreateCard({ activeChannelId, kind }: { activeChannelId: s
     setError(null);
   };
 
+  // Owner TG 3700 (Omni 1.2): the lengths come from the model's catalog range, capped while a last frame is set; a chosen length
+  // over the cap stays chosen and is named as a problem (never shortened silently).
+  const durationRange = spec?.kind === "video" ? spec.durationSeconds : null;
+  const withLastFrame = Boolean(form?.lastFrame.trim());
+  const durationChoices = durationRange ? geminiDurationChoices(durationRange, withLastFrame) : [];
+  const durationProblem = durationRange && form ? geminiDurationProblem(durationRange, form.durationSeconds, withLastFrame) : null;
+  const durationOptions = form && durationRange && !durationChoices.includes(form.durationSeconds) ? [...durationChoices, form.durationSeconds] : durationChoices;
+
+  function problemParams(problem: GeminiFormProblem): UiTextParams | undefined {
+    if (problem === "duration" && durationRange) return { min: durationRange.min, max: durationRange.max };
+    if (problem === "durationLastFrame" && durationRange) return { max: durationRange.maxWithLastFrame };
+    return undefined;
+  }
+
   function built(): GeminiRequest | null {
     if (!form) return null;
     const result = buildGeminiRequest(kind, form, models);
     if (!result.ok) {
-      setError(t(PROBLEM_TEXT[result.problem]));
+      setError(t(PROBLEM_TEXT[result.problem], problemParams(result.problem)));
       return null;
     }
     return result.request;
@@ -284,13 +300,19 @@ export function GeminiCreateCard({ activeChannelId, kind }: { activeChannelId: s
               </label>
               <label className="block space-y-1">
                 <span className="text-xs text-zinc-400">{t("media.gemini.duration")}</span>
-                <select value={String(form.durationSeconds)} onChange={(e) => update({ durationSeconds: Number(e.target.value) })} className={inputClass}>
-                  {GEMINI_FORM_DURATIONS.map((d) => (
+                <select
+                  value={String(form.durationSeconds)}
+                  onChange={(e) => update({ durationSeconds: Number(e.target.value) })}
+                  aria-invalid={durationProblem ? true : undefined}
+                  className={`${inputClass}${durationProblem ? " border-amber-600" : ""}`}
+                >
+                  {durationOptions.map((d) => (
                     <option key={d} value={String(d)}>
                       {t("media.gemini.durationOption", { seconds: d })}
                     </option>
                   ))}
                 </select>
+                {durationProblem && <span className="block text-xs text-amber-300">{t(PROBLEM_TEXT[durationProblem], problemParams(durationProblem))}</span>}
               </label>
             </div>
           )}

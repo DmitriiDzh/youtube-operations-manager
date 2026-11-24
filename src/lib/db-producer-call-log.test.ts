@@ -8,7 +8,7 @@ import { createLibsqlClient } from "@/lib/libsql-client";
 import { createIsolatedDb, initializeDatabaseSchema, insertProducerCallLogEntry, listProducerCallLogEntries, SCHEMA_MIGRATIONS } from "@/lib/db";
 
 // Owner TG 4782 (the Producer edits the connected channels' playlists), independent review: a Producer playlist write's call-log row
-// says what it wrote. Schema v123 adds two nullable columns to `producer_call_log` (v72): `target` (the playlist) and `details_json`.
+// says what it wrote. Schema v124 adds two nullable columns to `producer_call_log` (v72): `target` (the playlist) and `details_json`.
 // An existing row keeps its values and reads null in both; every other call still writes null there.
 
 async function withClient(run: (client: Client) => Promise<void>) {
@@ -27,9 +27,9 @@ async function columns(client: Client): Promise<string[]> {
   return rows.rows.map((row) => String(row.name));
 }
 
-test("schema v123 adds target and details_json to a v72 producer_call_log, keeping its rows; re-applying is harmless", async () => {
-  const migration = SCHEMA_MIGRATIONS.find((m) => m.version === 123);
-  assert.ok(migration, "v123 exists");
+test("schema v124 adds target and details_json to a v72 producer_call_log, keeping its rows; re-applying is harmless", async () => {
+  const migration = SCHEMA_MIGRATIONS.find((m) => m.version === 124);
+  assert.ok(migration, "v124 exists");
   await withClient(async (client) => {
     // The table exactly as v72 created it, with one row already logged.
     await client.execute(

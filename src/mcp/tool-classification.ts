@@ -203,6 +203,11 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   producer_clip_review_list: "producer-only",
   producer_clip_review_get: "producer-only",
   producer_clip_review_withdraw: "producer-only",
+  // BL-272 (ADR 0076): the Producer's master still image review tools -- on its endpoint only; only the owner decides (Web UI).
+  producer_image_review_submit: "producer-only",
+  producer_image_review_list: "producer-only",
+  producer_image_review_get: "producer-only",
+  producer_image_review_withdraw: "producer-only",
   // BL-271 (ADR 0075): the Producer's wait -- uploads and restarts only, on its endpoint only.
   producer_wait: "producer-only",
 });

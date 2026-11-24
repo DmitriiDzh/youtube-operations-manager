@@ -96,6 +96,7 @@ import {
   PRODUCER_TOOL_NAMES,
   PRODUCER_UPLOAD_QUEUE_TOOLS,
   PRODUCER_CLIP_REVIEW_TOOLS,
+  PRODUCER_IMAGE_REVIEW_TOOLS,
   PRODUCER_THUMBNAIL_TOOLS,
   PRODUCER_PLAN_TOOLS,
   PRODUCER_PLAN_MOVE_TOOLS,
@@ -545,6 +546,16 @@ export type ProducerSession = {
     get(input: { channelId: string; clipId: string }): Promise<Record<string, unknown>>;
   };
   /**
+   * BL-272 (ADR 0076): the Producer's side of the master still images for review -- submit, withdraw, list, get (`session-deps.ts`
+   * wires the image-reviews module's Producer surface; the owner's three answers are reachable only from the Web UI).
+   */
+  imageReviews: {
+    submit(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+    withdraw(input: { channelId: string; imageId: string }): Promise<Record<string, unknown>>;
+    list(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+    get(input: { channelId: string; imageId: string }): Promise<Record<string, unknown>>;
+  };
+  /**
    * BL-255 (ADR 0069): replace a video's custom thumbnail through `src/lib/video-thumbnails/` (`session-deps.ts` wires it; nothing
    * else in src/mcp reaches the writer).
    */
@@ -632,6 +643,11 @@ export const producerClipReviewSubmitInputSchema = z
     note: z.string().min(1).max(2000).describe("What changed / what to look at (1-2000 characters)."),
     startSec: z.number().finite().min(0).optional().describe("Optional: where the owner's player starts, in seconds."),
     endSec: z.number().finite().min(0).optional().describe("Optional: where the owner's player stops, in seconds."),
+    approvedImageId: z
+      .string()
+      .regex(/^[A-Za-z0-9_-]{1,40}$/)
+      .optional()
+      .describe("Optional (1.28.0): the imageId of the approved master still (producer_image_review_*) this clip was made from -- an image of the same channel the owner approved, with or without a note."),
   })
   .strict();
 export const producerClipReviewListInputSchema = z
@@ -642,6 +658,37 @@ export const producerClipReviewListInputSchema = z
   })
   .strict();
 export const producerClipReviewOneInputSchema = z.object({ channelId: producerClipChannelId, clipId: producerClipId }).strict();
+
+/**
+ * BL-272 (ADR 0076): the Producer's image review tools' inputs. Plain shapes here (the MCP layer lists them); the image-reviews
+ * module checks them again with its own schemas (trimming, control characters, the limits) and the rules beyond the shape.
+ */
+const producerImageChannelId = z.string().min(1).max(64).describe("The channel of the image (one of producer_list_channels).");
+const producerImageId = z.string().regex(/^[A-Za-z0-9_-]{1,40}$/).describe("The image's id (imageId from producer_image_review_submit or _list).");
+const producerImageKey = z.string().regex(/^[A-Za-z0-9_.:-]{1,80}$/);
+export const producerImageReviewSubmitInputSchema = z
+  .object({
+    channelId: producerImageChannelId,
+    sceneId: z.string().min(1).max(80).describe("The scene the image is the master still of, e.g. P46 (1-80 characters); a reworked image of the same scene uses the same label."),
+    imagePath: z
+      .string()
+      .min(1)
+      .max(500)
+      .describe("The image file, relative to the channel's workspace folder, '/' between folders, e.g. '03 Images/Scenes/P46/master.png'. PNG or JPEG."),
+    note: z.string().min(1).max(2000).optional().describe("Optional: what to look at (1-2000 characters)."),
+    batchId: producerImageKey.optional().describe("Optional: submits sharing a batchId are one batch -- the owner sees them as one grid (at most 40 images per batch)."),
+    requestId: producerImageKey.optional().describe("Optional idempotency key: a retry with the same requestId answers the stored image (replayed: true); the same requestId for a different request is refused."),
+  })
+  .strict();
+export const producerImageReviewListInputSchema = z
+  .object({
+    channelId: producerImageChannelId,
+    status: z.enum(["pending", "approved", "approved_with_note", "returned", "withdrawn"]).optional(),
+    batchId: producerImageKey.optional().describe("Only this batch's images."),
+    limit: z.number().int().min(1).max(200).optional().describe("At most this many images (default 50)."),
+  })
+  .strict();
+export const producerImageReviewOneInputSchema = z.object({ channelId: producerImageChannelId, imageId: producerImageId }).strict();
 
 /** BL-239 (ADR 0059): the Producer's upload queue tools' inputs. */
 const producerQueueChannelId = z.string().min(1).max(64).describe("The channel of the upload (one of producer_list_channels).");
@@ -3227,7 +3274,7 @@ export function createMcpServer(
     "producer_get_capabilities",
     {
       description:
-        "The Producer role's own report: its API version, its permissions (READ; DRAFT for its proposals only; UPLOAD_QUEUE for this computer's upload queue) and the tools it can call. Every channel tool needs `channelId` -- one of producer_list_channels -- and answers with `forChannelId`. No tool here writes to YouTube or spends money by itself: the DRAFT tools (draftTools) store a proposal or mark one read, and a proposal changes nothing until the owner approves it in YT Manager; the UPLOAD_QUEUE tools (uploadQueueTools) list, order, cancel and add rows of this computer's upload queue -- the app's own uploader then uploads a queued row as private, with its identity check, and only while the owner's Live writes switch is on; a date comes only from a weekly-plan slot the owner approved. The clip review tools (clipReviewTools) submit a clip already in a channel's folder for the owner to watch, and read his answer: only the owner approves or returns a clip, in YT Manager. THUMBNAIL_WRITE (thumbnailTools, since 1.20.0): producer_video_thumbnail_replace writes a video's custom thumbnail on YouTube (owner's decision, any video of a connected channel), with backup, identity check, Live writes, read-back and audit. METADATA_WRITE (metadataTools, since 1.24.0): producer_video_metadata_update writes an uploaded video's title / description / tags from its package's current manifest, refusing any conflict, with the same safety steps. PLAN_MOVE (planMoveTools, since 1.25.0): producer_publishing_plan_move_slot moves a weekly-plan slot anywhere at once and, for a video already dated, writes the new date on YouTube with the same safety steps. CAPTIONS_WRITE (captionsTools, since 1.26.0): producer_video_captions_add puts a package's English captions onto its uploaded video (overwrite: true replaces the video's one English standard track), with the same safety steps. PLAYLIST_WRITE (playlistTools / playlistWriteTools, since 1.28.0): the channel's own playlist tools -- playlist_list reads; playlist_create, playlist_update (title, description, privacy: public, unlisted or private), playlist_add_videos (only the channel's own synced videos) and playlist_remove_videos write to YouTube on that channel's playlists, with the write-channel guardrail (expectedChannelId = channelId), the playlist's owner check and Live writes; no playlist delete. These are the only YouTube writes a Producer tool makes itself; producer_week_template_propose is a DRAFT the owner decides.",
+        "The Producer role's own report: its API version, its permissions (READ; DRAFT for its proposals only; UPLOAD_QUEUE for this computer's upload queue) and the tools it can call. Every channel tool needs `channelId` -- one of producer_list_channels -- and answers with `forChannelId`. No tool here writes to YouTube or spends money by itself: the DRAFT tools (draftTools) store a proposal or mark one read, and a proposal changes nothing until the owner approves it in YT Manager; the UPLOAD_QUEUE tools (uploadQueueTools) list, order, cancel and add rows of this computer's upload queue -- the app's own uploader then uploads a queued row as private, with its identity check, and only while the owner's Live writes switch is on; a date comes only from a weekly-plan slot the owner approved. The clip review tools (clipReviewTools) submit a clip already in a channel's folder for the owner to watch, and read his answer: only the owner approves or returns a clip, in YT Manager. The image review tools (imageReviewTools, since 1.28.0) do the same for a scene's master still image: only the owner approves it, approves it with a note, or returns it. THUMBNAIL_WRITE (thumbnailTools, since 1.20.0): producer_video_thumbnail_replace writes a video's custom thumbnail on YouTube (owner's decision, any video of a connected channel), with backup, identity check, Live writes, read-back and audit. METADATA_WRITE (metadataTools, since 1.24.0): producer_video_metadata_update writes an uploaded video's title / description / tags from its package's current manifest, refusing any conflict, with the same safety steps. PLAN_MOVE (planMoveTools, since 1.25.0): producer_publishing_plan_move_slot moves a weekly-plan slot anywhere at once and, for a video already dated, writes the new date on YouTube with the same safety steps. CAPTIONS_WRITE (captionsTools, since 1.26.0): producer_video_captions_add puts a package's English captions onto its uploaded video (overwrite: true replaces the video's one English standard track), with the same safety steps. PLAYLIST_WRITE (playlistTools / playlistWriteTools, since 1.29.0): the channel's own playlist tools -- playlist_list reads; playlist_create, playlist_update (title, description, privacy: public, unlisted or private), playlist_add_videos (only the channel's own synced videos) and playlist_remove_videos write to YouTube on that channel's playlists, with the write-channel guardrail (expectedChannelId = channelId), the playlist's owner check and Live writes; no playlist delete. These are the only YouTube writes a Producer tool makes itself; producer_week_template_propose is a DRAFT the owner decides.",
       inputSchema: z.object({}).strict(),
     },
     async () =>
@@ -3240,6 +3287,7 @@ export function createMcpServer(
         draftTools: [...PRODUCER_DRAFT_TOOLS],
         uploadQueueTools: [...PRODUCER_UPLOAD_QUEUE_TOOLS],
         clipReviewTools: [...PRODUCER_CLIP_REVIEW_TOOLS],
+        imageReviewTools: [...PRODUCER_IMAGE_REVIEW_TOOLS],
         thumbnailTools: [...PRODUCER_THUMBNAIL_TOOLS],
         metadataTools: [...PRODUCER_METADATA_TOOLS],
         captionsTools: [...PRODUCER_CAPTIONS_TOOLS],
@@ -3460,7 +3508,7 @@ export function createMcpServer(
     "producer_clip_review_submit",
     {
       description:
-        "Ask the owner to watch a short clip and approve it or send it back -- he answers in YT Manager (Контент → «Клипы»), not in Telegram. The clip must already be a file in the channel's own folder (the Factory Operator renders it there; you never write into a channel folder): `clipPath` relative to the channel's workspace folder, '/' between folders, no '..' and no absolute path, the file's real path inside the folder (a symlink out of it is refused), .mp4 or .webm, 5-300 s long by ffprobe (±0.5 s), any size. Optional `startSec` / `endSec`: the part to watch (0 <= startSec < endSec <= the clip's length). Its size and SHA-256 are stored: the owner approves exactly this file, so do not overwrite it while it waits (a changed file cannot be approved). Both computers see the clip (the channel folder syncs; a computer whose copy is missing says so). Returns { clip } with status pending and forChannelId. Errors: CHANNEL_NOT_ACTIVE (not connected here), clip_review_workspace_unavailable (no workspace folder here), clip_review_not_video, clip_review_file_unavailable (details.reason: not in the folder, outside it, not a regular file, a bad path), clip_review_probe_unavailable (the length cannot be measured here), clip_review_duration_out_of_range (details.durationSeconds), clip_review_duplicate (the same file already waits: details.clipId), clip_review_too_many_pending (50 per channel), validation_failed (a bad range or text), operation_lock_held / device_in_recovery_mode. Nothing reaches YouTube.",
+        "Ask the owner to watch a short clip and approve it or send it back -- he answers in YT Manager (Контент → «Клипы»), not in Telegram. The clip must already be a file in the channel's own folder (the Factory Operator renders it there; you never write into a channel folder): `clipPath` relative to the channel's workspace folder, '/' between folders, no '..' and no absolute path, the file's real path inside the folder (a symlink out of it is refused), .mp4 or .webm, 5-300 s long by ffprobe (±0.5 s), any size. Optional `startSec` / `endSec`: the part to watch (0 <= startSec < endSec <= the clip's length). Its size and SHA-256 are stored: the owner approves exactly this file, so do not overwrite it while it waits (a changed file cannot be approved). Both computers see the clip (the channel folder syncs; a computer whose copy is missing says so). Returns { clip } with status pending and forChannelId. Errors: CHANNEL_NOT_ACTIVE (not connected here), clip_review_workspace_unavailable (no workspace folder here), clip_review_not_video, clip_review_file_unavailable (details.reason: not in the folder, outside it, not a regular file, a bad path), clip_review_probe_unavailable (the length cannot be measured here), clip_review_duration_out_of_range (details.durationSeconds), clip_review_duplicate (the same file already waits: details.clipId), clip_review_too_many_pending (50 per channel), validation_failed (a bad range or text), operation_lock_held / device_in_recovery_mode. Optional `approvedImageId` (1.28.0): the approved master still (producer_image_review_*) the clip was made from -- the owner sees that image next to the clip; the clip then carries `approvedImageId` in _get / _list. It must be an image of the same channel the owner approved (with or without a note): clip_review_image_not_found (no such image in this channel), clip_review_image_not_approved (details.status: pending, returned or withdrawn). Nothing reaches YouTube.",
       inputSchema: producerClipReviewSubmitInputSchema,
     },
     async (args: z.infer<typeof producerClipReviewSubmitInputSchema>) => toolSuccessResult(await producerSession!.clipReviews.submit(args))
@@ -3493,6 +3541,48 @@ export function createMcpServer(
       inputSchema: producerClipReviewOneInputSchema,
     },
     async (args: z.infer<typeof producerClipReviewOneInputSchema>) => toolSuccessResult(await producerSession!.clipReviews.withdraw(args))
+  );
+
+  // BL-272 (ADR 0076; owner TG 2547 via the Producer): master still images for review. These tools reach only the session's
+  // `imageReviews` (the image-reviews module's Producer surface); the owner's approve / approve with a note / return is Web-UI-only.
+  const imageViewFields =
+    "imageId, channelId, sceneId, imagePath, note ('' when none), batchId, requestId (null when not given), width, height, sizeBytes, sha256, submittedAt, device (the computer it was submitted on), status (pending | approved | approved_with_note | returned | withdrawn), comment (the owner's words: always on approved_with_note -- approved, but apply this note, e.g. 'убрать прохожего' -- and on returned; null otherwise), decidedAt, decidedOn (the computer the answer was given on)";
+  registerTool(
+    "producer_image_review_submit",
+    {
+      description:
+        "Ask the owner to look at a scene's master still image (e.g. the 1920×1080 PNG a clip will be made from) and answer: approve, approve with a note, or return with a comment -- he answers in YT Manager (Медиа → «Кадры»), not in Telegram; each answer also lands in your Inbox as REVIEW-DECISION-image-<imageId>-<decisionId>.md. The image must already be a file in the channel's own folder (you never write into a channel folder): `imagePath` relative to the channel's workspace folder, '/' between folders, no '..' and no absolute path, the file's real path inside that channel's folder (a symlink out of it, or into another channel's folder, is refused), .png / .jpg / .jpeg whose header is that format, at most 50 MB. Its size and SHA-256 are stored: the owner approves exactly this file, so do not overwrite it while it waits (a changed file cannot be approved). Several submits with the same `batchId` are one batch, shown to the owner as one grid (at most 40 images per batch). `requestId` makes the submit idempotent: a retry with the same requestId answers the stored image with `replayed: true` (even after the file changed or the owner answered); the same requestId with a different request is refused. Returns { image, replayed } and forChannelId. Errors: CHANNEL_NOT_ACTIVE (not connected here), image_review_workspace_unavailable (no workspace folder here), image_review_not_image (not PNG/JPEG, header of another format, unreadable, too large, a side outside 16-16384 px), image_review_file_unavailable (details.reason: not in the folder, outside it, not a regular file, a bad path), image_review_duplicate (the same file already waits: details.imageId), image_review_too_many_pending (200 per channel), image_review_batch_full (40 per batch), image_review_request_conflict (details.imageId), validation_failed, operation_lock_held / device_in_recovery_mode. Nothing reaches YouTube.",
+      inputSchema: producerImageReviewSubmitInputSchema,
+    },
+    async (args: z.infer<typeof producerImageReviewSubmitInputSchema>) => toolSuccessResult(await producerSession!.imageReviews.submit(args))
+  );
+
+  registerTool(
+    "producer_image_review_list",
+    {
+      description: `One channel's master still images for review and the owner's answers: pending first (oldest first), then the rest newest first; optional \`status\` and \`batchId\` filters and \`limit\` (default 50, at most 200). Each image: ${imageViewFields}. Also \`pending\` (how many wait, within the batch when \`batchId\` is given). Two computers' answers merge: the first answer the owner gave counts. A local read that changes nothing.`,
+      inputSchema: producerImageReviewListInputSchema,
+    },
+    async (args: z.infer<typeof producerImageReviewListInputSchema>) => toolSuccessResult(await producerSession!.imageReviews.list(args))
+  );
+
+  registerTool(
+    "producer_image_review_get",
+    {
+      description: `One master still image for review by its imageId with the owner's answer: { image } -- ${imageViewFields}. Errors: image_review_not_found (no such image in that channel), CHANNEL_NOT_ACTIVE.`,
+      inputSchema: producerImageReviewOneInputSchema,
+    },
+    async (args: z.infer<typeof producerImageReviewOneInputSchema>) => toolSuccessResult(await producerSession!.imageReviews.get(args))
+  );
+
+  registerTool(
+    "producer_image_review_withdraw",
+    {
+      description:
+        "Take back an image that still waits for the owner (status pending): it leaves his grid (status withdrawn). An image he already answered is never withdrawn (image_review_not_pending, details.status). Returns { image } and forChannelId. Errors: image_review_not_found, image_review_not_pending, CHANNEL_NOT_ACTIVE, operation_lock_held / device_in_recovery_mode.",
+      inputSchema: producerImageReviewOneInputSchema,
+    },
+    async (args: z.infer<typeof producerImageReviewOneInputSchema>) => toolSuccessResult(await producerSession!.imageReviews.withdraw(args))
   );
 
   // BL-271 (WAIT_TOOLS_PLAN.md §3.2, ADR 0075; Q6): the Producer waits on an upload of this computer (any channel, as the queue list
@@ -3627,7 +3717,7 @@ export function createMcpServer(
     "playlist_create",
     {
       description:
-        "Create a YouTube playlist (privacyStatus private by default; unlisted or public too -- a channel agent may create a public playlist since Agent API 4.26.0, owner msg 4782). In a channel session expectedChannelId, when given, must be the session's channel (WRITE_CHANNEL_MISMATCH). credentialRef is OPTIONAL and falls back to active local auth context.",
+        "Create a YouTube playlist (privacyStatus private by default; unlisted or public too -- a channel agent may create a public playlist since Agent API 4.27.0, owner msg 4782). In a channel session expectedChannelId, when given, must be the session's channel (WRITE_CHANNEL_MISMATCH). credentialRef is OPTIONAL and falls back to active local auth context.",
       inputSchema: playlistCreateInputSchema.partial({ credentialRef: true }),
     },
     (args) => handlers.playlistCreate(args)
@@ -3657,7 +3747,7 @@ export function createMcpServer(
     "playlist_update",
     {
       description:
-        "Update playlist metadata (title, description, privacyStatus private/unlisted/public) with strict patch validation and write-channel guardrails. A channel agent may make its channel's playlist public since Agent API 4.26.0 (owner msg 4782). In a channel session expectedChannelId must be the session's channel (WRITE_CHANNEL_MISMATCH, before any YouTube call). credentialRef is OPTIONAL and falls back to active local auth context.",
+        "Update playlist metadata (title, description, privacyStatus private/unlisted/public) with strict patch validation and write-channel guardrails. A channel agent may make its channel's playlist public since Agent API 4.27.0 (owner msg 4782). In a channel session expectedChannelId must be the session's channel (WRITE_CHANNEL_MISMATCH, before any YouTube call). credentialRef is OPTIONAL and falls back to active local auth context.",
       inputSchema: playlistUpdateToolInputSchema,
     },
     (args) => handlers.playlistUpdate(args)
@@ -4405,7 +4495,7 @@ export function createMcpServer(
     "agent_set_privacy",
     {
       description:
-        "BL-216 (ADR 0048): hide one of THIS channel's videos or playlists, or make a playlist public: { target: video|playlist, id, privacyStatus: private|unlisted|public, dryRun? } -> { target, id, dryRun, previousPrivacyStatus, privacyStatus, changed }. dryRun defaults to true (shows the change, writes nothing); pass dryRun:false to write. public only for a playlist (owner msg 4782, Agent API 4.26.0): a video is never made public by an agent (AGENT_PUBLIC_NOT_ALLOWED, before any read). Refused: a scheduled video (AGENT_SCHEDULE_OWNER_ONLY -- its date is the owner's), the channel's current live broadcast (AGENT_LIVE_BROADCAST_OWNER_ONLY; finished recordings are fine), a video not in this channel's synced list or a playlist not of this channel (not_found). A video is written through the app's video-details write (identity check, backup, Live writes, read-back), a playlist through the playlist write (Live writes); a target already at that status is not written (changed:false). About 51 quota units for a video, about 51 for a playlist. Logged in the worker log.",
+        "BL-216 (ADR 0048): hide one of THIS channel's videos or playlists, or make a playlist public: { target: video|playlist, id, privacyStatus: private|unlisted|public, dryRun? } -> { target, id, dryRun, previousPrivacyStatus, privacyStatus, changed }. dryRun defaults to true (shows the change, writes nothing); pass dryRun:false to write. public only for a playlist (owner msg 4782, Agent API 4.27.0): a video is never made public by an agent (AGENT_PUBLIC_NOT_ALLOWED, before any read). Refused: a scheduled video (AGENT_SCHEDULE_OWNER_ONLY -- its date is the owner's), the channel's current live broadcast (AGENT_LIVE_BROADCAST_OWNER_ONLY; finished recordings are fine), a video not in this channel's synced list or a playlist not of this channel (not_found). A video is written through the app's video-details write (identity check, backup, Live writes, read-back), a playlist through the playlist write (Live writes); a target already at that status is not written (changed:false). About 51 quota units for a video, about 51 for a playlist. Logged in the worker log.",
       inputSchema: setPrivacyInputSchema,
     },
     async (args: z.infer<typeof setPrivacyInputSchema>) => {

@@ -79,5 +79,5 @@ Status: Accepted
    (tool, channel, outcome, error code), refused calls included; the worker log stays the workers' own (it has no actor column).
 5. **No dry run** was added to the playlist tools (they never had one; every playlist change is reversible by another call).
 
-Consequences: Agent API 4.26.0 (MINOR: one refusal fewer; a wrong `expectedChannelId` gave `WRITE_CHANNEL_MISMATCH` before too, now
-earlier). Producer API 1.28.0 (MINOR: five tools, the permission `PLAYLIST_WRITE`, `playlistTools` / `playlistWriteTools`).
+Consequences: Agent API 4.27.0 (MINOR: one refusal fewer; a wrong `expectedChannelId` gave `WRITE_CHANNEL_MISMATCH` before too, now
+earlier). Producer API 1.29.0 (MINOR: five tools, the permission `PLAYLIST_WRITE`, `playlistTools` / `playlistWriteTools`).

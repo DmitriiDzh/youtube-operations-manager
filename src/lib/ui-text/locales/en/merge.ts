@@ -23,6 +23,7 @@ export const merge = {
   "handoff.family.elevenlabsSettings": "ElevenLabs limits",
   "handoff.family.clipReviews": "Clips for review",
   "handoff.family.packageReviews": "Videos for review",
+  "handoff.family.imageReviews": "Stills for review",
 
   "handoff.requestFailed": "Request to {url} failed ({status})",
   "handoff.justNow": "just now",

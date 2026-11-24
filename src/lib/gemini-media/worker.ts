@@ -11,8 +11,9 @@ import {
   GEMINI_OUTPUT_SUBDIR,
   GEMINI_SPEECH,
   GEMINI_SPEECH_MODELS,
-  GEMINI_VIDEO_MODELS,
+  geminiVideoModelSpec,
   isDomainError,
+  resolveGeminiVideoModel,
   ownEntry,
   type GeminiCostBasis,
   type GeminiImageParams,
@@ -316,7 +317,8 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
     let result: GeminiInteractionsVideoResult;
     try {
       result = await deps.api.generateVideo(claimed.apiKey, {
-        model: job.model,
+        // Owner TG 3700: a job queued under a deprecated id (gemini-omni-1.1-flash) is sent as the model it stands for.
+        model: resolveGeminiVideoModel(job.model),
         prompt: job.prompt,
         frames: [...pick("first_frame"), ...pick("last_frame")],
         aspectRatio: params.aspectRatio,
@@ -550,7 +552,7 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
         // cap, so it never waits behind running jobs (review).
         // BL-236: a speech job is checked against the speech models; a voice design is never queued (sent at once by its call).
         const offered =
-          job.kind === "image" ? ownEntry(GEMINI_IMAGE_MODELS, job.model) : job.kind === "video" ? ownEntry(GEMINI_VIDEO_MODELS, job.model) : job.kind === "speech" ? ownEntry(GEMINI_SPEECH_MODELS, job.model) : undefined;
+          job.kind === "image" ? ownEntry(GEMINI_IMAGE_MODELS, job.model) : job.kind === "video" ? geminiVideoModelSpec(job.model) : job.kind === "speech" ? ownEntry(GEMINI_SPEECH_MODELS, job.model) : undefined;
         if (!offered) {
           await fail(job, "queued", notCharged("gemini_invalid_request", `${job.model} is no longer offered here (removed with BL-180); the job was not sent.`));
           continue;

@@ -578,18 +578,24 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
    * while a social post goes out AT and after the slot's time. Fail closed: only the `packaged` stage counts (a slot-stage approval
    * names no package); an unreadable package scan approves nothing; a slot id in two plans and two approvals of one video number
    * approve nothing. Read-only; never a decision.
+   * `opts.alsoSlotIds` (owner TG 4780): slots evaluated however long ago their time was -- those of the owner's pending retry of a
+   * failed social post or of a social job still in flight, and the entry's own slot in the runner's approval re-check. The approval
+   * rules (dated by the plan, not vetoed, the CURRENT manifest) apply to them unchanged; such an old slot only never counts against
+   * a slot inside the look-back in the "one video in two approved slots" rule (it is itself still disapproved by it).
    */
-  async function socialSlotStates(channelId: string): Promise<SocialSlotState[]> {
+  async function socialSlotStates(channelId: string, opts: { alsoSlotIds?: readonly string[] } = {}): Promise<SocialSlotState[]> {
     // BL-267 (owner O10, ADR 0073 §3, AC-WT-37): one plan for YouTube and the social networks -- a slot authorizes its package's
     // `crossPost` when the plan dates it (the template with the media condition, or a standing explicit owner date), evaluated also
     // for slots up to 36 h past, bound to the slot's CURRENT manifest (the runner re-checks this same read before each call).
     const snapshot = await ports.store.read(channelId);
     const now = ports.now();
     const from = now.getTime() - SOCIAL_LOOKBACK_MS;
+    const also = new Set(opts.alsoSlotIds ?? []);
+    const inRange = (slot: { slotId: string; publishAtUtc: string }) => Date.parse(slot.publishAtUtc) >= from || also.has(slot.slotId);
     const ids = new Set<string>();
     for (const meta of Object.values(snapshot.plans)) {
       const bare = planViewOf({ stage: "packaged", channelId, meta, slots: slotsOf(snapshot, meta.weekStart), decisions: decisionsOf(snapshot, meta.weekStart), progress: new Map(), now });
-      for (const slot of bare.slots) if (Date.parse(slot.publishAtUtc) >= from) ids.add(slot.slotId);
+      for (const slot of bare.slots) if (inRange(slot)) ids.add(slot.slotId);
     }
     if (ids.size === 0 || !ports.progress) return [];
     // Every live slot too: template positions are claimed across the channel (the first created takes one).
@@ -602,7 +608,7 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
     for (const meta of Object.values(snapshot.plans)) {
       const view = planViewOf({ stage: "packaged", channelId, meta, slots: slotsOf(snapshot, meta.weekStart), decisions: decisionsOf(snapshot, meta.weekStart), progress: read.progress, now, matches });
       for (const slot of view.slots) {
-        if (Date.parse(slot.publishAtUtc) < from) continue;
+        if (!inRange(slot)) continue;
         seen.set(slot.slotId, (seen.get(slot.slotId) ?? 0) + 1);
         const current = fingerprintOf(read.progress.get(slot.slotId) ?? null);
         // Fail closed: vetoed, or a date YouTube carries that this computer did not set -- nothing posts. Owner msg 4640 (2026-11-16,
@@ -613,9 +619,20 @@ export function createPublishingPlansService(ports: PublishingPlansPorts) {
         out.push({ slotId: slot.slotId, weekStart: meta.weekStart, timeZone: meta.timeZone, publishAtUtc: slot.publishAtUtc, released: slot.released, vetoed: slot.vetoed !== null, approved, package: approved ? { ...current! } : null });
       }
     }
-    const videos = new Map<string, number>();
-    for (const s of out) if (s.approved && s.package) videos.set(s.package.video, (videos.get(s.package.video) ?? 0) + 1);
-    return out.map((s) => ((seen.get(s.slotId) ?? 0) > 1 || (s.package && (videos.get(s.package.video) ?? 0) > 1) ? { ...s, approved: false, package: null } : s));
+    // One video in two approved slots approves neither. Review 23.11: a slot read only through `alsoSlotIds` (past the look-back,
+    // for a retry or an in-flight job) never counts against a slot in the look-back -- an old slot of the same video must not
+    // disapprove the current one -- but is itself disapproved when its video is in any other approved slot (so the two never
+    // both post).
+    const recent = (s: SocialSlotState) => Date.parse(s.publishAtUtc) >= from;
+    const videosAll = new Map<string, number>();
+    const videosRecent = new Map<string, number>();
+    for (const s of out) {
+      if (!s.approved || !s.package) continue;
+      videosAll.set(s.package.video, (videosAll.get(s.package.video) ?? 0) + 1);
+      if (recent(s)) videosRecent.set(s.package.video, (videosRecent.get(s.package.video) ?? 0) + 1);
+    }
+    const twice = (s: SocialSlotState) => Boolean(s.package) && ((recent(s) ? videosRecent : videosAll).get(s.package!.video) ?? 0) > 1;
+    return out.map((s) => ((seen.get(s.slotId) ?? 0) > 1 || twice(s) ? { ...s, approved: false, package: null } : s));
   }
 
   /** The approvals of a slot that no later revocation of the same content cancelled -- revoked by a move (as by retime). */
@@ -867,7 +884,7 @@ export function ownerSurface(service: Omit<PublishingPlansOwnerSurface, "move"> 
 /** BL-252 stage 2: what cross-posting reads (ADR 0068 amendment 1) -- never a save or a decision. */
 export type PublishingPlansSocialSurface = Pick<PublishingPlansService, "socialSlotStates">;
 export function socialSurface(service: PublishingPlansSocialSurface): PublishingPlansSocialSurface {
-  return { socialSlotStates: (channelId) => service.socialSlotStates(channelId) };
+  return { socialSlotStates: (channelId, opts) => service.socialSlotStates(channelId, opts) };
 }
 
 /** BL-225 stage 3: what the uploads read (the slots' decisions) -- never a save or a decision. */

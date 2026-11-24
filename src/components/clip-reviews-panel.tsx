@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { UiTextKey } from "@/lib/ui-text";
 import { ActionButton, SkeletonLines } from "./busy-feedback";
 import { AttachmentDropZone, DecisionAttachments, useAttachmentComposer } from "./clip-attachments";
-import { answeredGroupsOf, canApprove, openGroupsFrom, rangeOf, returnCommentReady, scenesOf, videoSrcOf, type ClipDto, type ClipScene, type ClipStatus } from "./clip-reviews-model";
+import { answeredGroupsOf, canApprove, openGroupsFrom, rangeOf, returnCommentReady, scenesOf, sourceImageStateOf, videoSrcOf, type ClipDto, type ClipScene, type ClipStatus, type SourceImageStatus } from "./clip-reviews-model";
 import { useT, useUiText } from "./ui-text-provider";
 import { useUserTimezone } from "./use-user-timezone";
 
@@ -240,6 +240,7 @@ export function ClipReviewsPanel({ channelId, visible }: { channelId: string | n
             )}
             {clip.file === "changed" && <p className="rounded-md border border-orange-900 bg-orange-950/40 px-3 py-2 text-sm text-orange-200">{t("clipReviews.file.changedHelp")}</p>}
             <p className="whitespace-pre-wrap text-sm text-zinc-200">{clip.note}</p>
+            {clip.approvedImage !== undefined && <ClipSourceImage channelId={channelId} clip={clip} />}
             <dl className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500">
               {range && <dd>{t("clipReviews.range", range)}</dd>}
               <dd>{clip.device ? t("clipReviews.submittedOn", { when: at(clip.submittedAt), device: clip.device }) : t("clipReviews.submitted", { when: at(clip.submittedAt) })}</dd>
@@ -381,6 +382,46 @@ export function ClipReviewsPanel({ channelId, visible }: { channelId: string | n
         </>
       )}
     </section>
+  );
+}
+
+const SOURCE_IMAGE_STATUS_KEYS = {
+  approved: "clipReviews.sourceImage.status.approved",
+  approved_with_note: "clipReviews.sourceImage.status.approved_with_note",
+  pending: "clipReviews.sourceImage.status.pending",
+  returned: "clipReviews.sourceImage.status.returned",
+  withdrawn: "clipReviews.sourceImage.status.withdrawn",
+  unknown: "clipReviews.sourceImage.status.unknown",
+} as const satisfies Record<SourceImageStatus, string>;
+
+/**
+ * BL-272 (ADR 0076): the master still a clip was made from -- its large thumbnail (the image-reviews route) next to the clip, opening
+ * the full-size file in a new tab, with the still's status NOW; anything but approved / approved with a note is highlighted (review:
+ * an earlier answer synced from the other computer may have returned it). A still this computer's stills do not have yet is named.
+ */
+function ClipSourceImage({ channelId, clip }: { channelId: string; clip: ClipDto }) {
+  const t = useT();
+  const image = clip.approvedImage;
+  if (!image) return <p className="text-xs text-zinc-500">{t("clipReviews.sourceImageGone", { imageId: clip.approvedImageId ?? "" })}</p>;
+  const base = `/api/channels/${encodeURIComponent(channelId)}/image-reviews/${encodeURIComponent(image.imageId)}`;
+  const state = sourceImageStateOf(image.status);
+  return (
+    <div className={`flex min-w-0 flex-wrap items-center gap-3 rounded-md border p-2 ${state.highlight ? "border-amber-500/50 bg-amber-500/10" : "border-zinc-800 bg-zinc-950/60"}`}>
+      <a href={`${base}/image`} target="_blank" rel="noreferrer" title={t("clipReviews.sourceImageOpen")} className="block w-40 shrink-0 overflow-hidden rounded bg-black sm:w-48">
+        {/* eslint-disable-next-line @next/next/no-img-element -- a local file streamed by the route, not an optimisable asset */}
+        <img src={`${base}/preview`} alt="" loading="lazy" className="aspect-video w-full object-cover" />
+      </a>
+      <div className="min-w-0 space-y-1 text-xs">
+        <p className="flex flex-wrap items-center gap-1.5 text-sm text-zinc-200">
+          <span>{t("clipReviews.sourceImage", { scene: image.sceneId })}</span>
+          <span className={`rounded-full px-2 py-0.5 text-[11px] ring-1 ${state.highlight ? "bg-amber-500/15 text-amber-200 ring-amber-500/40" : "bg-emerald-500/15 text-emerald-300 ring-emerald-500/30"}`}>
+            {t(SOURCE_IMAGE_STATUS_KEYS[state.status])}
+          </span>
+        </p>
+        {state.highlight && <p className="text-amber-200">{t("clipReviews.sourceImage.notApproved")}</p>}
+        <p className="break-all font-mono text-zinc-500">{image.imagePath}</p>
+      </div>
+    </div>
   );
 }
 

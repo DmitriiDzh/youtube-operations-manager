@@ -34,12 +34,40 @@ export type PendingPageView = { pageId: string; pageName: string; instagram: { i
 
 export type MetaAppStatus = { configured: boolean; appId: string | null; configId: string | null };
 
-/** What posting to Instagram and a Facebook Page needs from the stored Page token (AC-XP-8 identity read). */
-export const META_POSTING_SCOPES = ["pages_show_list", "pages_read_engagement", "pages_manage_posts", "instagram_basic", "instagram_content_publish"] as const;
+/**
+ * What posting needs from the stored Page token, per network (AC-XP-8; 2026-11-23, owner TG 4779: one network's problem never stops
+ * another). Instagram publishes with the Page's token, so it needs the Page's scopes as well as its own.
+ */
+export const META_NETWORK_SCOPES: Record<SocialNetwork, readonly string[]> = {
+  facebook: ["pages_show_list", "pages_read_engagement", "pages_manage_posts"],
+  instagram: ["pages_show_list", "pages_read_engagement", "pages_manage_posts", "instagram_basic", "instagram_content_publish"],
+};
 
-export type AccountCheckProblem = "token_invalid" | "scope_missing" | "page_mismatch" | "instagram_mismatch" | "instagram_unlinked";
+/** Every scope some network needs. */
+export const META_POSTING_SCOPES: readonly string[] = [...new Set(SOCIAL_NETWORKS.flatMap((n) => META_NETWORK_SCOPES[n]))];
 
-/** The identity read of a channel's connected Meta accounts: Meta's live answer against what is stored (never a token). */
+/**
+ * `token_invalid` and `page_mismatch` concern the Page token every Meta network posts with, so they fail each network; the
+ * `instagram_*` problems fail only Instagram; `scope_missing` fails only the networks whose own scopes are missing.
+ */
+export type AccountCheckProblem = "token_invalid" | "scope_missing" | "page_mismatch" | "instagram_mismatch" | "instagram_unlinked" | "instagram_unreadable";
+
+/** One connected network's identity read: whether a post to THIS network may go out (AC-XP-8, per network). */
+export type NetworkAccountCheck = {
+  network: SocialNetwork;
+  ok: boolean;
+  problems: AccountCheckProblem[];
+  missingScopes: string[];
+  /** The account id this channel stored for the network, and the one Meta's live answer names (null: none). */
+  stored: string;
+  live: string | null;
+};
+
+/**
+ * The identity read of a channel's connected Meta accounts: Meta's live answer against what is stored (never a token).
+ * `networks` has one entry per connected network and alone decides posting; `ok` / `problems` / `missingScopes` are their union
+ * (`ok` = every connected network passes), kept for older readers -- `ok: false` does not mean no network can post.
+ */
 export type AccountCheck = {
   channelId: string;
   checkedAt: number;
@@ -48,9 +76,13 @@ export type AccountCheck = {
   missingScopes: string[];
   scopes: string[];
   tokenExpiresAt: number | null;
+  networks: NetworkAccountCheck[];
   facebook: { stored: string; live: string | null; name: string | null } | null;
   instagram: { stored: string | null; live: string | null; username: string | null } | null;
 };
+
+/** What the runner gets for ONE network after that network's identity read passed: the Page token, the Page and the network's account. */
+export type PostingTarget = { network: SocialNetwork; token: string; pageId: string; accountId: string };
 
 export function notConfigured(): DomainError {
   return new DomainError({ code: "social_not_configured", message: "The Meta app (App ID and App Secret) is not saved on this computer yet (Settings → Channels → Social networks)." });

@@ -1,4 +1,5 @@
-import type { WorkspacePathValidationResult } from "@/lib/local-path-validation/services";
+import path from "node:path";
+import { isPathInsideOrEqual, type WorkspacePathValidationResult } from "@/lib/local-path-validation/services";
 import { DomainError } from "./contracts";
 import type { ChannelWorkspaceListEntry, ChannelWorkspaceResult } from "./contracts";
 import { getChannelWorkspaceInputSchema, parseWithSchema, setChannelWorkspaceInputSchema } from "./schemas";
@@ -24,6 +25,8 @@ export type ServiceDependencies = {
   /** Set-time only (`src/lib/local-path-validation`). Deliberately NOT used by any read below:
    * a read returns the stored string and never touches the workspace path (AC-P11-09). */
   validatePath(candidatePath: string): Promise<WorkspacePathValidationResult>;
+  /** Set-time only: the real path of a directory (symlinks resolved), to compare the candidate with the other channels' folders. */
+  realpath(candidatePath: string): Promise<string>;
 };
 
 export function createChannelWorkspacesServices(deps: ServiceDependencies) {
@@ -36,6 +39,32 @@ export function createChannelWorkspacesServices(deps: ServiceDependencies) {
         details: { channelId },
       });
     }
+  }
+
+  /** A real path to compare; a folder that cannot be resolved now (a disk not mounted) is compared as written. */
+  async function comparablePath(candidate: string): Promise<string> {
+    try {
+      return await deps.realpath(candidate);
+    } catch {
+      return path.resolve(candidate);
+    }
+  }
+
+  /**
+   * BL-272 (review, ADR 0076 §3): a channel's folder is never inside, equal to or around another connected channel's folder on this
+   * device -- a file of one channel would otherwise resolve inside the other's workspace (the clip and image reviews' "strictly
+   * inside that channel's workspace" rule). Disconnected channels' rows are left out: they cannot be cleared from Settings.
+   */
+  async function nestedChannelOf(deviceId: string, channelId: string, candidate: string): Promise<string | null> {
+    const connected = new Set(await deps.listConnectedChannelIds());
+    const others = (await deps.store.list(deviceId)).filter((row) => row.channelId !== channelId && connected.has(row.channelId));
+    if (others.length === 0) return null;
+    const real = await comparablePath(candidate);
+    for (const row of others) {
+      const other = await comparablePath(row.path);
+      if (isPathInsideOrEqual(other, real) || isPathInsideOrEqual(real, other)) return row.channelId;
+    }
+    return null;
   }
 
   return {
@@ -70,7 +99,8 @@ export function createChannelWorkspacesServices(deps: ServiceDependencies) {
 
     /**
      * Operator-only write -- never reachable from an agent surface. Validates the path once, at set
-     * time (absolute, exists, is a directory, does not overlap the app-data directory). Nothing is
+     * time (absolute, exists, is a directory, does not overlap the app-data directory, BL-272: not inside, equal to or around
+     * another connected channel's folder on this device -- CHANNEL_WORKSPACE_NESTED). Nothing is
      * stored when validation fails. `null`/blank clears.
      */
     async setWorkspace(input: unknown): Promise<ChannelWorkspaceResult> {
@@ -90,6 +120,14 @@ export function createChannelWorkspacesServices(deps: ServiceDependencies) {
           code: "CHANNEL_WORKSPACE_PATH_INVALID",
           message: `workspace path rejected: ${validation.reason}`,
           details: { channelId: parsed.channelId, reason: validation.reason },
+        });
+      }
+      const nestedWith = await nestedChannelOf(deviceId, parsed.channelId, candidate);
+      if (nestedWith !== null) {
+        throw new DomainError({
+          code: "CHANNEL_WORKSPACE_NESTED",
+          message: `workspace path rejected: it is inside, or contains, the workspace folder of channel ${nestedWith}`,
+          details: { channelId: parsed.channelId, otherChannelId: nestedWith },
         });
       }
       await deps.store.set(deviceId, parsed.channelId, candidate);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createPackagesReader, invalidatePackagesEntry, PACKAGES_CACHE_MAX_MS, PACKAGES_CACHE_MS, type PackagesEntry } from "./packages-cache";
+import { createPackagesReader, invalidatePackagesEntry, PACKAGES_CACHE_MAX_MS, PACKAGES_CACHE_MS, PACKAGES_SCAN_TIMEOUT_MS, PackagesScanTimeoutError, type PackagesEntry } from "./packages-cache";
 
 // BL-243 final triage: a progress answer built while the removed-list read failed ("none known") is not kept for the minute -- the
 // next call reads the list again; a good answer is kept.
@@ -190,4 +190,178 @@ test("BL-270 review (negative): a file changed while the scan ran, or an unreada
   unreadable.state.now += 60_000;
   await unreadable.packagesOf("UC1");
   assert.equal(unreadable.state.scans, 2);
+});
+
+// Owner TG 4784 («План» loads slowly): the plan list, the shown week, the calendar and the alerts ask at once; on a cold cache each
+// scanned `04 Videos/` on its own. Concurrent callers share the one read under way.
+test("owner 4784: concurrent cold reads of one channel share one scan; another channel scans on its own", async () => {
+  const scans: string[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const packagesOf = createPackagesReader({
+    removedVideos: async () => [],
+    scan: async (channelId) => {
+      scans.push(channelId);
+      await gate;
+      return { status: "ok", packages: [] };
+    },
+    synthetic: async () => false,
+    now: () => 1_000_000,
+    cache: new Map<string, PackagesEntry>(),
+  });
+  const reads = [packagesOf("UC1"), packagesOf("UC1"), packagesOf("UC1"), packagesOf("UC2")];
+  await new Promise((resolve) => setImmediate(resolve));
+  release();
+  const [a, b, c, other] = await Promise.all(reads);
+  assert.deepEqual(scans, ["UC1", "UC2"]);
+  assert.equal(a, b);
+  assert.equal(b, c);
+  assert.notEqual(a, other);
+});
+
+test("owner 4784 (negative): a failed shared read is not kept -- the next call scans again", async () => {
+  let calls = 0;
+  const packagesOf = createPackagesReader({
+    removedVideos: async () => [],
+    scan: async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("disk gone");
+      return { status: "ok", packages: [] };
+    },
+    synthetic: async () => false,
+    now: () => 1_000_000,
+    cache: new Map<string, PackagesEntry>(),
+  });
+  const [x, y] = await Promise.all([packagesOf("UC1"), packagesOf("UC1")]);
+  assert.equal(x.packages, null);
+  assert.equal(y.packages, null);
+  assert.equal(calls, 1, "shared while under way");
+  assert.deepEqual((await packagesOf("UC1")).packages, [], "read again after it ended");
+  assert.equal(calls, 2);
+});
+
+test("owner 4784 (negative): an invalidation during a read -- the next caller scans again, and the older answer is not kept", async () => {
+  const cache = new Map<string, PackagesEntry>();
+  let scans = 0;
+  const gates: Array<() => void> = [];
+  const packagesOf = createPackagesReader({
+    removedVideos: async () => [],
+    scan: async () => {
+      scans += 1;
+      await new Promise<void>((resolve) => gates.push(resolve));
+      return { status: "ok", packages: [] };
+    },
+    synthetic: async () => false,
+    now: () => 1_000_000,
+    cache,
+  });
+  const before = packagesOf("UC1");
+  await new Promise((resolve) => setImmediate(resolve));
+  invalidatePackagesEntry(cache, "UC1"); // the owner's review decision while the scan runs
+  const after = packagesOf("UC1");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(scans, 2, "the caller after the invalidation does not join the older read");
+  gates[0]();
+  await before;
+  assert.equal(cache.has("UC1"), false, "the read that began before the invalidation is not kept");
+  gates[1]();
+  await after;
+  assert.equal(cache.has("UC1"), true, "the read after it is kept");
+});
+
+// Owner TG 4784, independent review item 6: a shared scan that never settles must not hold every later caller. Past the time limit
+// the callers waiting on it (the first included) get an error, the next caller scans afresh, and the hung scan's answer, should it
+// land after all, is not kept. The timer is injected (fired by hand), so nothing waits for real time.
+test("review 6: a scan that never settles -- joiners get a timeout error after the limit, the next caller scans afresh", async () => {
+  const cache = new Map<string, PackagesEntry>();
+  const gates: Array<() => void> = [];
+  const timers: Array<{ fire: () => void; ms: number; cancelled: boolean }> = [];
+  let scans = 0;
+  const packagesOf = createPackagesReader({
+    removedVideos: async () => [],
+    scan: async () => {
+      scans += 1;
+      await new Promise<void>((resolve) => gates.push(resolve)); // the first scan is released only at the very end
+      return { status: "ok", packages: [] };
+    },
+    synthetic: async () => false,
+    now: () => 1_000_000,
+    cache,
+    startTimer: (fire, ms) => {
+      const timer = { fire, ms, cancelled: false };
+      timers.push(timer);
+      return () => {
+        timer.cancelled = true;
+      };
+    },
+  });
+  const first = packagesOf("UC1");
+  const joiner = packagesOf("UC1");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(scans, 1, "one shared scan");
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].ms, PACKAGES_SCAN_TIMEOUT_MS, "the default limit");
+  timers[0].fire(); // the limit passes, the scan still hangs
+  await assert.rejects(first, PackagesScanTimeoutError);
+  await assert.rejects(joiner, PackagesScanTimeoutError);
+  const next = packagesOf("UC1");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(scans, 2, "the next caller does not join the hung scan");
+  gates[1]();
+  assert.deepEqual((await next).packages, []);
+  assert.equal(timers[1].cancelled, true, "a scan that settles cancels its timer");
+  assert.equal(cache.has("UC1"), true, "the fresh scan is kept");
+  cache.delete("UC1");
+  gates[0](); // the hung scan lands after all
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(cache.has("UC1"), false, "the abandoned scan's answer is not kept");
+});
+
+test("review 6: the time limit is configurable; a scan within it is not affected", async () => {
+  const limits: number[] = [];
+  const packagesOf = createPackagesReader({
+    removedVideos: async () => [],
+    scan: async () => ({ status: "ok", packages: [] }),
+    synthetic: async () => false,
+    now: () => 1_000_000,
+    cache: new Map<string, PackagesEntry>(),
+    timeoutMs: 5_000,
+    startTimer: (_fire, ms) => {
+      limits.push(ms);
+      return () => undefined;
+    },
+  });
+  assert.deepEqual((await packagesOf("UC1")).packages, []);
+  assert.deepEqual(limits, [5_000]);
+});
+
+test("review 6: a hung scan already forgotten by an invalidation times out without spoiling the newer scan's answer", async () => {
+  const cache = new Map<string, PackagesEntry>();
+  const gates: Array<() => void> = [];
+  const timers: Array<() => void> = [];
+  const packagesOf = createPackagesReader({
+    removedVideos: async () => [],
+    scan: async () => {
+      await new Promise<void>((resolve) => gates.push(resolve));
+      return { status: "ok", packages: [] };
+    },
+    synthetic: async () => false,
+    now: () => 1_000_000,
+    cache,
+    startTimer: (fire) => {
+      timers.push(fire);
+      return () => undefined;
+    },
+  });
+  const hung = packagesOf("UC1");
+  await new Promise((resolve) => setImmediate(resolve));
+  invalidatePackagesEntry(cache, "UC1"); // the owner's review decision: the hung read is forgotten
+  const newer = packagesOf("UC1");
+  await new Promise((resolve) => setImmediate(resolve));
+  timers[0](); // the forgotten read's limit passes while the newer scan runs
+  await assert.rejects(hung, PackagesScanTimeoutError);
+  gates[1]();
+  await newer;
+  assert.equal(cache.has("UC1"), true, "the newer scan's answer is kept");
 });

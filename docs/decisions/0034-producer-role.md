@@ -136,3 +136,11 @@ every channel's reads without a worker per channel, and nothing else.
   already in a channel's folder; only the owner approves or returns it, in the Web UI.
 - `producer_get_capabilities` lists `clipReviewTools`; `draftTools` gains submit and withdraw; permissions unchanged.
 - **Not changed:** the closed list of channel tools, the per-call channel scope; channel agents and the factory get none of these tools.
+
+## Amendment 10 — master still images for review (BL-272, owner TG 2547 via the Producer, 2026-11-23; ADR 0076)
+
+- Producer API 1.28.0 adds four `producer-only` tools: `producer_image_review_submit` and `producer_image_review_withdraw` (DRAFT) and
+  `producer_image_review_list` / `producer_image_review_get` (READ). An image is a file already in a channel's folder; only the owner
+  approves it, approves it with a note, or returns it, in the Web UI. `producer_clip_review_submit` gains an optional `approvedImageId`.
+- `producer_get_capabilities` lists `imageReviewTools`; `draftTools` gains submit and withdraw; permissions unchanged.
+- **Not changed:** the closed list of channel tools, the per-call channel scope; channel agents and the factory get none of these tools.

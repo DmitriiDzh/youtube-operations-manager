@@ -1,4 +1,5 @@
 import { parseWithSchema, type DomainErrorCode } from "@/lib/shared-domain";
+import { IMAGE_REVIEW_APPROVED_KINDS } from "@/lib/sync-gateway";
 import { attachmentRefusalOf, attachmentRuleOf, CLIP_ATTACHMENT_LIMITS, headMatchesKind, sanitizeAttachmentName, textLooksValid, uniqueAttachmentNames } from "./attachments";
 import {
   CLIP_ATTACHMENTS_FOLDER,
@@ -73,6 +74,20 @@ export function createClipReviewsService(ports: ClipReviewsPorts) {
     return sortClipViews(Object.values(snapshot.clips).filter((c) => c.channelId === channelId).map((clip) => clipViewOf(clip, decisions)));
   }
 
+  /**
+   * BL-272 (ADR 0076): a clip's `approvedImageId` must name an image of the SAME channel's image reviews that the owner approved
+   * (with or without a note); anything else -- no such image here, another channel's, pending, returned, withdrawn -- is refused.
+   */
+  async function assertApprovedImage(channelId: string, imageId: string): Promise<void> {
+    const image = ports.imageOf ? await ports.imageOf(channelId, imageId) : null;
+    if (!image) {
+      throw new DomainError({ code: "clip_review_image_not_found", message: `No image ${imageId} in this channel's image reviews (producer_image_review_list)`, details: { approvedImageId: imageId } });
+    }
+    if (!IMAGE_REVIEW_APPROVED_KINDS.includes(image.status as (typeof IMAGE_REVIEW_APPROVED_KINDS)[number])) {
+      throw new DomainError({ code: "clip_review_image_not_approved", message: `Image ${imageId} is ${image.status}: only an image the owner approved can be a clip's source`, details: { approvedImageId: imageId, status: image.status } });
+    }
+  }
+
   /** `producer_clip_review_submit`: every rule is checked first; a refusal stores nothing. */
   async function submit(input: unknown, producer: { tokenId: string }): Promise<{ clip: ClipReviewView }> {
     const parsed = parseWithSchema(submitClipInputSchema, input, "clip review");
@@ -101,6 +116,8 @@ export function createClipReviewsService(ports: ClipReviewsPorts) {
     if ((startSec !== null && startSec >= (endSec ?? duration)) || (endSec !== null && (endSec > duration || endSec <= 0))) {
       throw new DomainError({ code: "validation_failed", message: `The time range must lie within the clip (0 <= startSec < endSec <= ${duration.toFixed(1)})`, details: { startSec, endSec, durationSeconds: duration } });
     }
+    const approvedImageId = parsed.approvedImageId ?? null;
+    if (approvedImageId !== null) await assertApprovedImage(channelId, approvedImageId);
     const sha256 = await ports.hashFile(resolved.path);
     return ports.withLock(async () => {
       const current = await views(channelId);
@@ -124,6 +141,7 @@ export function createClipReviewsService(ports: ClipReviewsPorts) {
         submittedAt: stamp(),
         submittedBy: producer.tokenId,
         device: await ports.deviceLabel(),
+        ...(approvedImageId !== null ? { approvedImageId } : {}),
       };
       await ports.store.addClip(channelId, clip);
       return { clip: clipViewOf(clip, []) };
@@ -189,7 +207,9 @@ export function createClipReviewsService(ports: ClipReviewsPorts) {
       const clip = snapshot.clips[view.clipId];
       const record = decidingRecordOf(view.clipId, decisions);
       const decisionId = record?.id ?? null;
-      clips.push({ ...view, file: await fileStateOf(clip, false), decisionId, attachments: await ownerAttachmentsOf(clip, decisionId, view.attachments) });
+      // BL-272 (ADR 0076): a clip made from an approved image shows that image (read now; null when it is gone).
+      const approvedImage = typeof clip.approvedImageId === "string" ? { approvedImage: ports.imageOf ? await ports.imageOf(channelId, clip.approvedImageId).catch(() => null) : null } : {};
+      clips.push({ ...view, file: await fileStateOf(clip, false), decisionId, attachments: await ownerAttachmentsOf(clip, decisionId, view.attachments), ...approvedImage });
     }
     return { clips, waiting: new Set(all.filter((v) => v.status === "pending").map((v) => v.sceneId)).size };
   }
