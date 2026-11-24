@@ -91,8 +91,14 @@ type ServiceDependencies = {
   channelSelectionStore: {
     setSelectedChannelId(userId: string, channelId: string): Promise<void>;
   };
-  /** ADR 0048: refuses `public` for a channel-bound agent (no-op for the owner). Wired to `channel-access` in `index.ts`. */
-  assertMayNotPublish(privacyStatus: string | undefined): void;
+  /**
+   * Agent scope (a channel worker, or the Producer calling for one channel): `expectedChannelId` must be the scope's channel
+   * (`WRITE_CHANNEL_MISMATCH`, the guardrail's own code, otherwise); a no-op for the owner. Wired to `channel-access` in `index.ts`.
+   * Called right after input validation, before any credential or YouTube call.
+   */
+  assertScopeChannel(expectedChannelId: string | undefined): void;
+  // ADR 0048 rule 2 ("never public" for a playlist) was lifted by the owner, Telegram msg 4782 (2026-11-23): an agent may make its
+  // channel's playlist public. The video rule stays in `worker-privacy`.
 };
 
 function classifyYoutubeMutationError(
@@ -173,7 +179,7 @@ export function createPlaylistManagementServices(deps: ServiceDependencies) {
         input,
         "playlist create input"
       );
-      deps.assertMayNotPublish(parsedInput.privacyStatus);
+      deps.assertScopeChannel(parsedInput.expectedChannelId);
 
       try {
         const credentials = await deps.authResolver.resolve({
@@ -213,7 +219,7 @@ export function createPlaylistManagementServices(deps: ServiceDependencies) {
         input,
         "playlist update input"
       );
-      deps.assertMayNotPublish(parsedInput.privacyStatus);
+      deps.assertScopeChannel(parsedInput.expectedChannelId);
 
       try {
         const credentials = await deps.authResolver.resolve({
@@ -285,6 +291,7 @@ export function createPlaylistManagementServices(deps: ServiceDependencies) {
         input,
         "playlist delete input"
       );
+      deps.assertScopeChannel(parsedInput.expectedChannelId);
 
       try {
         const credentials = await deps.authResolver.resolve({
@@ -353,6 +360,7 @@ export function createPlaylistManagementServices(deps: ServiceDependencies) {
         input,
         "playlist add videos input"
       );
+      deps.assertScopeChannel(parsedInput.expectedChannelId);
 
       try {
         const credentials = await deps.authResolver.resolve({
@@ -439,6 +447,7 @@ export function createPlaylistManagementServices(deps: ServiceDependencies) {
         input,
         "playlist remove videos input"
       );
+      deps.assertScopeChannel(parsedInput.expectedChannelId);
 
       try {
         const credentials = await deps.authResolver.resolve({

@@ -75,6 +75,7 @@ export const weekTemplate = {
   "weekTemplate.ghost.long": "free · long video",
   "weekTemplate.ghost.longHours": "free · {hours} h video",
   "weekTemplate.date.action": "Give a date off the template",
+  "weekTemplate.date.actionShort": "Set date",
   "weekTemplate.date.title": "Give this slot its own date?",
   "weekTemplate.date.text": "When its video is uploaded, it gets the date {day} {local} ({utc} UTC, channel zone {zone}). Only this slot.",
   "weekTemplate.date.textUploaded": "The video on YouTube gets the date {day} {local} ({utc} UTC, channel zone {zone}) within a minute (about {units} quota units). Only this slot.",

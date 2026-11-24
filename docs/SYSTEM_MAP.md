@@ -122,6 +122,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 | 2.9be | Гигиена диска: временные папки тестов, кэш сборки, резервные копии ми… | IMPLEMENTED на ветке `feature/bl-237-di… | `docs/system/disk-hygiene.md` |
 | 2.9bf | Удаление локального mp4 после загрузки | IMPLEMENTED на ветке `feature/fo-req-00… | `docs/system/publishing.md` |
 | 2.9bg | Клипы на проверку | IMPLEMENTED | `docs/system/media-review.md` |
+| 2.9bo | Кадры на проверку (мастер-кадры сцен) | IMPLEMENTED на ветке `feature/image-reviews` | `docs/system/media-review.md` |
 | 2.9bl | Проверка владельцем итогового пакета | IMPLEMENTED на ветке | `docs/system/publishing.md` |
 | 2.9bn | Шаблон недели вместо одобрения слотов | IMPLEMENTED на ветке | `docs/system/publishing.md` |
 | 2.9bm | Ворота только по медиа и правка упаковки после загрузки | IMPLEMENTED на ветке | `docs/system/publishing.md` |

@@ -108,7 +108,7 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   agent_release_media_session: "bound",
   // BL-215 (ADR 0048): the bound channel's worker log, read-only.
   agent_list_worker_actions: "bound",
-  // BL-216 (ADR 0048): private/unlisted on the bound channel's own videos and playlists, never public.
+  // BL-216 (ADR 0048): private/unlisted on the bound channel's own videos and playlists; public for a playlist only (owner msg 4782).
   agent_set_privacy: "bound",
   // BL-220 (RESTART_WHEN_IDLE_PLAN.md, ADR 0049): restart when idle -- the status, a worker's own hold and its release.
   agent_restart_status: "bound",
@@ -203,6 +203,11 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   producer_clip_review_list: "producer-only",
   producer_clip_review_get: "producer-only",
   producer_clip_review_withdraw: "producer-only",
+  // BL-272 (ADR 0076): the Producer's master still image review tools -- on its endpoint only; only the owner decides (Web UI).
+  producer_image_review_submit: "producer-only",
+  producer_image_review_list: "producer-only",
+  producer_image_review_get: "producer-only",
+  producer_image_review_withdraw: "producer-only",
   // BL-271 (ADR 0075): the Producer's wait -- uploads and restarts only, on its endpoint only.
   producer_wait: "producer-only",
 });

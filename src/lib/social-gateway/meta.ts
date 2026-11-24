@@ -35,6 +35,15 @@ export type MetaTokenInspection = {
   expiresAt: number | null;
   page: { pageId: string; pageName: string } | null;
   instagram: { igUserId: string; username: string | null } | null;
+  /**
+   * The read of the linked Instagram failed while the Page itself read fine: Instagram is unknown (never assumed). Only Instagram
+   * is refused for it (owner TG 4779); the Page read failing still fails the whole inspection.
+   */
+  instagramUnreadable?: boolean;
+  /** With `instagramUnreadable`: the failure said nothing definite (no answer, a timeout, a rate limit, Meta's 5xx) -- ask again later. */
+  instagramReadTransient?: boolean;
+  /** `debug_token`'s `profile_id` (for a Page token, the Page it belongs to) when Meta gives one, as a string. */
+  profileId?: string;
 };
 
 export type MetaPage = {
@@ -230,8 +239,8 @@ export function createMetaClient(args: { fetchImpl?: Fetch; postingAllowed?: () 
 
     /**
      * BL-252 stage 2 (AC-XP-8): the identity read before anything is posted -- `debug_token` (with the app token, so the Page token
-     * is never sent as the caller) gives validity and scopes; `/{page-id}` with the Page token gives the Page and its linked
-     * Instagram account. Read-only; tokens travel in the query string as Meta documents, and never appear in an error.
+     * is never sent as the caller) gives validity, scopes and the token's Page (`profile_id`); `/{page-id}` with the Page token gives
+     * the Page, and a second read of it its linked Instagram account. Read-only; tokens travel in the query string as Meta documents, and never appear in an error.
      */
     async inspectPageToken(input: { appId: string; appSecret: string; pageId: string; pageToken: string }): Promise<MetaTokenInspection> {
       const d = new URL(`${META_GRAPH_BASE}/debug_token`);
@@ -241,18 +250,38 @@ export function createMetaClient(args: { fetchImpl?: Fetch; postingAllowed?: () 
       const valid = debug.is_valid === true;
       const scopes = Array.isArray(debug.scopes) ? debug.scopes.filter((s): s is string => typeof s === "string") : [];
       const exp = typeof debug.expires_at === "number" && debug.expires_at > 0 ? debug.expires_at * 1000 : null;
-      if (!valid) return { valid: false, scopes, expiresAt: exp, page: null, instagram: null };
-      const u = new URL(`${META_GRAPH_BASE}/${encodeURIComponent(input.pageId)}`);
-      u.searchParams.set("fields", "id,name,instagram_business_account{id,username}");
-      u.searchParams.set("access_token", input.pageToken);
-      const p = await getJson(u, "page");
-      const ig = (p.instagram_business_account ?? null) as Record<string, unknown> | null;
+      // For a Page token `profile_id` names the Page the token belongs to: the services compare it with the stored Page.
+      const profileId = typeof debug.profile_id === "string" && debug.profile_id ? debug.profile_id : typeof debug.profile_id === "number" ? String(debug.profile_id) : null;
+      const profile = profileId ? { profileId } : {};
+      if (!valid) return { valid: false, scopes, expiresAt: exp, page: null, instagram: null, ...profile };
+      const pageRead = (fields: string) => {
+        const u = new URL(`${META_GRAPH_BASE}/${encodeURIComponent(input.pageId)}`);
+        u.searchParams.set("fields", fields);
+        u.searchParams.set("access_token", input.pageToken);
+        return getJson(u, "page");
+      };
+      // 2026-11-23 (owner TG 4779: one network's problem never stops another): the Page and its linked Instagram are two separate
+      // reads. The Page read failing fails the whole inspection (every Meta network posts with that Page); ANY failure of the
+      // Instagram read (Meta's refusal of a blocked account, no answer, a timeout, a 5xx) only makes Instagram unreadable -- Instagram
+      // fails closed, Facebook is still judged. A failure that proves nothing is marked transient, so Instagram asks again later.
+      const p = await pageRead("id,name");
+      let ig: Record<string, unknown> | null = null;
+      let unreadable: { instagramUnreadable: true; instagramReadTransient?: true } | null = null;
+      try {
+        ig = ((await pageRead("instagram_business_account{id,username}")).instagram_business_account ?? null) as Record<string, unknown> | null;
+      } catch (error) {
+        const status = error instanceof DomainError ? (error.details as { status?: unknown } | undefined)?.status : undefined;
+        const definite = error instanceof DomainError && (error.code === "social_request_rejected" || error.code === "social_token_invalid") && typeof status === "number" && status < 500;
+        unreadable = definite ? { instagramUnreadable: true } : { instagramUnreadable: true, instagramReadTransient: true };
+      }
       return {
         valid: true,
         scopes,
         expiresAt: exp,
         page: typeof p.id === "string" ? { pageId: p.id, pageName: typeof p.name === "string" ? p.name : p.id } : null,
         instagram: ig && typeof ig.id === "string" ? { igUserId: ig.id, username: typeof ig.username === "string" ? ig.username : null } : null,
+        ...(unreadable ?? {}),
+        ...profile,
       };
     },
 

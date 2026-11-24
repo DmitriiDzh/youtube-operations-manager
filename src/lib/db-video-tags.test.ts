@@ -7,7 +7,7 @@ import { createLibsqlClient } from "@/lib/libsql-client";
 import { getStoredVideo, initializeDatabaseSchema, listStoredVideosByChannel, listStoredVideosByIds, SCHEMA_MIGRATIONS, upsertChannel, upsertVideos } from "@/lib/db";
 import { SNAPSHOT_TRANSFERRED_TABLES } from "@/lib/snapshot/contracts";
 
-// FO-REQ-0056 part 2: schema v123 adds `videos.tags_json` -- YouTube's `snippet.tags` of each synced video, stored by the sync so
+// FO-REQ-0056 part 2: schema v125 adds `videos.tags_json` -- YouTube's `snippet.tags` of each synced video, stored by the sync so
 // channel_video_list / agent_get_video_context can show them without a YouTube call. NULL = not read yet (unknown), "[]" = none.
 
 function video(videoId: string, channelId: string, extra: { tags?: string[] } = {}) {
@@ -27,8 +27,8 @@ function video(videoId: string, channelId: string, extra: { tags?: string[] } = 
   };
 }
 
-test("schema v123 adds videos.tags_json (nullable, no default) on a fresh database, and re-applying it is harmless", async () => {
-  const migration = SCHEMA_MIGRATIONS.find((m) => m.version === 123);
+test("schema v125 adds videos.tags_json (nullable, no default) on a fresh database, and re-applying it is harmless", async () => {
+  const migration = SCHEMA_MIGRATIONS.find((m) => m.version === 125);
   assert.ok(migration);
   // videos is a device-local cache of YouTube (a new computer syncs it itself), so the column never travels in a snapshot.
   assert.equal((SNAPSHOT_TRANSFERRED_TABLES as readonly string[]).includes("videos"), false);

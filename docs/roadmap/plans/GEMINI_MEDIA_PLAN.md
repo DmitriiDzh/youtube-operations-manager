@@ -162,7 +162,7 @@ Veo parameter rules:
 | Setting | Default |
 |---|---|
 | `enabled` | **false** |
-| `maxUsdPerJob` | 1 |
+| `maxUsdPerJob` | 2 (1 until owner TG 4789, 2026-11-23) |
 | `maxUsdPerDay` | 5 |
 | `maxUsdPerMonth` | 50 |
 | `maxActiveJobs` | 10 |

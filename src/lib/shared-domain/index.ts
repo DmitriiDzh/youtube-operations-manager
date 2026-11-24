@@ -180,6 +180,8 @@ export type DomainErrorCode =
   // one of this installation's connected channels (never "does not exist" vs. "not connected").
   | "CHANNEL_WORKSPACE_PATH_INVALID"
   | "CHANNEL_WORKSPACE_CHANNEL_NOT_CONNECTED"
+  // BL-272 (review): the path is inside, equal to or around another connected channel's workspace folder on this device.
+  | "CHANNEL_WORKSPACE_NESTED"
   // Phase 14 (docs/roadmap/plans/PHASE_14_PLAN.md) -- remote media generation on RunPod/ComfyUI.
   // NOT_CONFIGURED: no credentials/settings on this device (the feature is simply off, AC-P14-01).
   // GATEWAY_DISABLED: the operator's "Media gateway" toggle is off. CREDENTIALS_INVALID: RunPod or
@@ -379,6 +381,25 @@ export type DomainErrorCode =
   | "clip_review_duplicate"
   | "clip_review_file_missing"
   | "clip_review_file_changed"
+  // BL-272 (ADR 0076): a clip's `approvedImageId` names no image of the channel (IMAGE_NOT_FOUND) or one not approved
+  // (IMAGE_NOT_APPROVED, details.status).
+  | "clip_review_image_not_found"
+  | "clip_review_image_not_approved"
+  // BL-272 (ADR 0076) -- master still images for review, as the clips: NOT_FOUND, NOT_PENDING, WORKSPACE_UNAVAILABLE,
+  // FILE_UNAVAILABLE (details.reason), NOT_IMAGE (not .png/.jpg/.jpeg, its header another format, unreadable, too large or an odd
+  // size), TOO_MANY_PENDING / DUPLICATE / BATCH_FULL (the queue's limits), REQUEST_CONFLICT (a known requestId with another
+  // request), FILE_MISSING / FILE_CHANGED (an approval while this computer's copy is not the submitted file).
+  | "image_review_not_found"
+  | "image_review_not_pending"
+  | "image_review_workspace_unavailable"
+  | "image_review_file_unavailable"
+  | "image_review_not_image"
+  | "image_review_too_many_pending"
+  | "image_review_duplicate"
+  | "image_review_batch_full"
+  | "image_review_request_conflict"
+  | "image_review_file_missing"
+  | "image_review_file_changed"
   // BL-257 (ADR 0070, PACKAGE_REVIEW_PLAN.md) -- the owner's review of a final release package. NOT_FOUND: no package of the channel
   // with this manifest SHA-256 here; UPLOADED: already on YouTube (nothing to review); NO_SHA256: the manifest states no video
   // `sha256`; VIDEO_MISSING / VIDEO_MISMATCH: this computer's mp4 is not there or does not hash to it; THUMBNAIL_MISSING: no default

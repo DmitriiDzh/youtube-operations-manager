@@ -249,7 +249,7 @@ export const videos = sqliteTable("videos", {
   durationSeconds: integer("duration_seconds"),
   // Additive, SCHEMA_MIGRATIONS version 47: YouTube's `snippet.liveBroadcastContent` ("none" | "live" | "upcoming") from the last sync; NULL = unknown.
   liveBroadcastContent: text("live_broadcast_content"),
-  // Additive, SCHEMA_MIGRATIONS version 123 (FO-REQ-0056 part 2): YouTube's `snippet.tags` from the last sync, a JSON array of strings
+  // Additive, SCHEMA_MIGRATIONS version 125 (FO-REQ-0056 part 2): YouTube's `snippet.tags` from the last sync, a JSON array of strings
   // ("[]" = the sync saw none). Nullable, no default: NULL = not read since this column existed (unknown, never shown as "no tags").
   tagsJson: text("tags_json"),
   // Additive, schema version 21 (owner instruction, 2026-09-26, Telegram: Content tab's "Publish"
@@ -1916,7 +1916,8 @@ export const producerAgentTokens = sqliteTable("producer_agent_tokens", {
 
 /**
  * BL-161, SCHEMA_MIGRATIONS version 72: one row per Producer MCP tool call, allowed or refused (FO-REQ-0012 §2.4: the owner sees
- * what the Producer looked at). Device-local; rows older than 90 days are pruned on insert.
+ * what the Producer looked at). Device-local; rows older than 90 days are pruned on insert. Version 124 (owner TG 4782 review):
+ * `target` and `details_json` say what a playlist write wrote (the playlist, privacy, video ids, the answer's counts); null otherwise.
  */
 export const producerCallLog = sqliteTable("producer_call_log", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -1925,6 +1926,8 @@ export const producerCallLog = sqliteTable("producer_call_log", {
   channelId: text("channel_id"),
   outcome: text("outcome").notNull(),
   errorCode: text("error_code"),
+  target: text("target"),
+  detailsJson: text("details_json"),
 });
 
 /**
@@ -2131,6 +2134,15 @@ export const socialPostJobs = sqliteTable(
     errorMessage: text("error_message"),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+    /**
+     * v123 (owner TG 4780): when the owner asked in the Web UI to retry this failed job; null = no retry pending. Set only on a
+     * `failed` job that never sent a publishing call and has no post id (`markSocialPostJobOwnerRetry`, a conditional update). The
+     * runner starts it again however late but never before its planned time (the 12 h window binds only the automatic start), and
+     * sets it back to null when it takes the job over, when the retry is refused (identity, slot no longer approved, network
+     * blocked: each with its own error code) or when the mark is older than 48 h (`retry_expired`). While the network's 24 h limit
+     * is reached it stays set (error code `retry_waiting_quota`).
+     */
+    ownerRetryAt: integer("owner_retry_at", { mode: "timestamp_ms" }),
   },
   (table) => [index("social_post_jobs_channel_idx").on(table.channelId, table.slotId)]
 );
@@ -6216,7 +6228,33 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
   {
     version: 123,
     description:
-      "videos.tags_json -- FO-REQ-0056 part 2: YouTube's snippet.tags of each synced video (already in the sync's snippet read, no extra quota), for channel_video_list / agent_get_video_context. Additive, nullable; existing rows stay NULL (unknown) until their next sync. videos is a device-local cache (not transferred)",
+      "social_post_jobs.owner_retry_at -- BL-252 (ADR 0068 amendment 2, owner TG 4780): the owner's explicit retry of a failed social job is recorded on the job (the runner then posts it however late). Additive, nullable, device-local",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE social_post_jobs ADD COLUMN owner_retry_at INTEGER");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
+    },
+  },
+  {
+    version: 124,
+    description:
+      "producer_call_log.target + details_json -- owner TG 4782 review (ADR 0048 amendment 1): what a Producer playlist write wrote (the playlist, privacy, video ids, the answer's counts). Additive, nullable, no default, device-local",
+    apply: async (client) => {
+      for (const statement of ["ALTER TABLE producer_call_log ADD COLUMN target TEXT", "ALTER TABLE producer_call_log ADD COLUMN details_json TEXT"]) {
+        try {
+          await client.execute(statement);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
+    },
+  },
+  {
+    version: 125,
+    description:
+      "videos.tags_json -- FO-REQ-0056 part 2 (BL-273): YouTube's snippet.tags of each synced video (already in the sync's snippet read, no extra quota), for channel_video_list / agent_get_video_context. Additive, nullable; existing rows stay NULL (unknown) until their next sync. videos is a device-local cache (not transferred)",
     apply: async (client) => {
       try {
         await client.execute("ALTER TABLE videos ADD COLUMN tags_json TEXT");
@@ -8775,6 +8813,10 @@ export type ProducerCallLogEntry = {
   channelId: string | null;
   outcome: "ok" | "error";
   errorCode: string | null;
+  /** v124: a playlist write's playlist (null for every other call). */
+  target: string | null;
+  /** v124: a playlist write's details as JSON, at most 500 characters (a long list is cut and is then no longer JSON). */
+  detailsJson: string | null;
 };
 
 /** How long a Producer call stays in the log (BL-161). */
@@ -8782,11 +8824,12 @@ export const PRODUCER_CALL_LOG_RETENTION_MS = 90 * 24 * 60 * 60_000;
 
 /** BL-161: records one Producer tool call and drops rows older than the retention, in one transaction. */
 export async function insertProducerCallLogEntry(
-  entry: { at: Date; tool: string; channelId: string | null; outcome: "ok" | "error"; errorCode: string | null },
+  entry: { at: Date; tool: string; channelId: string | null; outcome: "ok" | "error"; errorCode: string | null; target?: string | null; details?: string | null },
   database: AppDb = db
 ): Promise<void> {
+  const { details, target, ...row } = entry;
   await database.transaction(async (tx) => {
-    await tx.insert(producerCallLog).values(entry);
+    await tx.insert(producerCallLog).values({ ...row, target: target ?? null, detailsJson: details ?? null });
     await tx.delete(producerCallLog).where(lt(producerCallLog.at, new Date(entry.at.getTime() - PRODUCER_CALL_LOG_RETENTION_MS)));
   });
 }
@@ -8953,9 +8996,9 @@ export async function getGatewayTrafficLast24h(
   }));
 }
 
-export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens" | "live_streams" | "channel_language_settings" | "channel_publishing_settings" | "publishing_uploads" | "storyboards" | "media_jobs" | "gemini_spend" | "gemini_settings" | "video_reservations" | "video_costs" | "live_analytics" | "publishing_plans" | "elevenlabs_spend" | "elevenlabs_settings" | "clip_reviews" | "package_reviews";
+export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens" | "live_streams" | "channel_language_settings" | "channel_publishing_settings" | "publishing_uploads" | "storyboards" | "media_jobs" | "gemini_spend" | "gemini_settings" | "video_reservations" | "video_costs" | "live_analytics" | "publishing_plans" | "elevenlabs_spend" | "elevenlabs_settings" | "clip_reviews" | "package_reviews" | "image_reviews";
 
-const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens", "live_streams", "channel_language_settings", "channel_publishing_settings", "publishing_uploads", "storyboards", "media_jobs", "gemini_spend", "gemini_settings", "video_reservations", "video_costs", "live_analytics", "publishing_plans", "elevenlabs_spend", "elevenlabs_settings", "clip_reviews", "package_reviews"];
+const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens", "live_streams", "channel_language_settings", "channel_publishing_settings", "publishing_uploads", "storyboards", "media_jobs", "gemini_spend", "gemini_settings", "video_reservations", "video_costs", "live_analytics", "publishing_plans", "elevenlabs_spend", "elevenlabs_settings", "clip_reviews", "package_reviews", "image_reviews"];
 
 export type SyncFamilyStatusRow = {
   family: SyncFamily;
@@ -17151,6 +17194,20 @@ export async function insertSocialPostJob(row: typeof socialPostJobs.$inferInser
 
 export async function updateSocialPostJob(jobId: string, set: Partial<typeof socialPostJobs.$inferInsert>, database: AppDb = db): Promise<void> {
   await database.update(socialPostJobs).set(set).where(eq(socialPostJobs.jobId, jobId));
+}
+
+/**
+ * The owner's retry mark (owner TG 4780, review 23.11): set only while the job is still `failed`, never sent a publishing call and
+ * has no post id -- in one conditional update, so a runner pass that took the job over (or published it) in between is never
+ * marked for another post. False when the row no longer qualifies.
+ */
+export async function markSocialPostJobOwnerRetry(jobId: string, at: Date, database: AppDb = db): Promise<boolean> {
+  const marked = await database
+    .update(socialPostJobs)
+    .set({ ownerRetryAt: at })
+    .where(and(eq(socialPostJobs.jobId, jobId), eq(socialPostJobs.status, "failed"), eq(socialPostJobs.publishAttempted, false), isNull(socialPostJobs.remotePostId)))
+    .returning({ jobId: socialPostJobs.jobId });
+  return marked.length === 1;
 }
 
 export async function deleteSocialPostJob(jobId: string, database: AppDb = db): Promise<void> {

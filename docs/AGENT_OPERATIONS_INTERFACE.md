@@ -117,9 +117,9 @@ includedSections, metadata?, localizations? }`. `include` selects which of `"met
 `include` is left `undefined` on the response object entirely (owner spec §23's token-efficiency
 requirement), not returned as an empty placeholder. Throws `DATA_NOT_SYNCED` if `videoId` does not
 belong to `channelId`'s synced video list (protects against a cross-channel `videoId` or a typo).
-`metadata` also carries `durationSeconds` / `liveBroadcastContent` (FO-REQ-0015 item 6) and, since `AGENT_API_VERSION` 4.26.0
+`metadata` also carries `durationSeconds` / `liveBroadcastContent` (FO-REQ-0015 item 6) and, since `AGENT_API_VERSION` 4.28.0
 (FO-REQ-0056 part 2, additive), `tags`: the video's YouTube `snippet.tags` as of the last channel sync, in YouTube's order (`[]`
-when it has none, `null` when the stored copy has not read them yet -- a row synced before schema v123, until the next sync).
+when it has none, `null` when the stored copy has not read them yet -- a row synced before schema v125, until the next sync).
 `channel_video_list` carries the same `tags` (selectable in `fields`). Both stay local reads: the sync's existing `snippet` read
 supplies the tags at no extra quota.
 

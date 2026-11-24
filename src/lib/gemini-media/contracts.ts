@@ -10,8 +10,8 @@ export { DomainError, isDomainError };
 // ---------------------------------------------------------------------------
 
 /** The official Gemini API pricing page these prices were copied from (§1.1): read 2026-10-09; Omni added from the page read
- * 2026-10-13 (BL-179). */
-export const GEMINI_PRICES_AS_OF = "2026-10-13";
+ * 2026-10-13 (BL-179); Omni 1.2 and the image prices re-read 2026-11-23 (owner TG 3700, https://aistudio.google.com/docs/pricing). */
+export const GEMINI_PRICES_AS_OF = "2026-11-23";
 
 export type GeminiImageModelSpec = {
   label: string;
@@ -38,39 +38,63 @@ export type GeminiVideoModelSpec = {
   referenceImages: boolean;
   /** Whether a first frame (and a last frame with it) can be given. */
   frames: boolean;
+  /** Whole seconds allowed (inclusive), and the longest clip when a last frame is given too. */
+  durationSeconds: { min: number; max: number; maxWithLastFrame: number };
   /** Google's announced shutdown date (YYYY-MM-DD) -- https://ai.google.dev/gemini-api/docs/deprecations. */
   retiresOn?: string;
   /** Token prices (USD per 1M), and the video tokens per second by resolution, for the estimate. */
   tokenPricing?: { inputPerM: number; textOutPerM: number; videoOutPerM: number; videoTokensPerSecond: Readonly<Record<string, number>> };
 };
 
-// BL-179 (FO-REQ-0021): Omni's pricing page gives 5,792 tokens per second of 720p video at $17.50 per 1M (about $0.10/s). It
-// gives no count for 1080p (upscaled): the estimate takes 1080p's pixel ratio over 720p (2.25 x) until a real job measures
-// it -- the estimate gates the spend limits, the cost itself is Google's count.
-const OMNI_720P_TOKENS_PER_SECOND = 5792;
-const OMNI_TOKENS = { "720p": OMNI_720P_TOKENS_PER_SECOND, "1080p": Math.ceil(OMNI_720P_TOKENS_PER_SECOND * 2.25) };
-const OMNI_VIDEO_OUT_PER_M = 17.5;
+// Owner TG 3700: Gemini Omni 1.2 Flash (GA 2026-11-05) replaces 1.1, which Google routes to 1.2 (billed at 1.2's rates) from
+// 2026-12-03 (https://aistudio.google.com/docs/deprecations). Read 2026-11-23 from https://aistudio.google.com/docs/pricing:
+// input $1.50, text (and thinking) output $9.00, video output $12.00 per 1M tokens; 5,792 tokens per second of 720p and 8,688 of
+// 1080p (upsampled) -- about $0.07/s and $0.104/s. (1.1, BL-179: $17.50 per 1M video tokens, 1080p guessed at 2.25 x 720p.)
+// Durations from https://aistudio.google.com/docs/omni: any whole second 3-15 s (`response_format.duration`, e.g. "15s"); first +
+// last frame 3-10 s ("over 10 s returns an invalid argument error"); a single image up to 15 s. The estimate gates the spend
+// limits; the cost itself is Google's count.
+const OMNI_TOKENS = { "720p": 5792, "1080p": 8688 };
+const OMNI_VIDEO_OUT_PER_M = 12;
 
 export const GEMINI_VIDEO_MODELS: Readonly<Record<string, GeminiVideoModelSpec>> = Object.freeze({
-  "gemini-omni-1.1-flash": {
-    label: "Gemini Omni Flash",
+  "gemini-omni-1.2-flash": {
+    label: "Gemini Omni 1.2 Flash",
     perSecond: Object.fromEntries(Object.entries(OMNI_TOKENS).map(([resolution, tokens]) => [resolution, (tokens * OMNI_VIDEO_OUT_PER_M) / 1_000_000])),
     referenceImages: false,
     frames: true,
+    durationSeconds: { min: 3, max: 15, maxWithLastFrame: 10 },
     tokenPricing: { inputPerM: 1.5, textOutPerM: 9, videoOutPerM: OMNI_VIDEO_OUT_PER_M, videoTokensPerSecond: OMNI_TOKENS },
   },
   // BL-180: the three Veo 3.1 previews (veo-3.1-generate-preview, -fast-, -lite-) and their `predictLongRunning` transport are
   // gone -- Google shuts them down on 2026-10-22 and names Omni as the replacement (owner, Telegram msg 2902: removed now).
 });
 
+/**
+ * Owner TG 3700: deprecated video model ids still accepted, each sent to Google and recorded on a new job as its replacement (the
+ * Operator's workflow bundles pin `gemini-omni-1.1-flash`). Never listed as a model of its own.
+ */
+export const GEMINI_VIDEO_MODEL_ALIASES: Readonly<Record<string, string>> = Object.freeze({ "gemini-omni-1.1-flash": "gemini-omni-1.2-flash" });
+
+/** A video model id with a deprecated alias replaced by its model (any other id unchanged). */
+export function resolveGeminiVideoModel(model: string): string {
+  return ownEntry(GEMINI_VIDEO_MODEL_ALIASES, model) ?? model;
+}
+
+/** The video model of an id or of a deprecated alias (a job stored before the alias was retired may carry either). */
+export function geminiVideoModelSpec(model: string): GeminiVideoModelSpec | undefined {
+  return ownEntry(GEMINI_VIDEO_MODELS, resolveGeminiVideoModel(model));
+}
+
 // ---------------------------------------------------------------------------
 // BL-236 (FO-REQ-0050, ADR 0057): speech -- one take of text in a designed voice, a third job kind next to image and video (same
 // table, key, switch, limits, spend, worker and folder). Prices from the Gemini pricing page as the Operator's research R-0005
-// read it on 2026-10-29 (UNVERIFIED here: no page or API was read while building): a promotional rate until 2026-12-31, then
-// double. Audio output is billed at 25 tokens per second of audio.
+// read it on 2026-10-29: a promotional rate until 2026-12-31, then double. Audio output is billed at 25 tokens per second of audio.
+// Verified on https://aistudio.google.com/docs/pricing on 2026-11-23 (owner TG 3700): 3.8 Flash TTS input $0.50 -> $1.00 and audio
+// output $9.00 -> $18.00, 3.8 Flash-Lite TTS input $0.50 -> $1.00 and audio output $6.00 -> $12.00 per 1M, "starting January 1,
+// 2027". (The speech request shape stays UNVERIFIED, see the gateway.)
 // ---------------------------------------------------------------------------
 
-export const GEMINI_SPEECH_PRICES_AS_OF = "2026-10-29";
+export const GEMINI_SPEECH_PRICES_AS_OF = "2026-11-23";
 
 /** The instant Google's announced doubling applies (UTC midnight -- the earlier reading of "from 2027-01-01", so never under-counted). */
 export const GEMINI_SPEECH_PRICE_CHANGE_AT = "2027-01-01T00:00:00.000Z";
@@ -115,7 +139,6 @@ export const GEMINI_SPEECH = Object.freeze({
 export const GEMINI_IMAGE_ASPECT_RATIOS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"] as const;
 export const GEMINI_VIDEO_ASPECT_RATIOS = ["16:9", "9:16"] as const;
 export const GEMINI_VIDEO_RESOLUTIONS = ["720p", "1080p", "4k"] as const;
-export const GEMINI_VIDEO_DURATIONS = [4, 6, 8] as const;
 export const GEMINI_PERSON_GENERATION = ["allow_all", "allow_adult"] as const;
 
 export const GEMINI_LIMITS = Object.freeze({
@@ -160,7 +183,9 @@ export type GeminiMediaSettings = {
 
 export const DEFAULT_GEMINI_MEDIA_SETTINGS: GeminiMediaSettings = Object.freeze({
   enabled: false,
-  maxUsdPerJob: 1,
+  // Owner TG 4789: $2 (was $1) so every Omni 1.2 clip fits -- the largest, 1080p 15 s, is estimated at $1.58. Only the default:
+  // a stored value (the owner's own or one received through the shared Gemini settings) is kept.
+  maxUsdPerJob: 2,
   maxUsdPerDay: 5,
   maxUsdPerMonth: 50,
   maxActiveJobs: 10,

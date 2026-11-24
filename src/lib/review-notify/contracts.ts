@@ -37,7 +37,8 @@ export const REVIEW_NOTICE_FILE_PREFIX = "REVIEW-DECISION";
 
 // BL-257 (ADR 0070): + "package" -- the owner approved or returned a final release package in Media → «Видео на проверку».
 // BL-267 (AC-WT-04): + "template" -- the owner's decision on a week template (his edit, an accepted or rejected proposal, withdrawn).
-export type ReviewNoticeKind = "clip" | "storyboard" | "render" | "plan" | "slot" | "package" | "template";
+// BL-272 (ADR 0076): + "image" -- the owner approved, approved with a note, or returned a master still image in Media → «Кадры».
+export type ReviewNoticeKind = "clip" | "storyboard" | "render" | "plan" | "slot" | "package" | "template" | "image";
 export type SingleNoticeKind = Exclude<ReviewNoticeKind, "plan">;
 
 /** One line of an item's context in the file ("Scene: Tobacco Field Barn"). */
