@@ -324,19 +324,19 @@ function IssueList({
               </div>
               <ul className="space-y-1 pl-1 text-sm">
                 {issue.thread.map((turn, k) => (
-                  <li key={k} className="flex gap-1.5">
+                  <li key={k} className="break-words">
                     {turn.by === "owner" ? (
                       <>
-                        <span className="shrink-0 text-xs text-zinc-500">{t(turn.kind === "resolved" ? "packageReviews.issues.turn.resolved" : turn.kind === "follow_up" ? "packageReviews.issues.turn.followUp" : "packageReviews.issues.turn.owner")}</span>
-                        {turn.text ? <span className="min-w-0 break-words text-zinc-200">{turn.text}</span> : null}
+                        <span className="mr-1.5 text-xs text-zinc-500">{t(turn.kind === "resolved" ? "packageReviews.issues.turn.resolved" : turn.kind === "follow_up" ? "packageReviews.issues.turn.followUp" : "packageReviews.issues.turn.owner")}</span>
+                        {turn.text ? <span className="text-zinc-200">{turn.text}</span> : null}
                       </>
                     ) : (
                       <>
-                        <span className="shrink-0 text-xs text-sky-300">
+                        <span className="mr-1.5 text-xs text-sky-300">
                           {t("packageReviews.issues.turn.agent", { status: t(STATUS_KEYS[turn.status]) })}
                           {turn.atSeconds !== null ? ` · ${formatPlayerTime(turn.atSeconds)}` : ""}
                         </span>
-                        <span className="min-w-0 whitespace-pre-wrap break-words text-zinc-300">{turn.text}</span>
+                        <span className="whitespace-pre-wrap text-zinc-300">{turn.text}</span>
                       </>
                     )}
                   </li>
