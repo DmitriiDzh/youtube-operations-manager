@@ -76,7 +76,9 @@
 // playlist_update (title / description / privacy, public included), playlist_add_videos (only the channel's own synced videos) and
 // playlist_remove_videos, each run for the named channel as its own agent would (`expectedChannelId`, required except on
 // playlist_create, must equal `channelId`); permission PLAYLIST_WRITE and playlistTools in producer_get_capabilities. No playlist delete. Additive.
-// 1.31.0 (owner TG 4839/4842, ADR 0072 amendment 1; 1.30.0 is reserved for the tags branch): producer_video_metadata_update takes `localizations: true` -- the package's current
+// 1.30.0 (FO-REQ-0056 part 2, BL-273): channel_video_list gains the selectable field `tags` and agent_get_video_context's metadata gains
+// `tags` (snippet.tags as of the last channel sync; [] = none; null = not read yet). Read-only, local copy. Additive; no tool added.
+// 1.31.0 (BL-274, owner TG 4839/4842, ADR 0072 amendment 1): producer_video_metadata_update takes `localizations: true` -- the package's current
 // translations onto its uploaded video (per-language three-way check, any conflict refuses, nothing removed, dryRun), through the
 // shared video translations writer. Additive; no tool added.
 export const PRODUCER_API_VERSION = "1.31.0";

@@ -127,6 +127,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 | 2.9bn | Шаблон недели вместо одобрения слотов | IMPLEMENTED на ветке | `docs/system/publishing.md` |
 | 2.9bm | Ворота только по медиа и правка упаковки после загрузки | IMPLEMENTED на ветке | `docs/system/publishing.md` |
 | 2.9bh | Решения владельца будят Продюсера | IMPLEMENTED, влито в `dev` (`b598da19`) | `docs/system/agent-operations.md` |
+| 2.9bo2 | Теги видео только на чтение | IMPLEMENTED | `docs/system/component-status.md` |
 | 2.9bm2 | Мелкие изменения 15.11 | — | `docs/system/component-status.md` |
 | 2.9bn2 | Ожидание долгих операций без токенов агента | IMPLEMENTED на ветке | `docs/system/component-status.md` |
 | 2.9bm3 | Английские субтитры длинных видео WWE | IMPLEMENTED на ветке | `docs/system/component-status.md` |

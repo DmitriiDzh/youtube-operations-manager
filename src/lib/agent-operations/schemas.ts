@@ -175,6 +175,7 @@ const videoMetadataContextSchema = z
     lastSyncedAt: z.string(),
     durationSeconds: z.number().int().nullable(),
     liveBroadcastContent: z.string().nullable(),
+    tags: z.array(z.string()).nullable(),
   })
   .strict();
 

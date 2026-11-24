@@ -17,9 +17,11 @@ export function createVideoDetailsAuditStoreAdapter() {
 export function createVideoDetailsLocalCacheAdapter() {
   return {
     /** Reuses `upsertVideos` (the exact function `channel-sync` itself upserts through -- no
-     * parallel write path, AGENTS.md §D). `upsertVideos` always replaces the ENTIRE row it's
-     * given, so every field not touched by this edit is copied forward unchanged from the
-     * current stored row first -- never blanked, never guessed. If the video was never synced
+     * parallel write path, AGENTS.md §D). `upsertVideos` replaces every column of the row it's
+     * given except `tags` (FO-REQ-0056: kept as stored when an entry omits it), so every field not
+     * touched by this edit is copied forward unchanged from the current stored row first -- never
+     * blanked, never guessed. `tags` is given from the verified read-back (`after`), so a tags
+     * write shows in the local copy at once. If the video was never synced
      * locally at all (no stored row), there is nothing to merge onto and nothing to preserve;
      * silently skip rather than fabricate a partial row that the next real sync would just
      * overwrite anyway. */
@@ -51,6 +53,8 @@ export function createVideoDetailsLocalCacheAdapter() {
             durationSeconds: current.durationSeconds,
             // A targeted patch must not erase what the last sync stored (the upsert writes NULL for an omitted field).
             liveBroadcastContent: current.liveBroadcastContent,
+            // FO-REQ-0056: the verified read-back's tags (YouTube's own, `[]` when none) -- what the video has now.
+            tags: args.after.tags,
             // No `?? current.publishAt` fallback (unlike `privacyStatus` above, whose real-world
             // null case is negligible): `args.after.publishAt` is a fresh, authoritative read
             // straight from YouTube (adapters/youtube-api.ts), and `null` there is a genuine,
