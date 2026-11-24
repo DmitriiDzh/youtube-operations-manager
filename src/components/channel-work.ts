@@ -28,7 +28,7 @@ export function waitingLabel(t: Translate, work: Pick<PlanChannelWork, "waitingR
 }
 
 /** BL-262 (owner msgs 4541/4542/4545): what a bell entry is about -- the bell shows it as an icon instead of a group header. */
-export type BellGroup = "disk" | "media" | "translations" | "storyboards" | "publishing" | "live" | "sync";
+export type BellGroup = "disk" | "media" | "translations" | "storyboards" | "packages" | "publishing" | "live" | "sync";
 
 /** BL-262: `action` = the owner has to act (red icon); `info` = something to know or look at (sky icon). */
 export type BellSeverity = "action" | "info";

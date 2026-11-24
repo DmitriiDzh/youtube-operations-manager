@@ -47,6 +47,8 @@ export function AppShell<T extends string>(props: {
   publishingEntries?: readonly ChannelWorkEntry[];
   /** BL-184: the other channels' storyboards waiting for review. */
   storyboardEntries?: readonly ChannelWorkEntry[];
+  /** BL-257 fix: the other channels' final videos waiting for the owner's review. */
+  packageEntries?: readonly ChannelWorkEntry[];
   /** A bell entry's button: switch to that channel, then open `href`. */
   onOpenChannelWork?: (channelId: string, href: string) => void;
   /** BL-254: the sections on a phone's bottom bar (the rest are under «Ещё»). */
@@ -149,6 +151,7 @@ export function AppShell<T extends string>(props: {
                 languageEntries={props.languageEntries}
                 publishingEntries={props.publishingEntries}
                 storyboardEntries={props.storyboardEntries}
+                packageEntries={props.packageEntries}
                 onOpenChannelWork={props.onOpenChannelWork}
               />
             </FeatureErrorBoundary>

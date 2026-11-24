@@ -502,7 +502,11 @@ flags the error as not sent; the mark keeps the retry count, so a failing insert
   (no re-queue loop).
 - **Surfaces:** owner routes `/api/channels/[channelId]/package-reviews` (`GET`/`PUT`, `/decision`, `/video`, `/thumbnail` via
   `local-file-response`, `isOwnerBrowserRequest`); Media → «Видео на проверку» (`MEDIA_TABS` value `packages`); the week-plan slot line
-  from `PlanSlotPackage.reviewComment` and the problem codes; review-notify kind `package` (`packageNoticesOf`).
+  from `PlanSlotPackage.reviewComment` and the problem codes; review-notify kind `package` (`packageNoticesOf`). Notices (fix
+  2026-11-24): `GET /api/package-review-alerts` (`createPackageReviewAlertsHandler` in the same `handlers.ts`, so AC-PR-08's single
+  composer holds) -- per connected channel the owner surface's `waiting(channelId)` (= `view().waiting`; 0 without a scan when the gate
+  is off), the Media menu badge for the active channel and a bell entry (group `packages`, `/media/packages`) for the others
+  (`src/components/package-review-alerts.ts`, the storyboard-alerts pattern).
 
 ## BL-267 — the week template replaces slot approval (ADR 0073, WEEK_TEMPLATE_PLAN.md)
 
