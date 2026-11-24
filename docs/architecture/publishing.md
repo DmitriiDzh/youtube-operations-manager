@@ -526,7 +526,11 @@ flags the error as not sent; the mark keeps the retry count, so a failing insert
   `publishAt`, audit `publishing.plan_moved` with `by`). An undated video only changes position (D1); a failed write leaves the plan
   moved and is retried by moving to the same place.
 - **Social.** `socialSlotStates` returns `approved` when the plan dates the slot (template or explicit), evaluated for slots up to 36 h
-  past, bound to the current manifest; a foreign date, a veto, a removed entry or a taken position post nothing.
+  past, bound to the current manifest; a foreign date, a veto, a removed entry or a taken position post nothing. `alsoSlotIds`
+  (owner TG 4780, ADR 0068 amendment 2) adds slots past that look-back with the same rules -- the composition passes only the slots
+  of the owner's pending retry of a failed social job or of a social job still in flight (`slotsBeyondLookback`). Such an old slot
+  never counts against a slot inside the look-back in the "one video in two approved slots" rule; it is itself disapproved when
+  its video is in another approved slot.
 - **Weekly build by template.** `weekly-build.startByTemplate` writes the template (the `templateViewOf` serializer) to
   `05 Docs/publishing/week-template.json` and starts `13 Weekly_Plan v1 auto --template [--week]`; `collectTemplateBuild` saves a done
   job's `job.result.payloads` through the plan's agent save as `factory` once per job and runs `13 push --sent --plan` for the accepted.

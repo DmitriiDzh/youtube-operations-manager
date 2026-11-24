@@ -56,3 +56,43 @@ A slot authorizes its package's `crossPost` when the weekly plan dates it -- a m
 media approval (where the channel has the review gate), or his explicit one-slot date -- evaluated also for slots up to 36 h past and
 bound to the slot's CURRENT manifest SHA-256, which the runner re-checks before each Meta call (`socialSlotStates`). A vetoed slot, a
 slot whose video carries a date this computer did not set, or one the template no longer dates, posts nothing.
+
+## Amendment 2 — every network posts or stops on its own (2026-11-23; owner TG 4779)
+
+Cause: from 20.11 Meta blocked the channel's Instagram, the Page's answer lost `instagram_business_account`, and the channel-wide
+identity read refused every post (`social_account_mismatch (instagram_unlinked)`), so Facebook Reels S6–S8 were never posted.
+Owner: «даже если одна из соц сетей отваливалась — оставшиеся продолжали обновляться и получать свои публикации».
+
+1. **AC-XP-8 per network.** One Meta read of the stored Page token, judged per connected network: Facebook needs a valid token,
+   its scopes (`pages_show_list`, `pages_read_engagement`, `pages_manage_posts`) and Meta's live Page equal to the stored one;
+   Instagram needs the same plus `instagram_basic`, `instagram_content_publish` and the live linked account equal to the stored
+   one. Each network still fails closed. `token_invalid` and `page_mismatch` concern the one Page token, so they stop every Meta
+   network; `instagram_unlinked`, `instagram_mismatch` and `instagram_unreadable` stop only Instagram. The Page (`id,name`) and its linked
+   Instagram are two separate reads: the Page read failing fails every network; any failure of the Instagram read makes only
+   Instagram unreadable (fail closed) -- a definite refusal (4xx) fails its job with `instagram_unreadable`, a failure that proves
+   nothing (no answer, timeout, 5xx, rate limit) is refused as `social_unavailable` so Instagram waits and asks again (an
+   Instagram job already processing is never failed for it). `debug_token`'s `profile_id`, when Meta gives one, must be the
+   stored Page too (else `page_mismatch` for every network). The runner's port is `postingTarget(channelId, network)`; a refusal stays
+   `social_account_mismatch` with `details.problems` (`not_connected` when no account of that network is stored), and the job
+   records its own network's problem as its code.
+2. **One lane per network in the runner.** Each network's pass runs concurrently and sequentially by slot, with its own identity
+   read (before the quota gate, so a refusal is recorded on that network's job at once), quota, jobs and errors; a step that
+   throws is skipped for that pass only; a network whose pass is still running (a long upload) is skipped by the next tick while
+   the others run. Per-network behaviour (upload, status read, identity, quota) sits in tables keyed by network, so a new network
+   is a new entry, never a branch of a shared check.
+3. **Surfaces.** `checkAccounts` adds `networks` (additive; the top-level `ok`/`problems` are their union); the Settings card shows
+   the result per network. No MCP tool exposes the check, so no MCP contract version changes.
+4. **The owner's retry posts however late (owner TG 4780).** «Повторить» in the Web UI (`POST /api/social/jobs/retry`, no MCP or
+   agent path) records `owner_retry_at` on the failed job (schema v123, additive, device-local) instead of deleting it. The runner
+   then starts that job again with no 12 h window, and the plan's social read evaluates that slot past its 36 h look-back
+   (`socialSlotStates(channelId, { alsoSlotIds })`); the slot approval (current manifest, not vetoed), the network's identity read,
+   its quota and the video's sha256 apply unchanged, and a job that sent its publishing call or has a post id is never retried
+   (the mark is one conditional update on `status = failed`, `publish_attempted = 0`, no post id). Late is allowed, early never:
+   the retry waits for the slot's (possibly moved) planned time. The mark is cleared when the runner takes the job over, and
+   otherwise with the job's own code whenever it can no longer be carried out without a new click: refused again by the
+   identity read (the network's code), `retry_slot_not_approved` (the slot no longer approved or listed for that network --
+   also when the plan read fails: fail closed; a mark set while a pass was reading the plan waits for the next pass), `retry_blocked` (the package's block or video refused for that network),
+   `retry_expired` (the mark is older than 48 h; a slot moved more than 48 h past the retry therefore expires, not posts). A full
+   24 h limit keeps the mark, shown as `retry_waiting_quota`. A slot read past the look-back only for a retry or an in-flight
+   job never counts against a current slot of the same video in the "one video in two approved slots" rule (the old slot
+   itself is still disapproved). A late automatic start stays `missed_window`.

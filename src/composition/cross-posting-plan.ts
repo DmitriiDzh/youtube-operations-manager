@@ -42,8 +42,10 @@ export function uploadBodyOf(filePath: string, sizeBytes: number) {
 }
 
 /** The approved slots of one channel that carry a `crossPost` block, ready for the runner. Errors per slot are skipped (fail closed). */
-export async function plannedCrossPostsOf(channelId: string): Promise<PlannedCrossPost[]> {
-  const states = (await createPublishingPlansSocialCore(publishingPlanProgress).socialSlotStates(channelId)).filter((s) => s.approved && s.package);
+export async function plannedCrossPostsOf(channelId: string, opts: { alsoSlotIds?: readonly string[] } = {}): Promise<PlannedCrossPost[]> {
+  // `alsoSlotIds` (owner TG 4780): slots read past the 36 h look-back -- those of an owner's pending retry or of a job still in flight
+  // (`slotsBeyondLookback`), and the entry's own slot in the approval re-check; the approval rules are the same for them.
+  const states = (await createPublishingPlansSocialCore(publishingPlanProgress).socialSlotStates(channelId, opts)).filter((s) => s.approved && s.package);
   if (states.length === 0) return [];
   const workspace = await createChannelWorkspacesCore().getWorkspace({ channelId });
   if (!workspace.configured) return [];
