@@ -9,6 +9,8 @@ export type MediaReviewKey = { manifestSha256: string | null; video: string; vid
 export type MediaReviewOf = ((key: MediaReviewKey) => PlanMediaReview) & {
   /** Owner TG 4817 (AC-TC-08): the timed comments of the owner's standing decision on this package ([] when none). */
   timedComments?: (key: MediaReviewKey) => Array<{ atSeconds: number; time: string; text: string }>;
+  /** Owner TG 4836: the general comment of the owner's standing APPROVAL (notes for future videos), else null. */
+  approvalComment?: (key: MediaReviewKey) => string | null;
 };
 import { uploadTimeOf, VIDEO_DELETED_ON_YOUTUBE } from "@/lib/shared-video-presence";
 import type { ScannedPackage } from "@/lib/publishing";
@@ -59,6 +61,9 @@ export function progressOfPackage(scanned: ScannedPackage, channelSyntheticMedia
   const videoSha256 = typeof pkg.sha256 === "string" ? pkg.sha256.toLowerCase() : null;
   const reviewKey = { manifestSha256: scanned.manifestSha256, video: pkg.video, videoSha256, videoSizeBytes: pkg.sizeBytes ?? null };
   const timed = reviewOf?.timedComments?.(reviewKey) ?? [];
+  // BL-257: a return's comment (gate on); owner TG 4836: else the standing approval's notes for future videos.
+  const returnComment = reviewCommentOf(scanned);
+  const approvalNotes = returnComment === null ? (reviewOf?.approvalComment?.(reviewKey) ?? null) : null;
   return {
     status,
     code,
@@ -84,7 +89,9 @@ export function progressOfPackage(scanned: ScannedPackage, channelSyntheticMedia
       // BL-242 (ADR 0062 §2): part of what the owner approves in the `packaged` stage.
       manifestSha256: scanned.manifestSha256,
       // BL-257 (ADR 0070): the owner's return comment from package review, for the slot's status line (only when returned).
-      ...(reviewCommentOf(scanned) !== null ? { reviewComment: reviewCommentOf(scanned) } : {}),
+      // Review fix 7: a return whose comment is only its timed comments written out says so (`returned_timed`: read reviewTimedComments).
+      ...(returnComment !== null ? { reviewComment: returnComment, reviewCommentKind: timed.length > 0 && returnComment === timed.map((c) => `${c.time} ${c.text}`).join("\n") ? ("returned_timed" as const) : ("returned" as const) } : {}),
+      ...(approvalNotes ? { reviewComment: approvalNotes, reviewCommentKind: "approved_notes" as const } : {}),
       // Owner TG 4817 (AC-TC-08): the owner's timed comments of his standing decision, only when there are some.
       ...(timed.length > 0 ? { reviewTimedComments: timed } : {}),
     },

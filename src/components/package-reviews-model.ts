@@ -59,9 +59,10 @@ export function durationLabel(seconds: number): string {
  * Which actions a package offers: the owner may change his mind about the video until the upload; approval needs the video's
  * checksum. BL-265 (ADR 0072 §2, AC-MG-07): a packaging comment is offered on every package, uploaded ones included.
  */
-export function actionsOf(item: Pick<PackageReviewDto, "state" | "hasVideoSha256">): { approve: boolean; ret: boolean; comment: boolean } {
-  if (item.state === "uploaded") return { approve: false, ret: false, comment: true };
-  return { approve: item.state !== "approved" && item.hasVideoSha256, ret: item.state !== "returned", comment: true };
+export function actionsOf(item: Pick<PackageReviewDto, "state" | "hasVideoSha256">): { approve: boolean; reapprove: boolean; ret: boolean; comment: boolean } {
+  if (item.state === "uploaded") return { approve: false, reapprove: false, ret: false, comment: true };
+  // Owner TG 4836: an approved video can be approved again WITH NOTES for future videos (a new approval; it stays approved).
+  return { approve: item.state !== "approved" && item.hasVideoSha256, reapprove: item.state === "approved" && item.hasVideoSha256, ret: item.state !== "returned", comment: true };
 }
 
 /** A return (and a packaging comment) needs a comment with at least one character that is not a space. */
@@ -111,18 +112,37 @@ export const oneLineText = (value: string) => value.replace(/[\r\n\t]+/g, " ");
  * Whether a decision can be sent (AC-TC-06): an approval always; a return with a general comment or at least one timed comment; a
  * packaging comment with its comment.
  */
-export function decisionReady(kind: "approved" | "returned" | "packaging_comment", comment: string, timedCount: number): boolean {
-  if (kind === "approved") return true;
+export function decisionReady(kind: "approved" | "returned" | "packaging_comment", comment: string, timedCount: number, reapprove = false): boolean {
+  // Owner TG 4836: approving an approved video again only makes sense with notes (a general comment or comments at moments).
+  if (kind === "approved") return !reapprove || comment.trim().length > 0 || timedCount > 0;
   if (kind === "returned") return comment.trim().length > 0 || timedCount > 0;
   return comment.trim().length > 0;
 }
 
 /** The decision's body: the draft's comments go with an approval or a return only, without the screen's ids (AC-TC-05). */
-export function decisionBody(manifestSha256: string, kind: "approved" | "returned" | "packaging_comment", comment: string, draft: readonly DraftTimedComment[]) {
+export function decisionBody(manifestSha256: string, kind: "approved" | "returned" | "packaging_comment", comment: string, draft: readonly DraftTimedComment[], draftUpdatedAt: string | null = null) {
   return {
     manifestSha256,
     kind,
     comment: comment.trim() || null,
     ...(kind !== "packaging_comment" && draft.length > 0 ? { timedComments: draft.map((c) => ({ atSeconds: c.atSeconds, text: c.text })) } : {}),
+    // Review fix 1: the draft this decision was made from (its server stamp; null: none) -- the server deletes only that one.
+    ...(kind !== "packaging_comment" ? { draftUpdatedAt } : {}),
   };
+}
+
+/**
+ * Review fix 3 (AC-TC-01): the moment a comment being written belongs to. Focusing the box with nothing typed takes the current moment
+ * (the video pauses there); playing on or seeking drops a taken moment, so the comment never binds to an old one -- the next focus, or
+ * adding it, takes the moment then.
+ */
+export function nextMoment(taken: number | null, event: { kind: "focus"; text: string; current: number } | { kind: "play" } | { kind: "seek" } | { kind: "retake"; current: number }): number | null {
+  switch (event.kind) {
+    case "focus":
+      return taken === null || event.text.trim() === "" ? event.current : taken;
+    case "retake":
+      return event.current;
+    default:
+      return null;
+  }
 }

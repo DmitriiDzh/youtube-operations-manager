@@ -1,7 +1,7 @@
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { decidingRecordOf, wellFormedAttachments } from "@/lib/clip-reviews";
-import { ownerReviewStateOf, standingDecision, timedCommentsReadout, wellFormedTimedComments } from "@/lib/package-reviews";
+import { commentIsTimedText, ownerReviewStateOf, standingDecision, timedCommentsReadout, wellFormedTimedComments } from "@/lib/package-reviews";
 import {
   deleteReviewNotifyLedgerBefore,
   getReviewNotifySettingsJson,
@@ -277,6 +277,8 @@ export function packageNoticesOf(channel: Channel, snapshot: PackageReviewsSnaps
     const media = typeof d.videoSha256 === "string" ? [{ label: "Video sha256", value: `${d.videoSha256} (${d.videoSizeBytes ?? "?"} bytes)` }] : [];
     // Owner TG 4817 (AC-TC-08): the timed comments sent with an approval or a return, as the package-reviews rule reads them.
     const timed = d.kind === "packaging_comment" ? [] : timedCommentsReadout(wellFormedTimedComments(d.timedComments));
+    // Review fix 7: a return whose comment is only its timed comments written out shows them once (in their own section).
+    const generated = commentIsTimedText(d.comment, timed);
     out.push({
       kind: "package",
       channelId: channel.channelId,
@@ -284,13 +286,18 @@ export function packageNoticesOf(channel: Channel, snapshot: PackageReviewsSnaps
       itemId: d.video || d.manifestSha256.slice(0, 12),
       decisionId: d.id,
       status: d.kind,
-      comment: d.comment,
+      comment: generated ? null : d.comment,
       decidedAt: d.at,
       decidedOn: d.device,
       context: [
         { label: "Video", value: d.video },
         { label: "Manifest sha256", value: d.manifestSha256 },
         ...media,
+        ...(generated ? [{ label: "Owner's comment", value: "none of its own -- what to change is the timed comments below" }] : []),
+        // Owner TG 4836: an approval with a comment or timed comments is an approval WITH NOTES for future videos -- never a return.
+        ...(d.kind === "approved" && ((d.comment ?? "").trim() !== "" || timed.length > 0)
+          ? [{ label: "Notes", value: "Одобрено с замечаниями на будущее (approved with notes for the future): non-blocking -- take the owner's comment and timed comments into account in the next videos; this video stays approved, nothing to redo" }]
+          : []),
         ...(d.kind === "approved" ? [{ label: "Next", value: "the video (this mp4) is approved: every package of it is ready -- a re-package of only its packaging keeps the approval; the automatic upload (or producer_upload_queue_add) takes it; the owner's slot approval gives the date" }] : []),
         ...(d.kind === "returned" ? [{ label: "Next", value: "this mp4 stays out of the upload and the plan; a package with a new mp4 is reviewed again" }] : []),
         ...(d.kind === "packaging_comment"

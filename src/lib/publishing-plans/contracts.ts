@@ -55,6 +55,12 @@ export type PlanSlotPackage = {
    */
   reviewComment?: string | null;
   /**
+   * Owner TG 4836: what `reviewComment` is -- `returned` (his return comment: re-make the video), `returned_timed` (a return whose comment
+   * is only `reviewTimedComments` written out as `m:ss text` lines) or `approved_notes` (the general comment
+   * of his standing approval: notes for future videos, non-blocking; this video stays approved). Present whenever `reviewComment` is.
+   */
+  reviewCommentKind?: "returned" | "returned_timed" | "approved_notes";
+  /**
    * Owner TG 4817 (PACKAGE_REVIEW_PLAN.md AC-TC-08): the comments the owner bound to moments of the video, sent with his standing
    * package-review decision (approved or returned) -- seconds, the same moment as `m:ss` (`h:mm:ss` past an hour), the text; sorted
    * by time. Absent when there are none. Not part of the package fingerprint.

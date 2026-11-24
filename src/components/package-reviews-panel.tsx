@@ -51,10 +51,13 @@ const ERROR_KEYS: Record<string, UiTextKey> = {
   package_review_thumbnail_missing: "packageReviews.error.package_review_thumbnail_missing",
   package_review_not_found: "packageReviews.error.package_review_not_found",
   package_review_uploaded: "packageReviews.error.package_review_uploaded",
+  package_review_draft_changed: "packageReviews.error.package_review_draft_changed",
 };
 
 type DecisionKind = "approved" | "returned" | "packaging_comment";
-type Asking = { item: PackageReviewDto; kind: DecisionKind } | null;
+/** Owner TG 4836: `reapprove` -- an approval of an already approved video, with notes for future videos (it stays approved). */
+type Asking = { item: PackageReviewDto; kind: DecisionKind; reapprove: boolean } | null;
+const REAPPROVE_KEYS = { title: "packageReviews.reapprove.title", description: "packageReviews.reapprove.description", confirm: "packageReviews.reapprove.confirm", placeholder: "packageReviews.reapprove.placeholder" } as const satisfies Record<string, UiTextKey>;
 const DIALOG_KEYS: Record<DecisionKind, { title: UiTextKey; description: UiTextKey; confirm: UiTextKey; placeholder: UiTextKey }> = {
   approved: { title: "packageReviews.approve.title", description: "packageReviews.approve.description", confirm: "packageReviews.approve.confirm", placeholder: "packageReviews.approve.placeholder" },
   returned: { title: "packageReviews.return.title", description: "packageReviews.return.description", confirm: "packageReviews.return.confirm", placeholder: "packageReviews.return.placeholder" },
@@ -94,7 +97,7 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
       // storage unavailable
     }
     setCommentState(draft);
-    setAsking({ item, kind });
+    setAsking({ item, kind, reapprove: kind === "approved" && item.state === "approved" });
   };
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -102,27 +105,35 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
 
   // Owner TG 4817 (AC-TC-03/05): each package's draft of timed comments -- the server's (device-local), loaded when its card opens and
   // saved whole on every change, one save at a time per package (the last one wins). Kept apart from the list the minute poll reloads.
-  const [drafts, setDrafts] = useState<Record<string, { comments: DraftTimedComment[]; state: DraftSaveState }>>({});
+  // Review fixes 1-2: nothing is written before the draft has loaded (`loaded`); every save names the stored draft it replaces (the
+  // server's stamp, `stamps`) and the decision names the draft it was made from, so a draft saved meanwhile elsewhere is never
+  // overwritten or deleted unsent -- the server refuses (`package_review_draft_changed`) and the screen reloads it.
+  type DraftEntry = { comments: DraftTimedComment[]; state: DraftSaveState; loaded: boolean; changed: boolean };
+  const [drafts, setDrafts] = useState<Record<string, DraftEntry>>({});
   const requested = useRef<Set<string>>(new Set());
+  const stamps = useRef<Map<string, string | null>>(new Map());
   const saveChains = useRef<Map<string, Promise<unknown>>>(new Map());
   const saveSeq = useRef<Map<string, number>>(new Map());
   useEffect(() => {
     requested.current = new Set();
+    stamps.current = new Map();
     setDrafts({});
   }, [base]);
   const loadDraft = useCallback(
-    async (manifest: string) => {
-      if (!base || requested.current.has(manifest)) return;
+    async (manifest: string, force = false) => {
+      if (!base || (requested.current.has(manifest) && !force)) return;
       requested.current.add(manifest);
-      setDrafts((d) => ({ ...d, [manifest]: { comments: d[manifest]?.comments ?? [], state: "loading" } }));
+      saveSeq.current.set(manifest, (saveSeq.current.get(manifest) ?? 0) + 1);
+      setDrafts((d) => ({ ...d, [manifest]: { comments: d[manifest]?.comments ?? [], state: "loading", loaded: false, changed: force } }));
       try {
         const res = await fetch(`${base}/draft?manifest=${encodeURIComponent(manifest)}`);
         if (!res.ok) throw new Error(String(res.status));
         const body = (await res.json()) as PackageReviewDraftDto;
-        setDrafts((d) => ({ ...d, [manifest]: { comments: body.comments, state: "saved" } }));
+        stamps.current.set(manifest, body.updatedAt);
+        setDrafts((d) => ({ ...d, [manifest]: { comments: body.comments, state: "saved", loaded: true, changed: d[manifest]?.changed ?? false } }));
       } catch {
         requested.current.delete(manifest);
-        setDrafts((d) => ({ ...d, [manifest]: { comments: d[manifest]?.comments ?? [], state: "error" } }));
+        setDrafts((d) => ({ ...d, [manifest]: { comments: d[manifest]?.comments ?? [], state: "error", loaded: false, changed: false } }));
       }
     },
     [base]
@@ -132,25 +143,35 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
       if (!base) return;
       const seq = (saveSeq.current.get(manifest) ?? 0) + 1;
       saveSeq.current.set(manifest, seq);
-      setDrafts((d) => ({ ...d, [manifest]: { comments, state: "saving" } }));
+      setDrafts((d) => ({ ...d, [manifest]: { comments, state: "saving", loaded: true, changed: false } }));
       const run = async () => {
-        const res = await fetch(`${base}/draft`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ manifestSha256: manifest, comments }) });
-        if (!res.ok) throw new Error(String(res.status));
+        // The base is read when the save runs: the answer of the save before it in the chain.
+        const res = await fetch(`${base}/draft`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ manifestSha256: manifest, baseUpdatedAt: stamps.current.get(manifest) ?? null, comments }),
+        });
+        const body = (await res.json().catch(() => ({}))) as Partial<PackageReviewDraftDto> & { error?: string };
+        if (!res.ok) throw new Error(body.error ?? String(res.status));
+        stamps.current.set(manifest, body.updatedAt ?? null);
       };
       const chain = (saveChains.current.get(manifest) ?? Promise.resolve()).then(run, run);
       saveChains.current.set(manifest, chain.catch(() => undefined));
       chain.then(
         () => {
-          if (saveSeq.current.get(manifest) === seq) setDrafts((d) => ({ ...d, [manifest]: { comments: d[manifest]?.comments ?? comments, state: "saved" } }));
+          if (saveSeq.current.get(manifest) === seq) setDrafts((d) => ({ ...d, [manifest]: { ...d[manifest], comments: d[manifest]?.comments ?? comments, state: "saved", loaded: true, changed: false } }));
         },
-        () => {
-          if (saveSeq.current.get(manifest) === seq) setDrafts((d) => ({ ...d, [manifest]: { comments: d[manifest]?.comments ?? comments, state: "error" } }));
+        (error: unknown) => {
+          if (error instanceof Error && error.message === "package_review_draft_changed") void loadDraft(manifest, true);
+          else if (saveSeq.current.get(manifest) === seq) setDrafts((d) => ({ ...d, [manifest]: { ...d[manifest], comments: d[manifest]?.comments ?? comments, state: "error", loaded: true, changed: false } }));
         }
       );
     },
-    [base]
+    [base, loadDraft]
   );
   const draftOf = (manifest: string) => drafts[manifest]?.comments ?? [];
+  /** The decision buttons wait for the draft: loaded, and not failing (review fix 1). */
+  const draftReady = (manifest: string) => drafts[manifest]?.loaded === true && drafts[manifest]?.state !== "error" && drafts[manifest]?.state !== "loading";
 
   const accept = useCallback(
     (body: PackageReviewsDto) => {
@@ -223,11 +244,13 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
         method: "POST",
         headers: { "content-type": "application/json" },
         // AC-TC-05: the draft's timed comments go with an approval or a return, as one batch.
-        body: JSON.stringify(decisionBody(item.manifestSha256, kind, comment, draftOf(item.manifestSha256))),
+        body: JSON.stringify(decisionBody(item.manifestSha256, kind, comment, draftOf(item.manifestSha256), stamps.current.get(item.manifestSha256) ?? null)),
       });
       const body = (await res.json().catch(() => ({}))) as { view?: PackageReviewsDto; error?: string; message?: string };
       if (!res.ok || !body.view) {
         const key = body.error ? ERROR_KEYS[body.error] : undefined;
+        // Review fix 1: the draft changed meanwhile (another tab, the phone) -- reload it; nothing was decided.
+        if (body.error === "package_review_draft_changed") void loadDraft(item.manifestSha256, true);
         setActionError({ manifest: item.manifestSha256, text: key ? t(key) : t("packageReviews.error.generic", { message: body.message ?? body.error ?? String(res.status) }) });
         setAsking(null);
         await load();
@@ -237,7 +260,8 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
       // The server cleared the draft once the decision was stored (a packaging comment never carries it).
       if (kind !== "packaging_comment") {
         saveSeq.current.set(item.manifestSha256, (saveSeq.current.get(item.manifestSha256) ?? 0) + 1);
-        setDrafts((d) => ({ ...d, [item.manifestSha256]: { comments: [], state: "saved" } }));
+        stamps.current.set(item.manifestSha256, null);
+        setDrafts((d) => ({ ...d, [item.manifestSha256]: { comments: [], state: "saved", loaded: true, changed: false } }));
       }
       try {
         window.localStorage.removeItem(draftKey(item.manifestSha256, kind));
@@ -265,6 +289,7 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
   }, [data, open, loadDraft]);
 
   if (!channelId) return null;
+  const dialogKeys = asking ? (asking.reapprove ? REAPPROVE_KEYS : DIALOG_KEYS[asking.kind]) : DIALOG_KEYS.approved;
   const gateOff = data !== null && data.readable && !data.required;
   const toggle = (manifest: string) =>
     setOpen((current) => {
@@ -310,11 +335,13 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
                 editable={item.state !== "uploaded"}
                 draft={draftOf(item.manifestSha256)}
                 saveState={drafts[item.manifestSha256]?.state ?? "loading"}
+                ready={drafts[item.manifestSha256]?.loaded === true}
+                changed={drafts[item.manifestSha256]?.changed === true}
                 sent={item.timedComments ?? []}
                 onDraft={(next) => saveDraft(item.manifestSha256, next)}
                 onRetry={() => {
-                  if (requested.current.has(item.manifestSha256)) saveDraft(item.manifestSha256, draftOf(item.manifestSha256));
-                  else void loadDraft(item.manifestSha256);
+                  if (drafts[item.manifestSha256]?.loaded) saveDraft(item.manifestSha256, draftOf(item.manifestSha256));
+                  else void loadDraft(item.manifestSha256, true);
                 }}
               />
               <div className="min-w-0 space-y-3 text-sm">
@@ -339,12 +366,20 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
                 {item.decidedAt && item.decision && (
                   <div className="rounded-md bg-zinc-900 px-3 py-2">
                     <p className="text-zinc-300">
-                      {t(item.decision === "returned" ? "packageReviews.decided.returned" : "packageReviews.decided.approved", { when: at(item.decidedAt) })}
+                      {/* Owner TG 4836: an approval with notes says so -- the notes are for future videos, this one stays approved. */}
+                      {t(
+                        item.decision === "returned"
+                          ? "packageReviews.decided.returned"
+                          : item.comment || (item.timedComments ?? []).length > 0
+                            ? "packageReviews.decided.approvedWithNotes"
+                            : "packageReviews.decided.approved",
+                        { when: at(item.decidedAt) }
+                      )}
                       {item.decidedOn ? ` ${t("packageReviews.decidedOn", { device: item.decidedOn })}` : ""}
                     </p>
                     {item.comment && (
                       <p className="mt-1 whitespace-pre-wrap text-zinc-400">
-                        <span className="text-zinc-500">{t("packageReviews.yourComment")}: </span>
+                        <span className="text-zinc-500">{t(item.decision === "approved" ? "packageReviews.yourNotes" : "packageReviews.yourComment")}: </span>
                         {item.comment}
                       </p>
                     )}
@@ -377,24 +412,24 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
                 {actionError?.manifest === item.manifestSha256 && <p className="text-red-400">{actionError.text}</p>}
               </div>
             </div>
-            {(actions.approve || actions.ret || actions.comment) && (
+            {(actions.approve || actions.reapprove || actions.ret || actions.comment) && (
               // AC-PR-15: on a phone the actions stay at the bottom of the screen while the card scrolls -- just above the shell's fixed
               // bottom navigation (56 px + the safe area), which overlays the scrolling main area; on a wider screen in place.
               <div className="sticky bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-10 flex gap-2 border-t border-zinc-800 bg-zinc-900/95 px-3 py-2 backdrop-blur md:static md:bg-transparent md:backdrop-blur-none">
-                {actions.approve && (
+                {(actions.approve || actions.reapprove) && (
                   <button
                     type="button"
-                    disabled={busy !== null}
+                    disabled={busy !== null || !draftReady(item.manifestSha256)}
                     onClick={() => openDialog(item, "approved")}
                     className="flex-1 rounded-md bg-violet-600 px-3 py-2 text-sm font-semibold text-white hover:bg-violet-500 disabled:opacity-40 md:flex-none md:py-1"
                   >
-                    {t("packageReviews.action.approve")}
+                    {t(actions.reapprove ? "packageReviews.action.reapprove" : "packageReviews.action.approve")}
                   </button>
                 )}
                 {actions.ret && (
                   <button
                     type="button"
-                    disabled={busy !== null}
+                    disabled={busy !== null || !draftReady(item.manifestSha256)}
                     onClick={() => openDialog(item, "returned")}
                     className="flex-1 rounded-md border border-zinc-600 px-3 py-2 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-40 md:flex-none md:py-1"
                   >
@@ -462,12 +497,12 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
       )}
       {asking && (
         <ConfirmDialog
-          title={t(DIALOG_KEYS[asking.kind].title, { video: asking.item.video })}
-          description={t(DIALOG_KEYS[asking.kind].description)}
+          title={t(dialogKeys.title, { video: asking.item.video })}
+          description={t(dialogKeys.description)}
           cancelLabel={t("packageReviews.action.cancel")}
-          confirmLabel={t(DIALOG_KEYS[asking.kind].confirm)}
+          confirmLabel={t(dialogKeys.confirm)}
           confirmVariant={asking.kind === "returned" ? "danger" : "default"}
-          confirmDisabled={busy !== null || !decisionReady(asking.kind, comment, asking.kind === "packaging_comment" ? 0 : draftOf(asking.item.manifestSha256).length)}
+          confirmDisabled={busy !== null || !decisionReady(asking.kind, comment, asking.kind === "packaging_comment" ? 0 : draftOf(asking.item.manifestSha256).length, asking.reapprove)}
           confirmBusyLabel={busy === asking.item.manifestSha256 ? t(asking.kind === "approved" ? "packageReviews.action.checking" : "packageReviews.action.saving") : null}
           onCancel={() => {
             if (busy === null) setAsking(null);
@@ -479,8 +514,8 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
             onChange={(event) => setComment(event.target.value)}
             maxLength={2000}
             rows={asking.kind === "approved" ? 2 : 4}
-            aria-label={t(DIALOG_KEYS[asking.kind].placeholder)}
-            placeholder={t(DIALOG_KEYS[asking.kind].placeholder)}
+            aria-label={t(dialogKeys.placeholder)}
+            placeholder={t(dialogKeys.placeholder)}
             className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-100 placeholder:text-zinc-600"
           />
           {/* Owner TG 4817 (AC-TC-05/06): what goes with the decision -- the draft's comments at moments, in one batch. */}

@@ -111,6 +111,8 @@ export const MediaVideoPlayer = forwardRef<
   const { t } = useUiText();
   const video = useRef<HTMLVideoElement | null>(null);
   const frameBox = useRef<HTMLDivElement | null>(null);
+  /** Review fix 4: the whole player (frame, flags, timeline, controls) goes full screen, not the frame alone. */
+  const root = useRef<HTMLDivElement | null>(null);
   const timeline = useRef<HTMLDivElement | null>(null);
   const [time, setTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -279,6 +281,23 @@ export const MediaVideoPlayer = forwardRef<
     onUserPlay?.(wasPaused, v.currentTime);
   };
 
+  // Review fix 4: in full screen, Space (or K) plays and pauses, as the browser's own controls did; a click on the frame already does.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!root.current || document.fullscreenElement !== root.current) return;
+      if (event.key !== " " && event.key.toLowerCase() !== "k") return;
+      const tag = (event.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      event.preventDefault();
+      const v = video.current;
+      if (!v) return;
+      if (v.paused) play();
+      else v.pause();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [play]);
+
   useImperativeHandle(ref, () => ({
     togglePlay() {
       const v = video.current;
@@ -367,7 +386,7 @@ export const MediaVideoPlayer = forwardRef<
 
   /** Owner TG 4817: full screen -- the frame where the browser allows it, else the video's own (an iPhone). */
   const enterFullscreen = () => {
-    const box = frameBox.current as (HTMLDivElement & { webkitRequestFullscreen?: () => void }) | null;
+    const box = root.current as (HTMLDivElement & { webkitRequestFullscreen?: () => void }) | null;
     const v = video.current as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | null;
     if (box && typeof box.requestFullscreen === "function") void box.requestFullscreen().catch(() => v?.webkitEnterFullscreen?.());
     else if (box?.webkitRequestFullscreen) box.webkitRequestFullscreen();
@@ -402,10 +421,10 @@ export const MediaVideoPlayer = forwardRef<
   const pct = (seconds: number) => (duration > 0 ? `${(seconds / duration) * 100}%` : "0%");
 
   return (
-    <div className="space-y-2">
+    <div ref={root} className="space-y-2 [&:fullscreen]:flex [&:fullscreen]:flex-col [&:fullscreen]:justify-center [&:fullscreen]:bg-black [&:fullscreen]:p-4">
       <div
         ref={frameBox}
-        className={`relative ${onAddPin || overlay ? "touch-none" : ""} select-none overflow-hidden rounded-lg bg-black [&:fullscreen]:h-full [&:fullscreen]:max-h-none [&:fullscreen]:rounded-none ${className}`}
+        className={`relative ${onAddPin || overlay ? "touch-none" : ""} select-none overflow-hidden rounded-lg bg-black ${className} [:fullscreen>&]:aspect-auto [:fullscreen>&]:h-auto [:fullscreen>&]:max-h-none [:fullscreen>&]:w-full [:fullscreen>&]:min-h-0 [:fullscreen>&]:flex-1`}
         onPointerDown={onFrameDown}
         onPointerMove={onFrameMove}
         onPointerUp={onFrameUp}

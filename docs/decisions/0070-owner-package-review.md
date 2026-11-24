@@ -61,3 +61,8 @@ return without a general comment stores them as `m:ss text` lines in `comment`, 
 draft is device-local: SQLite schema 124 `package_review_drafts` (the first schema change of this feature). Agents read the batch in the
 wake file («Timed comments») and as `reviewTimedComments` of the plan's package (Factory 1.55.0, Agent 4.26.0, Producer 1.28.0).
 Still no YouTube write and no MCP path that decides.
+
+**Amendment (2026-11-24, owner TG 4836):** an approval may carry a general comment as notes for future videos (non-blocking), also as
+a new approval of an already approved video («одобрить ещё раз с замечаниями»; it stays approved). Agents read them as
+`reviewCommentKind: approved_notes` on the plan package and the wake file line «Notes: Одобрено с замечаниями на будущее». No new
+decision kind: older builds read it as an approval.

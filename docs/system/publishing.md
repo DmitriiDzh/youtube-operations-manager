@@ -104,7 +104,7 @@
   `MediaVideoPlayer` (крупно, звук, без автозапуска и петли, `preload="metadata"`, во весь экран) + `package-review-workspace.tsx`; клик в
   поле ставит паузу и берёт момент, комментарий — флажок на шкале и строка списка (правка, удаление). Черновик — на сервере, локально
   (таблица `package_review_drafts`, схема 124, маршрут `…/package-reviews/draft`); уходит одной пачкой с «Одобрить»/«Вернуть»
-  (`timedComments` решения). Агенты: раздел «Timed comments» в файле пробуждения и `reviewTimedComments` пакета слота плана
+  (`timedComments` решения). Одобрение может нести общий комментарий — замечания на будущее (owner TG 4836), в т.ч. «Одобрить ещё раз с замечаниями» для одобренного видео. Агенты: раздел «Timed comments» и строка «Notes: Одобрено с замечаниями на будущее» в файле пробуждения, `reviewTimedComments`, `reviewComment` + `reviewCommentKind` (returned / returned_timed / approved_notes) пакета слота плана
   (Factory 1.55.0, Agent 4.26.0, Producer 1.28.0).
 
 ### 2.9bn Шаблон недели вместо одобрения слотов (BL-267, PRD-REQ-0195 A, ADR 0073, `docs/roadmap/plans/WEEK_TEMPLATE_PLAN.md`) — **IMPLEMENTED на ветке** `feature/bl-267-week-template` (ждёт ревью, текст §F у владельца, разрешения на мердж)

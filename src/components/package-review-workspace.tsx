@@ -1,10 +1,10 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import type { DraftTimedComment, TimedComment } from "@/lib/package-reviews/timed-comments";
 import { formatPlayerTime } from "./media-review-player";
 import { MediaVideoPlayer, type VideoFlag, type VideoPlayerHandle } from "./media-video-player";
-import { frameOf, newCommentId, oneLineText, withComment, withEditedComment, withoutComment, type DraftSaveState } from "./package-reviews-model";
+import { frameOf, newCommentId, nextMoment, oneLineText, withComment, withEditedComment, withoutComment, type DraftSaveState } from "./package-reviews-model";
 import { useT } from "./ui-text-provider";
 
 // Owner TG 4817 (PACKAGE_REVIEW_PLAN.md AC-TC-01..09; the audio review's "mark at the playhead with its note", plan-review-screen):
@@ -18,6 +18,8 @@ export function PackageReviewWorkspace({
   editable,
   draft,
   saveState,
+  ready,
+  changed,
   sent,
   onDraft,
   onRetry,
@@ -27,6 +29,10 @@ export function PackageReviewWorkspace({
   editable: boolean;
   draft: DraftTimedComment[];
   saveState: DraftSaveState;
+  /** Review fix 2: the draft has loaded -- nothing can be written before (a save would replace a draft not seen yet). */
+  ready: boolean;
+  /** The draft was reloaded because it changed elsewhere (another tab, the phone). */
+  changed: boolean;
   /** The standing decision's timed comments (sent). */
   sent: TimedComment[];
   onDraft: (next: DraftTimedComment[]) => void;
@@ -51,12 +57,19 @@ export function PackageReviewWorkspace({
     [draft, sent, showSent, active]
   );
 
-  /** The moment is taken when he starts writing: the video pauses there. */
-  const takeMoment = () => {
+  /** The moment is taken when he starts writing (nothing typed yet) or asks for it: the video pauses there (review fix 3). */
+  const takeMoment = (kind: "focus" | "retake") => {
     player.current?.pause();
-    setAt(player.current?.currentTime() ?? 0);
+    const current = player.current?.currentTime() ?? 0;
+    setAt((taken) => nextMoment(taken, kind === "focus" ? { kind, text, current } : { kind, current }));
   };
+  // Playing on or seeking drops a taken moment, so a comment never binds to an old one.
+  const onPlayingChange = useCallback((playing: boolean) => {
+    if (playing) setAt((taken) => nextMoment(taken, { kind: "play" }));
+  }, []);
+  const onUserSeek = useCallback(() => setAt((taken) => nextMoment(taken, { kind: "seek" })), []);
   const seekTo = (id: string, seconds: number) => {
+    setAt((taken) => nextMoment(taken, { kind: "seek" }));
     setActive(id);
     player.current?.seekTo(seconds, "pause");
     listRef.current?.querySelector(`[data-comment="${CSS.escape(id)}"]`)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
@@ -97,6 +110,8 @@ export function PackageReviewWorkspace({
           compact
           className={playerClass}
           onMetadata={({ width, height }) => setFrame(frameOf(width, height))}
+          onPlayingChange={onPlayingChange}
+          onUserSeek={onUserSeek}
           flags={flags}
           onFlagClick={(id) => {
             const flag = flags.find((f) => f.id === id);
@@ -121,9 +136,10 @@ export function PackageReviewWorkspace({
               <input
                 ref={input}
                 value={text}
+                disabled={!ready}
                 maxLength={500}
                 onFocus={() => {
-                  if (at === null) takeMoment();
+                  takeMoment("focus");
                 }}
                 onChange={(event) => setText(oneLineText(event.target.value))}
                 onKeyDown={(event) => {
@@ -136,9 +152,9 @@ export function PackageReviewWorkspace({
                 }}
                 aria-label={t("packageReviews.timed.placeholder")}
                 placeholder={t("packageReviews.timed.placeholder")}
-                className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 md:py-1.5"
+                className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 disabled:opacity-50 md:py-1.5"
               />
-              <button type="submit" disabled={!text.trim()} className="shrink-0 rounded-md bg-amber-500/90 px-3 py-2 text-sm font-medium text-black hover:bg-amber-400 disabled:opacity-40 md:py-1.5">
+              <button type="submit" disabled={!ready || !text.trim()} className="shrink-0 rounded-md bg-amber-500/90 px-3 py-2 text-sm font-medium text-black hover:bg-amber-400 disabled:opacity-40 md:py-1.5">
                 {t("packageReviews.timed.add")}
               </button>
             </div>
@@ -146,7 +162,7 @@ export function PackageReviewWorkspace({
               {at !== null ? (
                 <>
                   <span className="rounded bg-amber-500/15 px-1.5 py-0.5 font-mono text-amber-200">{t("packageReviews.timed.at", { time: formatPlayerTime(at) })}</span>
-                  <button type="button" onClick={takeMoment} className="text-zinc-400 underline decoration-dotted hover:text-zinc-100">
+                  <button type="button" onClick={() => takeMoment("retake")} className="text-zinc-400 underline decoration-dotted hover:text-zinc-100">
                     {t("packageReviews.timed.retake")}
                   </button>
                 </>
@@ -196,7 +212,7 @@ export function PackageReviewWorkspace({
                 ) : (
                   <>
                     <p className="min-w-0 flex-1 break-words text-sm text-zinc-200">{c.text}</p>
-                    {editable && (
+                    {editable && ready && (
                       <span className="flex shrink-0 items-center">
                         <button type="button" onClick={() => setEditing({ id: c.id, text: c.text })} aria-label={t("packageReviews.timed.edit")} title={t("packageReviews.timed.edit")} className="flex h-8 w-8 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 md:h-6 md:w-6">
                           {/* ui-text-ignore: a symbol */}✎
@@ -221,13 +237,16 @@ export function PackageReviewWorkspace({
             {saveState === "saved" && draft.length > 0 && t("packageReviews.timed.saved")}
             {saveState === "error" && (
               <>
-                {t("packageReviews.timed.saveFailed")}{" "}
+                {t(ready ? "packageReviews.timed.saveFailed" : "packageReviews.timed.loadFailed")}{" "}
                 <button type="button" onClick={onRetry} className="underline hover:text-red-200">
                   {t("packageReviews.timed.retry")}
                 </button>
               </>
             )}
           </p>
+        )}
+        {editable && changed && saveState !== "loading" && (
+          <p className="text-xs text-amber-300">{t("packageReviews.timed.reloaded")}</p>
         )}
         {showSent && (
           <div className="space-y-1 border-t border-zinc-800 pt-2">

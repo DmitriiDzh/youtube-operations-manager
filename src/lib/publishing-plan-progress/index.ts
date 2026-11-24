@@ -21,6 +21,11 @@ export async function mediaReviewReaderOf(channelId: string, read: (channelId: s
         }
       : () => "not_required";
     reader.timedComments = timedComments;
+    // Owner TG 4836: the notes of a standing approval (an approval with a comment), for the plan's package.
+    reader.approvalComment = (key) => {
+      const standing = standingDecision(state, key);
+      return standing?.kind === "approved" && (standing.comment ?? "").trim() !== "" ? standing.comment : null;
+    };
     return reader;
   } catch {
     return () => "unreadable";

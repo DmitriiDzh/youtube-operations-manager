@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
-import { deletePackageReviewDraft, getPackageReviewDraft, insertVideoEditAuditEvent, rawSqlClient, setPackageReviewDraft } from "@/lib/db";
+import { deletePackageReviewDraft, getPackageReviewDraft, insertVideoEditAuditEvent, prunePackageReviewDrafts, rawSqlClient, setPackageReviewDraft } from "@/lib/db";
 import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 import { createPackageReviewsCoreForProduction } from "@/lib/sync-gateway";
 import { hashPackageFile } from "./adapters/files";
@@ -47,6 +47,7 @@ function service(ports: PackageReviewsCompositionPorts) {
       get: (channelId, manifestSha256) => getPackageReviewDraft(channelId, manifestSha256),
       set: (channelId, manifestSha256, commentsJson, updatedAt) => setPackageReviewDraft(channelId, manifestSha256, commentsJson, updatedAt),
       remove: (channelId, manifestSha256) => deletePackageReviewDraft(channelId, manifestSha256),
+      prune: (channelId, keepManifests) => prunePackageReviewDrafts(channelId, keepManifests),
     },
   });
 }

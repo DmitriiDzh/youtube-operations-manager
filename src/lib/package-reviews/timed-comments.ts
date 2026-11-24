@@ -82,3 +82,11 @@ export function timedCommentsAsText(list: readonly TimedComment[], maxLength = 2
   const text = list.map((c) => `${clockOf(c.atSeconds)} ${c.text}`).join("\n");
   return text.length <= maxLength ? text : `${text.slice(0, maxLength - 1)}…`;
 }
+
+/**
+ * Review fix 7: whether a decision's comment is only its timed comments written out (a return without a general comment, AC-TC-06) --
+ * this build's readers then show the timed comments once, not twice.
+ */
+export function commentIsTimedText(comment: string | null, list: readonly TimedComment[]): boolean {
+  return comment !== null && list.length > 0 && comment === timedCommentsAsText(list);
+}

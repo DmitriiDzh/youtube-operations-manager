@@ -33,6 +33,8 @@ export type PackageReviewDraftsStore = {
   get(channelId: string, manifestSha256: string): Promise<{ commentsJson: string; updatedAt: Date } | null>;
   set(channelId: string, manifestSha256: string, commentsJson: string, updatedAt: Date): Promise<void>;
   remove(channelId: string, manifestSha256: string): Promise<void>;
+  /** Review fix 5: removes the channel's drafts of packages it no longer has (re-packaged, removed); returns how many. */
+  prune?(channelId: string, keepManifests: readonly string[]): Promise<number>;
 };
 
 export type PackageReviewsDeps = {
@@ -144,6 +146,8 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
       readable: snapshot !== "unreadable",
     };
     if (found.status !== "ok") return { ...base, packages: found.status, items: [], waiting: 0 };
+    // Review fix 5: a draft of a package the channel no longer has (re-packaged, removed) would never show again -- pruned here.
+    await deps.drafts?.prune?.(channelId, found.packages.map((p) => p.manifestSha256)).catch(() => 0);
     const decided = new Set(decisions.map((d) => (d as { manifestSha256?: unknown }).manifestSha256));
     // The scan lists packages by planned date (oldest first): the decided uploads kept are the latest ones.
     const uploadedKept = new Set(found.packages.filter((p) => p.uploaded && decided.has(p.manifestSha256)).slice(-PACKAGE_REVIEW_LIMITS.uploadedShown));
@@ -225,10 +229,29 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
       ...(media ?? {}),
       ...(timed.length > 0 ? { timedComments: timed } : {}),
     };
-    await deps.withLock(() => deps.store.addDecision(channelId, decision));
-    // AC-TC-05: the draft goes only once the decision carrying it is stored (a refused decision above keeps it). A packaging comment
-    // never carries the draft, so it keeps it too.
-    if (parsed.kind !== "packaging_comment") await deps.drafts?.remove(channelId, pkg.manifestSha256).catch(() => undefined);
+    // Review fix 1 (AC-TC-05): the stored draft goes only when it is the one this decision was made from (`draftUpdatedAt` = its stamp;
+    // null = the screen saw none). Another stored draft -- saved from the phone, or not loaded in this tab -- refuses the decision
+    // before anything is written, so its comments are neither lost nor left out. Without `draftUpdatedAt` (an older screen) the draft
+    // stays. A packaging comment never carries the draft and leaves it.
+    const checkDraft = parsed.kind !== "packaging_comment" && parsed.draftUpdatedAt !== undefined && deps.drafts !== undefined;
+    let draftToRemove = false;
+    await deps.withLock(async () => {
+      if (checkDraft) {
+        const row = await deps.drafts!.get(channelId, pkg.manifestSha256);
+        const stored = row ? row.updatedAt.toISOString() : null;
+        if (stored !== (parsed.draftUpdatedAt ?? null)) {
+          throw refuse("package_review_draft_changed", "Your comments at moments changed meanwhile (another tab or the phone): reload the video's comments and decide again", { manifestSha256: pkg.manifestSha256 });
+        }
+        draftToRemove = row !== null;
+      }
+      await deps.store.addDecision(channelId, decision);
+    });
+    if (draftToRemove) {
+      // Review fix 6: a draft that could not be removed would come back and go out twice -- audited, never silent.
+      await deps.drafts!.remove(channelId, pkg.manifestSha256).catch((error: unknown) =>
+        deps.audit({ channelId, video: pkg.video, detail: { event: "package_review.draft_remove_failed", decisionId: decision.id, manifestSha256: pkg.manifestSha256, message: error instanceof Error ? error.message : String(error) } }).catch(() => undefined)
+      );
+    }
     await deps.audit({ channelId, video: pkg.video, detail: { event: `package_review.${decision.kind}`, decisionId: decision.id, manifestSha256: decision.manifestSha256, ...(media ?? {}), thumbnailSha256, comment, ...(timed.length > 0 ? { timedComments: timed.length } : {}) } });
     await deps.afterChange(channelId);
     return { decision, view: await view(channelId) };
@@ -254,7 +277,8 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
     } catch {
       comments = [];
     }
-    return { manifestSha256: sha, comments, updatedAt: row && comments.length > 0 ? row.updatedAt.toISOString() : null };
+    // The stamp is the stored row's (null: no row): the screen sends it back with its next save and with its decision (review fixes 1-2).
+    return { manifestSha256: sha, comments, updatedAt: row ? row.updatedAt.toISOString() : null };
   }
 
   /** AC-TC-03/04: replaces the draft whole (`comments: []` removes it). Only for a package of this channel. Local: no sync, no gate. */
@@ -263,13 +287,22 @@ export function createPackageReviewsService(deps: PackageReviewsDeps) {
     const store = draftsStore();
     await findPackage(channelId, parsed.manifestSha256, true);
     const comments = wellFormedDraft(parsed.comments);
-    if (comments.length === 0) {
-      await store.remove(channelId, parsed.manifestSha256);
-      return { manifestSha256: parsed.manifestSha256, comments: [], updatedAt: null };
-    }
-    const at = deps.now();
-    await store.set(channelId, parsed.manifestSha256, JSON.stringify(comments), at);
-    return { manifestSha256: parsed.manifestSha256, comments, updatedAt: at.toISOString() };
+    return deps.withLock(async () => {
+      // Review fix 2: a save made on a stale base (`baseUpdatedAt` is not the stored draft's stamp) is refused, never written over it.
+      if (parsed.baseUpdatedAt !== undefined) {
+        const row = await store.get(channelId, parsed.manifestSha256);
+        if ((row ? row.updatedAt.toISOString() : null) !== (parsed.baseUpdatedAt ?? null)) {
+          throw refuse("package_review_draft_changed", "Your comments at moments changed meanwhile (another tab or the phone): reload them", { manifestSha256: parsed.manifestSha256 });
+        }
+      }
+      if (comments.length === 0) {
+        await store.remove(channelId, parsed.manifestSha256);
+        return { manifestSha256: parsed.manifestSha256, comments: [], updatedAt: null };
+      }
+      const at = deps.now();
+      await store.set(channelId, parsed.manifestSha256, JSON.stringify(comments), at);
+      return { manifestSha256: parsed.manifestSha256, comments, updatedAt: at.toISOString() };
+    });
   }
 
   /**

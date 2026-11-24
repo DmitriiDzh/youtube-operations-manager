@@ -24,6 +24,8 @@ export const timedCommentInputSchema = z
 export const packageReviewDraftInputSchema = z
   .object({
     manifestSha256: manifestSha256Schema,
+    /** Review fix 2: the stored draft this one replaces (its `updatedAt`, null: none). Another stored draft is refused. Absent: no check. */
+    baseUpdatedAt: z.string().max(40).nullable().optional(),
     comments: z
       .array(timedCommentInputSchema.extend({ id: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/) }).strict())
       .max(TIMED_COMMENT_LIMITS.count)
@@ -43,6 +45,11 @@ export const packageDecisionInputSchema = z
     comment: z.string().max(PACKAGE_REVIEW_LIMITS.comment).nullable().optional(),
     /** Owner TG 4817 (AC-TC-05): the draft's timed comments, sent with an approval or a return as one batch. */
     timedComments: z.array(timedCommentInputSchema).max(TIMED_COMMENT_LIMITS.count).optional(),
+    /**
+     * Review fix 1: the draft this decision was made from -- its `updatedAt` as the screen last read it (null: it saw no draft). The
+     * stored draft is deleted only when it is that one; another one is refused (`package_review_draft_changed`). Absent: kept.
+     */
+    draftUpdatedAt: z.string().max(40).nullable().optional(),
   })
   .strict()
   .superRefine((value, ctx) => {

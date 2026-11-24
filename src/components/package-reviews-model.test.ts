@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { actionsOf, decisionBody, decisionReady, durationLabel, frameOf, mediaSrcOf, newCommentId, oneLineText, returnCommentReady, withComment, withEditedComment, withoutComment } from "./package-reviews-model";
+import { actionsOf, decisionBody, decisionReady, durationLabel, frameOf, mediaSrcOf, newCommentId, nextMoment, oneLineText, returnCommentReady, withComment, withEditedComment, withoutComment } from "./package-reviews-model";
 import { flagPlaces } from "./visual-review-model";
 
 // BL-257 (PACKAGE_REVIEW_PLAN.md AC-PR-04/05/09/15; ADR 0070 §4, §6): the screen asks for the media by the manifest hash only; the
@@ -18,11 +18,13 @@ test("durations", () => {
 
 // BL-265 (AC-MG-07): every package also offers «Комментарий к упаковке», uploaded ones included.
 test("AC-PR-04/05, AC-MG-07: actions by state", () => {
-  assert.deepEqual(actionsOf({ state: "pending", hasVideoSha256: true }), { approve: true, ret: true, comment: true });
-  assert.deepEqual(actionsOf({ state: "pending", hasVideoSha256: false }), { approve: false, ret: true, comment: true });
-  assert.deepEqual(actionsOf({ state: "approved", hasVideoSha256: true }), { approve: false, ret: true, comment: true });
-  assert.deepEqual(actionsOf({ state: "returned", hasVideoSha256: true }), { approve: true, ret: false, comment: true });
-  assert.deepEqual(actionsOf({ state: "uploaded", hasVideoSha256: true }), { approve: false, ret: false, comment: true });
+  assert.deepEqual(actionsOf({ state: "pending", hasVideoSha256: true }), { approve: true, reapprove: false, ret: true, comment: true });
+  assert.deepEqual(actionsOf({ state: "pending", hasVideoSha256: false }), { approve: false, reapprove: false, ret: true, comment: true });
+  assert.deepEqual(actionsOf({ state: "approved", hasVideoSha256: true }), { approve: false, reapprove: true, ret: true, comment: true });
+  // Owner TG 4836 (changed requirement: approve again with notes): an approved video offers «approve again with notes», never without the checksum.
+  assert.equal(actionsOf({ state: "approved", hasVideoSha256: false }).reapprove, false);
+  assert.deepEqual(actionsOf({ state: "returned", hasVideoSha256: true }), { approve: true, reapprove: false, ret: false, comment: true });
+  assert.deepEqual(actionsOf({ state: "uploaded", hasVideoSha256: true }), { approve: false, reapprove: false, ret: false, comment: true });
   assert.deepEqual([returnCommentReady(""), returnCommentReady("  \n"), returnCommentReady(" x ")], [false, false, true]);
 });
 
@@ -47,10 +49,30 @@ test("AC-TC-01/03: adding keeps time order and one decimal; editing changes only
 test("AC-TC-05/06: what can be sent and what the decision carries", () => {
   assert.deepEqual([decisionReady("approved", "", 0), decisionReady("returned", "", 0), decisionReady("returned", "", 2), decisionReady("returned", "redo", 0)], [true, false, true, true]);
   assert.deepEqual([decisionReady("packaging_comment", "", 3), decisionReady("packaging_comment", "title", 0)], [false, true]);
+  // Owner TG 4836: approving an approved video again needs notes -- a general comment or a comment at a moment.
+  assert.deepEqual([decisionReady("approved", "", 0, true), decisionReady("approved", " next time shorter intro ", 0, true), decisionReady("approved", "", 1, true)], [false, true, true]);
   const draft = [{ id: "a", atSeconds: 4, text: "black frame" }];
-  assert.deepEqual(decisionBody("m", "returned", "  ", draft), { manifestSha256: "m", kind: "returned", comment: null, timedComments: [{ atSeconds: 4, text: "black frame" }] });
-  assert.deepEqual(decisionBody("m", "approved", " ok ", []), { manifestSha256: "m", kind: "approved", comment: "ok" });
+  // Review fix 1 (changed requirement): an approval or a return names the draft it was made from (its server stamp; null: none).
+  assert.deepEqual(decisionBody("m", "returned", "  ", draft, "2026-11-24T10:00:00.000Z"), { manifestSha256: "m", kind: "returned", comment: null, timedComments: [{ atSeconds: 4, text: "black frame" }], draftUpdatedAt: "2026-11-24T10:00:00.000Z" });
+  assert.deepEqual(decisionBody("m", "approved", " ok ", []), { manifestSha256: "m", kind: "approved", comment: "ok", draftUpdatedAt: null });
   assert.deepEqual(decisionBody("m", "packaging_comment", "title", draft), { manifestSha256: "m", kind: "packaging_comment", comment: "title" });
+});
+
+// Review fix 3 (AC-TC-01): focusing with nothing typed takes the current moment; playing on or seeking drops it, so a focus at 0:10,
+// play to 2:00, pause, focus gives 2:00 -- never 0:10.
+test("review fix 3: the moment a comment gets", () => {
+  let at: number | null = null;
+  at = nextMoment(at, { kind: "focus", text: "", current: 10 });
+  assert.equal(at, 10);
+  at = nextMoment(at, { kind: "play" });
+  assert.equal(at, null);
+  at = nextMoment(at, { kind: "focus", text: "", current: 120 });
+  assert.equal(at, 120);
+  assert.equal(nextMoment(120, { kind: "focus", text: "half typed", current: 130 }), 120, "refocusing a started comment keeps its moment");
+  assert.equal(nextMoment(120, { kind: "focus", text: "  ", current: 130 }), 130, "nothing typed: the moment now");
+  assert.equal(nextMoment(120, { kind: "seek" }), null);
+  assert.equal(nextMoment(null, { kind: "focus", text: "typed earlier", current: 140 }), 140);
+  assert.equal(nextMoment(120, { kind: "retake", current: 150 }), 150);
 });
 
 // AC-TC-02: flags never cover each other in a row -- the next one goes up a row; one past the right edge ends at its moment.

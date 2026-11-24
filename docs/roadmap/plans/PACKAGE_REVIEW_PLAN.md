@@ -69,3 +69,15 @@ its own note, sent with the verdict). No YouTube call; the same routes, session 
   package (`factory_/agent_/producer_publishing_plan_get`) gains `reviewTimedComments: [{ atSeconds, time, text }]` of the standing
   decision (approved or returned; absent when none). Factory 1.55.0, Agent 4.26.0, Producer 1.28.0 (additive).
 - AC-TC-09 The card shows the standing decision's timed comments (time and text) after it is sent.
+- AC-TC-10 (owner TG 4836) An approval carries an optional general comment — notes for future videos — together with the timed
+  comments, in one action. An approved video offers «Одобрить ещё раз с замечаниями» (a new approval; it needs a comment or a timed
+  comment; the state stays approved). The card says «одобрили с замечаниями на будущее». An older build reads such an approval as an
+  approval (the comment is allowed since BL-257; `timedComments` is an unknown field it ignores).
+- AC-TC-11 (owner TG 4836) Agents see the notes as non-blocking: the wake file line «Notes: Одобрено с замечаниями на будущее …»; the
+  plan package `reviewComment` with `reviewCommentKind: approved_notes` (`returned`, or `returned_timed` when a return's comment is only
+  its timed comments written out; then the wake file shows them once, not as a fenced copy too).
+- AC-TC-12 (independent review) A decision deletes only the draft it was made from (`draftUpdatedAt` = the stored stamp, else
+  `package_review_draft_changed` and nothing decided; absent: the draft stays); a draft save names its base (`baseUpdatedAt`) and a stale
+  one is refused; the screen writes nothing and offers no decision until the draft has loaded; playing on or seeking drops a taken
+  moment; full screen holds the whole player (frame, flags, timeline, controls) with Space / click to play and pause; drafts of gone
+  packages are pruned when the list is read; a failed draft removal is audited.

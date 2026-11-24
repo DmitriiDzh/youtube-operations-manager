@@ -510,7 +510,10 @@ flags the error as not sent; the mark keeps the retry count, so a failing insert
   The unsent draft is device-local: table `package_review_drafts` (schema 124, not in snapshots), port `drafts` of the service,
   `GET`/`PUT …/package-reviews/draft` under the same session + active-channel guard and the channel's scan; cleared only after the
   decision is stored. Readouts: the wake file's «Timed comments» section (`ReviewDecisionNotice.timedComments`) and
-  `PlanSlotPackage.reviewTimedComments` via `mediaReviewReaderOf(...).timedComments` (Factory 1.55.0 / Agent 4.26.0 / Producer 1.28.0).
+  `PlanSlotPackage.reviewTimedComments` via `mediaReviewReaderOf(...).timedComments`, an approval's notes (owner TG 4836) as `reviewComment` +
+  `reviewCommentKind: approved_notes` via `.approvalComment` (Factory 1.55.0 / Agent 4.26.0 / Producer 1.28.0). The draft is guarded by
+  stamps: a save names `baseUpdatedAt`, a decision `draftUpdatedAt`; a mismatch is `package_review_draft_changed` (409); drafts of gone
+  packages are pruned in `view()`.
   Screen: `package-review-workspace.tsx` over the shared `MediaVideoPlayer` (additive props `loop`, `preload`, `onMetadata`, `flags`,
   `onFlagClick`, `fullscreen`; flags laid out by `visual-review-model.flagPlaces`) -- no parallel player.
 

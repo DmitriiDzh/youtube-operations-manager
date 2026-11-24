@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { type Client } from "@libsql/client";
 import { createLibsqlClient } from "@/lib/libsql-client";
-import { createIsolatedDb, deletePackageReviewDraft, getPackageReviewDraft, initializeDatabaseSchema, SCHEMA_MIGRATIONS, setPackageReviewDraft } from "@/lib/db";
+import { createIsolatedDb, deletePackageReviewDraft, getPackageReviewDraft, initializeDatabaseSchema, prunePackageReviewDrafts, SCHEMA_MIGRATIONS, setPackageReviewDraft } from "@/lib/db";
 import { SNAPSHOT_DEVICE_LOCAL_TABLES } from "@/lib/snapshot/contracts";
 
 // Owner TG 4817 (PACKAGE_REVIEW_PLAN.md AC-TC-03): schema v124 adds `package_review_drafts` -- one row per (channel, manifest), replaced
@@ -46,5 +46,19 @@ test("AC-TC-03: one draft per (channel, manifest): a second save replaces it; an
     await deletePackageReviewDraft("UC1", m, database);
     assert.equal(await getPackageReviewDraft("UC1", m, database), null);
     assert.deepEqual(await getPackageReviewDraft("UC2", m, database), { commentsJson: "[]", updatedAt: t1 });
+  });
+});
+
+// Review fix 5: pruning removes the channel's drafts whose manifest is not kept, never another channel's.
+test("review fix 5: prunePackageReviewDrafts keeps the listed manifests and other channels", async () => {
+  await withDb(async (client) => {
+    const database = createIsolatedDb(client);
+    const at = new Date("2026-11-24T10:00:00Z");
+    for (const [c, m] of [["UC1", "a"], ["UC1", "b"], ["UC2", "a"]] as const) await setPackageReviewDraft(c, m.repeat(64), "[]", at, database);
+    assert.equal(await prunePackageReviewDrafts("UC1", ["a".repeat(64)], database), 1);
+    assert.ok(await getPackageReviewDraft("UC1", "a".repeat(64), database));
+    assert.equal(await getPackageReviewDraft("UC1", "b".repeat(64), database), null);
+    assert.ok(await getPackageReviewDraft("UC2", "a".repeat(64), database));
+    assert.equal(await prunePackageReviewDrafts("UC2", [], database), 1);
   });
 });

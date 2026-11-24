@@ -11048,6 +11048,13 @@ export async function setPackageReviewDraft(channelId: string, manifestSha256: s
     .onConflictDoUpdate({ target: [packageReviewDrafts.channelId, packageReviewDrafts.manifestSha256], set: { commentsJson, updatedAt } });
 }
 
+/** Review fix 5: the channel's drafts whose manifest is not in `keepManifests` (the package was re-packaged or removed); returns how many. */
+export async function prunePackageReviewDrafts(channelId: string, keepManifests: readonly string[], database: AppDb = db): Promise<number> {
+  const where = keepManifests.length > 0 ? and(eq(packageReviewDrafts.channelId, channelId), notInArray(packageReviewDrafts.manifestSha256, [...keepManifests])) : eq(packageReviewDrafts.channelId, channelId);
+  const result = await database.delete(packageReviewDrafts).where(where);
+  return Number(result.rowsAffected ?? 0);
+}
+
 /** AC-TC-03/05: the draft is gone (emptied, or sent with a decision). */
 export async function deletePackageReviewDraft(channelId: string, manifestSha256: string, database: AppDb = db): Promise<void> {
   await database.delete(packageReviewDrafts).where(and(eq(packageReviewDrafts.channelId, channelId), eq(packageReviewDrafts.manifestSha256, manifestSha256)));
