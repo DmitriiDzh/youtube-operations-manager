@@ -24,7 +24,10 @@ function readRequest(pathname: string) {
   return new NextRequest(new Request(`http://localhost${pathname}`, { method: "GET", headers: LOCAL }));
 }
 
-// AC-LOCK-01
+// AC-LOCK-01. Owner msg 4556: before refusing, the proxy waits up to 20 s for a live process's EXPORT lock (an import or a
+// migration is refused at once). This test keeps a live export lock, so it covers the whole wait-then-refuse path and takes
+// those 20 s. The other "gated like any other real mutation" tests below are about the gate itself, which treats every lock
+// the same; they hold an IMPORT lock so that each request does not wait 20 s (with export locks the file took ~11 min).
 test("proxy rejects a mutating /api/** request while the operation lock is held", async () => {
   await acquireOperationLock(rawSqlClient, "export");
   try {
@@ -51,7 +54,7 @@ test("proxy allows a GET request through even while the operation lock is held",
 });
 
 test("proxy never gates the device-handoff routes themselves (they manage the lock internally)", async () => {
-  await acquireOperationLock(rawSqlClient, "import");
+  await acquireOperationLock(rawSqlClient, "export");
   try {
     const response = await proxy(mutatingRequest("/api/device-handoff/export"));
     assert.notEqual(response.status, 409);
@@ -63,7 +66,7 @@ test("proxy never gates the device-handoff routes themselves (they manage the lo
 
 // BL-152: the interface-language route only sets a cookie on this browser; it must work whatever state the device is in.
 test("proxy never gates the interface-language route, even while the operation lock is held", async () => {
-  await acquireOperationLock(rawSqlClient, "import");
+  await acquireOperationLock(rawSqlClient, "export");
   try {
     const response = await proxy(putRequest("/api/ui-language"));
     assert.notEqual(response.status, 409);
@@ -110,7 +113,7 @@ test("proxy never gates genuinely read-only POST preview/generate routes, even w
 // own preview sibling above, it must NOT be exempt, so it stays behind the ordinary
 // operation-lock gate exactly like every other real mutation.
 test("proxy gates the video-details apply route like any other real mutation", async () => {
-  await acquireOperationLock(rawSqlClient, "export");
+  await acquireOperationLock(rawSqlClient, "import");
   try {
     const response = await proxy(mutatingRequest("/api/channels/chan-1/videos/v1/details/apply"));
     assert.equal(response.status, 409);
@@ -123,7 +126,7 @@ test("proxy gates the video-details apply route like any other real mutation", a
 // rows) -- unlike ai-localization's own `generate` (exempted because it persists nothing), this
 // must stay behind the ordinary gate, not be added to EXEMPT_READ_ONLY_PATH_SUFFIXES.
 test("proxy gates the analytics collect route like any other real mutation", async () => {
-  await acquireOperationLock(rawSqlClient, "export");
+  await acquireOperationLock(rawSqlClient, "import");
   try {
     const response = await proxy(mutatingRequest("/api/channels/chan-1/analytics/collect"));
     assert.equal(response.status, 409);
@@ -135,7 +138,7 @@ test("proxy gates the analytics collect route like any other real mutation", asy
 // Phase 8 (BL-059): the auto-collect trigger is a POST that MAY perform the same real mutation --
 // gated the same way, never exempted, even though it often no-ops.
 test("proxy gates the analytics auto-collect route like any other real mutation", async () => {
-  await acquireOperationLock(rawSqlClient, "export");
+  await acquireOperationLock(rawSqlClient, "import");
   try {
     const response = await proxy(mutatingRequest("/api/channels/chan-1/analytics/auto-collect"));
     assert.equal(response.status, 409);
@@ -148,7 +151,7 @@ test("proxy gates the analytics auto-collect route like any other real mutation"
 // perform a real local-persistence mutation (a new/replacement snapshot row) -- gated the same
 // way, never exempted, even though it often no-ops (same reasoning as auto-collect above).
 test("proxy gates the analytics weekly-reports generate-if-due route like any other real mutation", async () => {
-  await acquireOperationLock(rawSqlClient, "export");
+  await acquireOperationLock(rawSqlClient, "import");
   try {
     const response = await proxy(mutatingRequest("/api/channels/chan-1/analytics/weekly-reports/generate-if-due"));
     assert.equal(response.status, 409);
@@ -161,7 +164,7 @@ test("proxy gates the analytics weekly-reports generate-if-due route like any ot
 // mutation (a new market_channel_snapshots/market_video_snapshots/collection-run row) -- gated the
 // same way, never exempted, even though it often no-ops (same reasoning as auto-collect above).
 test("proxy gates the market-intelligence collect-if-stale route like any other real mutation", async () => {
-  await acquireOperationLock(rawSqlClient, "export");
+  await acquireOperationLock(rawSqlClient, "import");
   try {
     const response = await proxy(mutatingRequest("/api/market-intelligence/collect-if-stale"));
     assert.equal(response.status, 409);
@@ -173,7 +176,7 @@ test("proxy gates the market-intelligence collect-if-stale route like any other 
 // Phase 9 slice 9C: discovery/candidate-lifecycle routes are real mutations (write candidate rows,
 // a run-log row, or a new watchlist entry) -- gated the same way, never exempted.
 test("proxy gates the market-intelligence discover route like any other real mutation", async () => {
-  await acquireOperationLock(rawSqlClient, "export");
+  await acquireOperationLock(rawSqlClient, "import");
   try {
     const response = await proxy(mutatingRequest("/api/market-intelligence/discover"));
     assert.equal(response.status, 409);
@@ -183,7 +186,7 @@ test("proxy gates the market-intelligence discover route like any other real mut
 });
 
 test("proxy gates the market-intelligence discovery-candidates status-update route like any other real mutation", async () => {
-  await acquireOperationLock(rawSqlClient, "export");
+  await acquireOperationLock(rawSqlClient, "import");
   try {
     const response = await proxy(patchRequest("/api/market-intelligence/discovery-candidates/UC_TEST0000000000000"));
     assert.equal(response.status, 409);
@@ -193,7 +196,7 @@ test("proxy gates the market-intelligence discovery-candidates status-update rou
 });
 
 test("proxy gates the market-intelligence discovery-candidates promote route like any other real mutation", async () => {
-  await acquireOperationLock(rawSqlClient, "export");
+  await acquireOperationLock(rawSqlClient, "import");
   try {
     const response = await proxy(mutatingRequest("/api/market-intelligence/discovery-candidates/UC_TEST0000000000000/promote"));
     assert.equal(response.status, 409);
@@ -205,7 +208,7 @@ test("proxy gates the market-intelligence discovery-candidates promote route lik
 // Phase 9 slice 9E, part A: topic/assignment routes are real mutations (write topic/assignment
 // rows) -- gated the same way, never exempted.
 test("proxy gates the market-intelligence topics route like any other real mutation", async () => {
-  await acquireOperationLock(rawSqlClient, "export");
+  await acquireOperationLock(rawSqlClient, "import");
   try {
     const response = await proxy(mutatingRequest("/api/market-intelligence/topics"));
     assert.equal(response.status, 409);
@@ -215,7 +218,7 @@ test("proxy gates the market-intelligence topics route like any other real mutat
 });
 
 test("proxy gates the market-intelligence topic-assignments route like any other real mutation", async () => {
-  await acquireOperationLock(rawSqlClient, "export");
+  await acquireOperationLock(rawSqlClient, "import");
   try {
     const response = await proxy(mutatingRequest("/api/market-intelligence/topics/topic-1/assignments"));
     assert.equal(response.status, 409);
@@ -227,7 +230,7 @@ test("proxy gates the market-intelligence topic-assignments route like any other
 // Phase 9 slice 9E, part B: trend-candidate/evidence routes are real mutations (write trend
 // candidate/evidence rows) -- gated the same way, never exempted.
 test("proxy gates the market-intelligence trend-candidates route like any other real mutation", async () => {
-  await acquireOperationLock(rawSqlClient, "export");
+  await acquireOperationLock(rawSqlClient, "import");
   try {
     const response = await proxy(mutatingRequest("/api/market-intelligence/trend-candidates"));
     assert.equal(response.status, 409);
@@ -237,7 +240,7 @@ test("proxy gates the market-intelligence trend-candidates route like any other 
 });
 
 test("proxy gates the market-intelligence trend-candidate status-update route like any other real mutation", async () => {
-  await acquireOperationLock(rawSqlClient, "export");
+  await acquireOperationLock(rawSqlClient, "import");
   try {
     const response = await proxy(patchRequest("/api/market-intelligence/trend-candidates/trend-1"));
     assert.equal(response.status, 409);
@@ -247,7 +250,7 @@ test("proxy gates the market-intelligence trend-candidate status-update route li
 });
 
 test("proxy gates the market-intelligence trend-candidate evidence route like any other real mutation", async () => {
-  await acquireOperationLock(rawSqlClient, "export");
+  await acquireOperationLock(rawSqlClient, "import");
   try {
     const response = await proxy(mutatingRequest("/api/market-intelligence/trend-candidates/trend-1/evidence"));
     assert.equal(response.status, 409);
@@ -260,7 +263,7 @@ test("proxy gates the market-intelligence trend-candidate evidence route like an
 // approve/reject routes are real mutations (the approve route also triggers a real search.list
 // call), gated the same way, never exempted.
 test("proxy gates the market-intelligence research-request approve route like any other real mutation", async () => {
-  await acquireOperationLock(rawSqlClient, "export");
+  await acquireOperationLock(rawSqlClient, "import");
   try {
     const response = await proxy(mutatingRequest("/api/market-intelligence/research-requests/req-1/approve"));
     assert.equal(response.status, 409);
@@ -270,7 +273,7 @@ test("proxy gates the market-intelligence research-request approve route like an
 });
 
 test("proxy gates the market-intelligence research-request reject route like any other real mutation", async () => {
-  await acquireOperationLock(rawSqlClient, "export");
+  await acquireOperationLock(rawSqlClient, "import");
   try {
     const response = await proxy(mutatingRequest("/api/market-intelligence/research-requests/req-1/reject"));
     assert.equal(response.status, 409);
@@ -282,7 +285,7 @@ test("proxy gates the market-intelligence research-request reject route like any
 // Phase 10 slice 1 (docs/roadmap/plans/PHASE_10_SLICE_1_PLAN.md) -- decision-engine's mutating
 // routes are real local-DB writes, gated the same way as every other mutation, never exempted.
 test("proxy gates the decision-engine create-hypothesis route like any other real mutation", async () => {
-  await acquireOperationLock(rawSqlClient, "export");
+  await acquireOperationLock(rawSqlClient, "import");
   try {
     const response = await proxy(mutatingRequest("/api/decision-engine/hypotheses"));
     assert.equal(response.status, 409);
@@ -292,7 +295,7 @@ test("proxy gates the decision-engine create-hypothesis route like any other rea
 });
 
 test("proxy gates the decision-engine create-experiment route like any other real mutation", async () => {
-  await acquireOperationLock(rawSqlClient, "export");
+  await acquireOperationLock(rawSqlClient, "import");
   try {
     const response = await proxy(mutatingRequest("/api/decision-engine/hypotheses/hyp-1/experiments"));
     assert.equal(response.status, 409);
@@ -302,7 +305,7 @@ test("proxy gates the decision-engine create-experiment route like any other rea
 });
 
 test("proxy gates the decision-engine experiment-transition route like any other real mutation", async () => {
-  await acquireOperationLock(rawSqlClient, "export");
+  await acquireOperationLock(rawSqlClient, "import");
   try {
     const response = await proxy(mutatingRequest("/api/decision-engine/experiments/exp-1/transition"));
     assert.equal(response.status, 409);
@@ -312,7 +315,7 @@ test("proxy gates the decision-engine experiment-transition route like any other
 });
 
 test("proxy gates the decision-engine create-outcome route like any other real mutation", async () => {
-  await acquireOperationLock(rawSqlClient, "export");
+  await acquireOperationLock(rawSqlClient, "import");
   try {
     const response = await proxy(mutatingRequest("/api/decision-engine/experiments/exp-1/outcomes"));
     assert.equal(response.status, 409);
@@ -324,7 +327,7 @@ test("proxy gates the decision-engine create-outcome route like any other real m
 // Phase 10 slice 3 (docs/roadmap/plans/PHASE_10_SLICE_3_PLAN.md) -- adding a structured evidence
 // reference is a real local-DB write (a new hypothesis_evidence row), gated the same way.
 test("proxy gates the decision-engine add-hypothesis-evidence route like any other real mutation", async () => {
-  await acquireOperationLock(rawSqlClient, "export");
+  await acquireOperationLock(rawSqlClient, "import");
   try {
     const response = await proxy(mutatingRequest("/api/decision-engine/hypotheses/hyp-1/evidence"));
     assert.equal(response.status, 409);
@@ -336,7 +339,7 @@ test("proxy gates the decision-engine add-hypothesis-evidence route like any oth
 // Phase 10 slice 4 -- unlike its own sibling `.../hypotheses/generate` (exempt, draft-only), this
 // route DOES persist a real hypothesis/evidence/provenance and must stay behind the normal gate.
 test("proxy gates the decision-engine generate/save route like any other real mutation", async () => {
-  await acquireOperationLock(rawSqlClient, "export");
+  await acquireOperationLock(rawSqlClient, "import");
   try {
     const response = await proxy(mutatingRequest("/api/decision-engine/hypotheses/generate/save"));
     assert.equal(response.status, 409);
@@ -349,7 +352,7 @@ test("proxy gates the decision-engine generate/save route like any other real mu
 // Set is a real local-DB write, and executing creates a real Batch -- both stay behind the normal
 // gate exactly like every other mutating decision-engine route.
 test("proxy gates the decision-engine set-change-set route like any other real mutation", async () => {
-  await acquireOperationLock(rawSqlClient, "export");
+  await acquireOperationLock(rawSqlClient, "import");
   try {
     const response = await proxy(putRequest("/api/decision-engine/experiments/exp-1/change-set"));
     assert.equal(response.status, 409);
@@ -359,7 +362,7 @@ test("proxy gates the decision-engine set-change-set route like any other real m
 });
 
 test("proxy gates the decision-engine execute-experiment route like any other real mutation", async () => {
-  await acquireOperationLock(rawSqlClient, "export");
+  await acquireOperationLock(rawSqlClient, "import");
   try {
     const response = await proxy(mutatingRequest("/api/decision-engine/experiments/exp-1/execute"));
     assert.equal(response.status, 409);
@@ -371,7 +374,7 @@ test("proxy gates the decision-engine execute-experiment route like any other re
 // Phase 11 (docs/roadmap/plans/PHASE_11_PLAN.md) -- the operator-only set path for a channel
 // workspace is a real local mutation, gated like every other one.
 test("proxy gates the channel-workspaces PUT route like any other real mutation", async () => {
-  await acquireOperationLock(rawSqlClient, "export");
+  await acquireOperationLock(rawSqlClient, "import");
   try {
     const response = await proxy(new NextRequest(new Request("http://localhost/api/channel-workspaces", { method: "PUT", headers: LOCAL })));
     assert.equal(response.status, 409);
@@ -383,7 +386,7 @@ test("proxy gates the channel-workspaces PUT route like any other real mutation"
 // Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md 12.1) -- issuing/revoking agent tokens are real local
 // mutations, gated like every other one.
 test("proxy gates issuing an agent token (POST) like any other real mutation", async () => {
-  await acquireOperationLock(rawSqlClient, "export");
+  await acquireOperationLock(rawSqlClient, "import");
   try {
     const response = await proxy(new NextRequest(new Request("http://localhost/api/agent-tokens", { method: "POST", headers: LOCAL })));
     assert.equal(response.status, 409);
@@ -458,7 +461,7 @@ test("AC-H4: stop switches are exempt from recovery mode only; the operation loc
 
 // Phase 12 slice 12.4 -- assigning market records to channels is a real local mutation.
 test("proxy gates the market-assignments PUT route like any other real mutation", async () => {
-  await acquireOperationLock(rawSqlClient, "export");
+  await acquireOperationLock(rawSqlClient, "import");
   try {
     const response = await proxy(new NextRequest(new Request("http://localhost/api/market-assignments", { method: "PUT", headers: LOCAL })));
     assert.equal(response.status, 409);
@@ -469,7 +472,7 @@ test("proxy gates the market-assignments PUT route like any other real mutation"
 
 // BL-163: the owner's proposal decisions and the watchlist pause / inactivity settings are real mutations, gated like the rest.
 test("proxy gates the agent-proposal approve/reject and the watchlist pause/inactivity routes like any other real mutation", async () => {
-  await acquireOperationLock(rawSqlClient, "export");
+  await acquireOperationLock(rawSqlClient, "import");
   try {
     for (const path of [
       "/api/agent-proposals/p-1/approve",
@@ -487,7 +490,7 @@ test("proxy gates the agent-proposal approve/reject and the watchlist pause/inac
 // docs/roadmap/plans/HTTP_MCP_SERVER_PLAN.md AC-HM-11: every MCP call is a POST (reads included), so the
 // in-app agent endpoint must not be blocked by the device gate; other mutating routes still are.
 test("AC-HM-11: only /api/mcp itself is exempt -- a sibling like /api/mcp-x or /api/mcpx stays gated", async () => {
-  await acquireOperationLock(rawSqlClient, "export");
+  await acquireOperationLock(rawSqlClient, "import");
   try {
     assert.equal((await proxy(mutatingRequest("/api/mcp/"))).status, 200);
     for (const path of ["/api/mcp-x", "/api/mcpx", "/api/mcp2/foo"]) {
@@ -499,7 +502,7 @@ test("AC-HM-11: only /api/mcp itself is exempt -- a sibling like /api/mcp-x or /
 });
 
 test("AC-HM-11: /api/mcp is not blocked by the operation lock, while another mutating route still is", async () => {
-  await acquireOperationLock(rawSqlClient, "export");
+  await acquireOperationLock(rawSqlClient, "import");
   try {
     const mcp = await proxy(mutatingRequest("/api/mcp"));
     assert.equal(mcp.status, 200);
