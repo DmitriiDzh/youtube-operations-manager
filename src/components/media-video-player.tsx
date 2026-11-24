@@ -4,7 +4,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useSta
 import type { PlanMarkerRegion } from "@/lib/generation-plans/contracts";
 import { formatPlayerTime } from "./media-review-player";
 import { useUiText } from "./ui-text-provider";
-import { fitView, flagPlaces, frameAt, isWrap, PLAYBACK_RATES, rateKeyDirection, stepRate, storedRate, type PlaybackRate, lastFrameTime, measuredFps, regionFromDrag, regionToScreen, sameProportions, seamJump, seamWindowOf, splitAt, stepFrame, wipeClip, type ImageBox } from "./visual-review-model";
+import { fitView, flagPlaces, frameAt, isWrap, PLAYBACK_RATES, playerKeyAction, seekTarget, stepRate, storedRate, type PlaybackRate, lastFrameTime, measuredFps, regionFromDrag, regionToScreen, sameProportions, seamJump, seamWindowOf, splitAt, stepFrame, wipeClip, type ImageBox } from "./visual-review-model";
 
 /**
  * BL-175 phase 2 (review): where the second clip of a wipe / difference stands for the first one's `time` -- the same moment, or,
@@ -49,7 +49,11 @@ export type VideoPlayerHandle = {
 };
 
 /** Owner TG 4817: a comment flag above the timeline (`draft`: not sent yet; `sent`: part of the owner's sent decision). */
-export type VideoFlag = { id: string; atSeconds: number; number: number; text: string; tone: "draft" | "sent"; active?: boolean };
+export type VideoFlag = { id: string; atSeconds: number; number: number | string; text: string; tone: FlagTone; active?: boolean };
+/** Owner TG 4846: `issue` -- an open issue from an earlier review (violet); `closed` -- resolved or noted (grey). */
+export type FlagTone = "draft" | "sent" | "issue" | "closed";
+const FLAG_CHIP_TONES: Record<FlagTone, string> = { draft: "border-amber-400 bg-amber-950/90 text-amber-100", sent: "border-sky-400 bg-sky-950/90 text-sky-100", issue: "border-violet-400 bg-violet-950/90 text-violet-100", closed: "border-zinc-500 bg-zinc-900/90 text-zinc-300" };
+const FLAG_LINE_TONES: Record<FlagTone, string> = { draft: "bg-amber-400", sent: "bg-sky-400", issue: "bg-violet-400", closed: "bg-zinc-500" };
 /** A flag's width in px: the number only on a narrow timeline, the number and the start of the text on a wide one. */
 const FLAG_CHIP_NARROW = 26;
 const FLAG_CHIP_WIDE = 150;
@@ -106,10 +110,14 @@ export const MediaVideoPlayer = forwardRef<
     onFlagClick?: (id: string) => void;
     /** Owner TG 4844: the localStorage key the chosen speed is remembered under (absent: not remembered). */
     rememberRate?: string;
+    /** Owner TG 4856: ← / → seek 5 s and Space plays / pauses (in full screen, with the focus, or alone -- see `keysWithoutFocus`). */
+    seekKeys?: boolean;
+    /** Owner TG 4856: the watching keys also work with nothing focused (this is the only video open on the screen). */
+    keysWithoutFocus?: boolean;
     /** Owner TG 4817: a full-screen button (the native controls' one is gone with them). */
     fullscreen?: boolean;
   }
->(function MediaVideoPlayer({ src, markers, fps: reportedFps, onAddPin, onPlayStart, onUserSeek, onUserPlay, onPlayingChange, autoPlay = true, onReady, initialTime = null, seam = false, overlay, className = "h-[48vh]", startMuted = true, compact = false, loop = true, preload = "auto", onMetadata, flags, onFlagClick, fullscreen = false, rememberRate }, ref) {
+>(function MediaVideoPlayer({ src, markers, fps: reportedFps, onAddPin, onPlayStart, onUserSeek, onUserPlay, onPlayingChange, autoPlay = true, onReady, initialTime = null, seam = false, overlay, className = "h-[48vh]", startMuted = true, compact = false, loop = true, preload = "auto", onMetadata, flags, onFlagClick, fullscreen = false, rememberRate, seekKeys = false, keysWithoutFocus = false }, ref) {
   const { t } = useUiText();
   const video = useRef<HTMLVideoElement | null>(null);
   const frameBox = useRef<HTMLDivElement | null>(null);
@@ -317,30 +325,41 @@ export const MediaVideoPlayer = forwardRef<
   useEffect(() => {
     rateRef.current = rate;
   }, [rate]);
+  // Owner TG 4856: ← / → seek 5 s and Space plays / pauses on a screen that asks for it (`seekKeys`) -- in full screen, with the focus,
+  // or (`keysWithoutFocus`) when this is the only video open and nothing else has the focus. The rule is `playerKeyAction`'s.
+  const keysRef = useRef({ seekKeys, keysWithoutFocus });
+  useEffect(() => {
+    keysRef.current = { seekKeys, keysWithoutFocus };
+  }, [seekKeys, keysWithoutFocus]);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const box = root.current;
       if (!box) return;
-      const tag = (event.target as HTMLElement | null)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      const full = document.fullscreenElement === box;
-      const direction = rateKeyDirection(event);
-      if (direction !== null) {
-        if (!full && !box.contains(document.activeElement)) return;
-        event.preventDefault();
-        setRate(stepRate(rateRef.current, direction));
-        return;
-      }
-      if (!full || (event.key !== " " && event.key.toLowerCase() !== "k")) return;
+      const el = event.target as HTMLElement | null;
+      const active = document.activeElement;
+      const action = playerKeyAction(
+        event,
+        { tag: el?.tagName ?? null, editable: Boolean(el?.isContentEditable) },
+        {
+          full: document.fullscreenElement === box,
+          focused: box.contains(active),
+          alone: keysRef.current.keysWithoutFocus && (active === null || active === document.body),
+          seekKeys: keysRef.current.seekKeys,
+        }
+      );
+      if (!action) return;
       event.preventDefault();
       const v = video.current;
-      if (!v) return;
-      if (v.paused) play();
-      else v.pause();
+      if (action.kind === "rate") setRate(stepRate(rateRef.current, action.direction));
+      else if (!v) return;
+      else if (action.kind === "toggle") {
+        if (v.paused) play();
+        else v.pause();
+      } else seek(seekTarget(v.currentTime, action.delta, v.duration), true);
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [play, setRate]);
+  }, [play, seek, setRate]);
 
   useImperativeHandle(ref, () => ({
     togglePlay() {
@@ -623,7 +642,7 @@ export const MediaVideoPlayer = forwardRef<
                 {sorted.map((flag, i) => {
                   const place = places[i];
                   const label = t("review.visual.flagLabel", { number: flag.number, time: formatPlayerTime(flag.atSeconds), text: flag.text });
-                  const tone = flag.tone === "sent" ? "border-sky-400 bg-sky-950/90 text-sky-100" : "border-amber-400 bg-amber-950/90 text-amber-100";
+                  const tone = FLAG_CHIP_TONES[flag.tone];
                   return (
                     <button
                       key={flag.id}
@@ -667,7 +686,7 @@ export const MediaVideoPlayer = forwardRef<
           <span key={i} title={m.label ?? undefined} className={`absolute top-1 bottom-1 rounded-sm ${TONE_COLORS[m.tone]}`} style={{ left: pct(m.start), width: m.end !== null && m.end > m.start ? `calc(${pct(m.end - m.start)} + 2px)` : "3px" }} />
         ))}
         {(flags ?? []).map((flag) => (
-          <span key={`flag-${flag.id}`} className={`pointer-events-none absolute inset-y-0 w-0.5 ${flag.tone === "sent" ? "bg-sky-400" : "bg-amber-400"}`} style={{ left: pct(flag.atSeconds) }} />
+          <span key={`flag-${flag.id}`} className={`pointer-events-none absolute inset-y-0 w-0.5 ${FLAG_LINE_TONES[flag.tone]}`} style={{ left: pct(flag.atSeconds) }} />
         ))}
         {loopRange && <span className="absolute inset-y-0 rounded-sm border border-indigo-300/70 bg-indigo-400/20" style={{ left: pct(loopRange.start), width: pct(loopRange.end - loopRange.start) }} />}
         <span className="absolute inset-y-0 w-0.5 bg-white" style={{ left: pct(time) }} />

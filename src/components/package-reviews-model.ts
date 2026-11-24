@@ -1,6 +1,7 @@
 // BL-257 (ADR 0070, PACKAGE_REVIEW_PLAN.md stage 2): the review screen's pure helpers (tested on their own).
 
-import { roundSeconds, TIMED_COMMENT_LIMITS, type DraftTimedComment, type TimedComment } from "@/lib/package-reviews/timed-comments";
+import type { IssueCounts, ReviewIssue } from "@/lib/package-reviews/issues";
+import { roundSeconds, TIMED_COMMENT_LIMITS, type DraftTimedComment, type IssueAction, type TimedComment } from "@/lib/package-reviews/timed-comments";
 
 export type PackageReviewState = "pending" | "approved" | "returned" | "uploaded";
 
@@ -29,6 +30,9 @@ export type PackageReviewDto = {
   packagingComments?: Array<{ id: string; comment: string; at: string; device: string | null }>;
   /** BL-265: the YouTube video id once uploaded, else null. */
   videoId?: string | null;
+  /** Owner TG 4846 (AC-IS-06): the video's issues across its package versions and their counts (absent from an older server). */
+  issues?: ReviewIssue[];
+  issueCounts?: IssueCounts;
 };
 
 export type PackageReviewsDto = {
@@ -78,7 +82,7 @@ export function frameOf(width: number, height: number): "vertical" | "horizontal
 // --- Owner TG 4817 (PACKAGE_REVIEW_PLAN.md AC-TC-01..09): timed comments -----------------------------------------------------
 
 /** `GET/PUT …/package-reviews/draft` (`@/lib/package-reviews` PackageReviewDraft). */
-export type PackageReviewDraftDto = { manifestSha256: string; comments: DraftTimedComment[]; updatedAt: string | null };
+export type PackageReviewDraftDto = { manifestSha256: string; comments: DraftTimedComment[]; issueActions?: IssueAction[]; updatedAt: string | null };
 
 /** The draft's place on the screen: loaded and saved, being saved, or not saved (the screen offers to try again). */
 export type DraftSaveState = "loading" | "saved" | "saving" | "error";
@@ -120,7 +124,7 @@ export function decisionReady(kind: "approved" | "returned" | "packaging_comment
 }
 
 /** The decision's body: the draft's comments go with an approval or a return only, without the screen's ids (AC-TC-05). */
-export function decisionBody(manifestSha256: string, kind: "approved" | "returned" | "packaging_comment", comment: string, draft: readonly DraftTimedComment[], draftUpdatedAt: string | null = null) {
+export function decisionBody(manifestSha256: string, kind: "approved" | "returned" | "packaging_comment", comment: string, draft: readonly DraftTimedComment[], draftUpdatedAt: string | null = null, issueActions: readonly IssueAction[] = []) {
   return {
     manifestSha256,
     kind,
@@ -128,6 +132,8 @@ export function decisionBody(manifestSha256: string, kind: "approved" | "returne
     ...(kind !== "packaging_comment" && draft.length > 0 ? { timedComments: draft.map((c) => ({ atSeconds: c.atSeconds, text: c.text })) } : {}),
     // Review fix 1: the draft this decision was made from (its server stamp; null: none) -- the server deletes only that one.
     ...(kind !== "packaging_comment" ? { draftUpdatedAt } : {}),
+    // Owner TG 4846 (AC-IS-04): his actions on existing issues go with an approval or a return.
+    ...(kind !== "packaging_comment" && issueActions.length > 0 ? { issueActions: issueActions.map((a) => (a.kind === "follow_up" ? { issueId: a.issueId, kind: a.kind, text: a.text ?? "" } : { issueId: a.issueId, kind: a.kind })) } : {}),
   };
 }
 
@@ -146,3 +152,20 @@ export function nextMoment(taken: number | null, event: { kind: "focus"; text: s
       return null;
   }
 }
+
+/** Owner TG 4846 (AC-IS-04): the draft's action on one issue set (one per issue: it replaces an earlier one), or removed. */
+export function withIssueAction(list: readonly IssueAction[], action: IssueAction): IssueAction[] {
+  const text = action.kind === "follow_up" ? oneLineText(action.text ?? "").trim().slice(0, TIMED_COMMENT_LIMITS.text) : undefined;
+  if (action.kind === "follow_up" && !text) return [...list];
+  return [...list.filter((a) => a.issueId !== action.issueId), action.kind === "follow_up" ? { issueId: action.issueId, kind: "follow_up", text } : { issueId: action.issueId, kind: "resolved" }];
+}
+
+export function withoutIssueAction(list: readonly IssueAction[], issueId: string): IssueAction[] {
+  return list.filter((a) => a.issueId !== issueId);
+}
+
+/** What counts as notes / a reason with a decision: new timed comments and follow-ups (a resolve alone says nothing to change). */
+export const notesCount = (comments: readonly unknown[], actions: readonly IssueAction[]) => comments.length + actions.filter((a) => a.kind === "follow_up").length;
+
+/** Owner TG 4846: `I1`, `I2`... -- an issue's label on the timeline and in the list (new draft comments are 1, 2...). */
+export const issueLabel = (index: number) => `I${index + 1}`;

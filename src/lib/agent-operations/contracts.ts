@@ -138,7 +138,8 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT",
 // 4.26.0 (owner TG 4817, PACKAGE_REVIEW_PLAN.md AC-TC-08): agent_publishing_plan_get / _list -- a slot's package gains
 // reviewTimedComments [{ atSeconds, time, text }] (as factory_publishing_plan_get 1.55.0: the owner's comments at moments of the video,
 // sent with his standing package-review decision), reviewComment also for an approval with notes (owner TG 4836) and reviewCommentKind
-// returned | returned_timed | approved_notes. Additive.
+// returned | returned_timed | approved_notes; owner TG 4846: reviewIssues (id, time, state, thread per issue) and reviewIssueCounts --
+// answer issues in the next package's yt-release-package/2 reviewReplies. Additive.
 export const AGENT_API_VERSION = "4.26.0";
 
 /**

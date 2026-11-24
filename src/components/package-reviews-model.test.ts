@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { actionsOf, decisionBody, decisionReady, durationLabel, frameOf, mediaSrcOf, newCommentId, nextMoment, oneLineText, returnCommentReady, withComment, withEditedComment, withoutComment } from "./package-reviews-model";
-import { flagPlaces, PLAYBACK_RATES, rateKeyDirection, stepRate, storedRate } from "./visual-review-model";
+import { actionsOf, decisionBody, decisionReady, durationLabel, frameOf, issueLabel, mediaSrcOf, newCommentId, nextMoment, notesCount, withIssueAction, withoutIssueAction, oneLineText, returnCommentReady, withComment, withEditedComment, withoutComment } from "./package-reviews-model";
+import { flagPlaces, PLAYBACK_RATES, playerKeyAction, rateKeyDirection, seekTarget, stepRate, storedRate } from "./visual-review-model";
 
 // BL-257 (PACKAGE_REVIEW_PLAN.md AC-PR-04/05/09/15; ADR 0070 §4, §6): the screen asks for the media by the manifest hash only; the
 // owner may change his mind until the upload; approval needs the manifest's video checksum; a return needs a comment; a vertical
@@ -115,4 +115,41 @@ test("TG 4844: the speed keys on any layout", () => {
   assert.equal(rateKeyDirection({ key: "Ю", code: "Period", shiftKey: true }), 1);
   assert.equal(rateKeyDirection({ key: "б", code: "Comma", shiftKey: false }), null, "without Shift it is the frame step key");
   assert.equal(rateKeyDirection({ key: "a", code: "KeyA", shiftKey: true }), null);
+});
+
+// Owner TG 4856: ← / → seek 5 s (clamped to the clip), Space plays / pauses -- on the review screen, in full screen, with the focus or
+// as the only open video; never while typing; `<` / `>` keep stepping the speed; `,` / `.` (frame steps) are not taken.
+test("TG 4856: the watching keys", () => {
+  const key = (k: string, code = "", over: Record<string, boolean> = {}) => ({ key: k, code, shiftKey: false, ...over });
+  const page = { tag: "BODY", editable: false };
+  const alone = { full: false, focused: false, alone: true, seekKeys: true };
+  assert.deepEqual(playerKeyAction(key("ArrowLeft"), page, alone), { kind: "seek", delta: -5 });
+  assert.deepEqual(playerKeyAction(key("ArrowRight"), page, { ...alone, alone: false, focused: true }), { kind: "seek", delta: 5 });
+  assert.deepEqual(playerKeyAction(key("ArrowRight"), page, { full: true, focused: false, alone: false, seekKeys: true }), { kind: "seek", delta: 5 });
+  assert.deepEqual(playerKeyAction(key(" ", "Space"), page, alone), { kind: "toggle" });
+  assert.equal(playerKeyAction(key("ArrowLeft"), { tag: "INPUT", editable: false }, alone), null, "typing a comment");
+  assert.equal(playerKeyAction(key("ArrowLeft"), { tag: "TEXTAREA", editable: false }, alone), null);
+  assert.equal(playerKeyAction(key("ArrowLeft"), { tag: "DIV", editable: true }, alone), null);
+  assert.equal(playerKeyAction(key("ArrowLeft"), page, { ...alone, alone: false }), null, "another video open, nothing focused");
+  assert.equal(playerKeyAction(key("ArrowLeft"), page, { ...alone, seekKeys: false, focused: true }), null, "a screen without the watching keys");
+  assert.equal(playerKeyAction(key("ArrowLeft", "", { metaKey: true }), page, alone), null);
+  assert.equal(playerKeyAction(key(","), page, alone), null, "the frame step stays the screen's");
+  assert.deepEqual(playerKeyAction({ key: "Ю", code: "Period", shiftKey: true }, page, { ...alone, focused: true }), { kind: "rate", direction: 1 });
+  // Clamped to 0 and to the length.
+  assert.deepEqual([seekTarget(3, -5, 100), seekTarget(97, 5, 100), seekTarget(50, 5, 100), seekTarget(10, 5, Number.NaN)], [0, 100, 55, 15]);
+});
+
+// Owner TG 4846 (AC-IS-04): one draft action per issue (the latest replaces), a follow-up needs a text, undo removes it; the decision
+// carries them; resolves are no reason for a return, follow-ups are.
+test("AC-IS-04: draft issue actions and what they count for", () => {
+  let a = withIssueAction([], { issueId: "pr_a.1", kind: "resolved" });
+  a = withIssueAction(a, { issueId: "pr_a.2", kind: "follow_up", text: " still\nthere " });
+  assert.deepEqual(a, [{ issueId: "pr_a.1", kind: "resolved" }, { issueId: "pr_a.2", kind: "follow_up", text: "still there" }]);
+  assert.deepEqual(withIssueAction(a, { issueId: "pr_a.3", kind: "follow_up", text: "  " }), a, "an empty follow-up adds nothing");
+  assert.deepEqual(withIssueAction(a, { issueId: "pr_a.1", kind: "follow_up", text: "no, again" }).filter((x) => x.issueId === "pr_a.1"), [{ issueId: "pr_a.1", kind: "follow_up", text: "no, again" }]);
+  assert.deepEqual(withoutIssueAction(a, "pr_a.1"), [{ issueId: "pr_a.2", kind: "follow_up", text: "still there" }]);
+  assert.equal(notesCount([], a), 1);
+  assert.deepEqual(decisionBody("m", "returned", "", [], null, a).issueActions, [{ issueId: "pr_a.1", kind: "resolved" }, { issueId: "pr_a.2", kind: "follow_up", text: "still there" }]);
+  assert.equal("issueActions" in decisionBody("m", "packaging_comment", "t", [], null, a), false);
+  assert.deepEqual([issueLabel(0), issueLabel(11)], ["I1", "I12"]);
 });

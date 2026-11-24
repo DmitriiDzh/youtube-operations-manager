@@ -70,7 +70,9 @@
 // his standing approval or return), and the wake file REVIEW-DECISION-package-<video>-<decisionId>.md gains the section «Timed
 // comments» (one line per comment: `<seconds> s (<m:ss>): <text>`; absent when none); owner TG 4836: an approval may carry notes for
 // future videos (non-blocking) -- the wake file says «Notes: Одобрено с замечаниями на будущее», the plan package reviewComment with
-// reviewCommentKind approved_notes (returned | returned_timed for a return). Additive; no tool added.
+// reviewCommentKind approved_notes (returned | returned_timed for a return); owner TG 4846: reviewIssues + reviewIssueCounts on the
+// plan's package and the wake file section «Issues» (each owner comment an issue with an id; the factory answers in the next
+// package's reviewReplies). Additive; no tool added.
 export const PRODUCER_API_VERSION = "1.28.0";
 
 /** The channel agent's READ tools the Producer gets; each call names its channel and runs in that channel's agent scope. */

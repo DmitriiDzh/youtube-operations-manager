@@ -513,7 +513,11 @@ flags the error as not sent; the mark keeps the retry count, so a failing insert
   `PlanSlotPackage.reviewTimedComments` via `mediaReviewReaderOf(...).timedComments`, an approval's notes (owner TG 4836) as `reviewComment` +
   `reviewCommentKind: approved_notes` via `.approvalComment` (Factory 1.55.0 / Agent 4.26.0 / Producer 1.28.0). The draft is guarded by
   stamps: a save names `baseUpdatedAt`, a decision `draftUpdatedAt`; a mismatch is `package_review_draft_changed` (409); drafts of gone
-  packages are pruned in `view()`.
+  packages untouched for 14 days are pruned in `view()`. Issues (owner TG 4846): `package-reviews/issues.ts` (pure: `decisionsOfVideo` by
+  video code / recode alias, `issuesOf` builds threads from `timedComments[].id`, `repliesSeen`, `issueActions` and the current
+  manifest's `reviewReplies` passed raw by `publishing/packages.ts`), readouts `ReviewDecisionNotice.issues` (as of the decision) and
+  `PlanSlotPackage.reviewIssues` via `mediaReviewReaderOf(...).issues`; the screen's `IssueList` (resolve / follow-up into the draft).
+  `MediaVideoPlayer` `seekKeys` / `keysWithoutFocus` (← → 5 s, Space) and `rememberRate`; key rules in `visual-review-model.playerKeyAction`.
   Screen: `package-review-workspace.tsx` over the shared `MediaVideoPlayer` (additive props `loop`, `preload`, `onMetadata`, `flags`,
   `onFlagClick`, `fullscreen`; flags laid out by `visual-review-model.flagPlaces`) -- no parallel player.
 

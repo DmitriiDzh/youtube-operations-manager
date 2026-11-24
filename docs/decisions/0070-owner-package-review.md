@@ -66,3 +66,9 @@ Still no YouTube write and no MCP path that decides.
 a new approval of an already approved video («одобрить ещё раз с замечаниями»; it stays approved). Agents read them as
 `reviewCommentKind: approved_notes` on the plan package and the wake file line «Notes: Одобрено с замечаниями на будущее». No new
 decision kind: older builds read it as an approval.
+
+**Amendment (2026-11-24, owner TG 4846/4848, issues):** each timed comment is an issue (`<decisionId>.<n>`) keyed across package
+versions by the channel's document plus the video code (or its recode alias). The factory answers in the re-packaged manifest
+(`yt-release-package/2` `reviewReplies`, read leniently); the owner's next decision keeps the answers he saw (`repliesSeen`) and his
+per-issue actions (`issueActions`: resolved / follow_up). Agents still only read (wake file «Issues», plan `reviewIssues`); no MCP path
+writes the review document (§4 unchanged).

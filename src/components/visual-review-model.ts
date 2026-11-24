@@ -361,3 +361,37 @@ export function rateKeyDirection(event: { key: string; code: string; shiftKey: b
   if (event.code === "Period") return 1;
   return null;
 }
+
+/** Owner TG 4856: ← / → seek this many seconds. */
+export const SEEK_KEY_SECONDS = 5;
+
+export type PlayerKeyAction = { kind: "seek"; delta: number } | { kind: "rate"; direction: 1 | -1 } | { kind: "toggle" } | null;
+
+/**
+ * Owner TG 4844 / 4856 and review fix 4: what a key does in a player. Never while typing (an input, a textarea, a select, an editable
+ * element) or with Ctrl / Cmd / Alt. `<` / `>` (any layout) step the speed when the player is full screen or has the focus. Space / K
+ * play and pause in full screen, and -- on a screen that turns the watching keys on (`seekKeys`) -- also when the player has the focus or
+ * is the only video open; ← / → then seek 5 s the same way.
+ */
+export function playerKeyAction(
+  event: { key: string; code: string; shiftKey: boolean; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean },
+  target: { tag: string | null; editable: boolean },
+  scope: { full: boolean; focused: boolean; alone: boolean; seekKeys: boolean }
+): PlayerKeyAction {
+  if (target.editable || target.tag === "INPUT" || target.tag === "TEXTAREA" || target.tag === "SELECT") return null;
+  if (event.ctrlKey || event.metaKey || event.altKey) return null;
+  const direction = rateKeyDirection(event);
+  if (direction !== null) return scope.full || scope.focused ? { kind: "rate", direction } : null;
+  const watching = scope.full || (scope.seekKeys && (scope.focused || scope.alone));
+  if (event.key === " " || event.key.toLowerCase() === "k" || event.code === "KeyK") return watching ? { kind: "toggle" } : null;
+  if (scope.seekKeys && (event.key === "ArrowLeft" || event.key === "ArrowRight") && (scope.full || scope.focused || scope.alone)) {
+    return { kind: "seek", delta: event.key === "ArrowLeft" ? -SEEK_KEY_SECONDS : SEEK_KEY_SECONDS };
+  }
+  return null;
+}
+
+/** Where a seek lands: kept between 0 and the clip's length (an unknown length only stops at 0). */
+export function seekTarget(current: number, delta: number, duration: number): number {
+  const to = Math.max(0, current + delta);
+  return Number.isFinite(duration) && duration > 0 ? Math.min(duration, to) : to;
+}
