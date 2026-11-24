@@ -64,7 +64,7 @@ test("BL-272: the list answers the module's waiting count; a decision reaches th
   ok.calls.length = 0;
   const body = { action: "approve_with_note", comment: "убрать прохожего" };
   assert.equal((await ok.handlers.decide(post(body), ctx({ channelId: "UC_active", imageId: "img_1" }))).status, 200);
-  assert.deepEqual(ok.calls[1], ["decide", "UC_active", "img_1", body, "u1"]);
+  assert.deepEqual(ok.calls, [["decide", "UC_active", "img_1", body, "u1"]]);
   const decided = make({ refuse: new DomainError({ code: "image_review_not_pending", message: "approved", details: { status: "approved" } }) });
   const res = await decided.handlers.decide(post({ action: "return", comment: "x" }), ctx({ channelId: "UC_active", imageId: "img_1" }));
   assert.equal(res.status, 409);
