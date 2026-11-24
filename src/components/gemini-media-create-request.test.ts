@@ -1,15 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildGeminiRequest, catalogEstimateUsd, isRelativeInputPath, type GeminiCatalogModel, type GeminiFormState } from "./gemini-media-create-request";
+import { buildGeminiRequest, catalogEstimateUsd, geminiDurationChoices, geminiDurationProblem, isRelativeInputPath, type GeminiCatalogModel, type GeminiFormState } from "./gemini-media-create-request";
 
 // BL-188 stage 4 (owner msg 2806 Q3): Media's Gemini form -> the Gemini module's request (GEMINI_MEDIA_PLAN.md §2.5 rules the
-// form can know: a model of the tab's kind, a setting the model offers, 4/6/8 s, frames only on a model that takes them, a last
+// form can know: a model of the tab's kind, a setting the model offers, a length in the model's range -- since Omni 1.2 (owner TG 3700) any whole second 3-15, at
+// most 10 with a last frame -- frames only on a model that takes them, a last
 // frame only with a first, storyboard + segment together, relative paths). Prices from the catalog the server sends.
 
 const catalog: GeminiCatalogModel[] = [
   { model: "img-a", kind: "image", label: "Image A", sizes: ["1K", "2K"], usdPerImage: { "1K": 0.04, "2K": 0.06 } },
-  { model: "vid-frames", kind: "video", label: "Video frames", resolutions: ["720p", "1080p"], usdPerSecond: { "720p": 0.1, "1080p": 0.15 }, referenceImages: false, frames: true, retiresOn: null },
-  { model: "vid-refs", kind: "video", label: "Video refs", resolutions: ["720p"], usdPerSecond: { "720p": 0.4 }, referenceImages: true, frames: false, retiresOn: "2026-10-22" },
+  { model: "vid-frames", kind: "video", label: "Video frames", resolutions: ["720p", "1080p"], usdPerSecond: { "720p": 0.1, "1080p": 0.15 }, referenceImages: false, frames: true, retiresOn: null, durationSeconds: { min: 3, max: 15, maxWithLastFrame: 10 } },
+  { model: "vid-refs", kind: "video", label: "Video refs", resolutions: ["720p"], usdPerSecond: { "720p": 0.4 }, referenceImages: true, frames: false, retiresOn: "2026-10-22", durationSeconds: { min: 4, max: 8, maxWithLastFrame: 8 } },
 ];
 
 const form = (extra: Partial<GeminiFormState> = {}): GeminiFormState => ({
@@ -65,7 +66,10 @@ test("video refusals follow the model rules the form can know", () => {
   const v = (extra: Partial<GeminiFormState>) => form({ model: "vid-frames", aspectRatio: "16:9", ...extra });
   assert.equal(problem(v({ resolution: "4k" })), "resolution");
   assert.equal(problem(v({ aspectRatio: "1:1" })), "aspectRatio");
-  assert.equal(problem(v({ durationSeconds: 5 })), "duration");
+  assert.equal(problem(v({ durationSeconds: 2 })), "duration");
+  assert.equal(problem(v({ durationSeconds: 16 })), "duration");
+  assert.equal(problem(v({ durationSeconds: 7.5 })), "duration");
+  assert.equal(problem(v({ model: "vid-refs", durationSeconds: 9 })), "duration", "the selected model's own range");
   assert.equal(problem(v({ lastFrame: "b.jpg" })), "lastFrame");
   assert.equal(problem(v({ model: "vid-refs", firstFrame: "a.jpg" })), "frames");
   assert.equal(problem(v({ referenceImages: "r.png" })), "references", "this model takes no reference images");
@@ -75,6 +79,26 @@ test("video refusals follow the model rules the form can know", () => {
   assert.equal(problem(v({ segmentId: "S1" })), "storyboard");
   assert.equal(problem(v({ storyboardId: "bar loop", segmentId: "S1" })), "storyboard");
   assert.equal(problem(v({ firstFrame: "../K0.jpg" })), "path");
+});
+
+test("Omni 1.2 lengths: any whole second 3-15 without frames, 3-10 once a last frame is set", () => {
+  const omni = { min: 3, max: 15, maxWithLastFrame: 10 };
+  assert.deepEqual(geminiDurationChoices(omni, false), [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+  assert.deepEqual(geminiDurationChoices(omni, true), [3, 4, 5, 6, 7, 8, 9, 10]);
+  assert.deepEqual(geminiDurationChoices({ min: 4, max: 8, maxWithLastFrame: 8 }, true), [4, 5, 6, 7, 8]);
+});
+
+test("a length over the last-frame cap is a problem of its own, never shortened", () => {
+  const omni = { min: 3, max: 15, maxWithLastFrame: 10 };
+  assert.equal(geminiDurationProblem(omni, 12, true), "durationLastFrame");
+  assert.equal(geminiDurationProblem(omni, 10, true), null);
+  assert.equal(geminiDurationProblem(omni, 12, false), null);
+  assert.equal(geminiDurationProblem(omni, 16, true), "duration");
+  const loop = form({ model: "vid-frames", durationSeconds: 12, firstFrame: "bar/K0.jpg", lastFrame: "bar/K0.jpg" });
+  assert.deepEqual(buildGeminiRequest("video", loop, catalog), { ok: false, problem: "durationLastFrame" });
+  const firstOnly = buildGeminiRequest("video", form({ model: "vid-frames", durationSeconds: 15, firstFrame: "bar/K0.jpg" }), catalog);
+  assert.ok(firstOnly.ok, "a first frame alone allows the full 15 s");
+  assert.equal(firstOnly.request.video?.durationSeconds, 15);
 });
 
 test("the price list's figure: one image of the size, or seconds × the resolution's price (rounded up to 1/10000 $)", () => {

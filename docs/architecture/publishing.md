@@ -323,6 +323,22 @@ FO-REQ-0040; owner msgs 3511/3534; plan `docs/roadmap/plans/WEEKLY_PUBLISHING_PL
   Видео › Пакет › YouTube › Дата, actions), amber rows for a change after approval, struck-through vetoed rows with «Вернуть»,
   the inline veto confirmation, and in «Всю неделю» the bar with the count, the quota estimate (`estimateUploadUnits`) and «Одобрить
   неделю»; «По одному» gives «Одобрить» / «Отозвать» per slot. The tab's badge reads `waiting`.
+  Owner TG 4784 (2026-11-23): the tab opens on the current week every time it is shown (`currentWeekStart` in the channel's zone =
+  the newest plan's `timeZone`, `channelZoneOf`; before the list arrives the owner's zone, else the browser's), unless the address
+  carries a deliberate `?week=<Monday>` (`weekFromSearch`). Away from the Sunday/Monday boundary (`weekIsZoneIndependent`: the same
+  Monday at UTC-12 and UTC+14) the week is set at once and its read runs beside the list's; near it the screen waits for the owner's
+  zone (`useUserTimezoneStatus`) and the list, at most 1.5 s, so it does not jump. Week reads go through `createWeekLoader` (a read
+  of another week aborts the one before, the minute's poll of the same week joins the read under way, `fresh` after a move or a
+  refusal; only the newest read's answer applied). Every kept answer names its channel (`Scoped`, `LoadedWeek`; `weekScreenOf`
+  derives what is shown): another channel's rows, zone or template never show, a skeleton until the selected channel's week is read;
+  answers and decisions arriving after a channel change are dropped (`applyDecisionAnswer`: applied, and the read in flight
+  cancelled, only for the current channel and shown week). The list read and the week read have separate error lines. From a list
+  container (`@container`) of 44rem the rows share the list's columns through CSS subgrid -- day, thumbnail, title, chain, buttons
+  (44-64rem: narrower day and thumbnail, chain without arrows). A row shows at most one primary action («Вернуть» for a pulled
+  slot, «Дать дату» for a slot off the template) and «⋯» (`Popover` with `menu`: arrow keys, Home/End, Escape back to the trigger)
+  with the thumbnail, the new time, «Отозвать» and «Снять слот». The chain's and the buttons' tracks are sized by an invisible first
+  row (`ColumnSizer`) holding the full chain and every compact button set in every interface language, so nothing moves on a
+  language switch; under 44rem the stacked card with the buttons at the end of the chain's line.
 - **BL-240 (ADR 0060) -- pulled and replaced slots.** The screen lists vetoed slots under one closed row (`splitVetoed`, numbers
   kept). `save` lets an agent remove a vetoed slot without an upload (also one approved before the veto) and audits it; the veto
   outlives the slot (`standingVetoOf`: `slotDecisions` still answers `vetoed` for its id, and a new slot with that id is refused
@@ -372,6 +388,10 @@ FO-REQ-0040; owner msgs 3511/3534; plan `docs/roadmap/plans/WEEKLY_PUBLISHING_PL
   The plan's `progress` port is filled by `src/lib/publishing-plan-progress/` (a composition module: the package scan, cached a
   minute, and this computer's upload rows -> `built` / `packaged` / `uploading` / `failed (code)` / `scheduled` / `published`,
   `videoId`, the package's facts), passed by `factory-channel-deps.ts` and the owner's routes. The agents' list takes `limit`.
+  Owner TG 4784: concurrent callers of one channel share the scan under way (`createPackagesReader`'s in-flight map, kept on the
+  cache object); `invalidatePackagesEntry` also forgets a read under way, and a read that began before it is not kept. The shared
+  read is bounded (`PACKAGES_SCAN_TIMEOUT_MS`, 120 s): past it every caller waiting gets `PackagesScanTimeoutError`, the read is
+  forgotten (the next caller scans afresh) and the hung scan's answer is not kept.
 - **Stage 3 -- uploads of approved slots** (ADR 0051 §7/§8/§10, `docs/WRITE_AUTHORIZATIONS.md` «Upload localizations»):
   - `auto-upload.ts` gets `slotDecisions` (from `src/composition/publishing-plan-slots.ts` -> the plan's `createPublishingPlansUploadCore`):
     vetoed -> skipped (`slot_vetoed`, not hashed); approved and > 15 min ahead -> `queueAutomatic({ slotPublishAt })`; else dateless.
@@ -506,7 +526,11 @@ flags the error as not sent; the mark keeps the retry count, so a failing insert
   `publishAt`, audit `publishing.plan_moved` with `by`). An undated video only changes position (D1); a failed write leaves the plan
   moved and is retried by moving to the same place.
 - **Social.** `socialSlotStates` returns `approved` when the plan dates the slot (template or explicit), evaluated for slots up to 36 h
-  past, bound to the current manifest; a foreign date, a veto, a removed entry or a taken position post nothing.
+  past, bound to the current manifest; a foreign date, a veto, a removed entry or a taken position post nothing. `alsoSlotIds`
+  (owner TG 4780, ADR 0068 amendment 2) adds slots past that look-back with the same rules -- the composition passes only the slots
+  of the owner's pending retry of a failed social job or of a social job still in flight (`slotsBeyondLookback`). Such an old slot
+  never counts against a slot inside the look-back in the "one video in two approved slots" rule; it is itself disapproved when
+  its video is in another approved slot.
 - **Weekly build by template.** `weekly-build.startByTemplate` writes the template (the `templateViewOf` serializer) to
   `05 Docs/publishing/week-template.json` and starts `13 Weekly_Plan v1 auto --template [--week]`; `collectTemplateBuild` saves a done
   job's `job.result.payloads` through the plan's agent save as `factory` once per job and runs `13 push --sent --plan` for the accepted.

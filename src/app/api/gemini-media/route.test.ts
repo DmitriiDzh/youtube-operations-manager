@@ -95,7 +95,7 @@ test("settings: the switch and limits are saved; a bad value or unknown field is
   const d = deps();
   const ok = await createGeminiSettingsPutHandler(d)(json("PUT", { enabled: true, maxUsdPerDay: 3 }));
   assert.equal(ok.status, 200);
-  assert.deepEqual(await ok.json(), { enabled: true, maxUsdPerJob: 1, maxUsdPerDay: 3, maxUsdPerMonth: 50, maxActiveJobs: 10 });
+  assert.deepEqual(await ok.json(), { enabled: true, maxUsdPerJob: 2, maxUsdPerDay: 3, maxUsdPerMonth: 50, maxActiveJobs: 10 });
   for (const bad of [{ maxUsdPerDay: 0 }, { maxUsdPerDay: -1 }, { maxActiveJobs: 1.5 }, { enabled: "yes" }, { apiKey: KEY }]) {
     const response = await createGeminiSettingsPutHandler(d)(json("PUT", bad));
     assert.notEqual(response.status, 200, JSON.stringify(bad));

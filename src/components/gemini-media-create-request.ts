@@ -7,11 +7,13 @@ import { ceil4 } from "@/lib/shared-money";
 
 export type GeminiCatalogModel =
   | { model: string; kind: "image"; label: string; sizes: string[]; usdPerImage: Record<string, number> }
-  | { model: string; kind: "video"; label: string; resolutions: string[]; usdPerSecond: Record<string, number>; referenceImages: boolean; frames: boolean; retiresOn: string | null };
+  | { model: string; kind: "video"; label: string; resolutions: string[]; usdPerSecond: Record<string, number>; referenceImages: boolean; frames: boolean; retiresOn: string | null; durationSeconds: GeminiDurationRange };
+
+/** Whole seconds a video model allows (inclusive), and the longest clip when a last frame is given too (the catalog's field). */
+export type GeminiDurationRange = { min: number; max: number; maxWithLastFrame: number };
 
 export const GEMINI_FORM_IMAGE_ASPECTS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"] as const;
 export const GEMINI_FORM_VIDEO_ASPECTS = ["16:9", "9:16"] as const;
-export const GEMINI_FORM_DURATIONS = [4, 6, 8] as const;
 export const GEMINI_FORM_MAX_REFERENCE_IMAGES = { image: 14, video: 3 } as const;
 
 export type GeminiFormState = {
@@ -42,7 +44,25 @@ export type GeminiRequest = {
 };
 
 /** Which field is wrong, for the form's message (each maps to a text key in the component). */
-export type GeminiFormProblem = "model" | "prompt" | "size" | "aspectRatio" | "resolution" | "duration" | "path" | "references" | "frames" | "lastFrame" | "storyboard";
+export type GeminiFormProblem = "model" | "prompt" | "size" | "aspectRatio" | "resolution" | "duration" | "path" | "references" | "frames" | "lastFrame" | "durationLastFrame" | "storyboard";
+
+/**
+ * Owner TG 3700 (Omni 1.2): the lengths the form offers for a video model -- every whole second of its catalog range, capped at
+ * `maxWithLastFrame` while a last frame is set (Google refuses a longer first + last frame clip).
+ */
+export function geminiDurationChoices(range: GeminiDurationRange, withLastFrame: boolean): number[] {
+  const max = withLastFrame ? Math.min(range.max, range.maxWithLastFrame) : range.max;
+  const choices: number[] = [];
+  for (let s = Math.ceil(range.min); s <= max; s++) choices.push(s);
+  return choices;
+}
+
+/** The form's length problem, if any: outside the model's range, or longer than a last frame allows (never changed silently). */
+export function geminiDurationProblem(range: GeminiDurationRange, durationSeconds: number, withLastFrame: boolean): "duration" | "durationLastFrame" | null {
+  if (!Number.isInteger(durationSeconds) || durationSeconds < range.min || durationSeconds > range.max) return "duration";
+  if (withLastFrame && durationSeconds > range.maxWithLastFrame) return "durationLastFrame";
+  return null;
+}
 
 /** A path the form accepts: relative, `/` between folders, no `..` (the executor proves it is inside `Sent to YTM/` itself). */
 export function isRelativeInputPath(path: string): boolean {
@@ -72,9 +92,10 @@ export function buildGeminiRequest(kind: "image" | "video", form: GeminiFormStat
   }
   if (!spec.resolutions.includes(form.resolution)) return { ok: false, problem: "resolution" };
   if (!(GEMINI_FORM_VIDEO_ASPECTS as readonly string[]).includes(form.aspectRatio)) return { ok: false, problem: "aspectRatio" };
-  if (!(GEMINI_FORM_DURATIONS as readonly number[]).includes(form.durationSeconds)) return { ok: false, problem: "duration" };
   const firstFrame = form.firstFrame.trim();
   const lastFrame = form.lastFrame.trim();
+  const durationProblem = geminiDurationProblem(spec.durationSeconds, form.durationSeconds, Boolean(lastFrame));
+  if (durationProblem) return { ok: false, problem: durationProblem };
   if ((firstFrame && !isRelativeInputPath(firstFrame)) || (lastFrame && !isRelativeInputPath(lastFrame))) return { ok: false, problem: "path" };
   if ((firstFrame || lastFrame) && !spec.frames) return { ok: false, problem: "frames" };
   if (lastFrame && !firstFrame) return { ok: false, problem: "lastFrame" };

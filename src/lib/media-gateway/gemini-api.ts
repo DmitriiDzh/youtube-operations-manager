@@ -489,6 +489,9 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; longWaitFetchIm
      * Frames go first, in order (start, then end) with `video_config.task = image_to_video`: Google's reference reads the first
      * image as the starting frame and an optional second one as the ending frame. `store:false` (as for images): Google keeps
      * nothing; `delivery: inline`, so the answer itself is the video.
+     * Owner TG 3700 (Omni 1.2, https://aistudio.google.com/docs/omni read 2026-11-23): the body is unchanged -- `model`, the
+     * `input` array, `response_format { type: "video", duration: "<n>s" (3-15), resolution, aspect_ratio }`. UNVERIFIED: the page
+     * names only `delivery="uri"` (for videos over 4 MB), never "inline" (RISK-127); a URI answer is collected by the poll.
      */
     async generateVideo(apiKey: string, request: GeminiInteractionsVideoRequest): Promise<GeminiInteractionsVideoResult> {
       const context = { call: "interactions.create", model: request.model };
