@@ -22,6 +22,7 @@ export const shell = {
   "tabs.media.images": "Images",
   "tabs.media.storyboards": "Storyboards",
   "tabs.media.video": "Video",
+  "tabs.media.stills": "Stills",
   "tabs.media.clips": "Clips",
   "tabs.media.review": "Videos for review",
   "tabs.research.inbox": "Inbox",

@@ -122,6 +122,7 @@ Every section below was moved verbatim (2026-11-17, `docs/roadmap/plans/DOCS_SPL
 | BL-237 | disk hygiene | `docs/architecture/disk-hygiene.md` |
 | BL-238 | local video cleanup after upload | `docs/architecture/publishing.md` |
 | BL-241 | clips for review | `docs/architecture/media-review.md` |
+| BL-272 | master still images for review | `docs/architecture/media-review.md` |
 | BL-248 | the owner's review decisions wake the Producer | `docs/architecture/agent-operations.md` |
 | BL-255 | replacing an uploaded video's thumbnail | `docs/architecture/publishing.md` |
 | BL-271 | waiting for a long operation without agent tokens | `docs/architecture/agent-operations.md` |

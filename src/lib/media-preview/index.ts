@@ -67,21 +67,47 @@ export type ImagePreviewer = ReturnType<typeof createImagePreviewer>;
 
 const PRODUCTION_KEY = Symbol.for("youtube-operations-manager.media-preview");
 
+async function loadSharpForProduction(): Promise<SharpFactory | null> {
+  try {
+    const mod = (await import("sharp")) as unknown as { default?: SharpFactory } & SharpFactory;
+    return (mod.default ?? mod) as SharpFactory;
+  } catch {
+    return null;
+  }
+}
+
+async function statForProduction(path: string): Promise<{ size: number; mtimeMs: number }> {
+  const s = await stat(path);
+  return { size: s.size, mtimeMs: s.mtimeMs };
+}
+
 /** The process's previewer (one cache per server process). */
 export function createImagePreviewerForProduction(): ImagePreviewer {
   const holder = globalThis as unknown as Record<symbol, ImagePreviewer | undefined>;
-  return (holder[PRODUCTION_KEY] ??= createImagePreviewer({
-    async loadSharp() {
-      try {
-        const mod = (await import("sharp")) as unknown as { default?: SharpFactory } & SharpFactory;
-        return (mod.default ?? mod) as SharpFactory;
-      } catch {
-        return null;
-      }
-    },
-    stat: async (path) => {
-      const s = await stat(path);
-      return { size: s.size, mtimeMs: s.mtimeMs };
-    },
-  }));
+  return (holder[PRODUCTION_KEY] ??= createImagePreviewer({ loadSharp: loadSharpForProduction, stat: statForProduction }));
+}
+
+/** BL-272 (ADR 0076): the longest side of a large grid preview (a 1920×1080 still shown about 480 px wide, at 2x density). */
+export const LARGE_PREVIEW_MAX_SIDE = 960;
+/** How many large previews the memory cache keeps (about 100-150 KB each). */
+const LARGE_PREVIEW_CACHE_ENTRIES = 120;
+const LARGE_PRODUCTION_KEY = Symbol.for("youtube-operations-manager.media-preview.large");
+
+/** BL-272: the process's previewer of large grid thumbnails (its own cache, so the small previews keep theirs). */
+export function createLargeImagePreviewerForProduction(): ImagePreviewer {
+  const holder = globalThis as unknown as Record<symbol, ImagePreviewer | undefined>;
+  return (holder[LARGE_PRODUCTION_KEY] ??= createImagePreviewer({ loadSharp: loadSharpForProduction, stat: statForProduction, maxSide: LARGE_PREVIEW_MAX_SIDE, entries: LARGE_PREVIEW_CACHE_ENTRIES }));
+}
+
+/** BL-272: an image's real format and size as `sharp` reads its header (not its extension); null when it is not an image here. */
+export async function readImageInfo(path: string): Promise<{ format: string; width: number; height: number } | null> {
+  try {
+    const sharp = (await loadSharpForProduction()) as unknown as ((input: string, options: { failOn: "none"; limitInputPixels: number }) => { metadata(): Promise<{ format?: string; width?: number; height?: number }> }) | null;
+    if (!sharp) return null;
+    const meta = await sharp(path, { failOn: "none", limitInputPixels: LIMIT_INPUT_PIXELS }).metadata();
+    if (!meta.format || !meta.width || !meta.height) return null;
+    return { format: meta.format, width: meta.width, height: meta.height };
+  } catch {
+    return null;
+  }
 }
