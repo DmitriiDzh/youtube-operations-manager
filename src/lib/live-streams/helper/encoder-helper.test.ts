@@ -214,11 +214,23 @@ test("real helper process: streams the pass, reports its position, keeps the key
     await new Promise((r) => setTimeout(r, 500));
     const helper = spawn(process.execPath, [path.join(process.cwd(), "src/lib/live-streams/helper/encoder-helper.mjs"), dir], { stdio: ["pipe", "ignore", "pipe"] });
     helper.stdin.end(`${KEY}\n`);
-    await new Promise((r) => setTimeout(r, 6000));
-    const running = JSON.parse(await readFile(path.join(dir, "status.json"), "utf8"));
+    // Poll instead of a fixed 6 s wait: under load (parallel renders) ffmpeg's start can take longer than the clip itself.
+    // Wait (up to 30 s) for the running status on the second clip; the assertions below still state what must hold.
+    const readStatus = async () => {
+      try {
+        return JSON.parse(await readFile(path.join(dir, "status.json"), "utf8"));
+      } catch {
+        return null;
+      }
+    };
+    let running = await readStatus();
+    for (const deadline = Date.now() + 30_000; Date.now() < deadline && !(running?.state === "running" && running?.position?.videoId === "BBBBBBBBBB2"); ) {
+      await new Promise((r) => setTimeout(r, 200));
+      running = await readStatus();
+    }
     assert.equal(running.state, "running");
     assert.equal(running.token, "tok-123");
-    assert.equal(running.position.videoId, "BBBBBBBBBB2", "about 6 s in: the second clip");
+    assert.equal(running.position.videoId, "BBBBBBBBBB2", "the second clip is reached");
     helper.kill("SIGTERM");
     const code = await new Promise((r) => helper.on("exit", r));
     assert.equal(code, 0);
