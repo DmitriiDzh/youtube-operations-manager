@@ -157,7 +157,7 @@ export function StoryboardVideoView({ channelId, storyboard, version, onPicked }
                 {thumb(segment.toKeyframeId)}
               </div>
               {list.some((take) => large === takeKey(take)) ? (
-                <MediaVideoPlayer key={large} src={takeSrc(channelId, storyboard.storyboardId, list.find((take) => large === takeKey(take))!)} markers={[]} fps={null} className="h-[46vh]" />
+                <MediaVideoPlayer key={large} src={takeSrc(channelId, storyboard.storyboardId, list.find((take) => large === takeKey(take))!)} markers={[]} fps={null} className="aspect-video min-h-[46vh] w-full max-w-[calc(70vh*16/9)]" />
               ) : null}
             </div>
           );
@@ -234,7 +234,7 @@ function AssembledLoop({ sources, loop }: { sources: Array<{ key: string; segmen
           if (sources.length === 1 && loop) void video.current?.play();
         }}
         controls
-        className="h-[46vh] w-full rounded bg-black object-contain"
+        className="aspect-video min-h-[46vh] w-full max-w-[calc(70vh*16/9)] rounded bg-black object-contain"
       />
       <div className="flex flex-wrap gap-1" role="group" aria-label={t("storyboards.video.assembled")}>
         {sources.map((source, i) => (

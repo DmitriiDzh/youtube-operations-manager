@@ -479,7 +479,8 @@ export function ModelsCard({ configured, active }: { configured: boolean; active
               ))}
             </ul>
           )}
-          <div className="grid gap-2 sm:grid-cols-4">
+          {/* Owner TG 4896: Servers is full width; the add-model form keeps a width of its own. */}
+          <div className="grid max-w-6xl gap-2 sm:grid-cols-4">
             <label className="block text-xs text-zinc-400">
               {t("media.models.repo")}
               {/* ui-text-ignore: a sample Hugging Face repository id */}
@@ -710,7 +711,8 @@ export function WorkflowTemplatesCard() {
         </ul>
       )}
       {showImport ? (
-        <div className="space-y-2">
+        // Owner TG 4896: Servers is full width; the import form keeps a comfortable width of its own.
+        <div className="max-w-4xl space-y-2">
           <label className="block text-xs text-zinc-400">
             {t("media.templates.name")}
             {/* ui-text-ignore: a sample template name */}
@@ -1637,7 +1639,8 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
         ) : !ready ? (
           <p className="text-xs text-zinc-500">{t("media.sessions.notReady")}</p>
         ) : (
-          <div className="grid gap-2 sm:grid-cols-3">
+          // Owner TG 4896: Servers is full width; the session request form keeps a comfortable width of its own.
+          <div className="grid max-w-4xl gap-2 sm:grid-cols-3">
             <label className="block text-xs text-zinc-400">
               {t("media.sessions.maxMinutes")}
               <input type="text" inputMode="numeric" value={maxMinutesText} onChange={(e) => setMaxMinutesText(e.target.value)} className={inputClass} placeholder={t("media.sessions.maxMinutesPlaceholder", { value: limits?.defaultMaxMinutes ?? 60 })} />
