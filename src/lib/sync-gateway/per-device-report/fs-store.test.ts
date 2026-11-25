@@ -33,7 +33,7 @@ test("BL-270: an unchanged peer report or local report is not rewritten; a chang
   await store.writeLocal('{"own":1}');
   const peerFile = path.join(dir, "peers", "win.json");
   const localFile = path.join(dir, "local.json");
-  const old = new Date(Date.now() - 60 * 60_000);
+  const old = new Date(Math.floor(Date.now() / 1000) * 1000 - 60 * 60_000); // whole seconds: HFS+ (the T9 disk) keeps 1 s mtimes
   await utimes(peerFile, old, old);
   await utimes(localFile, old, old);
   await store.writePeer("win", '{"v":1}');

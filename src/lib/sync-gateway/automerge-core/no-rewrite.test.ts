@@ -16,7 +16,7 @@ import { createPerChannelFilesystemTransport } from "./transport";
 type Doc = { key: string; notes: Record<string, string> };
 const emptyDocument = (key: string): Doc => ({ key, notes: {} });
 
-const OLD = new Date(Date.now() - 60 * 60_000);
+const OLD = new Date(Math.floor(Date.now() / 1000) * 1000 - 60 * 60_000); // whole seconds: HFS+ (the T9 disk) keeps 1 s mtimes
 
 async function backdate(file: string) {
   await utimes(file, OLD, OLD);
