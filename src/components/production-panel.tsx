@@ -221,9 +221,10 @@ export function ServersPanel({
   const runpodLabel = `${t("nav.servers")} — ${t("settingsCard.runpod")}`;
 
   // Every tab stays mounted and is only hidden (like Settings' sub-tabs): Sessions keeps polling -- the header's counts
-  // and an agent's new request stay current whichever tab is open.
+  // and an agent's new request stay current whichever tab is open. Owner TG 4896: full width like Media (was max-w-5xl);
+  // the tables stretch, the forms keep a width of their own and Setup stays a narrow column of forms.
   return (
-    <div className="max-w-5xl space-y-6">
+    <div className="min-w-0 space-y-6">
       <BalanceHeader configured={overview?.credentials.configured ?? false} limits={overview ? limits : null} activeElsewhere={activeElsewhere} gemini={geminiToday} runpodNotice={runpodNotice} />
       <TabBar tabs={SERVERS_TABS} current={tab} onSelect={setTab} />
       <div className={tab === "sessions" ? "space-y-6" : "hidden"}>
@@ -323,8 +324,10 @@ export function MediaPanel({
   // BL-257: final videos waiting for the owner's review (reported by the panel itself).
   const [packagesWaiting, setPackagesWaiting] = useState(0);
   const badges: Partial<Record<MediaTab, number>> = { music: plansWaiting.audio ?? 0, images: plansWaiting.image ?? 0, video: plansWaiting.video ?? 0, storyboards: storyboardsWaiting, stills: stillsWaiting, clips: clipsWaiting, packages: packagesWaiting };
+  // Owner TG 4887: Media uses the whole content width (it was capped at max-w-5xl); each tab keeps its own readable widths for
+  // text and forms, and its players grow with the width up to a height that still fits the screen.
   return (
-    <div className="max-w-5xl space-y-6">
+    <div className="min-w-0 space-y-6">
       <NowRunningLine activeChannelId={activeChannelId} sessionsHref={sessionsHref} />
       <TabBar tabs={MEDIA_TABS} current={tab} onSelect={setTab} badges={badges} />
       <div className={tab === "storyboards" ? "space-y-6" : "hidden"}>

@@ -286,7 +286,9 @@ export function ImageReviewsPanel({ channelId, visible }: { channelId: string | 
           {batch.waiting > 0 ? t("imageReviews.batch.counts", { waiting: formatNumber(batch.waiting), total: formatNumber(batch.images.length) }) : t("imageReviews.batch.done", { total: batch.images.length })} · {at(batch.latestAt)}
         </span>
       </header>
-      <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2">{batch.images.map((image) => renderCard(image, batch))}</ul>
+      {/* Owner TG 4887: as many columns of at least 20rem as the width takes (two from a small tablet, three on a laptop, more on a
+          wide screen, one on a phone), so the stills grow with the screen instead of two fixed columns. */}
+      <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,20rem),1fr))] gap-3">{batch.images.map((image) => renderCard(image, batch))}</ul>
     </section>
   );
 
