@@ -157,7 +157,10 @@ export function StoryboardVideoView({ channelId, storyboard, version, onPicked }
                 {thumb(segment.toKeyframeId)}
               </div>
               {list.some((take) => large === takeKey(take)) ? (
-                <MediaVideoPlayer key={large} src={takeSrc(channelId, storyboard.storyboardId, list.find((take) => large === takeKey(take))!)} markers={[]} fps={null} className="aspect-video min-h-[46vh] w-full max-w-[calc(70vh*16/9)]" />
+                // Owner TG 4896: the cap on the wrapper, so the player's timeline and buttons are as wide as its frame.
+                <div className="max-w-[calc(70vh*16/9)]">
+                  <MediaVideoPlayer key={large} src={takeSrc(channelId, storyboard.storyboardId, list.find((take) => large === takeKey(take))!)} markers={[]} fps={null} className="aspect-video min-h-[46vh] w-full" />
+                </div>
               ) : null}
             </div>
           );

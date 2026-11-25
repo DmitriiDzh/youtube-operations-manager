@@ -74,7 +74,6 @@ export function returnCommentReady(comment: string): boolean {
   return comment.trim().length > 0;
 }
 
-
 // --- Owner TG 4817 (PACKAGE_REVIEW_PLAN.md AC-TC-01..09): timed comments -----------------------------------------------------
 
 /** `GET/PUT …/package-reviews/draft` (`@/lib/package-reviews` PackageReviewDraft). */

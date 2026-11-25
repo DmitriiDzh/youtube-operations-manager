@@ -434,7 +434,7 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
             </div>
             {(actions.approve || actions.reapprove || actions.ret || actions.comment) && (
               // AC-PR-15: on a phone the actions stay at the bottom of the screen while the card scrolls -- just above the shell's fixed
-              // bottom navigation (56 px + the safe area), which overlays the scrolling main area; on a wider screen in place.
+              // bottom navigation (56 px + the safe area), which overlays the scrolling page; on a wider screen in place.
               <div className="sticky bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-10 flex gap-2 border-t border-zinc-800 bg-zinc-900/95 px-3 py-2 backdrop-blur md:static md:bg-transparent md:backdrop-blur-none">
                 {(actions.approve || actions.reapprove) && (
                   <button

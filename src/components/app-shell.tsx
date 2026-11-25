@@ -176,8 +176,10 @@ export function AppShell<T extends string>(props: {
         </div>
         {/* Owner TG 4896 (MOBILE_UI_PLAN.md stage 2a, AC-PR-15): on a phone <main> is not a scroll container -- the page itself
             scrolls (the shell has no fixed height), and a scroll container that never scrolls kept every sticky bar inside a panel
-            (the «Видео на проверку» decision bar) from sticking. The desktop keeps its overflow-y-auto exactly as before. */}
-        <main className="flex-1 md:overflow-y-auto px-6 py-6 max-md:px-4 max-md:py-4 max-md:pb-[calc(5rem+env(safe-area-inset-bottom))]">{props.children}</main>
+            (the «Видео на проверку» decision bar) from sticking. Sideways overflow is clipped there (overflow-x: clip, which is NOT a
+            scroll container -- hidden or auto would be one again and break the sticky bars), so it never pans the whole page. The
+            desktop keeps its overflow-y-auto exactly as before. */}
+        <main className="flex-1 md:overflow-y-auto max-md:overflow-x-clip px-6 py-6 max-md:px-4 max-md:py-4 max-md:pb-[calc(5rem+env(safe-area-inset-bottom))]">{props.children}</main>
       </div>
       <PhoneNav
         items={props.navItems}
