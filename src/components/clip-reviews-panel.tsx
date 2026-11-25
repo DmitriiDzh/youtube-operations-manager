@@ -5,7 +5,7 @@ import type { UiTextKey } from "@/lib/ui-text";
 import { ActionButton, SkeletonLines } from "./busy-feedback";
 import { AttachmentDropZone, DecisionAttachments, useAttachmentComposer } from "./clip-attachments";
 import { answeredGroupsOf, canApprove, openGroupsFrom, rangeOf, returnCommentReady, scenesOf, sourceImageStateOf, videoSrcOf, type ClipDto, type ClipScene, type ClipStatus, type SourceImageStatus } from "./clip-reviews-model";
-import { frameOf } from "./package-reviews-model";
+import { frameOf } from "./media-frame";
 import { useT, useUiText } from "./ui-text-provider";
 import { useUserTimezone } from "./use-user-timezone";
 
@@ -234,9 +234,10 @@ export function ClipReviewsPanel({ channelId, visible }: { channelId: string | n
         </button>
         {expanded && (
           <div className="@container space-y-3 border-t border-zinc-800 px-3 py-3">
-            {/* Owner TG 4887: on a wide card the player takes the width and the description, the source still and the answer sit
-                beside it, so Approve / Return stay next to the video; narrower, they follow it. */}
-            <div className="grid grid-cols-[minmax(0,1fr)] gap-3 @6xl:grid-cols-[minmax(0,1fr)_24rem]">
+            {/* Owner TG 4887: on a card from 56rem (a laptop) the player takes the width and the description, the source still and the
+                answer sit beside it, so Approve / Return stay next to the video; narrower, the answer comes right under the player and
+                the description, the still and the details follow it (review of f05c349d). */}
+            <div className="grid grid-cols-[minmax(0,1fr)] gap-3 @4xl:grid-cols-[minmax(0,1fr)_20rem]">
               <div className="min-w-0 space-y-3">
                 {clip.file === "missing" ? (
                   <p className="rounded-md border border-orange-900 bg-orange-950/40 px-3 py-2 text-sm text-orange-200">{t("clipReviews.file.missingHelp")}</p>
@@ -245,14 +246,14 @@ export function ClipReviewsPanel({ channelId, visible }: { channelId: string | n
                 )}
                 {clip.file === "changed" && <p className="rounded-md border border-orange-900 bg-orange-950/40 px-3 py-2 text-sm text-orange-200">{t("clipReviews.file.changedHelp")}</p>}
               </div>
-              <div className="min-w-0 space-y-3">
+              <div className="flex min-w-0 flex-col gap-3">
                 <p className="max-w-[90ch] whitespace-pre-wrap text-sm text-zinc-200">{clip.note}</p>
                 {clip.approvedImage !== undefined && <ClipSourceImage channelId={channelId} clip={clip} />}
                 <dl className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500">
                   {range && <dd>{t("clipReviews.range", range)}</dd>}
                   <dd>{clip.device ? t("clipReviews.submittedOn", { when: at(clip.submittedAt), device: clip.device }) : t("clipReviews.submitted", { when: at(clip.submittedAt) })}</dd>
                   <dd>{t("clipReviews.size", { megabytes: formatNumber(clip.sizeBytes / 1_048_576, { maximumFractionDigits: 1 }) })}</dd>
-                  <dd className="font-mono" title={t("clipReviews.path")}>
+                  <dd className="break-all font-mono" title={t("clipReviews.path")}>
                     {clip.clipPath}
                   </dd>
                 </dl>
@@ -272,7 +273,7 @@ export function ClipReviewsPanel({ channelId, visible }: { channelId: string | n
                   </div>
                 )}
                 {clip.status === "pending" && !confirming && (
-                  <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2 @max-4xl:order-first">
                     <button
                       type="button"
                       disabled={!canApprove(clip) || busy !== null}
@@ -289,7 +290,7 @@ export function ClipReviewsPanel({ channelId, visible }: { channelId: string | n
                   </div>
                 )}
                 {clip.status === "pending" && confirming && (
-                  <div className={`space-y-2 rounded-md border px-3 py-2 ${confirming === "approve" ? "border-violet-800 bg-violet-950/30" : "border-red-900 bg-red-950/30"}`}>
+                  <div className={`space-y-2 rounded-md border px-3 py-2 @max-4xl:order-first ${confirming === "approve" ? "border-violet-800 bg-violet-950/30" : "border-red-900 bg-red-950/30"}`}>
                     <p className="text-sm font-medium text-zinc-100">{t(confirming === "approve" ? "clipReviews.confirm.approveTitle" : "clipReviews.confirm.returnTitle")}</p>
                     <AttachmentDropZone composer={composer} disabled={rowBusy}>
                       {(onPaste) => (
@@ -330,7 +331,7 @@ export function ClipReviewsPanel({ channelId, visible }: { channelId: string | n
                     </div>
                   </div>
                 )}
-                {actionError?.clipId === clip.clipId && <p className="text-sm text-red-400">{actionError.text}</p>}
+                {actionError?.clipId === clip.clipId && <p className="text-sm text-red-400 @max-4xl:order-first">{actionError.text}</p>}
               </div>
             </div>
             {scene && scene.earlier.length > 0 && (

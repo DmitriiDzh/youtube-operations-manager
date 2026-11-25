@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { actionsOf, decisionBody, decisionReady, durationLabel, frameOf, issueLabel, mediaSrcOf, newCommentId, nextMoment, notesCount, withIssueAction, withoutIssueAction, oneLineText, returnCommentReady, withComment, withEditedComment, withoutComment } from "./package-reviews-model";
+import { actionsOf, decisionBody, decisionReady, durationLabel, issueLabel, mediaSrcOf, newCommentId, nextMoment, notesCount, withIssueAction, withoutIssueAction, oneLineText, returnCommentReady, withComment, withEditedComment, withoutComment } from "./package-reviews-model";
+import { frameOf } from "./media-frame";
 import { flagPlaces, PLAYBACK_RATES, playerKeyAction, rateKeyDirection, seekTarget, stepRate, storedRate } from "./visual-review-model";
 
 // BL-257 (PACKAGE_REVIEW_PLAN.md AC-PR-04/05/09/15; ADR 0070 §4, §6): the screen asks for the media by the manifest hash only; the
