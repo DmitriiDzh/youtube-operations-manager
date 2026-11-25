@@ -70,6 +70,7 @@ import { getQuotaLedgerSyncCore } from "@/lib/quota-ledger-sync";
 import { nextYoutubeQuotaReset, startOfYoutubeQuotaDay } from "@/lib/youtube-quota";
 import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 import { detectFfmpeg, probeMedia, type FfmpegTools } from "@/lib/ffmpeg-host";
+import { cachedForFile, statFileStamp } from "@/lib/file-fingerprint";
 import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
 import { createWriteContextCore } from "@/lib/write-context";
@@ -220,12 +221,15 @@ export function createPublishingCalendarCore(options: { dailyCoverage?: (channel
 
 export type PublishingCalendarCore = ReturnType<typeof createPublishingCalendarCore>;
 
-// ffprobe is looked up once per process once found (until then, on every check); a probed duration is kept per file and
-// size (a finished video does not change).
+// ffprobe is looked up once per process once found (until then, on every check); a probed duration and frame are kept per file
+// and stamp by the `file-fingerprint` rule (BL-277: a file changed in the last 2 s, or during the probe, or replaced by a rename,
+// is probed again).
 const scanHolder = globalThis as typeof globalThis & { [key: symbol]: unknown };
 const FFMPEG_KEY = Symbol.for("ytom.publishing.ffmpeg");
-const PROBE_CACHE_KEY = Symbol.for("ytom.publishing.probeCache");
-const FRAME_CACHE_KEY = Symbol.for("ytom.publishing.frameCache");
+// BL-277: new value shape (duration and frame together), so a process still holding the older maps starts fresh.
+const PROBE_CACHE_KEY = Symbol.for("ytom.publishing.probeCache.v2");
+type ProbedVideo = { durationSeconds: number | null; frame: { width: number; height: number } | null };
+const NO_FFPROBE = Symbol("no_ffprobe");
 
 /** BL-182 stage 2: the channel's release packages under `04 Videos/`, checked again (Content → «Публикация»). Read-only. */
 export function createPackageScanCore() {
@@ -284,13 +288,36 @@ function createPackageScanReads() {
   const workspaces = createChannelWorkspacesCore();
   const files = createWorkspaceVideoFiles();
   const videoStore = createChannelVideoStoreAdapter();
-  const probeCache = (scanHolder[PROBE_CACHE_KEY] ??= new Map<string, number | null>()) as Map<string, number | null>;
-  const frameCache = (scanHolder[FRAME_CACHE_KEY] ??= new Map<string, { width: number; height: number } | null>()) as Map<string, { width: number; height: number } | null>;
+  const probeCache = (scanHolder[PROBE_CACHE_KEY] ??= new Map<string, ProbedVideo>()) as Map<string, ProbedVideo>;
   const ffmpeg = async () => {
     const found = await ((scanHolder[FFMPEG_KEY] ??= detectFfmpeg()) as Promise<FfmpegTools | null>);
     if (!found) scanHolder[FFMPEG_KEY] = undefined; // look again next time (ffmpeg may be installed meanwhile)
     return found;
   };
+  /** One ffprobe run gives the duration and the frame (BL-259); throws `NO_FFPROBE` when there is none here (never cached). */
+  const probeVideo = async (absolutePath: string): Promise<ProbedVideo> =>
+    cachedForFile({
+      store: {
+        get: (key) => probeCache.get(key),
+        set(key, value) {
+          if (probeCache.size >= 2000) probeCache.clear();
+          probeCache.set(key, value);
+        },
+      },
+      scope: absolutePath,
+      stamp: await statFileStamp(absolutePath),
+      now: () => Date.now(),
+      restat: () => statFileStamp(absolutePath),
+      compute: async () => {
+        const tools = await ffmpeg();
+        if (!tools) throw NO_FFPROBE;
+        const probe = await probeMedia(tools, absolutePath).catch(() => null);
+        // A phone's 90/270-degree flag shows the stored frame turned: its width and height swap on screen (review).
+        const quarter = Math.abs(Math.round((probe?.video?.rotation ?? 0) / 90)) % 2 === 1;
+        const frame = probe?.video?.width && probe.video.height ? (quarter ? { width: probe.video.height, height: probe.video.width } : { width: probe.video.width, height: probe.video.height }) : null;
+        return { durationSeconds: probe?.durationSeconds ?? null, frame };
+      },
+    });
   const deps: PackageScanDeps = {
     async workspace(channelId) {
       const workspace = await workspaces.getWorkspace({ channelId });
@@ -319,22 +346,15 @@ function createPackageScanReads() {
     readText: (absolutePath, maxBytes) => files.readText(absolutePath, maxBytes),
     readHead: (absolutePath, length) => files.readHead(absolutePath, length),
     sha256: (absolutePath) => sha256OfFile(absolutePath),
-    async probeDuration(absolutePath, bytes) {
-      const key = `${absolutePath}|${bytes}`;
-      if (probeCache.has(key)) return probeCache.get(key) ?? null;
-      const tools = await ffmpeg();
-      if (!tools) return "no_ffprobe";
-      const probe = await probeMedia(tools, absolutePath).catch(() => null);
-      probeCache.set(key, probe?.durationSeconds ?? null);
-      // BL-259: the same ffprobe call gives the frame (no second run).
-      // A phone's 90/270-degree flag shows the stored frame turned: its width and height swap on screen (review).
-      const quarter = Math.abs(Math.round((probe?.video?.rotation ?? 0) / 90)) % 2 === 1;
-      frameCache.set(key, probe?.video?.width && probe.video.height ? (quarter ? { width: probe.video.height, height: probe.video.width } : { width: probe.video.width, height: probe.video.height }) : null);
-      return probe?.durationSeconds ?? null;
+    async probeDuration(absolutePath) {
+      const probed = await probeVideo(absolutePath).catch((error: unknown) => (error === NO_FFPROBE ? NO_FFPROBE : null));
+      if (probed === NO_FFPROBE) return "no_ffprobe";
+      return probed?.durationSeconds ?? null;
     },
-    // BL-259 (owner msg 4397): the frame from the duration's ffprobe run (the scan probes the duration first).
-    async probeFrame(absolutePath, bytes) {
-      return frameCache.get(`${absolutePath}|${bytes}`) ?? null;
+    // BL-259 (owner msg 4397): the frame from the duration's ffprobe run (the scan probes the duration first; a file too fresh to be
+    // cached is probed once more).
+    async probeFrame(absolutePath) {
+      return (await probeVideo(absolutePath).catch(() => null))?.frame ?? null;
     },
     orientations: { get: (channelId) => getVideoOrientations(channelId), remember: (channelId, video, orientation) => rememberVideoOrientation(channelId, video, orientation) },
     async channel(channelId) {
@@ -767,9 +787,10 @@ export function createAutoPrivateUploadCore(options: { slotDecisions?: (channelI
       const file = await files.resolveFile(workspace, relativePath);
       if (!file) return null;
       const info = await stat(file.path).catch(() => null);
-      return info ? { path: file.path, bytes: file.bytes, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs, ino: info.ino, dev: info.dev } : null;
+      return info ? { path: file.path, bytes: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs, ino: info.ino, dev: info.dev } : null; // one stamp from one stat (BL-277)
     },
     hashFile: (absolutePath) => sha256OfFile(absolutePath),
+    statFile: (absolutePath) => statFileStamp(absolutePath).catch(() => null),
     queue: (input) => approval.queueAutomatic(input),
     // BL-225 stage 3: the weekly plan's slots, given by the composition layer (absent: as before -- every package private, no date).
     ...(options.slotDecisions ? { slotDecisions: options.slotDecisions } : {}),
@@ -935,7 +956,7 @@ export function createUploadQueueControlCore(
       const file = await files.resolveFile(workspace, relativePath);
       if (!file) return null;
       const info = await stat(file.path).catch(() => null);
-      return info ? { path: file.path, bytes: file.bytes, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs, ino: info.ino, dev: info.dev } : null;
+      return info ? { path: file.path, bytes: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs, ino: info.ino, dev: info.dev } : null; // one stamp from one stat (BL-277)
     },
     hashFile: (absolutePath) => sha256OfFile(absolutePath),
     queue: (input) => approval.queueByProducer(input),

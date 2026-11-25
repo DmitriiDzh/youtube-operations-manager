@@ -63,6 +63,7 @@ export function createImagePreviewer(deps: ImagePreviewerDeps) {
           store,
           scope: path,
           stamp: await deps.stat(path),
+          restat: () => deps.stat(path), // a file changed while it was resized is not kept
           now,
           compute: async () => {
             const sharp = await deps.loadSharp();

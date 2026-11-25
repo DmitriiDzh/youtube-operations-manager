@@ -50,7 +50,9 @@ export function createFsPerDeviceReportStore(dir: string): PerDeviceReportStore 
         } else {
           const settled = isSettledAt(stamp, Date.now());
           text = await readOrNull(file);
-          if (text && settled) peerCache.set(name, { key, text });
+          // Kept only when the file is the same after the read as before it (a change during the read is never kept).
+          const after = text && settled ? await stat(file).catch(() => null) : null;
+          if (text && after && fileStampKey(stampOf(after)) === key) peerCache.set(name, { key, text });
           else peerCache.delete(name);
         }
         if (text) out[name.slice(0, -".json".length)] = text;

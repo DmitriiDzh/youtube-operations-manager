@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
-import { COARSE_MTIME_SLACK_MS, cachedForFile, fileStampKey, isSettledAt, type FileStamp } from "./index";
+import { COARSE_MTIME_SLACK_MS, cachedForFile, cachedSha256OfFile, fileStampKey, isSettledAt, type FileStamp } from "./index";
 
 // BL-277 (owner TG 4922): a file system that keeps modification times to whole seconds (HFS+ on the T9 disk, where channel workspaces
 // and media live) gives a file replaced within the same second the same size and mtime as the one before. A value cached per path,
@@ -114,6 +118,45 @@ test("BL-277: the scope separates entries (the same file under another manifest 
   await h.get(stamp(), "manifest-2");
   await h.get(stamp(), "manifest-1");
   assert.equal(h.reads, 2);
+});
+
+test("BL-277 (review): a stamp that changed during the read -- or cannot be read again -- caches nothing; an unchanged one does", async () => {
+  const store = new Map<string, string>();
+  let reads = 0;
+  const get = (after: () => Promise<FileStamp | null>) =>
+    cachedForFile({ store, scope: "f", stamp: stamp(), now: () => NOW, restat: after, compute: async () => `sha(${++reads})` });
+  // Same size, same mtime and ctime (no ctime kept), only the content moved: the size the write left behind tells.
+  assert.equal(await get(async () => stamp({ size: 1001 })), "sha(1)");
+  assert.equal(await get(async () => stamp({ mtimeMs: NOW - 59_000 })), "sha(2)");
+  assert.equal(await get(async () => null), "sha(3)");
+  assert.equal(await get(async () => Promise.reject(new Error("ENOENT"))), "sha(4)");
+  assert.equal(store.size, 0);
+  assert.equal(await get(async () => stamp()), "sha(5)");
+  assert.equal(await get(async () => stamp({ size: 1 })), "sha(5)", "the stored value");
+  assert.equal(reads, 5);
+});
+
+test("BL-277: cachedSha256OfFile hashes the file's bytes; an old unchanged file is read once, an in-place same-size rewrite again", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "bl277-sha-"));
+  try {
+    const file = path.join(dir, "v.mp4");
+    await writeFile(file, "abc");
+    const store = new Map<string, string>();
+    const later = () => Date.now() + 60_000; // the file is a minute old by this clock
+    assert.equal(await cachedSha256OfFile({ store, absolutePath: file, now: later }), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    assert.equal(store.size, 1);
+    const [key] = store.keys();
+    store.set(key, "cached");
+    assert.equal(await cachedSha256OfFile({ store, absolutePath: file, now: later }), "cached", "from the cache, no read");
+    const second = new Date(Math.floor(Date.now() / 1000) * 1000);
+    await utimes(file, second, second);
+    await writeFile(file, "abd");
+    await utimes(file, second, second);
+    // sha256("abd") by an independent hash of the literal bytes.
+    assert.equal(await cachedSha256OfFile({ store, absolutePath: file }), createHash("sha256").update("abd").digest("hex"));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("BL-277: a failed read is not cached", async () => {

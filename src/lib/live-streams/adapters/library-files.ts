@@ -83,6 +83,7 @@ export function createLibraryFiles(
         },
         scope: file,
         stamp: await statFileStamp(file),
+        restat: () => statFileStamp(file), // a file changed while it was probed is not kept
         now: () => Date.now(),
         compute: async () => {
           tools ??= detectFfmpeg();

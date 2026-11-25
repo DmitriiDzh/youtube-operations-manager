@@ -1,6 +1,4 @@
-import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { cachedForFile, statFileStamp } from "@/lib/file-fingerprint";
+import { cachedSha256OfFile } from "@/lib/file-fingerprint";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
 import { createExchangeFs, resolveWorkspaceFile } from "@/lib/workspace-exchange";
 import { createLruCache, type LruCache } from "./lru";
@@ -49,20 +47,5 @@ const holder = globalThis as Holder;
 
 /** The file's SHA-256 (hex), cached per path and file stamp by the `file-fingerprint` rule (LRU, `REVIEW_HASH_CACHE_MAX` entries). */
 export async function hashReviewFile(absolutePath: string): Promise<string> {
-  const stamp = await statFileStamp(absolutePath);
-  const cache = (holder[HASH_KEY] ??= createLruCache<string>(REVIEW_HASH_CACHE_MAX));
-  return cachedForFile({
-    store: cache,
-    scope: absolutePath,
-    stamp,
-    now: () => Date.now(),
-    compute: () =>
-      new Promise<string>((resolve, reject) => {
-        const hash = createHash("sha256");
-        createReadStream(absolutePath)
-          .on("data", (chunk) => hash.update(chunk))
-          .on("end", () => resolve(hash.digest("hex")))
-          .on("error", reject);
-      }),
-  });
+  return cachedSha256OfFile({ store: (holder[HASH_KEY] ??= createLruCache<string>(REVIEW_HASH_CACHE_MAX)), absolutePath });
 }

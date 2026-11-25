@@ -5,7 +5,7 @@
 // The checks at queue time are the approval's own (`upload-approval.ts` `queueAutomatic`). One try per manifest version: a manifest
 // hash once auto-queued is never queued again by itself, whatever became of its upload. Switched off: nothing is read or hashed.
 
-import { cachedForFile } from "@/lib/file-fingerprint";
+import { cachedForFile, type FileStamp } from "@/lib/file-fingerprint";
 import { isDomainError } from "@/lib/shared-domain";
 import type { PackageScanResult, ScannedPackage } from "./package-scan";
 import { approvalNamesUpload, type SlotDecision } from "./slot-decision";
@@ -48,6 +48,11 @@ export type AutoUploadDeps = {
   videoFile(channelId: string, relativePath: string): Promise<VideoFileInfo | null>;
   /** The SHA-256 (lower-case hex) of a whole file. Costly on a multi-GB video: called only after the size matched, once per key. */
   hashFile(absolutePath: string): Promise<string>;
+  /**
+   * BL-277 (review): the file's stamp read again after hashing; a hash is kept only when it is the stamp `videoFile` gave (null:
+   * unreadable, not kept). Absent: the stamp before the hash alone decides.
+   */
+  statFile?(absolutePath: string): Promise<FileStamp | null>;
   /** The approval's `queueAutomatic`. */
   queue(input: {
     channelId: string;
@@ -170,6 +175,7 @@ export function createAutoPrivateUpload(deps: AutoUploadDeps) {
       stamp: { size: file.bytes, mtimeMs: file.mtimeMs, ctimeMs: file.ctimeMs, ino: file.ino, dev: file.dev },
       now: () => (deps.now?.() ?? new Date()).getTime(),
       compute: async () => (await deps.hashFile(file.path)).toLowerCase(),
+      ...(deps.statFile ? { restat: () => deps.statFile!(file.path) } : {}),
     });
   }
 

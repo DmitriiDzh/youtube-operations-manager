@@ -78,7 +78,7 @@ function scanned(pkg: ReleasePackage, manifestSha256: string, fileBytes = pkg.si
   };
 }
 
-function harness(initial: { packages: ScannedPackage[]; enabled?: boolean; files?: Record<string, { bytes: number; mtimeMs: number; hash: string }>; slots?: Map<string, SlotDecision>; now?: () => Date }) {
+function harness(initial: { packages: ScannedPackage[]; enabled?: boolean; files?: Record<string, { bytes: number; mtimeMs: number; hash: string }>; slots?: Map<string, SlotDecision>; now?: () => Date; statFile?: AutoUploadDeps["statFile"] }) {
   const state = {
     enabled: initial.enabled ?? true,
     packages: initial.packages,
@@ -148,6 +148,7 @@ function harness(initial: { packages: ScannedPackage[]; enabled?: boolean; files
     // BL-225 stage 3: the plan's slot decisions (absent: the plan module is not plugged in).
     ...(initial.slots ? { slotDecisions: async () => initial.slots!, now: () => NOW } : {}),
     ...(initial.now ? { now: initial.now } : {}),
+    ...(initial.statFile ? { statFile: initial.statFile } : {}),
   };
   return { state, auto: createAutoPrivateUpload(deps) };
 }
@@ -236,6 +237,22 @@ test("BL-277: a video hashed within 2 s of its last change, then replaced by ano
   assert.equal(h.state.mismatches.length, 1);
   h.state.files = fileOf(p, { mtimeMs: written, hash: HASH_A });
   assert.deepEqual((await h.auto.tick()).queued.map((q) => q.video), ["V65"], "the stale SHA-256 of the replaced file is never reused");
+  assert.equal(h.state.hashCalls.length, 2);
+});
+
+test("BL-277 (review): a video whose stamp changed while it was hashed is not kept -- the next tick hashes it again", async () => {
+  const p = scanned(release("V65"), "mf-1");
+  let changedDuringHash = true;
+  const h = harness({
+    packages: [p],
+    files: fileOf(p, { hash: HASH_B }),
+    // The size the stamp read after the hash shows: another write was under way.
+    statFile: async () => ({ size: changedDuringHash ? 1001 : 1000, mtimeMs: 1 }),
+  });
+  assert.deepEqual((await h.auto.tick()).queued, []);
+  h.state.files = fileOf(p, { hash: HASH_A });
+  changedDuringHash = false;
+  assert.deepEqual((await h.auto.tick()).queued.map((q) => q.video), ["V65"], "hashed again, not the hash read during the change");
   assert.equal(h.state.hashCalls.length, 2);
 });
 

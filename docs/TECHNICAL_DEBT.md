@@ -2294,8 +2294,15 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
   format is not changed, which would re-import every file once), the `review-notify` document memo (a notice at most one change
   late), the `weekly-build` check key (also time-bounded), the live picker's duration cache (`live-streams/adapters/picker-files.ts`,
   a displayed duration), and the `04 Videos/` folder signature (bounded to 5 minutes and backed by the files signature above).
-- **Residual:** a file system whose clock runs more than 2 s behind this computer's (a network share) could still date a fresh file
-  as settled. **Gate(s):** none. **Re-evaluate:** if workspaces move to a network share, or another file-stamp cache is added (it must
+- **Re-stat (review):** a value is also kept only when the stamp read after the computation equals the one before it -- for the
+  whole-file SHA-256 (`cachedSha256OfFile`: review files, video-costs) both from the read's own descriptor (`fstat`); for the preview,
+  the ffprobe caches, the automatic upload's hash (`statFile` port) and the per-device reports by path. The package scan's ffprobe
+  duration/frame cache (`publishing/index.ts`, formerly keyed by path and size only) now goes through the same helper.
+- **Residual:** (1) a file system whose clock runs more than 2 s behind this computer's (a network share) could still date a fresh
+  file as settled; (2) a backward step of this computer's clock makes a fresh file look older for the size of the step; (3) on a
+  file system without a real ctime or stable inode (FAT/exFAT, some SMB shares) an in-place same-size replacement that preserves the
+  old mtime (`cp -p`, `robocopy`, `rsync -t`, an Explorer copy-over) still matches the old stamp, so a cached hash of the earlier file
+  can be returned. Channel workspaces are on APFS/HFS+ today. **Gate(s):** none. **Re-evaluate:** if workspaces move to a network share or a FAT/exFAT disk, or another file-stamp cache is added (it must
   use `cachedForFile`).
 
 ## RISK-158 — A channel worker can add any video id, another channel's included, to its own channel's playlist — OPEN, 2026-11-23

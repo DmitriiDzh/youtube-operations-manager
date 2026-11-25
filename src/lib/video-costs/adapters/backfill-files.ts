@@ -1,8 +1,6 @@
-import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import path from "node:path";
-import { cachedForFile, statFileStamp } from "@/lib/file-fingerprint";
+import { cachedSha256OfFile } from "@/lib/file-fingerprint";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
 import { createExchangeFs, resolveWorkspaceFile } from "@/lib/workspace-exchange";
 import { createWorkspaceVideoFiles, isVideoFileName, listVideoFolders } from "@/lib/workspace-videos";
@@ -54,7 +52,7 @@ export function createBackfillFiles(workspaceOf: (channelId: string) => Promise<
       });
       // BL-277: the shared `file-fingerprint` rule -- a file changed in the last 2 s (whole-second mtimes on HFS+) or replaced by a
       // rename is hashed again, so a cost is never matched by an earlier file's hash.
-      return cachedForFile({
+      return cachedSha256OfFile({
         store: {
           get: (key) => hashes.get(key),
           set(key, digest) {
@@ -62,17 +60,8 @@ export function createBackfillFiles(workspaceOf: (channelId: string) => Promise<
             while (hashes.size > BACKFILL_HASH_CACHE_MAX) hashes.delete(hashes.keys().next().value!);
           },
         },
-        scope: file.path,
-        stamp: await statFileStamp(file.path),
+        absolutePath: file.path,
         now,
-        compute: () =>
-          new Promise<string>((resolve, reject) => {
-            const hash = createHash("sha256");
-            createReadStream(file.path)
-              .on("data", (chunk) => hash.update(chunk))
-              .on("end", () => resolve(hash.digest("hex")))
-              .on("error", reject);
-          }),
       });
     },
   };
