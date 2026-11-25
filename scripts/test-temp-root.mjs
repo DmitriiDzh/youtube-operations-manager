@@ -100,7 +100,7 @@ export const T9_TOOLS_DIR = "/Volumes/Samsung T9/YouTube/00 Tools";
 export const T9_TEST_TEMP_DIR_NAME = "_ytm-test-tmp";
 
 /**
- * @param {{ env: NodeJS.ProcessEnv; platform: string; systemTmp: string; isOtherVolumeDir: (dir: string) => boolean }} input
+ * @param {{ env: Record<string, string | undefined>; platform: string; systemTmp: string; isOtherVolumeDir: (dir: string) => boolean }} input
  * @returns {{ base: string; source: "env" | "t9" | "system" }}
  */
 export function testRunBaseDir({ env, platform, systemTmp, isOtherVolumeDir }) {

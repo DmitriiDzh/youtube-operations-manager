@@ -190,7 +190,7 @@ test("the run's temp base: T9 when mounted on macOS, else the system temp folder
 });
 
 /** Runs the real runner on one probe test that asserts where os.tmpdir() points. */
-function runProbe(base: string, extraEnv: NodeJS.ProcessEnv, expectedParent: string) {
+function runProbe(base: string, extraEnv: Record<string, string>, expectedParent: string) {
   const probe = path.join(base, "where.test.mjs");
   return writeFile(
     probe,
