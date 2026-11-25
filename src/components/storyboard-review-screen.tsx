@@ -150,7 +150,7 @@ export function StoryboardReviewScreen({ channelId, storyboardId, onClose, initi
 
   if (!sb || !data || !version) {
     return (
-      <div className="max-w-6xl space-y-4">
+      <div className="min-w-0 space-y-4">
         <button type="button" onClick={onClose} className="text-sm text-zinc-400 hover:text-white">
           ← {t("storyboards.back")}
         </button>
@@ -342,11 +342,11 @@ export function StoryboardReviewScreen({ channelId, storyboardId, onClose, initi
             <p className="rounded-lg border border-rose-900 bg-rose-950/30 p-3 text-sm text-rose-200">{t("storyboards.file.missingHelp")}</p>
           ) : other && compare?.mode === "side" ? (
             <div className="grid grid-cols-2 gap-2">
-              <MediaImageViewer key={`a-${k.id}`} src={src(k.id)} pins={viewerPins(k.id)} onAddPin={canPin ? addPin : undefined} className="h-[46vh]" view={view} onViewChange={setView} />
-              <MediaImageViewer key={`b-${other.id}`} src={src(other.id)} pins={[]} className="h-[46vh]" view={view} onViewChange={setView} />
+              <MediaImageViewer key={`a-${k.id}`} src={src(k.id)} pins={viewerPins(k.id)} onAddPin={canPin ? addPin : undefined} className="aspect-video min-h-[46vh] w-full max-w-[calc(70vh*16/9)]" view={view} onViewChange={setView} />
+              <MediaImageViewer key={`b-${other.id}`} src={src(other.id)} pins={[]} className="aspect-video min-h-[46vh] w-full max-w-[calc(70vh*16/9)]" view={view} onViewChange={setView} />
             </div>
           ) : (
-            <MediaImageViewer key={`v-${k.id}`} src={src(k.id)} pins={viewerPins(k.id)} onAddPin={canPin ? addPin : undefined} className="h-[52vh]" overlay={overlay} {...(overlay ? { view, onViewChange: setView } : {})} />
+            <MediaImageViewer key={`v-${k.id}`} src={src(k.id)} pins={viewerPins(k.id)} onAddPin={canPin ? addPin : undefined} className="aspect-video min-h-[52vh] w-full max-w-[calc(70vh*16/9)]" overlay={overlay} {...(overlay ? { view, onViewChange: setView } : {})} />
           )}
           {/* ui-text-ignore: the keyframe's caption (data) */}
           {k.caption ? <p className="text-sm text-zinc-300">{k.caption}</p> : null}
@@ -577,8 +577,9 @@ export function StoryboardReviewScreen({ channelId, storyboardId, onClose, initi
         ].filter(Boolean)
       : [];
 
+  // Owner TG 4896: full width like the Media tabs (was max-w-6xl); the viewers grow with it, never above 70vh.
   return (
-    <div className="max-w-6xl space-y-4">
+    <div className="min-w-0 space-y-4">
       <div className="flex flex-wrap items-center gap-3">
         <button type="button" onClick={onClose} className="text-sm text-zinc-400 hover:text-white">
           ← {t("storyboards.back")}

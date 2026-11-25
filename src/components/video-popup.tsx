@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { createPortal } from "react-dom";
-import { frameOf } from "./package-reviews-model";
+import { frameOf } from "./media-frame";
 import { useT } from "./ui-text-provider";
 import { VideoDetailModal } from "./video-detail-modal";
 

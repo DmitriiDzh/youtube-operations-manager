@@ -5,7 +5,8 @@ import type { ReviewIssue } from "@/lib/package-reviews/issues";
 import type { DraftTimedComment, IssueAction } from "@/lib/package-reviews/timed-comments";
 import { formatPlayerTime } from "./media-review-player";
 import { MediaVideoPlayer, type VideoFlag, type VideoPlayerHandle } from "./media-video-player";
-import { frameOf, issueLabel, newCommentId, nextMoment, oneLineText, withComment, withEditedComment, withIssueAction, withoutComment, withoutIssueAction, type DraftSaveState } from "./package-reviews-model";
+import { frameOf } from "./media-frame";
+import { issueLabel, newCommentId, nextMoment, oneLineText, withComment, withEditedComment, withIssueAction, withoutComment, withoutIssueAction, type DraftSaveState } from "./package-reviews-model";
 import { useT } from "./ui-text-provider";
 
 // Owner TG 4817 (PACKAGE_REVIEW_PLAN.md AC-TC-01..09; the audio review's "mark at the playhead with its note", plan-review-screen):
@@ -100,11 +101,15 @@ export function PackageReviewWorkspace({
     setEditing(null);
   };
 
-  const playerClass = frame === "vertical" ? "mx-auto aspect-[9/16] h-[72vh] max-h-[calc(100dvh-11rem)] max-w-full" : "aspect-video w-full max-h-[78vh]";
+  // Owner TG 4887: the player grows with the width but never above 70% of the screen's height -- a 16:9 one by capping its column's
+  // width at 70vh x 16/9 (the frame stays 16:9, the timeline under it as wide as the frame), a vertical one by its height. Review of
+  // f05c349d: beside the comments the 16:9 column itself is that wide, so the comments stay right next to the player.
+  const vertical = frame === "vertical";
+  const playerClass = vertical ? "mx-auto aspect-[9/16] h-[70vh] max-h-[calc(100dvh-11rem)] max-w-full" : "aspect-video w-full";
 
   return (
-    <div className="grid grid-cols-[minmax(0,1fr)] gap-3 xl:grid-cols-[minmax(0,1fr)_22rem]">
-      <div className="min-w-0">
+    <div className={`grid grid-cols-[minmax(0,1fr)] gap-3 ${vertical ? "xl:grid-cols-[minmax(0,1fr)_22rem]" : "xl:grid-cols-[minmax(0,calc(70vh*16/9))_22rem] xl:justify-start"}`}>
+      <div className={`min-w-0 ${vertical ? "" : "w-full max-w-[calc(70vh*16/9)]"}`}>
         {/* The player says itself when the file cannot be played (the package's mp4 not on this computer). */}
         <MediaVideoPlayer
           ref={player}

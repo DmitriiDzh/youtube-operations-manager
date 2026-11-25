@@ -103,7 +103,10 @@ function RenderCard({ channelId, storyboardId, render, onDecided }: { channelId:
       {status === "ok" || status === "differs" ? (
         <>
           {status === "differs" ? <p className="text-xs text-amber-200">{t("storyboards.render.differs")}</p> : null}
-          <MediaVideoPlayer src={`${base}/file`} markers={[]} fps={null} className="h-[46vh]" />
+          {/* Owner TG 4896: the cap on the wrapper, so the player's timeline and buttons are as wide as its frame. */}
+          <div className="max-w-[calc(70vh*16/9)]">
+            <MediaVideoPlayer src={`${base}/file`} markers={[]} fps={null} className="aspect-video min-h-[46vh] w-full" />
+          </div>
         </>
       ) : status === "missing" ? (
         <p className="flex h-24 items-center justify-center rounded bg-zinc-900 px-3 text-center text-xs text-sky-200">{t("storyboards.render.missing", { device })}</p>

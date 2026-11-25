@@ -74,11 +74,6 @@ export function returnCommentReady(comment: string): boolean {
   return comment.trim().length > 0;
 }
 
-/** The player's frame from the video's own size: vertical (Shorts, 9:16) or the 16:9 default until the metadata is known. */
-export function frameOf(width: number, height: number): "vertical" | "horizontal" {
-  return width > 0 && height > width ? "vertical" : "horizontal";
-}
-
 // --- Owner TG 4817 (PACKAGE_REVIEW_PLAN.md AC-TC-01..09): timed comments -----------------------------------------------------
 
 /** `GET/PUT …/package-reviews/draft` (`@/lib/package-reviews` PackageReviewDraft). */
