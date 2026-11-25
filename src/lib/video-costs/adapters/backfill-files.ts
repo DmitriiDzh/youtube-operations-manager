@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import path from "node:path";
+import { cachedForFile, statFileStamp } from "@/lib/file-fingerprint";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
 import { createExchangeFs, resolveWorkspaceFile } from "@/lib/workspace-exchange";
 import { createWorkspaceVideoFiles, isVideoFileName, listVideoFolders } from "@/lib/workspace-videos";
@@ -19,9 +20,10 @@ export function processHashCache(): Map<string, string> {
 /**
  * BL-194 stage 4: the channel workspace's `MMDD Vn` folders with the size of each video file, and the sha256 of one workspace file
  * (reached through the workspace rule: its real path inside the workspace, a regular file). Read-only. A hash is kept for the life
- * of the process per path, size and modification time, so listing the proposals twice does not read a video twice.
+ * of the process per path and file stamp (`file-fingerprint`, BL-277), so listing the proposals twice does not read a video twice.
  */
-export function createBackfillFiles(workspaceOf: (channelId: string) => Promise<string>) {
+export function createBackfillFiles(workspaceOf: (channelId: string) => Promise<string>, options: { now?: () => number } = {}) {
+  const now = options.now ?? (() => Date.now()); // the clock of the 2 s rule (BL-277)
   const files = createWorkspaceVideoFiles();
   const hashes = processHashCache();
   return {
@@ -50,21 +52,28 @@ export function createBackfillFiles(workspaceOf: (channelId: string) => Promise<
         isPathInsideOrEqual,
         unavailable: (reason) => new Error(reason),
       });
-      const info = await stat(file.path);
-      const key = `${file.path}:${info.size}:${info.mtimeMs}`;
-      const known = hashes.get(key);
-      if (known) return known;
-      const hash = createHash("sha256");
-      await new Promise<void>((resolve, reject) => {
-        createReadStream(file.path)
-          .on("data", (chunk) => hash.update(chunk))
-          .on("end", () => resolve())
-          .on("error", reject);
+      // BL-277: the shared `file-fingerprint` rule -- a file changed in the last 2 s (whole-second mtimes on HFS+) or replaced by a
+      // rename is hashed again, so a cost is never matched by an earlier file's hash.
+      return cachedForFile({
+        store: {
+          get: (key) => hashes.get(key),
+          set(key, digest) {
+            hashes.set(key, digest);
+            while (hashes.size > BACKFILL_HASH_CACHE_MAX) hashes.delete(hashes.keys().next().value!);
+          },
+        },
+        scope: file.path,
+        stamp: await statFileStamp(file.path),
+        now,
+        compute: () =>
+          new Promise<string>((resolve, reject) => {
+            const hash = createHash("sha256");
+            createReadStream(file.path)
+              .on("data", (chunk) => hash.update(chunk))
+              .on("end", () => resolve(hash.digest("hex")))
+              .on("error", reject);
+          }),
       });
-      const digest = hash.digest("hex");
-      hashes.set(key, digest);
-      while (hashes.size > BACKFILL_HASH_CACHE_MAX) hashes.delete(hashes.keys().next().value!);
-      return digest;
     },
   };
 }

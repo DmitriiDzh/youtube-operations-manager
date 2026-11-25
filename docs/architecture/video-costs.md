@@ -71,7 +71,7 @@ Plan: `docs/roadmap/plans/VIDEO_COST_PLAN.md` §2 stages 2-4 (criteria 3-9). Sch
   runs into an existing file by computer + run id -- never removing one, adding new ones, updating a changed cost or result -- only
   on the computer named in `writtenBy`, and not at all while the peers' reports cannot be read.
 - **Older runs.** `backfill.ts`: `proposals` (storyboards without a video whose render's basename and bytes match a video file of a
-  `MMDD Vn` folder, then `hashOf` equals the render's sha256; `adapters/backfill-files.ts` caches hashes by path, size and mtime),
+  `MMDD Vn` folder, then `hashOf` equals the render's sha256; `adapters/backfill-files.ts` caches hashes by path and file stamp through `file-fingerprint`, BL-277),
   `withoutVideo` (storyboards with unlinked runs here, for a hand pick) and `linkable` (storyboards / plans with a video and unlinked
   runs here: `db.countUnlinkedJobsByOrigin`). `confirmStoryboard` checks the video (`assertAttachable`), sets it through the port
   `setStoryboardVideo` (the route wires `storyboards.ownerSetVideo`), then `db.linkUnlinkedJobsToVideo`; `linkRuns` links runs of an

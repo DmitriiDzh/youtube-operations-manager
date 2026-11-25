@@ -100,7 +100,7 @@ re-checks and the seam view are phase 2; Gemini outputs without copying, owner t
   tables (`review_seconds`, schema v85 -- its own migration, so a database stamped v84 by an earlier build gets it too).
 - **Previews** (`src/lib/media-preview/`, a shared module that knows nothing about plans): `sharp` (a direct dependency since
   BL-175; Next.js already installed it) resizes an image to at most 480 px a side, `limitInputPixels` guards against decompression
-  bombs, a 300-entry memory cache is keyed by path, size and mtime; any failure streams the original. The `…/preview` routes
+  bombs, a 300-entry memory cache is keyed by path and file stamp (`file-fingerprint`, BL-277: no reuse within 2 s of a change); any failure streams the original. The `…/preview` routes
   resolve and prove the file exactly as the audition route does (loopback, session, active channel, workspace proof) and answer
   415 for anything that is not an image.
 - **Screen.** The media kind (`mediaKindOf`, by the played file's extension) picks the viewer before `MediaReviewPlayer` would
@@ -321,7 +321,10 @@ On branch `feature/bl-229-music-library`. No schema change; no YouTube call; not
 - **Shared:** `src/lib/review-items/` owns `earliestDecidingRecord` (ADR 0061 §5), the one image status rule (`images.ts`:
   `decidingImageRecord`, `imageReviewStateOf` -- image-reviews' views and the clips' source-image port both use it) and the workspace
   file adapter (`resolveReviewFile`, `hashReviewFile` with an LRU cache of 500, `lru.ts` -- moved from clip-reviews' `adapters/files.ts`,
-  which now delegates and keeps its names). The owner kinds of an image
+  which now delegates and keeps its names). BL-277: the hash cache (and `media-preview`'s cache, which the owner approves from) go
+  through `src/lib/file-fingerprint/` `cachedForFile` -- key `dev:ino:size:mtimeMs:ctimeMs`, stored only for a file last changed
+  (mtime and ctime) at least `COARSE_MTIME_SLACK_MS` = 2 s before the clock read taken before the read, because HFS+ keeps whole-second
+  mtimes (RISK-159). The owner kinds of an image
   (`IMAGE_REVIEW_OWNER_KINDS`, `IMAGE_REVIEW_APPROVED_KINDS`) are constants of the sync-gateway family's contract, so clip-reviews and the
   review-notify composition use the same lists without importing image-reviews.
 - **Store:** sync family `image_reviews` (`sync-gateway/image-reviews`, `-sync`): the clip-reviews document shape with `images`;

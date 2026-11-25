@@ -46,14 +46,40 @@ test("BL-194: two backfill file readers share one hash cache, so a video is read
     const { writeFile } = await import("node:fs/promises");
     await writeFile(path.join(folder, "bar.mp4"), "abc");
     processHashCache().clear();
-    const first = await createBackfillFiles(async () => root).hashOf("UC1", "04 Videos/0928 V39/bar.mp4");
+    // BL-277: a file changed within the last 2 s is never cached (whole-second mtimes on HFS+); the readers' clock is a minute
+    // later than the file was written, as for a finished video.
+    const later = { now: () => Date.now() + 60_000 };
+    const first = await createBackfillFiles(async () => root, later).hashOf("UC1", "04 Videos/0928 V39/bar.mp4");
     // sha256("abc"), worked out independently.
     assert.equal(first, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     assert.equal(processHashCache().size, 1);
     // Mark the cached value: a second reader that answers with the mark took it from the cache instead of reading the file.
     const [key] = processHashCache().keys();
     processHashCache().set(key, "cached");
-    assert.equal(await createBackfillFiles(async () => root).hashOf("UC1", "04 Videos/0928 V39/bar.mp4"), "cached");
+    assert.equal(await createBackfillFiles(async () => root, later).hashOf("UC1", "04 Videos/0928 V39/bar.mp4"), "cached");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("BL-277: a same-size video rewritten in place within the same whole second is hashed again, never matched by the earlier hash", async () => {
+  const { createBackfillFiles, processHashCache } = await import("./adapters/backfill-files");
+  const { createHash } = await import("node:crypto");
+  const { utimes, writeFile } = await import("node:fs/promises");
+  const root = await mkdtemp(path.join(os.tmpdir(), "video-cost-hash-"));
+  try {
+    const folder = path.join(root, "04 Videos", "0928 V39");
+    await mkdir(folder, { recursive: true });
+    const file = path.join(folder, "bar.mp4");
+    const second = new Date(Math.floor(Date.now() / 1000) * 1000);
+    processHashCache().clear();
+    await writeFile(file, "abc");
+    await utimes(file, second, second);
+    const reader = createBackfillFiles(async () => root);
+    assert.equal(await reader.hashOf("UC1", "04 Videos/0928 V39/bar.mp4"), createHash("sha256").update("abc").digest("hex"));
+    await writeFile(file, "abd");
+    await utimes(file, second, second);
+    assert.equal(await reader.hashOf("UC1", "04 Videos/0928 V39/bar.mp4"), createHash("sha256").update("abd").digest("hex"));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

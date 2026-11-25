@@ -1,4 +1,4 @@
-import { stat } from "node:fs/promises";
+import { cachedForFile, statFileStamp, type FileStamp, type FileValueStore } from "@/lib/file-fingerprint";
 
 // ---------------------------------------------------------------------------
 // BL-175 (FO-REQ-0018 §B, docs/roadmap/plans/VISUAL_REVIEW_PLAN.md §2.7): small JPEG previews of images for the review grid,
@@ -24,7 +24,10 @@ export type SharpFactory = (input: string, options: { failOn: "none"; limitInput
 export type ImagePreviewerDeps = {
   /** Loads `sharp`; null when it cannot be loaded here (then every preview is null). */
   loadSharp(): Promise<SharpFactory | null>;
-  stat(path: string): Promise<{ size: number; mtimeMs: number }>;
+  /** The file's stamp (`file-fingerprint`): size and mtime at least; production also gives ctime, inode and device. */
+  stat(path: string): Promise<FileStamp>;
+  /** The clock for the cache's 2 s rule (absent: the system clock). */
+  now?(): number;
   maxSide?: number;
   entries?: number;
 };
@@ -32,30 +35,45 @@ export type ImagePreviewerDeps = {
 export function createImagePreviewer(deps: ImagePreviewerDeps) {
   const maxSide = deps.maxSide ?? PREVIEW_MAX_SIDE;
   const entries = deps.entries ?? PREVIEW_CACHE_ENTRIES;
+  const now = deps.now ?? (() => Date.now());
   const cache = new Map<string, Uint8Array>();
+  // Least recently used first out: a hit moves the entry to the end.
+  const store: FileValueStore<Uint8Array> = {
+    get(key) {
+      const hit = cache.get(key);
+      if (hit) {
+        cache.delete(key);
+        cache.set(key, hit);
+      }
+      return hit;
+    },
+    set(key, value) {
+      cache.set(key, value);
+      while (cache.size > entries) cache.delete(cache.keys().next().value as string);
+    },
+  };
   return {
     /** A JPEG no larger than `maxSide` on either side, or null (unreadable, not an image `sharp` decodes, no `sharp`). */
     async preview(path: string): Promise<Uint8Array | null> {
       try {
-        const info = await deps.stat(path);
-        // The same file again (same size and time) is the same preview; a rewritten file gets a new one.
-        const key = `${path}\u0000${info.size}\u0000${info.mtimeMs}`;
-        const hit = cache.get(key);
-        if (hit) {
-          cache.delete(key);
-          cache.set(key, hit);
-          return hit;
-        }
-        const sharp = await deps.loadSharp();
-        if (!sharp) return null;
-        const body = await sharp(path, { failOn: "none", limitInputPixels: LIMIT_INPUT_PIXELS })
-          .rotate()
-          .resize({ width: maxSide, height: maxSide, fit: "inside", withoutEnlargement: true })
-          .jpeg({ quality: 80 })
-          .toBuffer();
-        cache.set(key, body);
-        while (cache.size > entries) cache.delete(cache.keys().next().value as string);
-        return body;
+        // The same file again (same stamp) is the same preview; a rewritten file gets a new one. BL-277: the owner approves an image
+        // review from the large preview, so the shared `file-fingerprint` rule applies (a file changed in the last 2 s -- whole-second
+        // mtimes on HFS+ -- or replaced by a rename is never served from the cache).
+        return await cachedForFile({
+          store,
+          scope: path,
+          stamp: await deps.stat(path),
+          now,
+          compute: async () => {
+            const sharp = await deps.loadSharp();
+            if (!sharp) throw new Error("sharp is not available"); // null to the caller, nothing cached
+            return sharp(path, { failOn: "none", limitInputPixels: LIMIT_INPUT_PIXELS })
+              .rotate()
+              .resize({ width: maxSide, height: maxSide, fit: "inside", withoutEnlargement: true })
+              .jpeg({ quality: 80 })
+              .toBuffer();
+          },
+        });
       } catch {
         return null;
       }
@@ -76,10 +94,7 @@ async function loadSharpForProduction(): Promise<SharpFactory | null> {
   }
 }
 
-async function statForProduction(path: string): Promise<{ size: number; mtimeMs: number }> {
-  const s = await stat(path);
-  return { size: s.size, mtimeMs: s.mtimeMs };
-}
+const statForProduction = statFileStamp;
 
 /** The process's previewer (one cache per server process). */
 export function createImagePreviewerForProduction(): ImagePreviewer {

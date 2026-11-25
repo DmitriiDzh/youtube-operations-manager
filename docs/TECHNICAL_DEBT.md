@@ -2273,6 +2273,31 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Amended (BL-267, ADR 0073 §5):** decisions are now read by slot id across weeks (a moved slot keeps its veto and approvals); a
   build without BL-267 still reads them by week, which is why a vetoed slot cannot be moved.
 
+## RISK-159 — File-stamp caches on whole-second file systems (HFS+ on the T9 disk) — MITIGATED, 2026-11-25
+
+- **Affected components:** every cache keyed on a file's size and modification time. Found measuring tests on T9 (owner TG 4922): the
+  BL-272 test "a changed file (same size) is detected" failed with `TMPDIR` on T9 and passed on APFS.
+- **Risk:** HFS+ keeps mtimes to whole seconds, so a file replaced by another of the same size within the same second it was hashed
+  keeps size and mtime; a cache keyed on them returned the earlier file's SHA-256 -- an approved file differing from the one used.
+- **Rule (BL-277):** `src/lib/file-fingerprint/` `cachedForFile` is the one implementation: key `dev:ino:size:mtimeMs:ctimeMs` (a
+  rename-replacement or a `cp -p` copy always misses), and a value is stored only when the file's mtime and ctime are at least
+  `COARSE_MTIME_SLACK_MS` (2 s) older than the clock read taken before the file is read; a fresher file is read every time. Every
+  integrity cache uses it: `review-items` `hashReviewFile` (clip and image reviews), `media-preview` (the owner approves an image review
+  from its 960 px preview), the automatic upload tick's video hash (`publishing/auto-upload.ts` `videoHash`); also, being cheap, the
+  live-stream library's ffprobe cache, the video-costs backfill hashes and the `per-device-report` peer-report read cache (each
+  sync family has its own store instance, so one instance's write cannot drop another's entry; reports are replaced by an atomic
+  rename, which the inode in the key catches). `publishing-plan-progress/packages-cache.ts` already applied the same 2 s slack to the
+  files a kept scan resolved and now takes the constant from the module. Package reviews, the Producer's queue check
+  (`upload-queue-control.ts`) and the upload runner's pre-send check hash without a cache.
+- **Left as is (a stale value only means a later refresh):** `analytics-data-sync` peer-file fingerprints (persisted `size:mtime`;
+  assumed: a peer rewrites a day file only when its rows change, and a missed import is picked up at its next rewrite -- the stored
+  format is not changed, which would re-import every file once), the `review-notify` document memo (a notice at most one change
+  late), the `weekly-build` check key (also time-bounded), the live picker's duration cache (`live-streams/adapters/picker-files.ts`,
+  a displayed duration), and the `04 Videos/` folder signature (bounded to 5 minutes and backed by the files signature above).
+- **Residual:** a file system whose clock runs more than 2 s behind this computer's (a network share) could still date a fresh file
+  as settled. **Gate(s):** none. **Re-evaluate:** if workspaces move to a network share, or another file-stamp cache is added (it must
+  use `cachedForFile`).
+
 ## RISK-158 — A channel worker can add any video id, another channel's included, to its own channel's playlist — OPEN, 2026-11-23
 
 - **Affected components:** `src/lib/playlist-management/services.ts` `addVideosToPlaylist` in an agent scope; the worker's

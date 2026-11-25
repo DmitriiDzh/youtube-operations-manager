@@ -767,7 +767,7 @@ export function createAutoPrivateUploadCore(options: { slotDecisions?: (channelI
       const file = await files.resolveFile(workspace, relativePath);
       if (!file) return null;
       const info = await stat(file.path).catch(() => null);
-      return info ? { path: file.path, bytes: file.bytes, mtimeMs: info.mtimeMs } : null;
+      return info ? { path: file.path, bytes: file.bytes, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs, ino: info.ino, dev: info.dev } : null;
     },
     hashFile: (absolutePath) => sha256OfFile(absolutePath),
     queue: (input) => approval.queueAutomatic(input),
@@ -935,7 +935,7 @@ export function createUploadQueueControlCore(
       const file = await files.resolveFile(workspace, relativePath);
       if (!file) return null;
       const info = await stat(file.path).catch(() => null);
-      return info ? { path: file.path, bytes: file.bytes, mtimeMs: info.mtimeMs } : null;
+      return info ? { path: file.path, bytes: file.bytes, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs, ino: info.ino, dev: info.dev } : null;
     },
     hashFile: (absolutePath) => sha256OfFile(absolutePath),
     queue: (input) => approval.queueByProducer(input),

@@ -5,11 +5,18 @@
 // The checks at queue time are the approval's own (`upload-approval.ts` `queueAutomatic`). One try per manifest version: a manifest
 // hash once auto-queued is never queued again by itself, whatever became of its upload. Switched off: nothing is read or hashed.
 
+import { cachedForFile } from "@/lib/file-fingerprint";
 import { isDomainError } from "@/lib/shared-domain";
 import type { PackageScanResult, ScannedPackage } from "./package-scan";
 import { approvalNamesUpload, type SlotDecision } from "./slot-decision";
 import { isTriedPackage, mediaKeyOf, type TriedPackages } from "./owner-review-gate";
 import { AUTO_UPLOAD_WAIT_CODES } from "./upload-approval";
+
+/**
+ * A package's video file as the workspace rule resolved it, with its stamp. BL-277: `ctimeMs`, `ino` and `dev` belong to the hash
+ * cache's key (`file-fingerprint`); the production wiring always gives them, a test port may leave them out.
+ */
+export type VideoFileInfo = { path: string; bytes: number; mtimeMs: number; ctimeMs?: number; ino?: number; dev?: number };
 
 /** `userId` null: the channel has no connected account on this computer (it is skipped, with the reason recorded). */
 export type AutoUploadChannel = { channelId: string; userId: string | null };
@@ -38,7 +45,7 @@ export type AutoUploadDeps = {
    */
   triedHashes(channelId: string): Promise<TriedPackages>;
   /** The package's video file by the workspace rule, with its size and modification time; null when it is not there. */
-  videoFile(channelId: string, relativePath: string): Promise<{ path: string; bytes: number; mtimeMs: number } | null>;
+  videoFile(channelId: string, relativePath: string): Promise<VideoFileInfo | null>;
   /** The SHA-256 (lower-case hex) of a whole file. Costly on a multi-GB video: called only after the size matched, once per key. */
   hashFile(absolutePath: string): Promise<string>;
   /** The approval's `queueAutomatic`. */
@@ -70,7 +77,7 @@ export type AutoUploadDeps = {
   saveWaiting(entries: AutoUploadWaiting[]): Promise<void>;
   /** Kept between ticks (in memory): the reasons standing, by key, so only a change is logged. */
   waiting: Map<string, AutoUploadWaiting>;
-  /** Kept between ticks (in memory): `${manifestSha256}|${bytes}|${mtimeMs}` -> the video's SHA-256; and the hashes logged. */
+  /** Kept between ticks (in memory): (manifest hash, file stamp) -> the video's SHA-256 (`file-fingerprint` keys); and the hashes logged. */
   hashCache: Map<string, string>;
   loggedMismatches: Set<string>;
   warn?(message: string): void;
@@ -108,9 +115,9 @@ export type PackageCheckContext = {
   tried: TriedPackages;
   /** The plan's decision on each slot of the channel; null: the plan module is off (no slot is vetoed, none gives a date). */
   slots: Map<string, SlotDecision> | null;
-  videoFile(relativePath: string): Promise<{ path: string; bytes: number; mtimeMs: number } | null>;
+  videoFile(relativePath: string): Promise<VideoFileInfo | null>;
   /** The video's SHA-256 (lower-case hex); may throw. Called only once the size matched. */
-  videoHash(manifestSha256: string, file: { path: string; bytes: number; mtimeMs: number }): Promise<string>;
+  videoHash(manifestSha256: string, file: VideoFileInfo): Promise<string>;
   now(): Date;
 };
 
@@ -152,14 +159,18 @@ export async function checkPackageForQueue(p: ScannedPackage, ctx: PackageCheckC
 export function createAutoPrivateUpload(deps: AutoUploadDeps) {
   const warn = deps.warn ?? (() => undefined);
 
-  /** The video's SHA-256 at most once per (manifest hash, size, mtime): a finished video does not change. */
-  async function videoHash(manifestSha256: string, file: { path: string; bytes: number; mtimeMs: number }): Promise<string> {
-    const key = `${manifestSha256}|${file.bytes}|${file.mtimeMs}`;
-    const cached = deps.hashCache.get(key);
-    if (cached !== undefined) return cached;
-    const hash = (await deps.hashFile(file.path)).toLowerCase();
-    deps.hashCache.set(key, hash);
-    return hash;
+  /**
+   * The video's SHA-256 at most once per (manifest hash, file stamp): a finished video does not change. BL-277: by the shared
+   * `file-fingerprint` rule -- a video changed within the last 2 s (whole-second mtimes on HFS+) or replaced by a rename is hashed again.
+   */
+  async function videoHash(manifestSha256: string, file: VideoFileInfo): Promise<string> {
+    return cachedForFile({
+      store: deps.hashCache,
+      scope: manifestSha256,
+      stamp: { size: file.bytes, mtimeMs: file.mtimeMs, ctimeMs: file.ctimeMs, ino: file.ino, dev: file.dev },
+      now: () => (deps.now?.() ?? new Date()).getTime(),
+      compute: async () => (await deps.hashFile(file.path)).toLowerCase(),
+    });
   }
 
   /**

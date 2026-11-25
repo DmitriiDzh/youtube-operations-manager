@@ -78,7 +78,7 @@ function scanned(pkg: ReleasePackage, manifestSha256: string, fileBytes = pkg.si
   };
 }
 
-function harness(initial: { packages: ScannedPackage[]; enabled?: boolean; files?: Record<string, { bytes: number; mtimeMs: number; hash: string }>; slots?: Map<string, SlotDecision> }) {
+function harness(initial: { packages: ScannedPackage[]; enabled?: boolean; files?: Record<string, { bytes: number; mtimeMs: number; hash: string }>; slots?: Map<string, SlotDecision>; now?: () => Date }) {
   const state = {
     enabled: initial.enabled ?? true,
     packages: initial.packages,
@@ -147,6 +147,7 @@ function harness(initial: { packages: ScannedPackage[]; enabled?: boolean; files
     waiting: new Map(),
     // BL-225 stage 3: the plan's slot decisions (absent: the plan module is not plugged in).
     ...(initial.slots ? { slotDecisions: async () => initial.slots!, now: () => NOW } : {}),
+    ...(initial.now ? { now: initial.now } : {}),
   };
   return { state, auto: createAutoPrivateUpload(deps) };
 }
@@ -223,6 +224,18 @@ test("AC-AU-05: same size, another SHA-256 -> not queued, logged once; a second 
   // The file was replaced (a new mtime): hashed once more -- now it matches and is queued.
   h.state.files = fileOf(p, { mtimeMs: 2, hash: HASH_A });
   assert.deepEqual((await h.auto.tick()).queued.map((q) => q.video), ["V65"]);
+  assert.equal(h.state.hashCalls.length, 2);
+});
+
+test("BL-277: a video hashed within 2 s of its last change, then replaced by another of the same size and the same whole-second mtime, is hashed again", async () => {
+  // HFS+ (the T9 disk) keeps whole seconds: the replacement carries exactly the stamp of the file hashed a moment ago.
+  const p = scanned(release("V65"), "mf-1");
+  const written = NOW.getTime() - 1_000;
+  const h = harness({ packages: [p], files: fileOf(p, { mtimeMs: written, hash: HASH_B }), now: () => NOW });
+  assert.deepEqual((await h.auto.tick()).queued, []);
+  assert.equal(h.state.mismatches.length, 1);
+  h.state.files = fileOf(p, { mtimeMs: written, hash: HASH_A });
+  assert.deepEqual((await h.auto.tick()).queued.map((q) => q.video), ["V65"], "the stale SHA-256 of the replaced file is never reused");
   assert.equal(h.state.hashCalls.length, 2);
 });
 
