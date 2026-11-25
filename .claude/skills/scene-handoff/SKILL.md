@@ -10,6 +10,10 @@ and the `scene-dev` agent. Channel workers run `S` live: nothing is edited or bu
 
 ## 1. Brief (scene-dev agent)
 
+Launch `scene-dev` (and `psd2live-dev`) WITHOUT the Agent tool's `isolation: "worktree"`: that option sandboxes the agent
+in a YT Manager worktree and blocks every git call on `S`, so it can only hand back a patch. The agent makes its own
+`../scene-wt-<topic>` worktree.
+
 Give the agent the following:
 - the task in your own words;
 - the topic, which becomes `feat|fix|perf/<topic>` in `../scene-wt-<topic>`;
