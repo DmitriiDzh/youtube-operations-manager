@@ -5,6 +5,7 @@ import type { UiTextKey } from "@/lib/ui-text";
 import { ActionButton, SkeletonLines } from "./busy-feedback";
 import { AttachmentDropZone, DecisionAttachments, useAttachmentComposer } from "./clip-attachments";
 import { answeredGroupsOf, canApprove, openGroupsFrom, rangeOf, returnCommentReady, scenesOf, sourceImageStateOf, videoSrcOf, type ClipDto, type ClipScene, type ClipStatus, type SourceImageStatus } from "./clip-reviews-model";
+import { frameOf } from "./media-frame";
 import { useT, useUiText } from "./ui-text-provider";
 import { useUserTimezone } from "./use-user-timezone";
 
@@ -232,98 +233,107 @@ export function ClipReviewsPanel({ channelId, visible }: { channelId: string | n
           </span>
         </button>
         {expanded && (
-          <div className="space-y-3 border-t border-zinc-800 px-3 py-3">
-            {clip.file === "missing" ? (
-              <p className="rounded-md border border-orange-900 bg-orange-950/40 px-3 py-2 text-sm text-orange-200">{t("clipReviews.file.missingHelp")}</p>
-            ) : (
-              <ClipPlayer src={videoSrcOf(base!, clip)} startSec={clip.startSec} replayLabel={range ? t("clipReviews.replayRange") : null} />
-            )}
-            {clip.file === "changed" && <p className="rounded-md border border-orange-900 bg-orange-950/40 px-3 py-2 text-sm text-orange-200">{t("clipReviews.file.changedHelp")}</p>}
-            <p className="whitespace-pre-wrap text-sm text-zinc-200">{clip.note}</p>
-            {clip.approvedImage !== undefined && <ClipSourceImage channelId={channelId} clip={clip} />}
-            <dl className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500">
-              {range && <dd>{t("clipReviews.range", range)}</dd>}
-              <dd>{clip.device ? t("clipReviews.submittedOn", { when: at(clip.submittedAt), device: clip.device }) : t("clipReviews.submitted", { when: at(clip.submittedAt) })}</dd>
-              <dd>{t("clipReviews.size", { megabytes: formatNumber(clip.sizeBytes / 1_048_576, { maximumFractionDigits: 1 }) })}</dd>
-              <dd className="font-mono" title={t("clipReviews.path")}>
-                {clip.clipPath}
-              </dd>
-            </dl>
-            {clip.status !== "pending" && clip.decidedAt && (
-              <div className="rounded-md bg-zinc-900 px-3 py-2 text-sm">
-                <p className="text-zinc-300">
-                  {t(DECIDED_KEYS[clip.status], { when: at(clip.decidedAt) })}
-                  {clip.decidedOn ? ` ${t("clipReviews.decidedOn", { device: clip.decidedOn })}` : ""}
-                </p>
-                {clip.comment && (
-                  <p className="mt-1 whitespace-pre-wrap text-zinc-400">
-                    <span className="text-zinc-500">{t("clipReviews.yourComment")}: </span>
-                    {clip.comment}
-                  </p>
+          <div className="@container space-y-3 border-t border-zinc-800 px-3 py-3">
+            {/* Owner TG 4887: on a card from 56rem (a laptop) the player takes the width and the description, the source still and the
+                answer sit beside it, so Approve / Return stay next to the video; narrower, the answer comes right under the player and
+                the description, the still and the details follow it (review of f05c349d). */}
+            <div className="grid grid-cols-[minmax(0,1fr)] gap-3 @4xl:grid-cols-[minmax(0,1fr)_20rem]">
+              <div className="min-w-0 space-y-3">
+                {clip.file === "missing" ? (
+                  <p className="rounded-md border border-orange-900 bg-orange-950/40 px-3 py-2 text-sm text-orange-200">{t("clipReviews.file.missingHelp")}</p>
+                ) : (
+                  <ClipPlayer src={videoSrcOf(base!, clip)} startSec={clip.startSec} replayLabel={range ? t("clipReviews.replayRange") : null} />
                 )}
-                {clip.decisionId && clip.attachments.length > 0 && <DecisionAttachments base={base!} clipId={clip.clipId} decisionId={clip.decisionId} attachments={clip.attachments} />}
+                {clip.file === "changed" && <p className="rounded-md border border-orange-900 bg-orange-950/40 px-3 py-2 text-sm text-orange-200">{t("clipReviews.file.changedHelp")}</p>}
               </div>
-            )}
-            {clip.status === "pending" && !confirming && (
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  disabled={!canApprove(clip) || busy !== null}
-                  onClick={() => ask(clip.clipId, "approve")}
-                  className="rounded-md bg-violet-600 px-3 py-1 text-sm font-semibold text-white hover:bg-violet-500 disabled:opacity-40"
-                  title={canApprove(clip) ? undefined : t("clipReviews.approveBlocked")}
-                >
-                  {t("clipReviews.action.approve")}
-                </button>
-                <button type="button" disabled={busy !== null} onClick={() => ask(clip.clipId, "return")} className="rounded-md border border-zinc-600 px-3 py-1 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-40">
-                  {t("clipReviews.action.return")}
-                </button>
-                {!canApprove(clip) && <span className="text-xs text-zinc-500">{t("clipReviews.approveBlocked")}</span>}
+              <div className="flex min-w-0 flex-col gap-3">
+                <p className="max-w-[90ch] whitespace-pre-wrap text-sm text-zinc-200">{clip.note}</p>
+                {clip.approvedImage !== undefined && <ClipSourceImage channelId={channelId} clip={clip} />}
+                <dl className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500">
+                  {range && <dd>{t("clipReviews.range", range)}</dd>}
+                  <dd>{clip.device ? t("clipReviews.submittedOn", { when: at(clip.submittedAt), device: clip.device }) : t("clipReviews.submitted", { when: at(clip.submittedAt) })}</dd>
+                  <dd>{t("clipReviews.size", { megabytes: formatNumber(clip.sizeBytes / 1_048_576, { maximumFractionDigits: 1 }) })}</dd>
+                  <dd className="break-all font-mono" title={t("clipReviews.path")}>
+                    {clip.clipPath}
+                  </dd>
+                </dl>
+                {clip.status !== "pending" && clip.decidedAt && (
+                  <div className="rounded-md bg-zinc-900 px-3 py-2 text-sm">
+                    <p className="text-zinc-300">
+                      {t(DECIDED_KEYS[clip.status], { when: at(clip.decidedAt) })}
+                      {clip.decidedOn ? ` ${t("clipReviews.decidedOn", { device: clip.decidedOn })}` : ""}
+                    </p>
+                    {clip.comment && (
+                      <p className="mt-1 whitespace-pre-wrap text-zinc-400">
+                        <span className="text-zinc-500">{t("clipReviews.yourComment")}: </span>
+                        {clip.comment}
+                      </p>
+                    )}
+                    {clip.decisionId && clip.attachments.length > 0 && <DecisionAttachments base={base!} clipId={clip.clipId} decisionId={clip.decisionId} attachments={clip.attachments} />}
+                  </div>
+                )}
+                {clip.status === "pending" && !confirming && (
+                  <div className="flex flex-wrap items-center gap-2 @max-4xl:order-first">
+                    <button
+                      type="button"
+                      disabled={!canApprove(clip) || busy !== null}
+                      onClick={() => ask(clip.clipId, "approve")}
+                      className="rounded-md bg-violet-600 px-3 py-1 text-sm font-semibold text-white hover:bg-violet-500 disabled:opacity-40"
+                      title={canApprove(clip) ? undefined : t("clipReviews.approveBlocked")}
+                    >
+                      {t("clipReviews.action.approve")}
+                    </button>
+                    <button type="button" disabled={busy !== null} onClick={() => ask(clip.clipId, "return")} className="rounded-md border border-zinc-600 px-3 py-1 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-40">
+                      {t("clipReviews.action.return")}
+                    </button>
+                    {!canApprove(clip) && <span className="text-xs text-zinc-500">{t("clipReviews.approveBlocked")}</span>}
+                  </div>
+                )}
+                {clip.status === "pending" && confirming && (
+                  <div className={`space-y-2 rounded-md border px-3 py-2 @max-4xl:order-first ${confirming === "approve" ? "border-violet-800 bg-violet-950/30" : "border-red-900 bg-red-950/30"}`}>
+                    <p className="text-sm font-medium text-zinc-100">{t(confirming === "approve" ? "clipReviews.confirm.approveTitle" : "clipReviews.confirm.returnTitle")}</p>
+                    <AttachmentDropZone composer={composer} disabled={rowBusy}>
+                      {(onPaste) => (
+                        <textarea
+                          value={comment}
+                          onChange={(event) => setComment(event.target.value)}
+                          onPaste={onPaste}
+                          maxLength={2000}
+                          rows={confirming === "return" ? 3 : 2}
+                          aria-label={t(confirming === "approve" ? "clipReviews.confirm.approveComment" : "clipReviews.confirm.returnTitle")}
+                          placeholder={t(confirming === "approve" ? "clipReviews.confirm.approveComment" : "clipReviews.confirm.returnPlaceholder")}
+                          className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-100 placeholder:text-zinc-600"
+                        />
+                      )}
+                    </AttachmentDropZone>
+                    <div className="flex items-center gap-2">
+                      <ActionButton
+                        busy={rowBusy}
+                        busyLabel={t("clipReviews.action.saving")}
+                        disabled={busy !== null || !composer.ready || (confirming === "return" && !returnCommentReady(comment))}
+                        onClick={() => void decide(clip, confirming)}
+                        className={`rounded-md px-3 py-1 text-sm font-semibold text-white disabled:opacity-40 ${confirming === "approve" ? "bg-violet-600 hover:bg-violet-500" : "bg-red-700 hover:bg-red-600"}`}
+                      >
+                        {t(confirming === "approve" ? "clipReviews.confirm.approveYes" : "clipReviews.confirm.returnYes")}
+                      </ActionButton>
+                      <button
+                        type="button"
+                        disabled={rowBusy}
+                        onClick={() => {
+                          composer.clear(true);
+                          setConfirm(null);
+                        }}
+                        className="rounded-md px-3 py-1 text-sm text-zinc-400 hover:text-zinc-200 disabled:opacity-40"
+                      >
+                        {t("clipReviews.action.cancel")}
+                      </button>
+                      {!composer.ready && <span className="text-xs text-zinc-500">{t(composer.hasFailed ? "clipReviews.attach.removeFailed" : "clipReviews.attach.waitUploads")}</span>}
+                    </div>
+                  </div>
+                )}
+                {actionError?.clipId === clip.clipId && <p className="text-sm text-red-400 @max-4xl:order-first">{actionError.text}</p>}
               </div>
-            )}
-            {clip.status === "pending" && confirming && (
-              <div className={`space-y-2 rounded-md border px-3 py-2 ${confirming === "approve" ? "border-violet-800 bg-violet-950/30" : "border-red-900 bg-red-950/30"}`}>
-                <p className="text-sm font-medium text-zinc-100">{t(confirming === "approve" ? "clipReviews.confirm.approveTitle" : "clipReviews.confirm.returnTitle")}</p>
-                <AttachmentDropZone composer={composer} disabled={rowBusy}>
-                  {(onPaste) => (
-                    <textarea
-                      value={comment}
-                      onChange={(event) => setComment(event.target.value)}
-                      onPaste={onPaste}
-                      maxLength={2000}
-                      rows={confirming === "return" ? 3 : 2}
-                      aria-label={t(confirming === "approve" ? "clipReviews.confirm.approveComment" : "clipReviews.confirm.returnTitle")}
-                      placeholder={t(confirming === "approve" ? "clipReviews.confirm.approveComment" : "clipReviews.confirm.returnPlaceholder")}
-                      className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-100 placeholder:text-zinc-600"
-                    />
-                  )}
-                </AttachmentDropZone>
-                <div className="flex items-center gap-2">
-                  <ActionButton
-                    busy={rowBusy}
-                    busyLabel={t("clipReviews.action.saving")}
-                    disabled={busy !== null || !composer.ready || (confirming === "return" && !returnCommentReady(comment))}
-                    onClick={() => void decide(clip, confirming)}
-                    className={`rounded-md px-3 py-1 text-sm font-semibold text-white disabled:opacity-40 ${confirming === "approve" ? "bg-violet-600 hover:bg-violet-500" : "bg-red-700 hover:bg-red-600"}`}
-                  >
-                    {t(confirming === "approve" ? "clipReviews.confirm.approveYes" : "clipReviews.confirm.returnYes")}
-                  </ActionButton>
-                  <button
-                    type="button"
-                    disabled={rowBusy}
-                    onClick={() => {
-                      composer.clear(true);
-                      setConfirm(null);
-                    }}
-                    className="rounded-md px-3 py-1 text-sm text-zinc-400 hover:text-zinc-200 disabled:opacity-40"
-                  >
-                    {t("clipReviews.action.cancel")}
-                  </button>
-                  {!composer.ready && <span className="text-xs text-zinc-500">{t(composer.hasFailed ? "clipReviews.attach.removeFailed" : "clipReviews.attach.waitUploads")}</span>}
-                </div>
-              </div>
-            )}
-            {actionError?.clipId === clip.clipId && <p className="text-sm text-red-400">{actionError.text}</p>}
+            </div>
             {scene && scene.earlier.length > 0 && (
               <div className="space-y-1.5 border-t border-zinc-800 pt-3">
                 <h4 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">{t("clipReviews.versions.earlier")}</h4>
@@ -428,6 +438,8 @@ function ClipSourceImage({ channelId, clip }: { channelId: string; clip: ClipDto
 /** The inline player: this computer's copy with HTTP Range; the fragment starts and stops it at the Producer's range. */
 function ClipPlayer({ src, startSec, replayLabel }: { src: string; startSec: number | null; replayLabel: string | null }) {
   const ref = useRef<HTMLVideoElement>(null);
+  // Owner TG 4887: a vertical clip (Shorts, 9:16) gets a vertical frame of its own, known from the file's metadata.
+  const [vertical, setVertical] = useState(false);
   const replay = () => {
     const video = ref.current;
     if (!video) return;
@@ -438,7 +450,17 @@ function ClipPlayer({ src, startSec, replayLabel }: { src: string; startSec: num
   };
   return (
     <div className="space-y-1.5">
-      <video ref={ref} src={src} controls preload="metadata" playsInline className="aspect-video w-full max-w-3xl rounded-md bg-black" />
+      {/* Owner TG 4887: as wide as the column, but never taller than 70% of the screen (the width follows from 16:9, so the
+          controls and the answer still fit); a vertical clip is capped by the same height in a 9:16 frame. */}
+      <video
+        ref={ref}
+        src={src}
+        controls
+        preload="metadata"
+        playsInline
+        onLoadedMetadata={(event) => setVertical(frameOf(event.currentTarget.videoWidth, event.currentTarget.videoHeight) === "vertical")}
+        className={`rounded-md bg-black object-contain ${vertical ? "aspect-[9/16] w-[min(100%,calc(70vh*9/16))]" : "aspect-video w-full max-w-[calc(70vh*16/9)]"}`}
+      />
       {replayLabel && (
         <button type="button" onClick={replay} className="text-xs text-sky-400 hover:text-sky-300">
           {replayLabel}

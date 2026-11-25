@@ -1,13 +1,14 @@
-import { readdir, realpath, stat } from "node:fs/promises";
+import { readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { detectFfmpeg, probeMedia, type FfmpegTools, type MediaProbe } from "@/lib/ffmpeg-host";
+import { cachedForFile, statFileStamp } from "@/lib/file-fingerprint";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
 import { createExchangeFs, resolveWorkspaceFile } from "@/lib/workspace-exchange";
 import { createWorkspaceVideoFiles } from "@/lib/workspace-videos";
 import { LIBRARY_FOLDER, type LibraryDependencies } from "../library";
 
 // BL-234 (FO-REQ-0048, ADR 0056): the segment library's reads in the channel workspace -- the folder's file names, a sidecar's text,
-// a file through the workspace rule (its real path inside the workspace), ffprobe with a cache per path, size and modification time.
+// a file through the workspace rule (its real path inside the workspace), ffprobe with a cache per path and file stamp (`file-fingerprint`).
 // Read-only: no write, rename or delete of any library file exists here.
 
 type WorkspaceLookup = (channelId: string) => Promise<{ configured: false } | { configured: true; path: string }>;
@@ -70,20 +71,30 @@ export function createLibraryFiles(
       return files.readText(file.path, maxBytes).catch(() => null);
     },
     async probe(file) {
-      const info = await stat(file);
-      const key = `${file}|${info.size}|${info.mtimeMs}`;
-      const cached = cache.get(key);
-      if (cached) return cached;
-      tools ??= detectFfmpeg();
-      const found = await tools;
-      if (!found) {
-        tools = null; // look again next time (ffmpeg may be installed meanwhile)
-        throw new Error("ffmpeg/ffprobe is not installed on this computer");
-      }
-      const probe = await probeMedia(found, file);
-      if (cache.size >= PROBE_CACHE_MAX) cache.clear();
-      cache.set(key, probe);
-      return probe;
+      // BL-277: the shared `file-fingerprint` rule -- a file changed in the last 2 s (whole-second mtimes on HFS+) or replaced by a
+      // rename is probed again, never given the earlier file's duration and streams.
+      return cachedForFile({
+        store: {
+          get: (key) => cache.get(key),
+          set(key, probe) {
+            if (cache.size >= PROBE_CACHE_MAX) cache.clear();
+            cache.set(key, probe);
+          },
+        },
+        scope: file,
+        stamp: await statFileStamp(file),
+        restat: () => statFileStamp(file), // a file changed while it was probed is not kept
+        now: () => Date.now(),
+        compute: async () => {
+          tools ??= detectFfmpeg();
+          const found = await tools;
+          if (!found) {
+            tools = null; // look again next time (ffmpeg may be installed meanwhile)
+            throw new Error("ffmpeg/ffprobe is not installed on this computer");
+          }
+          return probeMedia(found, file);
+        },
+      });
     },
   };
 }

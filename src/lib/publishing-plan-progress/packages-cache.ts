@@ -1,3 +1,4 @@
+import { COARSE_MTIME_SLACK_MS } from "@/lib/file-fingerprint";
 import type { ScannedPackage } from "@/lib/publishing";
 
 // BL-243: the plan progress's one removed-list read and one package scan per channel, kept for a minute -- the plan screen polls
@@ -31,7 +32,7 @@ export class PackagesScanTimeoutError extends Error {
 }
 
 /** BL-270 review: how much earlier than the scan's start a resolved file must have last changed for the result to be reused late. */
-const FILE_CLOCK_SLACK_MS = 2_000;
+const FILE_CLOCK_SLACK_MS = COARSE_MTIME_SLACK_MS; // BL-277: the one coarse-clock slack of every file-stamp cache (`file-fingerprint`)
 
 export type PackagesEntry = {
   at: number;

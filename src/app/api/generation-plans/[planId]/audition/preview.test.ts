@@ -129,3 +129,25 @@ test("AC-VR-12: the same file again comes from the cache; a rewritten file (new 
   assert.deepEqual([...((await p.preview("/x/b.png")) ?? [])], [3]);
   assert.deepEqual([...((await p.preview("/x/a.png")) ?? [])], [4], "evicted after 2 newer ones (the cache keeps 2)");
 });
+
+test("BL-277: a preview of a file changed within the last 2 s is never served from the cache (whole-second mtimes on HFS+); once 2 s old it is", async () => {
+  let made = 0;
+  let now = 1_800_000_000_000;
+  const p = createImagePreviewer({
+    loadSharp: async () =>
+      ((() => {
+        made++;
+        const pipeline = { rotate: () => pipeline, resize: () => pipeline, jpeg: () => pipeline, toBuffer: async () => new Uint8Array([made]) };
+        return pipeline;
+      }) as unknown as SharpFactory),
+    // The same stamp throughout: the image is replaced by another of the same size in the same whole second, in place.
+    stat: async () => ({ size: 10, mtimeMs: 1_800_000_000_000, ctimeMs: 1_800_000_000_000, ino: 5, dev: 1 }),
+    now: () => now,
+  });
+  assert.deepEqual([...((await p.preview("/x/a.png")) ?? [])], [1]);
+  now += 1_000;
+  assert.deepEqual([...((await p.preview("/x/a.png")) ?? [])], [2], "made again, not the earlier image's preview");
+  now += 1_000;
+  assert.deepEqual([...((await p.preview("/x/a.png")) ?? [])], [3]);
+  assert.deepEqual([...((await p.preview("/x/a.png")) ?? [])], [3], "settled: cached");
+});

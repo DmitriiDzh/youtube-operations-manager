@@ -245,7 +245,8 @@ export function LiveStreamPanel({ channelId, visible }: { channelId: string | nu
             <StatusCard overview={overview} base={base!} onChanged={load} visible={visible} />
             <LiveStreamAnalyticsCard base={base!} visible={visible} />
           </div>
-          <div className="max-w-4xl space-y-6">
+          {/* Owner TG 4896: the lower cards use the full width too (was max-w-4xl); their forms keep a width of their own. */}
+          <div className="min-w-0 space-y-6">
             {/* BL-234 (review item 1a): the segment selection is prepared while the stream still plays videos; the switch to
                 segments is offered only once a selected segment passed its check. */}
             <LiveStreamSourceSwitch
@@ -269,7 +270,7 @@ export function LiveStreamPanel({ channelId, visible }: { channelId: string | nu
             )}
             <details className="group rounded-xl border border-zinc-800 bg-zinc-900">
               <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-zinc-200 hover:text-white">{t("live.settingsGroup")}</summary>
-              <div className="space-y-6 border-t border-zinc-800 p-3">
+              <div className="space-y-6 border-t border-zinc-800 p-3 *:max-w-4xl">
                 <SettingsCard overview={overview} base={base!} onChanged={load} />
                 <LiveStreamLocalizationsCard base={base!} view={overview.localizations ?? null} channelLanguage={overview.channelDefaultLanguage ?? null} hasStream={overview.stream !== null} onChanged={load} />
                 <LiveStreamVideoSettingsCard base={base!} channelLanguage={overview.channelDefaultLanguage ?? null} saved={overview.videoSettings} problem={overview.videoSettingsProblem} onChanged={load} />
@@ -989,7 +990,7 @@ function RotationCard({ overview, base, onChanged }: { overview: Overview; base:
                 </select>
               </label>
             )}
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex max-w-4xl flex-wrap items-center gap-2">
               <input type="text" value={videoId} onChange={(e) => setVideoId(e.target.value.trim())} placeholder={t("live.rotation.videoIdPlaceholder")} aria-label={t("live.rotation.videoId")} disabled={busy} className={`${inputClass} w-40 font-mono`} />
               <input type="text" value={file} onChange={(e) => setFile(e.target.value)} placeholder={t("live.rotation.filePlaceholder")} aria-label={t("live.rotation.file")} disabled={busy} className={`${inputClass} min-w-64 flex-1`} />
               <button

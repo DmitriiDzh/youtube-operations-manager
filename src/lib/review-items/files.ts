@@ -1,13 +1,12 @@
-import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
+import { cachedSha256OfFile } from "@/lib/file-fingerprint";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
 import { createExchangeFs, resolveWorkspaceFile } from "@/lib/workspace-exchange";
 import { createLruCache, type LruCache } from "./lru";
 
 // BL-272 (ADR 0076; moved from clip-reviews' files adapter, ADR 0061 §3): a review item's file on this computer -- the shared
-// workspace rule (`workspace-exchange`) and a SHA-256 of the file, remembered per path, size and modification time so an owner's
-// list does not hash an unchanged file on every read.
+// workspace rule (`workspace-exchange`) and a SHA-256 of the file, remembered per path and file stamp so an owner's list does not
+// hash an unchanged file on every read -- BL-277: by the shared `file-fingerprint` rule (a file changed in the last 2 s, or replaced
+// by a rename, is hashed again; HFS+ keeps whole-second mtimes).
 
 /** A file resolved inside the channel workspace (absolute: never sent to the browser or an agent). */
 export type ResolvedReviewFile = { path: string; bytes: number };
@@ -46,21 +45,7 @@ const HASH_KEY = Symbol.for("ytom.reviewItems.hashesLru");
 type Holder = typeof globalThis & { [HASH_KEY]?: LruCache<string> };
 const holder = globalThis as Holder;
 
-/** The file's SHA-256 (hex), cached per path, size and modification time (LRU, `REVIEW_HASH_CACHE_MAX` entries). */
+/** The file's SHA-256 (hex), cached per path and file stamp by the `file-fingerprint` rule (LRU, `REVIEW_HASH_CACHE_MAX` entries). */
 export async function hashReviewFile(absolutePath: string): Promise<string> {
-  const info = await stat(absolutePath);
-  const key = `${absolutePath}\u0000${info.size}\u0000${info.mtimeMs}`;
-  const cache = (holder[HASH_KEY] ??= createLruCache<string>(REVIEW_HASH_CACHE_MAX));
-  const known = cache.get(key);
-  if (known) return known;
-  const hash = createHash("sha256");
-  await new Promise<void>((resolve, reject) => {
-    createReadStream(absolutePath)
-      .on("data", (chunk) => hash.update(chunk))
-      .on("end", () => resolve())
-      .on("error", reject);
-  });
-  const sha = hash.digest("hex");
-  cache.set(key, sha);
-  return sha;
+  return cachedSha256OfFile({ store: (holder[HASH_KEY] ??= createLruCache<string>(REVIEW_HASH_CACHE_MAX)), absolutePath });
 }

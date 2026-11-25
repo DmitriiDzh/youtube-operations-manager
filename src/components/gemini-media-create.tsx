@@ -203,7 +203,8 @@ export function GeminiCreateCard({ activeChannelId, kind }: { activeChannelId: s
       </div>
       {open && !activeChannelId && <p className="text-xs text-zinc-500">{t("media.gemini.noChannel")}</p>}
       {open && activeChannelId && form && status && (
-        <div className="space-y-3 text-sm">
+        // Owner TG 4887: Media is full width; the form keeps a comfortable width of its own.
+        <div className="max-w-4xl space-y-3 text-sm">
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="block space-y-1">
               <span className="text-xs text-zinc-400">{t("media.gemini.computer")}</span>
