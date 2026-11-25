@@ -46,3 +46,19 @@ test("BL-270: an unchanged peer report or local report is not rewritten; a chang
   assert.deepEqual(await store.readPeers(), { win: '{"v":2}' }, "a real change is written and seen at once");
   assert.equal(await store.readLocal(), '{"own":2}');
 });
+
+// BL-277 (owner TG 4922): HFS+ keeps whole-second mtimes. A peer report replaced by another store (another module's instance, or the
+// sync tool) with the same size, in the same second the reader cached it, must still be seen.
+test("BL-277: a same-size peer report replaced in the same whole second by another writer is seen by the reader", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "per-device-store-"));
+  const reader = createFsPerDeviceReportStore(dir);
+  const writer = createFsPerDeviceReportStore(dir);
+  const file = path.join(dir, "peers", "win.json");
+  const second = new Date(Math.floor(Date.now() / 1000) * 1000);
+  await writer.writePeer("win", '{"v":1}');
+  await utimes(file, second, second);
+  assert.deepEqual(await reader.readPeers(), { win: '{"v":1}' });
+  await writer.writePeer("win", '{"v":2}');
+  await utimes(file, second, second);
+  assert.deepEqual(await reader.readPeers(), { win: '{"v":2}' });
+});

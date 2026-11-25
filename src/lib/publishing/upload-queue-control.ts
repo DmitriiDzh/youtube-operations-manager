@@ -8,7 +8,7 @@
 
 import type { StoredPublishingUpload } from "@/lib/db";
 import { DomainError, type DomainErrorCode } from "@/lib/shared-domain";
-import { checkPackageForQueue, type SlotDecision } from "./auto-upload";
+import { checkPackageForQueue, type SlotDecision, type VideoFileInfo } from "./auto-upload";
 import type { PackageScanResult } from "./package-scan";
 import type { TriedPackages } from "./owner-review-gate";
 import { compareQueueOrder, isCancellable, isPublishAtSet, isSending, type ApprovedPackage } from "./upload-runner";
@@ -47,7 +47,7 @@ export type UploadQueueControlDeps = {
   blockedHashes(channelId: string): Promise<TriedPackages>;
   /** The weekly plan's decisions (the composition layer); absent: the plan module is off. */
   slotDecisions?(channelId: string): Promise<Map<string, SlotDecision>>;
-  videoFile(channelId: string, relativePath: string): Promise<{ path: string; bytes: number; mtimeMs: number } | null>;
+  videoFile(channelId: string, relativePath: string): Promise<VideoFileInfo | null>;
   hashFile(absolutePath: string): Promise<string>;
   /** The approval's `queueByProducer`. */
   queue(input: {

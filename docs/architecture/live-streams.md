@@ -48,7 +48,7 @@ Plan: `docs/roadmap/plans/LIVE_STREAMS_PLAN.md` (FO-REQ-0019). Schema v86, Facto
     library `<workspace>/04 Videos/Live Segments/seg-<6 digits>.mp4` + sidecar `.json` (+ poster `.jpg`), written by the Operator's
     generator as `.part` then renamed. `library.ts` lists only complete segments whose sidecar parses with the file's `seq`; it has
     no write, rename or delete of a library file (`adapters/library-files.ts` reads through `resolveWorkspaceFile`, ffprobe cached by
-    path/size/mtime). No YouTube read: a segment is checked by ffprobe only (picture, AAC 44.1/48 kHz ≤ 2 ch, known duration).
+    path and file stamp through `file-fingerprint`, BL-277). No YouTube read: a segment is checked by ffprobe only (picture, AAC 44.1/48 kHz ≤ 2 ch, known duration).
   - One engine: a segment's id in a pass is `seg-<seq>`; the supervisor's items are both sources' (`index.liveSourceItems`), the
     buffer checks a segment copy with `checkSegmentMedia` instead of the YouTube duration, the helper is unchanged (resume by index
     + offset, replay of the playable copies). `recheckLiveSource` dispatches by mode for Start, Restart, encoder starts and the
