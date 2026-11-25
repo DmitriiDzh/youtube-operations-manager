@@ -137,7 +137,7 @@ test("BL-270: writeFileAtomicIfChanged skips identical bytes, writes different o
   withTempDir("atomic-if-changed-", async (dir) => {
     const file = path.join(dir, "doc.bin");
     assert.equal(await writeFileAtomicIfChanged(file, new Uint8Array([1, 2, 3])), true, "missing -> written");
-    const old = new Date(Date.now() - 60 * 60_000);
+    const old = new Date(Math.floor(Date.now() / 1000) * 1000 - 60 * 60_000); // whole seconds: HFS+ (the T9 disk) keeps 1 s mtimes
     await utimes(file, old, old);
     assert.equal(await writeFileAtomicIfChanged(file, new Uint8Array([1, 2, 3])), false);
     assert.equal((await stat(file)).mtimeMs, old.getTime(), "mtime untouched");

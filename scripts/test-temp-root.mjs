@@ -87,6 +87,30 @@ export async function sweepStaleTestRunRoots(baseDir, { now, isAlive = isPidAliv
   return removed;
 }
 
+/**
+ * Owner, Telegram 4903 (2026-11-25): test runs wrote ~60 GB per hour of testing to the Mac's internal SSD, almost all of it
+ * temporary databases and folders. Where a test run's folder goes:
+ *   - `YTM_TEST_TMP=<folder>`: that folder (created if missing); `YTM_TEST_TMP=system`: the system temp folder;
+ *   - otherwise, on macOS, when the external T9 disk is mounted: `<T9>/YouTube/00 Tools/_ytm-test-tmp`;
+ *   - otherwise the system temp folder (other computers, Windows, Linux, CI).
+ * "Mounted" means the `00 Tools` folder exists and sits on another volume than the system temp folder: an unmounted disk
+ * can leave `/Volumes/Samsung T9` behind as a plain folder on the internal disk, which must not count.
+ */
+export const T9_TOOLS_DIR = "/Volumes/Samsung T9/YouTube/00 Tools";
+export const T9_TEST_TEMP_DIR_NAME = "_ytm-test-tmp";
+
+/**
+ * @param {{ env: Record<string, string | undefined>; platform: string; systemTmp: string; isOtherVolumeDir: (dir: string) => boolean }} input
+ * @returns {{ base: string; source: "env" | "t9" | "system" }}
+ */
+export function testRunBaseDir({ env, platform, systemTmp, isOtherVolumeDir }) {
+  const override = (env.YTM_TEST_TMP ?? "").trim();
+  if (override === "system") return { base: systemTmp, source: "system" };
+  if (override !== "") return { base: path.resolve(override), source: "env" };
+  if (platform === "darwin" && isOtherVolumeDir(T9_TOOLS_DIR)) return { base: path.join(T9_TOOLS_DIR, T9_TEST_TEMP_DIR_NAME), source: "t9" };
+  return { base: systemTmp, source: "system" };
+}
+
 /** The environment a test run gets: every name the system reads its temporary folder from points at the run's folder. */
 export function testRunEnv(baseEnv, root) {
   return { ...baseEnv, TMPDIR: root, TMP: root, TEMP: root };
