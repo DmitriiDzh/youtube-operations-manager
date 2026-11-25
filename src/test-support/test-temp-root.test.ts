@@ -8,6 +8,7 @@ import {
   isStaleTestRunRoot,
   parseTestRunRootName,
   sweepStaleTestRunRoots,
+  testRunBaseDir,
   testRunEnv,
   testRunnerArgs,
   testRunRootName,
@@ -116,7 +117,7 @@ test("end to end: a test's mkdtemp lands in the run folder, and nothing of the r
       ].join("\n")
     );
     const runner = path.resolve(process.cwd(), "scripts", "run-tests.mjs");
-    const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: base, TMP: base, TEMP: base };
+    const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: base, TMP: base, TEMP: base, YTM_TEST_TMP: base };
     delete env.NODE_TEST_CONTEXT;
     delete env.NODE_TEST_WORKER_ID;
     const result = spawnSync(process.execPath, [runner, probe], { env, encoding: "utf8", timeout: 60_000 });
@@ -130,7 +131,7 @@ test("end to end: a failing test still removes the run folder and the run fails"
   withTempDir("ytm-runner-", async (base) => {
     const probe = path.join(base, "fail.test.mjs");
     await writeFile(probe, 'import test from "node:test";\ntest("fails", () => { throw new Error("expected"); });\n');
-    const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: base, TMP: base, TEMP: base };
+    const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: base, TMP: base, TEMP: base, YTM_TEST_TMP: base };
     delete env.NODE_TEST_CONTEXT;
     delete env.NODE_TEST_WORKER_ID;
     const result = spawnSync(process.execPath, [path.resolve(process.cwd(), "scripts", "run-tests.mjs"), probe], { env, encoding: "utf8", timeout: 60_000 });
@@ -154,11 +155,81 @@ test("--test-isolation other than \"process\" is refused (tests in one process c
 
 test("end to end: the runner refuses --test-isolation none before running anything, and leaves no run folder", () =>
   withTempDir("ytm-runner-", async (base) => {
-    const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: base, TMP: base, TEMP: base };
+    const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: base, TMP: base, TEMP: base, YTM_TEST_TMP: base };
     delete env.NODE_TEST_CONTEXT;
     delete env.NODE_TEST_WORKER_ID;
     const result = spawnSync(process.execPath, [path.resolve(process.cwd(), "scripts", "run-tests.mjs"), "--test-isolation", "none"], { env, encoding: "utf8", timeout: 60_000 });
     assert.equal(result.status, 2);
     assert.match(result.stderr, /refused/);
     assert.deepEqual(await readdir(base), []);
+  }));
+
+// Owner, Telegram 4903 (2026-11-25): test runs wore the Mac's internal SSD (~60 GB per hour of testing). Requirements: the run
+// folder goes to `<T9>/YouTube/00 Tools/_ytm-test-tmp` when the T9 disk is mounted (macOS); `YTM_TEST_TMP` picks another
+// folder (`system`: the system temp folder); without T9, on other systems, or when the chosen folder cannot be made, the
+// system temp folder as before. A stale `/Volumes/Samsung T9` folder left on the internal disk does not count as mounted.
+const T9_TOOLS = "/Volumes/Samsung T9/YouTube/00 Tools";
+const T9_BASE = path.join(T9_TOOLS, "_ytm-test-tmp");
+const SYS = "/var/folders/xy/T";
+
+test("the run's temp base: T9 when mounted on macOS, else the system temp folder; YTM_TEST_TMP overrides", () => {
+  const asked: string[] = [];
+  const mounted = (dir: string) => (asked.push(dir), true);
+  const absent = () => false;
+  assert.deepEqual(testRunBaseDir({ env: {}, platform: "darwin", systemTmp: SYS, isOtherVolumeDir: mounted }), { base: T9_BASE, source: "t9" });
+  assert.deepEqual(asked, [T9_TOOLS], "the check is on the existing `00 Tools` folder, never the YouTube root");
+  assert.deepEqual(testRunBaseDir({ env: {}, platform: "darwin", systemTmp: SYS, isOtherVolumeDir: absent }), { base: SYS, source: "system" });
+  for (const platform of ["linux", "win32"]) {
+    assert.deepEqual(testRunBaseDir({ env: {}, platform, systemTmp: SYS, isOtherVolumeDir: () => true }), { base: SYS, source: "system" }, platform);
+  }
+  assert.deepEqual(testRunBaseDir({ env: { YTM_TEST_TMP: "/Volumes/Other Disk/tmp" }, platform: "darwin", systemTmp: SYS, isOtherVolumeDir: mounted }), { base: path.resolve("/Volumes/Other Disk/tmp"), source: "env" });
+  assert.deepEqual(testRunBaseDir({ env: { YTM_TEST_TMP: "/srv/t" }, platform: "linux", systemTmp: SYS, isOtherVolumeDir: absent }), { base: path.resolve("/srv/t"), source: "env" });
+  assert.deepEqual(testRunBaseDir({ env: { YTM_TEST_TMP: "system" }, platform: "darwin", systemTmp: SYS, isOtherVolumeDir: mounted }), { base: SYS, source: "system" });
+  assert.deepEqual(testRunBaseDir({ env: { YTM_TEST_TMP: "  " }, platform: "darwin", systemTmp: SYS, isOtherVolumeDir: mounted }), { base: T9_BASE, source: "t9" }, "blank means not set");
+  assert.equal(testRunBaseDir({ env: { YTM_TEST_TMP: "rel/dir" }, platform: "linux", systemTmp: SYS, isOtherVolumeDir: absent }).base, path.resolve("rel/dir"));
+});
+
+/** Runs the real runner on one probe test that asserts where os.tmpdir() points. */
+function runProbe(base: string, extraEnv: NodeJS.ProcessEnv, expectedParent: string) {
+  const probe = path.join(base, "where.test.mjs");
+  return writeFile(
+    probe,
+    [
+      'import test from "node:test";',
+      'import assert from "node:assert/strict";',
+      'import { mkdtempSync, writeFileSync } from "node:fs";',
+      'import os from "node:os";',
+      'import path from "node:path";',
+      "test('probe', () => {",
+      `  assert.match(path.basename(os.tmpdir()), /^ytm-test-run-\\d+-\\d+$/);`,
+      `  assert.equal(path.dirname(os.tmpdir()), ${JSON.stringify(expectedParent)});`,
+      "  writeFileSync(path.join(mkdtempSync(path.join(os.tmpdir(), 'db-')), 'x.db'), Buffer.alloc(1024));",
+      "});",
+    ].join("\n")
+  ).then(() => {
+    const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: base, TMP: base, TEMP: base, ...extraEnv };
+    delete env.NODE_TEST_CONTEXT;
+    delete env.NODE_TEST_WORKER_ID;
+    return spawnSync(process.execPath, [path.resolve(process.cwd(), "scripts", "run-tests.mjs"), probe], { env, encoding: "utf8", timeout: 60_000 });
+  });
+}
+
+test("end to end: YTM_TEST_TMP with a space in its path gets the run folder, made when missing and emptied afterwards", () =>
+  withTempDir("ytm-runner-", async (base) => {
+    const chosen = path.join(base, "Samsung T9 like", "00 Tools", "_ytm-test-tmp");
+    const result = await runProbe(base, { YTM_TEST_TMP: chosen }, chosen);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, /pass 1/);
+    assert.deepEqual(await readdir(chosen), [], "the run folder is removed; the chosen folder itself stays");
+    // tsx's compile cache stays in the system temp folder, never in the chosen one.
+    assert.deepEqual((await readdir(base)).sort(), ["Samsung T9 like", tsxCacheFolderName(), "where.test.mjs"].sort());
+  }));
+
+test("end to end: a YTM_TEST_TMP that cannot be made falls back to the system temp folder", () =>
+  withTempDir("ytm-runner-", async (base) => {
+    await writeFile(path.join(base, "a-file"), "not a folder");
+    const result = await runProbe(base, { YTM_TEST_TMP: path.join(base, "a-file", "tmp") }, base);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stderr, /using the system temp folder/);
+    assert.deepEqual((await readdir(base)).sort(), ["a-file", tsxCacheFolderName(), "where.test.mjs"].sort());
   }));

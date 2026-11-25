@@ -6,6 +6,12 @@
   folders (> 2 h and pid gone, or > 48 h), links tsx's cache folder (`tsx-<uid>`) into it, spawns `node --import tsx --test …` with
   `TMPDIR`/`TMP`/`TEMP` = the run folder (every test process inherits it, so every `os.tmpdir()` — including the test-runner
   database singleton `youtube-ops-manager-test-singleton-<pid>` — lands inside), and removes the folder when the runner exits.
+- **Test temp base (owner TG 4903, 2026-11-25, SSD wear):** `testRunBaseDir` (`scripts/test-temp-root.mjs`) picks the folder the
+  run folder goes into: `YTM_TEST_TMP=<folder>` (made if missing; `system` = `os.tmpdir()`); else, on macOS, when
+  `/Volumes/Samsung T9/YouTube/00 Tools` exists on another volume than `os.tmpdir()` (a stale mountpoint folder does not count),
+  `…/00 Tools/_ytm-test-tmp` (only that leaf is created; removed with `rmdir` when empty after the run); else `os.tmpdir()`.
+  A folder that cannot be made falls back to `os.tmpdir()` with a warning. Stale run folders are swept in both the base and
+  `os.tmpdir()`; tsx's cache stays in `os.tmpdir()`.
 - **Build cache cap:** `prebuild` → `scripts/next-cache-trim.mjs`: `.next/cache` over 5 GB (`YTOM_NEXT_CACHE_LIMIT_GB`) and turbopack
   alone over half of it → remove `.next/cache/turbopack` only; a failure never stops the build.
 - **Migration backup retention:** `db-backup.pruneMigrationBackups(dir, { keep = 5, prefixes = [pre-migration, pre-auto-import],
