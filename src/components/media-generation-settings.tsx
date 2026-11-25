@@ -1001,7 +1001,8 @@ export function JobsCard({ activeChannelId, kind = null }: { activeChannelId: st
               : t("media.jobs.importTemplateFirst")}
         </p>
       ) : (
-        <div className="space-y-2">
+        // Owner TG 4887: Media is full width; the run form keeps a comfortable width of its own (the job table below stretches).
+        <div className="max-w-4xl space-y-2">
           <div className="grid gap-2 sm:grid-cols-2">
             {(targets.length > 1 || target?.deviceId) && (
               <label className="block text-xs text-zinc-400 sm:col-span-2">

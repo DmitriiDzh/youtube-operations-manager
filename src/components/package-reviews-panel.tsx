@@ -363,7 +363,8 @@ export function PackageReviewsPanel({ channelId, visible, onWaiting }: { channel
                   else void loadDraft(item.manifestSha256, true);
                 }}
               />
-              <div className="min-w-0 space-y-3 text-sm">
+              {/* Owner TG 4887: the text under the player keeps a readable line length on a wide screen. */}
+              <div className="min-w-0 max-w-[90ch] space-y-3 text-sm">
                 {item.thumbnailPath ? (
                   // eslint-disable-next-line @next/next/no-img-element -- a local file streamed by the route, not an optimisable asset
                   <img src={mediaSrcOf(base!, item.manifestSha256, "thumbnail")} alt={t("packageReviews.thumbnail")} className="aspect-video w-full max-w-xs rounded-md bg-black object-contain" loading="lazy" />
