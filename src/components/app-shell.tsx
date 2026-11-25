@@ -174,7 +174,10 @@ export function AppShell<T extends string>(props: {
         <div className="relative h-0.5 shrink-0 overflow-hidden">
           {pendingValue && <div role="progressbar" aria-label={t("shell.navigating")} className="ytom-nav-progress absolute inset-y-0 w-1/3 bg-accent" />}
         </div>
-        <main className="flex-1 overflow-y-auto px-6 py-6 max-md:px-4 max-md:py-4 max-md:pb-[calc(5rem+env(safe-area-inset-bottom))]">{props.children}</main>
+        {/* Owner TG 4896 (MOBILE_UI_PLAN.md stage 2a, AC-PR-15): on a phone <main> is not a scroll container -- the page itself
+            scrolls (the shell has no fixed height), and a scroll container that never scrolls kept every sticky bar inside a panel
+            (the «Видео на проверку» decision bar) from sticking. The desktop keeps its overflow-y-auto exactly as before. */}
+        <main className="flex-1 md:overflow-y-auto px-6 py-6 max-md:px-4 max-md:py-4 max-md:pb-[calc(5rem+env(safe-area-inset-bottom))]">{props.children}</main>
       </div>
       <PhoneNav
         items={props.navItems}

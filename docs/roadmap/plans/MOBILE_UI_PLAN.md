@@ -90,7 +90,8 @@ panels inside are still desktop layouts. Findings by severity:
   10–11 px text; meanings hidden in `title=` (no hover on a phone).
 - Tab rows scroll with no cue and do not bring the active tab into view (Media's last tabs «Клипы», «Видео на проверку»
   are off-screen).
-- `<main>` is `overflow-y-auto` without a height: sticky bars inside panels never stick (the «Видео на проверку» decision
+- (Fixed 2026-11-25, owner TG 4896: on phones `<main>` is no longer a scroll container, `md:overflow-y-auto` keeps the desktop.)
+  `<main>` is `overflow-y-auto` without a height: sticky bars inside panels never stick (the «Видео на проверку» decision
   bar), and sideways overflow hides inside `<main>` — AC-M-1 must measure `main.scrollWidth` too.
 - Video card dialog: `h-[92vh]` (iOS `vh` includes the toolbar) — bottom can sit under Safari's bar; use `dvh`.
 
