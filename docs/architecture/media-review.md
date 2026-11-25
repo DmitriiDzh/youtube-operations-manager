@@ -349,3 +349,14 @@ On branch `feature/bl-229-music-library`. No schema change; no YouTube call; not
 - **Wake:** review-notify kind `image` (`composition/review-notify.ts` `imageNoticesOf`, source "images"). A deciding owner return
   with a later owner approval in the document (either arrival order) adds one notice per overridden approval: status `approval_overturned`, decision id
   `<approvalId>-overturned-by-<returnId>`, dated as the approval; the return's own notice carries an "Overturns" line.
+
+## BL-277 — file-stamp caches safe on whole-second file systems
+
+- **Module:** `src/lib/file-fingerprint/` (neutral, no DB): `cachedForFile({store, scope, stamp, now, compute, restat?})` keys a value
+  by `dev:ino:size:mtimeMs:ctimeMs` and stores it only when the file was last changed at least `COARSE_MTIME_SLACK_MS` (2 s) before
+  the clock read taken before `compute`, and (with `restat`) when the stamp after `compute` equals the one before. `cachedSha256OfFile`
+  is the one cached whole-file SHA-256 (both stamps from `fstat` on the read descriptor).
+- **Users:** `review-items` `hashReviewFile`, `media-preview`, `publishing/auto-upload.ts` `videoHash` (`statFile` port), the package
+  scan ffprobe cache (`publishing/index.ts`), `live-streams/adapters/library-files.ts`, `video-costs/adapters/backfill-files.ts`,
+  `sync-gateway/per-device-report/fs-store.ts`; `publishing-plan-progress/packages-cache.ts` uses the constant. Decisions on the
+  other caches and the residual cases: `docs/TECHNICAL_DEBT.md` RISK-159.
