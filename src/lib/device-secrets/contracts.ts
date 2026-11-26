@@ -12,8 +12,10 @@ export const DEVICE_SECRETS_KEY_FILE_NAME = "device-secrets.key";
  * `github`: the owner's GitHub read token for private pod-runtime repositories (BL-230, media-generation).
  * `elevenlabs`: the ElevenLabs API key (BL-236, elevenlabs-speech; hint: its last 4 characters).
  * `meta_app`: the Meta app secret for cross-posting (BL-252, ADR 0068; JSON {appId, appSecret}; hint: the app id).
+ * `vidiq`: the vidIQ API key (BL-278, ADR 0077 decision 3, vidiq-research; hint: its last 4 characters; entered on the Mac only, never
+ * in the cloud-credentials transfer file, owner TG 4961).
  */
-export const DEVICE_SECRET_NAMES = ["runpod", "gemini", "huggingface", "github", "elevenlabs", "meta_app"] as const;
+export const DEVICE_SECRET_NAMES = ["runpod", "gemini", "huggingface", "github", "elevenlabs", "meta_app", "vidiq"] as const;
 export type DeviceSecretName = (typeof DEVICE_SECRET_NAMES)[number];
 
 /** `set`: a row and a readable key file. `none`: nothing stored. The key file is missing / unusable while a row exists. */

@@ -294,6 +294,26 @@ export type DomainErrorCode =
   | "elevenlabs_unavailable"
   | "elevenlabs_rate_limited"
   | "elevenlabs_request_rejected"
+  // BL-278 (ADR 0077, VIDIQ_INTEGRATION_PLAN.md): the vidIQ gateway (allowlist, drift, transport) and vidiq-research (switch, key,
+  // budget, ledger). `vidiq_tool_error` is a ledger code only (a tool answered isError).
+  | "vidiq_disabled"
+  | "vidiq_key_missing"
+  | "vidiq_key_invalid"
+  | "vidiq_tool_not_allowed"
+  | "vidiq_tool_missing"
+  | "vidiq_schema_drift"
+  | "vidiq_args_invalid"
+  | "vidiq_cost_changed"
+  | "vidiq_annotation_drift"
+  | "vidiq_canonical_id_required"
+  | "vidiq_rate_limited"
+  | "vidiq_unavailable"
+  | "vidiq_outcome_unknown"
+  | "vidiq_result_too_large"
+  | "vidiq_budget_exhausted"
+  | "vidiq_insufficient_credits"
+  | "vidiq_job_unknown"
+  | "vidiq_tool_error"
   // BL-176 (docs/roadmap/plans/LIVE_STREAMS_PLAN.md) -- VIDEO_REFUSED: a video cannot enter a live-stream rotation (not public,
   // not this channel's, its file missing or unusable); details.reason says which. WORKSPACE_UNAVAILABLE: the channel has no
   // usable workspace folder on this computer. NOT_FOUND: the video is not in the channel's rotation.

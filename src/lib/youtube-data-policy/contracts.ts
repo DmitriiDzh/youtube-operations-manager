@@ -141,6 +141,7 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
   social_accounts: authorized("cross-posting accounts on other networks (BL-252): their own ids, names and a sealed token, no YouTube API data"),
   transferred_change_counters: authorized("bookkeeping of our own device sync: table names and counters, no YouTube values (BL-270)"),
   package_review_drafts: authorized("the owner's draft comments on our own release packages: our manifest hashes, times and his text, no YouTube values (owner TG 4817)"),
+  vidiq_ledger: notApiData("the vidIQ call ledger: caller, tool name, a hash of the arguments, credits and outcome; no YouTube data (BL-278, ADR 0077)"),
   review_notify_ledger: authorized("bookkeeping of the review-notify writer: our own decision ids and file names, no YouTube values (BL-248)"),
   analytics_weekly_reports: authorized("reports built from our own analytics"),
   change_sets: authorized("drafts of our own videos' metadata"),

@@ -20,8 +20,8 @@ async function withFake(run: (fake: FakeVidiqServer, outcomes: string[]) => Prom
   }
 }
 
-function gatewayFor(fake: FakeVidiqServer, outcomes: string[], timeoutMs = 2_000) {
-  return createVidiqGateway({ endpoint: fake.url, timeoutMs, recordOutcome: async (outcome) => void outcomes.push(outcome) });
+function gatewayFor(fake: FakeVidiqServer, outcomes: string[], timeoutMs = 30_000) {
+  return createVidiqGateway({ endpoint: fake.url, timeoutMs, connectTimeoutMs: 120_000, recordOutcome: async (outcome) => void outcomes.push(outcome) });
 }
 
 async function codeOf(run: () => Promise<unknown>): Promise<{ code: string | null; error: unknown }> {
@@ -65,7 +65,7 @@ test("balance: free, parsed from the fixture (150, resets 2026-12-26), the key o
 
 test("AC-VQ-1.2 (gateway half): a key the server refuses (401) is vidiq_key_invalid, with no response text in the error", () =>
   withFake(async (fake, outcomes) => {
-    const gateway = createVidiqGateway({ endpoint: fake.url, timeoutMs: 2_000, recordOutcome: async (o) => void outcomes.push(o) });
+    const gateway = createVidiqGateway({ endpoint: fake.url, connectTimeoutMs: 120_000, recordOutcome: async (o) => void outcomes.push(o) });
     const wrong = "vq_WRONG_KEY_123";
     const { code, error } = await codeOf(() => gateway.balance(wrong));
     assert.equal(code, "vidiq_key_invalid");
@@ -86,18 +86,20 @@ test("AC-VQ-1.5: a tool not on the list is refused and the server receives no to
 test("AC-VQ-1.6: a renamed tool is vidiq_tool_missing after one re-read of the list; the drift report marks that row", () =>
   withFake(async (fake, outcomes) => {
     const gateway = gatewayFor(fake, outcomes);
-    // First read: the fixture (cached). Then vidIQ renames the tool.
-    const before = await gateway.listToolsChecked(KEY);
-    assert.equal(before.report.find((r) => r.tool === "vidiq_channel_stats")?.state, "ok");
+    // vidIQ's list lacks vidiq_channel_stats but has vidiq_channel_stats_v2.
     fake.tools = fake.tools.map((t) => (t.name === "vidiq_channel_stats" ? { ...t, name: "vidiq_channel_stats_v2" } : t));
+    const report = await gateway.listToolsChecked(KEY); // the list read (and kept for an hour)
+    assert.equal(report.report.length, 18);
+    assert.equal(report.report.find((r) => r.tool === "vidiq_channel_stats")?.state, "vidiq_tool_missing");
+    assert.equal(report.report.find((r) => r.tool === "vidiq_similar_channels")?.state, "ok");
     const listsBefore = fake.requests.filter((r) => r.rpcMethod === "tools/list").length;
     assert.equal((await codeOf(() => gateway.callTool(KEY, "vidiq_channel_stats", { channelId: UC }))).code, "vidiq_tool_missing");
     assert.equal(fake.requests.filter((r) => r.rpcMethod === "tools/list").length, listsBefore + 1, "exactly one re-read before the refusal");
     assert.equal(fake.toolCalls().length, 0);
-    const report = await gateway.listToolsChecked(KEY, { refresh: true });
-    assert.equal(report.report.length, 18);
-    assert.equal(report.report.find((r) => r.tool === "vidiq_channel_stats")?.state, "vidiq_tool_missing");
-    assert.equal(report.report.find((r) => r.tool === "vidiq_similar_channels")?.state, "ok");
+    // The re-read sees the tool back under its pinned name: the call goes.
+    fake.tools = fake.tools.map((t) => (t.name === "vidiq_channel_stats_v2" ? { ...t, name: "vidiq_channel_stats" } : t));
+    fake.script.set("vidiq_channel_stats", () => ({ result: paidResult(5) }));
+    assert.equal((await gateway.callTool(KEY, "vidiq_channel_stats", { channelId: UC })).creditsUsed, 5);
   }));
 
 test("AC-VQ-1.7: the live schema newly requiring a property is vidiq_schema_drift; nothing is sent", () =>

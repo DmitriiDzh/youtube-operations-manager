@@ -114,6 +114,8 @@ const REMOTE_BLOCKED_PREFIXES = [
   // "/api/social/jobs/retry" is reachable remotely since owner msg 4435 (2026-11-15): a retry only restarts a failed job of a slot
   // he already approved, behind the posting switch, which stays Mac-only.
   "/api/social/disconnect",
+  // BL-278 (ADR 0077 decision 3, owner TG 4961): the vidIQ key is entered on the Mac only.
+  "/api/vidiq/key",
 ];
 
 // Status reads the app shell makes on every page (owner, Windows over Tailscale, msg 4236: «Не удалось прочитать состояние
