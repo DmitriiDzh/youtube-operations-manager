@@ -45,6 +45,8 @@ function producerTools(wait: ProducerSession["wait"], logged: string[]): Tools {
     plans: { templateGet: none, templatePropose: none, get: none, list: none, move: none },
     wait,
     videoPlaylists: { get: none },
+    videoCategory: { fix: none },
+    publishingCheck: { check: none },
   };
   const server = createMcpServer(undefined, { connectionEnabled: true, producerSession: session });
   return (server as unknown as { _registeredTools: Tools })._registeredTools;

@@ -92,7 +92,13 @@
 // 1.33.0 (package playlists, BL-276, owner TG 4858/4859, ADR 0051 amendment 2026-11-24): producer_video_playlists (READ) -- { channelId, videoId, refresh? } -> the channel's
 // playlists that hold the video (live through the read gateway, kept 10 minutes) and this computer's upload rows of it with each
 // playlist's outcome; release packages (yt-release-package/2) may name `playlists` (0..10 ids) the upload adds the video to. Additive.
-export const PRODUCER_API_VERSION = "1.33.0";
+// 1.34.0 is taken by another branch (vidIQ, BL-278); this one is 1.35.0.
+// 1.35.0 (BL-279, owner TG 4963/4964, ADR 0072 amendment 2): producer_video_category_fix (METADATA_WRITE, joins metadataTools) -- the
+// category of a channel's package-uploaded videos set to the channel's SAVED publishing setting `categoryId` (dryRun first, never a
+// free value); producer_video_publishing_check (READ) -- a channel's videos' categoryId, languages, license, madeForKids, embeddable,
+// containsSyntheticMedia, paid placement and (captions: true) caption tracks on YouTube now, against its publishing settings;
+// producer_upload_queue_add refuses publishing_settings_not_saved for a channel whose publishing settings were never saved. Additive.
+export const PRODUCER_API_VERSION = "1.35.0";
 
 /** The channel agent's READ tools the Producer gets; each call names its channel and runs in that channel's agent scope. */
 export const PRODUCER_CHANNEL_TOOLS: Readonly<Record<string, { capability: string }>> = Object.freeze({
@@ -210,6 +216,9 @@ export const PRODUCER_ONLY_TOOLS = [
   "producer_wait",
   // Package playlists (owner TG 4858/4859): which playlists of its channel a video is in (a read).
   "producer_video_playlists",
+  // BL-279 (owner TG 4963/4964): the category fix (METADATA_WRITE) and the publishing fields check (a read).
+  "producer_video_category_fix",
+  "producer_video_publishing_check",
 ] as const;
 
 /** BL-267 (ADR 0073 §5): the Producer's weekly-plan tools -- exactly these five, the test pins the list. */
@@ -235,11 +244,13 @@ export const PRODUCER_UPLOAD_QUEUE_TOOLS = ["producer_upload_queue_list", "produ
 export const PRODUCER_THUMBNAIL_TOOLS = ["producer_video_thumbnail_replace"] as const;
 
 /**
- * BL-265 (ADR 0072 §5, owner TG 4578/4581): the Producer's packaging-fix tool -- exactly this one, the test pins the list. It writes an
- * uploaded video's title / description / tags from its package's current manifest through `src/lib/publishing/package-metadata.ts`
- * (video-details' writer: identity check, backup, Live writes, read-back, audit), refusing any conflict; nothing else.
+ * BL-265 (ADR 0072 §5, owner TG 4578/4581): the Producer's packaging-fix tools -- exactly these two, the test pins the list. The first
+ * writes an uploaded video's title / description / tags from its package's current manifest through `src/lib/publishing/package-metadata.ts`
+ * (video-details' writer: identity check, backup, Live writes, read-back, audit), refusing any conflict. BL-279 (owner TG 4963/4964, ADR
+ * 0072 amendment 2): the second sets the category of the channel's package-uploaded videos to its saved setting through
+ * `src/lib/publishing/package-category.ts` (the same writer and steps); nothing else.
  */
-export const PRODUCER_METADATA_TOOLS = ["producer_video_metadata_update"] as const;
+export const PRODUCER_METADATA_TOOLS = ["producer_video_metadata_update", "producer_video_category_fix"] as const;
 
 /**
  * BL-269 (ADR 0074 §8, §10; owner TG 4590/4592/4660): the Producer's captions tool -- exactly this one, the test pins the list. It

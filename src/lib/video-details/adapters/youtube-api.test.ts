@@ -69,6 +69,15 @@ test("AC-MG-26: a title/description/tags patch sends the whole snippet as read (
   assert.equal(result.before.channelId, "UC_x", "the snapshot names the video's channel (read only)");
 });
 
+// BL-279 (owner TG 4963/4964; YouTube Data API videos.update: a part is replaced whole, a snippet field left out is reset): the
+// category fix sends `part=snippet` with the new categoryId and the title, description, tags, defaultLanguage and defaultAudioLanguage
+// exactly as read just before, no status part, never localizations.
+test("BL-279: a categoryId patch sends the whole snippet as read with only the category changed, and no status or localizations", async () => {
+  const { io, sent } = fakeIo(true);
+  await createVideoDetailsYoutubeApiAdapter(io).applyPatch({ credentials: CREDENTIALS, videoId: "v1", patch: { categoryId: "27" }, readBackRetries: 0 });
+  assert.deepEqual(sent, [{ snippet: { title: "Old", description: "D", tags: ["a"], categoryId: "27", defaultLanguage: "ja", defaultAudioLanguage: "ja" } }]);
+});
+
 test("AC-MG-27: snippetPartOf leaves an audio language read as zxx out (RISK-102); keeps any other as read", () => {
   const read = { title: "Old", categoryId: "10", defaultLanguage: "ja", defaultAudioLanguage: "zxx", channelId: "UC_x" };
   assert.deepEqual(snippetPartOf(read, { title: "New" }), { title: "New", categoryId: "10", defaultLanguage: "ja" });

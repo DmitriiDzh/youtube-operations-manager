@@ -17,7 +17,7 @@ import { createPortfolioOverviewServices, createUploadMilestonesServices } from 
 import { createReachReportsCore } from "@/lib/reach-reports";
 import { PRODUCER_API_VERSION } from "@/mcp/producer-tools";
 import { createLiveAnalyticsCore } from "@/lib/live-analytics";
-import { createPackageCaptionsCore, createPackageLocalizationsCore, createPackageMetadataCore, createUploadQueueControlCore, listUploadPlaylistRecords, type SlotDecision } from "@/lib/publishing";
+import { createPackageCaptionsCore, createPackageCategoryCore, createPackageLocalizationsCore, createPackageMetadataCore, createUploadQueueControlCore, createVideoPublishingCheckCore, listUploadPlaylistRecords, type SlotDecision } from "@/lib/publishing";
 import { createVideoPlaylistMembershipCore } from "@/lib/video-playlist-membership";
 import { createClipReviewsProducerCore } from "@/lib/clip-reviews";
 import { createImageReviewsProducerCore } from "@/lib/image-reviews";
@@ -239,6 +239,17 @@ export function createProducerSessionDeps(
     // and the video that channel's (checked before any YouTube call), then the identity check on the channel's grant.
     videoPlaylists: {
       get: async (input) => ({ ...(await createVideoPlaylistMembershipCore({ channelUser: resolveChannelUser, uploadRecords: listUploadPlaylistRecords }).videoPlaylists(input)) }),
+    },
+    // BL-279 (owner TG 4963/4964, ADR 0072 amendment 2): the category fix -- the only wiring of it to an MCP endpoint; actor producer.
+    videoCategory: {
+      fix: async ({ channelId, dryRun, videoIds, expectedCategoryId }) =>
+        dryRun === true
+          ? { ...(await createPackageCategoryCore().preview(channelId, { kind: "producer" })) }
+          : { ...(await createPackageCategoryCore().apply(channelId, { ...(videoIds !== undefined ? { videoIds } : {}), ...(expectedCategoryId !== undefined ? { expectedCategoryId } : {}) }, { kind: "producer" })) },
+    },
+    // BL-279 (owner TG 4964): the publishing fields check -- read-only.
+    publishingCheck: {
+      check: async (input) => ({ ...(await createVideoPublishingCheckCore().check(input, { kind: "producer" })) }),
     },
   };
 }
