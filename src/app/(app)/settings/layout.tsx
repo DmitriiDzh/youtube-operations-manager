@@ -38,9 +38,8 @@ import { FeatureErrorBoundary } from "@/components/feature-error-boundary";
 import { UiLanguageSettings } from "@/components/ui-language-settings";
 import { RemoteAccessSettings } from "@/components/remote-access-settings";
 import { useAppChannel } from "@/components/app-channel";
-import { LocalVideoCleanupCard } from "@/components/local-video-cleanup-card";
-import { PublishingSettingsPanel } from "@/components/publishing-settings-panel";
-import { LOCAL_CLEANUP_ANCHOR, PUBLISHING_SETTINGS_ANCHOR } from "@/components/plan-extras";
+import Link from "next/link";
+import { PUBLISHING_SETTINGS_ANCHOR } from "@/components/plan-extras";
 import { useT } from "@/components/ui-text-provider";
 import type { UiTextKey } from "@/lib/ui-text";
 
@@ -132,26 +131,15 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
         <FeatureErrorBoundary label={section("social.title")}>
           <SocialAccountsSettings />
         </FeatureErrorBoundary>
-        {/* BL-266 (owner TG 4730/4732): the active channel's publishing defaults and its local copy cleanup, moved here from the former
-            Content → «Ролики и релизы». Each in its own boundary (AGENTS.md §M); both remount for another channel, and say which
-            channel they set (the cleanup deletes this computer's files of that channel). */}
+        {/* BL-279 (owner TG 4964): the active channel's publishing settings and local copy cleanup moved to Home (they belong to one
+            channel; Settings keeps YT Manager's own). A short pointer stays here, so a bookmark or habit lands on the way there. */}
         {channel && (
-          <div key={channel.id} className="space-y-3">
-            <div>
-              <h3 className="text-sm font-semibold text-zinc-100">{t("planExtras.settings.channel", { channel: channel.title })}</h3>
-              <p className="mt-0.5 text-xs text-zinc-400">{t("planExtras.settings.channelHint")}</p>
-            </div>
-            {/* The «⋯» links on «План» land on these anchors. */}
-            <div id={PUBLISHING_SETTINGS_ANCHOR} className="scroll-mt-20">
-              <FeatureErrorBoundary label={section("publishingSettings.collapsedTitle")}>
-                <PublishingSettingsPanel channelId={channel.id} visible={settingsSubTab === "channels"} />
-              </FeatureErrorBoundary>
-            </div>
-            <div id={LOCAL_CLEANUP_ANCHOR} className="scroll-mt-20">
-              <FeatureErrorBoundary label={section("cleanup.title")}>
-                <LocalVideoCleanupCard channelId={channel.id} visible={settingsSubTab === "channels"} />
-              </FeatureErrorBoundary>
-            </div>
+          <div key={channel.id} id={PUBLISHING_SETTINGS_ANCHOR} className="scroll-mt-20 rounded-xl border border-zinc-800 bg-zinc-900 p-4 text-sm">
+            <h3 className="text-sm font-semibold text-zinc-100">{t("channelSettings.movedTitle")}</h3>
+            <p className="mt-1 text-xs text-zinc-400">{t("channelSettings.movedText", { channel: channel.title })}</p>
+            <Link href={`/home#${PUBLISHING_SETTINGS_ANCHOR}`} className="mt-2 inline-block text-xs text-sky-400 hover:underline">
+              {t("channelSettings.movedLink")}
+            </Link>
           </div>
         )}
       </div>
