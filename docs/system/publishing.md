@@ -179,3 +179,26 @@
 - **Чтение Продюсера:** `producer_video_playlists` (Producer 1.33.0), модуль `src/lib/video-playlist-membership/` (кэш 10 мин, refresh не чаще
   раза в минуту, кэш старше результата шага плейлиста загрузки не используется) +
   `publishing.listUploadPlaylistRecords` через композицию (`session-deps.ts`).
+
+### 2.9br Настройки публикации канала: защита, исправление категории, проверка Продюсера, перенос на «Главную» (BL-279, owner TG 4963/4964, ADR 0072 поправка 2) — **IMPLEMENTED на ветке** `feature/channel-publishing-defaults` (ждёт ревью и разрешения на мердж)
+
+- **Причина:** строка загрузки замораживает настройки публикации канала (`settingsJson`); канал, который их ни разу не сохранял, получал
+  `DEFAULT_PUBLISHING_SETTINGS` (категория Music, субтитры выключены) — так ушли все ролики WWE.
+- **Защита:** `upload-approval.ts` `queue()` (одобрение владельца, автозагрузка, добавление Продюсером) отказывает
+  `publishing_settings_not_saved`, пока у канала нет ни одного сохранённого поля (`publishingSettingsSaved` = `view.saved.length > 0`, не
+  «файл документа есть»). Автозагрузка останавливает только этот канал на тик. Строки, поставленные до сборки, не перепроверяются
+  (RISK-160). Панель настроек: бейдж «Не сохранены», предупреждение, первая запись шлёт все поля («Подтвердить и сохранить»).
+- **Исправление категории:** `publishing/package-category.ts` (`createPackageCategoryCore`; без нового писателя:
+  `video-details.applyFieldsUpdate` с `{ categoryId }`) — только ролики, загруженные пакетом канала (запись загрузки в скане), только
+  сохранённая `categoryId` (иначе `publishing_settings_not_saved` / при конфликте `publishing_settings_changed`); dry run «было → станет»
+  (пакетное чтение `getVideosPublishingFields`), запись по одному ролику под `withPackageVideoLock`, сверка нетронутых полей и языков
+  переводов, аудит `source: package_category`; первая ошибка останавливает прогон. Маршрут владельца
+  `/api/channels/[channelId]/publishing/category-fix`, карточка `channel-category-fix-card.tsx`; инструмент Продюсера
+  `producer_video_category_fix` (METADATA_WRITE).
+- **Проверка Продюсера:** `publishing/video-publishing-check.ts` (`createVideoPublishingCheckCore`) → `producer_video_publishing_check`
+  (READ, Producer 1.35.0): categoryId, языки, лицензия, selfDeclaredMadeForKids, embeddable, containsSyntheticMedia, платное размещение и
+  (по `captions: true`) дорожки субтитров против настроек канала и пакета; новый ребёнок чтения не нужен — функция
+  `getVideosPublishingFields` в `youtube-read-gateway/data-api.ts` (50 id за вызов).
+- **Перенос:** настройки публикации и очистка локальных копий активного канала — на «Главной» (раздел «Настройки канала», вместе с
+  карточкой категории), в «Настройки → Каналы» осталась ссылка-указатель; ссылки «⋯» на «Плане» ведут на `/home#…`.
+

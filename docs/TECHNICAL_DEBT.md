@@ -2273,6 +2273,20 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Amended (BL-267, ADR 0073 §5):** decisions are now read by slot id across weeks (a moved slot keeps its veto and approvals); a
   build without BL-267 still reads them by week, which is why a vetoed slot cannot be moved.
 
+## RISK-160 — Publishing settings: "saved" is any one field, and rows queued before the guard keep their frozen defaults — OPEN, 2026-11-26
+
+- **Affected components:** `publishing/upload-approval.ts` (`publishingSettingsSaved`, the BL-279 guard), `publishing/upload-runner.ts`
+  (uploads from the row's frozen `settingsJson`), `publishing/package-category.ts`.
+- **Risk 1:** the guard (owner TG 4964) counts a channel as saved once any one field was saved. A channel that saved, say, only its
+  tags still uploads the built-in default category (Music), captions off and the rest. Tropico and Japan are exactly that case and
+  want Music, so a per-field rule would have blocked them (checked read-only on the Mac, 2026-11-26). The category fix itself is
+  stricter: it needs `categoryId` saved.
+- **Risk 2:** a row queued before BL-279 for a channel that never saved its settings keeps the defaults it froze; the runner does not
+  re-check (a row with a session must not change mid-upload). Before the merge the coordinator lists such rows; the stricter options
+  for the owner are a runner re-check before the first byte (fail the row `publishing_settings_not_saved`, nothing sent), or requiring
+  the category itself saved for every upload.
+- **Re-evaluate when:** a third channel is added, or the owner asks for every field to be confirmed.
+
 ## RISK-159 — File-stamp caches on whole-second file systems (HFS+ on the T9 disk) — MITIGATED, 2026-11-25
 
 - **Affected components:** every cache keyed on a file's size and modification time. Found measuring tests on T9 (owner TG 4922): the

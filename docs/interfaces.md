@@ -891,6 +891,14 @@ Key MCP tools:
     `upload_not_found` for another channel's), `POST .../publishing/uploads/[uploadId]/release` (an `unknown_outcome` upload the owner found
     absent in Studio; else 409 `upload_not_releasable`). New refusals: `upload_package_not_ready`, `upload_package_changed`, `upload_already_queued`,
     `publishing_settings_changed`, `upload_daily_limit` (409); `publish_at_too_soon` (400); `quota_insufficient` / `quota_unknown`.
+    BL-279 (owner TG 4963/4964): `publishing_settings_not_saved` (409) -- the channel's publishing settings were never saved, so no
+    upload is queued (owner approval, automatic upload and `producer_upload_queue_add` alike).
+    `POST /api/channels/[channelId]/publishing/category-fix` (BL-279, ADR 0072 amendment 2; owner session, active channel): `{ dryRun: true }`
+    → `{ dryRun: true, channelId, targetCategoryId, videos: [{ video, videoId, title, current, status: write | same | upload_pending |
+    not_on_youtube | not_in_channel }], toWrite, quotaUnits }`; `{ expectedCategoryId, videoIds? }` → `{ dryRun: false, channelId,
+    targetCategoryId, videos: [{ video, videoId, before, status: written | same | upload_pending | not_on_youtube | not_in_channel | failed,
+    backupPath?, error? }], written, verified, stoppedAt }` (the category comes only from the channel's saved setting; refusals as
+    `producer_video_category_fix`).
     `/api/settings` since BL-183: `analyticsSyncUtcTime`, `analyticsEveningUtcTime`, `userTimezone`.
   - `POST /api/analytics/evening-collect` (BL-181, Web only) — the dashboard's 5-minute evening check: `{ due: false }`,
     `{ due: false, done: true }`, `{ due: true, inProgress | importPending: true }` or `{ due: true, channels: [the active channel's
@@ -1585,7 +1593,9 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
 
 - **Transport:** as the factory endpoint, with `Authorization: Bearer ytom_pr_...` (the same checks and codes; a channel or factory token is
   401 `AGENT_TOKEN_INVALID` here, and a producer token on `/api/mcp` and `/api/mcp/factory`). Re-verified on every tool call.
-- **Producer API version:** `1.33.0` (package playlists, owner TG 4858/4859, ADR 0051 amendment 2026-11-24, BL-276; additive: `producer_video_playlists`
+- **Producer API version:** `1.35.0` (BL-279, owner TG 4963/4964, ADR 0072 amendment 2; additive: `producer_video_category_fix`
+  (METADATA_WRITE, joins `metadataTools`) and `producer_video_publishing_check` (READ), below; `producer_upload_queue_add` refuses
+  `publishing_settings_not_saved`; 1.34.0 is another branch's); `1.33.0` (package playlists, owner TG 4858/4859, ADR 0051 amendment 2026-11-24, BL-276; additive: `producer_video_playlists`
   below; release packages may name `playlists`); `1.32.0` (since owner TG 4817, AC-TC-08, additive: `producer_publishing_plan_get` / `_list` packages gain `reviewTimedComments`, the wake file gains «Timed comments»); `1.31.0` (owner TG 4839/4842, ADR 0072 amendment 1, BL-274, additive: `producer_video_metadata_update` takes `localizations: true` -- the package's translations, below); `1.30.0` (FO-REQ-0056 part 2, BL-273, additive: `channel_video_list` / `agent_get_video_context` carry each
   video's synced `tags`, see the channel-sync tools above); `1.29.0` (owner TG 4782, ADR 0048 Amendment 1, additive: the playlist channel tools below, permission
   `PLAYLIST_WRITE`, `playlistTools` / `playlistWriteTools` in `producer_get_capabilities`); `1.28.0` (BL-272, ADR 0076, additive: the image review tools below, `imageReviewTools` in `producer_get_capabilities`, `approvedImageId` on `producer_clip_review_submit`); `1.27.0` (BL-271, ADR 0075, additive: `producer_wait` below); `1.26.0` (since BL-269, ADR 0074, additive: `producer_video_captions_add` below, permission `CAPTIONS_WRITE`,
@@ -1693,6 +1703,26 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
   `result: "uploaded"` -- that upload, maybe on the other computer, has not finished its steps; allowed when this computer's own rows of the
   video all ended), `captions_track_changed`, `captions_scope_missing`, `video_not_in_channel`,
   `youtube_quota_exceeded`, `backup_item_failed`, `WRITE_CHANNEL_MISMATCH`, `live_writes_disabled`, `operation_lock_held` / `device_in_recovery_mode`.
+- **Category fix (BL-279, owner TG 4963/4964, ADR 0072 amendment 2; Producer 1.35.0):** `producer_video_category_fix { channelId, dryRun?,
+  videoIds? (1-200, apply only), expectedCategoryId? }` (strict; METADATA_WRITE; no category of the caller's) → the same shapes as the owner's
+  `category-fix` route above, plus `forChannelId`. Sets the category of the channel's videos a release package put on YouTube to the channel's
+  SAVED `categoryId` through `video-details` (full snippet read-merge-write, everything else sent back as read; identity check, backup, Live
+  writes immediately before each `videos.update`, read-back of the category, the untouched snippet fields, privacy, `publishAt` and the
+  localization languages; audit `source: package_category`, actor `producer`). One video at a time; the first failure stops the run
+  (`stoppedAt`); a refusal before any write on the first video is the call's error, a failure after the write may have been sent (`update_failed`) is that video's result. Errors: `publishing_settings_not_saved` (`details.field: categoryId`),
+  `publishing_settings_changed`, `package_metadata_not_uploaded` (`details.videoIds`), `package_no_workspace`, `package_workspace_unavailable`,
+  `CHANNEL_NOT_ACTIVE`, `WRITE_CHANNEL_MISMATCH`, `live_writes_disabled`, `video_details_conflict`, `update_failed`, `operation_lock_held` /
+  `device_in_recovery_mode`, `validation_failed`.
+- **Publishing fields check (BL-279, owner TG 4964; Producer 1.35.0):** `producer_video_publishing_check { channelId, videoIds? (1-200),
+  captions? }` (strict; READ) → `{ channelId, settingsSaved, savedFields, conflictedFields, expected { categoryId, license, madeForKids,
+  embeddable, containsSyntheticMedia, paidProductPlacement, captionsEnabled }, videos: [{ videoId, video, found: true, title, privacyStatus,
+  madeForKidsEffective, fields: [{ field: categoryId | license | madeForKids | embeddable | containsSyntheticMedia | paidProductPlacement |
+  defaultLanguage | defaultAudioLanguage | englishCaptions, youtube, expected, source: saved | default | package | unknown, status: match |
+  mismatch | unreadable | unchecked }], mismatches, captionTracks | null, captionsError? } | { videoId, video, found: false, reason:
+  not_on_youtube | not_in_channel }], mismatched, captionsChecked, quotaUnits }` plus `forChannelId`. Without `videoIds`: every video a
+  release package of the channel put on YouTube. `videos.list part=snippet,status,paidProductPlacementDetails` 50 ids a call (1 unit,
+  read gateway `getVideosPublishingFields`); `captions: true` adds `captions.list` per video (50 units; at most 50 videos). Errors:
+  `CHANNEL_NOT_ACTIVE`, `package_no_workspace`, `package_workspace_unavailable`, `data_api_reads_disabled`, `validation_failed`.
 - **Metadata tool (BL-265, ADR 0072, owner TG 4578/4581; Producer 1.24.0):** `producer_video_metadata_update` `{ channelId, video, dryRun? }`
   (strict: no text of the caller's) → dry run `{ dryRun: true, video, videoId, manifestSha256, etag, baseline: upload_row | metadata_apply | unknown,
   fields: [{ field: title | description | tags, youtube, uploaded, manifest, status: same | write | conflict }], changed, audioLanguageLeftOut,

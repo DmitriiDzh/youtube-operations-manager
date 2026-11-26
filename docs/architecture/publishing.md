@@ -654,3 +654,23 @@ flags the error as not sent; the mark keeps the retry count, so a failing insert
   shared `src/lib/release-recode-journals/` module, so `video-projects` blocks their codes and lists them (`pendingRecodes`) without
   importing publishing. Composition (`src/composition/release-recode.ts`) supplies the video list, package-review approvals, plan slot
   decisions, storyboards, peer rows and the other reports, so publishing imports none of those modules. No YouTube client anywhere.
+
+## BL-279 — channel publishing defaults: the upload guard, the category fix and the Producer's check (ADR 0072 amendment 2)
+
+- **Data flow, unchanged at its core:** the approval freezes the channel's effective settings into the row (`settingsJson`) and the
+  runner uploads from that copy. BL-279 adds one gate before the copy is made: `queue()` refuses while `view.saved` is empty
+  (`publishingSettingsSaved`). Why not "a document exists": `mergeIncoming` / `discardLocalAndAdoptPeer` write the document file with
+  no owner action. Why not per field: Tropico and Japan saved only tags and playlist and keep Music on purpose. Limits: RISK-160.
+- **Category fix:** a sibling of `package-metadata.ts` / `package-localizations.ts`, sharing `withPackageVideoLock`, `refuse` and the
+  deps of `uploadedPackageDeps` (device gate, credential, snapshot). The write is video-details' (`applyFieldsUpdate`): one
+  `videos.update part=snippet` with the snippet as read and only `categoryId` changed; `verifyUnchanged` names every other snippet field
+  plus privacy and `publishAt`. The video list is the scan's packages with an upload record (`uploadedPackageVideosOf`), so an upload
+  from either computer counts and a video uploaded in Studio never does. The preview reads the videos in batches of 50
+  (`getVideosPublishingFields`); the apply re-reads each video fresh (its etag goes into the write).
+- **Check:** read-only, the same batch reader; captions are opt-in because `captions.list` costs 50 units and needs youtube.force-ssl
+  (a missing grant marks that video's captions `unreadable`, never fails the call). Each expectation carries its source (saved /
+  default / package) so the Producer can tell a real setting from a fallback.
+- **UI:** the panel moved to Home (owner TG 4964: per-channel settings belong to the channel's page; Settings keeps YT Manager-wide
+  ones). On Home it starts folded to a summary and opens by itself while never saved, so the playlist list (a Data API read) is not
+  fetched on every Home visit. Settings → Channels keeps a pointer (bookmarks).
+

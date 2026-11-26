@@ -143,3 +143,43 @@ translations only; `docs/WRITE_AUTHORIZATIONS.md` «Package metadata after uploa
    read, no backup, no write. Quota about 56 units. A scheduled video that publishes during the call (private with a due `publishAt` ->
    public) is not a status change made by the write.
 6. **API:** Producer 1.31.0 (additive; 1.28.0 went to BL-272, 1.29.0 to playlist-rights, 1.30.0 to BL-273). Backlog BL-274. Factory and Agent unchanged.
+
+## Amendment 2 — the category from the channel's saved settings, and the upload guard (2026-11-26)
+
+**Requirement:** owner TG 4963/4964, 2026-11-26. The coordinator found that every WWE upload went out as Music (`categoryId` "10")
+with its captions switch off: the upload freezes the channel's publishing settings into the row (`settingsJson`), and a channel that
+never saved them gets `DEFAULT_PUBLISHING_SETTINGS`. Asked «Исправить категорию у уже загруженных роликов WWE… только у роликов,
+загруженных через YTM, только на значение из настроек канала. Бэкап, пробный прогон «было → станет», проверка чтением. Разрешаете?»,
+the owner answered «1. Да, нужно исправить уже загруженые ролики. 2. Да, добавь защиту и сделай инструменты для продюсера чтобы он мог
+читать и проверять эти поля. 3. … такие настройки "канала" … надо переносить на главную страницу». It reverses §5's "never category"
+for one value only; `docs/WRITE_AUTHORIZATIONS.md` «Package metadata after upload» carries the amendment. Backlog BL-279.
+
+1. **What.** `snippet.categoryId` of a video a release package of the channel already put on YouTube (the scan's upload record names
+   it, either computer's upload), set to the channel's SAVED publishing setting `categoryId` -- `saved` must include `categoryId`
+   (`publishing_settings_not_saved`, `details.field`), and the field must not be in conflict between the computers
+   (`publishing_settings_changed`). Never a value the caller gives: the owner's route and the Producer's tool take only
+   `expectedCategoryId`, which binds the apply to the preview and refuses when the saved value changed since.
+2. **Writer.** No new writer, no new gateway function: `src/lib/publishing/package-category.ts` decides, `video-details.applyFieldsUpdate`
+   writes `{ categoryId }` (full snippet read-merge-write; title, description, tags and both languages sent back as read, `zxx` left out),
+   with the fresh read's etag, `verifyUnchanged` = title, description, tags, both languages (not a `zxx` audio language), privacy,
+   `publishAt`, plus the localization-language read before and after (§5). Audit `source: package_category`. One video at a time under
+   `withPackageVideoLock`; a video already in the category, gone, not the channel's or still uploading here is not written; the first
+   failure stops the run; a refusal before any write on the first video is the call's error, a failure after the write may have been
+   sent (`update_failed`) is that video's result with its backup path.
+3. **Who.** The owner on Home (BL-279's section: «Проверить категории» → list «было → станет» → inline «Да, исправить»; route
+   `/api/channels/[channelId]/publishing/category-fix`) and the Producer (`producer_video_category_fix`, METADATA_WRITE, dry run first).
+   A new tool rather than a flag on `producer_video_metadata_update`: that tool is per video and manifest-driven with a three-way check
+   (`video` + `expectedManifestSha256`); this fix is per channel and settings-driven (no manifest field takes part), so one input shape
+   would mix two contracts. Worker agents and the factory get no tool.
+4. **Guard.** Every upload row is created by `upload-approval.ts` `queue()` (the owner's approval, the automatic upload, the Producer's
+   queue add): it refuses `publishing_settings_not_saved` while the channel's view has no saved field. "Saved" is `view.saved.length > 0`
+   (a field a computer saved and this build accepts), not "a document file exists": a sync merge or an adopted peer writes that file
+   with no owner action. One saved field counts, because Tropico and Japan saved only their tags and playlist and keep the default
+   category on purpose (checked read-only on the Mac, 2026-11-26). The automatic upload stops that channel only for the tick (like
+   `publishing_settings_changed`). Rows queued before this build keep their frozen settings: the runner is unchanged (a row with a
+   session is never re-checked; re-checking before the first byte is left to the owner -- see TECHNICAL_DEBT RISK-160).
+5. **Read and check.** `producer_video_publishing_check` (READ): `videos.list part=snippet,status,paidProductPlacementDetails` through
+   the read gateway's new `getVideosPublishingFields` (50 ids a call, 1 unit), caption tracks only with `captions: true`
+   (`listVideoCaptions`, 50 units a video, at most 50 videos). Each expectation says `saved`, `default` or `package` (languages and a
+   package's own synthetic-media mark come from the package, which the upload sent); a video of another channel shows no value.
+6. **API:** Producer 1.35.0 (additive; 1.34.0 is the vidIQ branch's). Factory and Agent unchanged.
