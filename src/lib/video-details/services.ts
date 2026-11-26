@@ -252,7 +252,7 @@ export function createVideoDetailsServices(deps: ServiceDependencies) {
           throw new DomainError({
             code: "update_failed",
             message: verified ? `Post-write verification found a field that was not written changed: ${changedUntouched.join(", ")}` : "Post-write verification found at least one field did not match what was sent",
-            details: { videoId: parsedInput.videoId, patch: parsedInput.patch, after, ...(changedUntouched.length > 0 ? { changedUntouched } : {}) },
+            details: { videoId: parsedInput.videoId, patch: parsedInput.patch, after, backupPath: backupRecord.path, ...(changedUntouched.length > 0 ? { changedUntouched } : {}) },
           });
         }
 

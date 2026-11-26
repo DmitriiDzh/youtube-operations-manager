@@ -2273,6 +2273,15 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Amended (BL-267, ADR 0073 §5):** decisions are now read by slot id across weeks (a moved slot keeps its veto and approvals); a
   build without BL-267 still reads them by week, which is why a vetoed slot cannot be moved.
 
+## RISK-161 — The texts and translations fixes after upload also reach a video the owner only linked to its release — OPEN, 2026-11-26
+
+- **Affected components:** `publishing/index.ts` `uploadedPackageDeps.findPackage` (BL-265 `package-metadata.ts`, `package-localizations.ts`).
+- **Risk:** their gate is "the release's upload record names a video id"; the owner's BL-221 «Привязать к видео» writes such a record
+  (`result: "linked"`) for a video uploaded outside the app, so those fixes can write it. BL-279's category fix excludes linked records
+  (`uploadedPackageVideos`, owner TG 4963 «только у роликов, загруженных через YTM»); the scan now exposes `youtube.linked`.
+- **Why not changed here:** the exclusion is one line in `findPackage`, but it would change three owner-approved writers at once (texts,
+  translations, and the captions writer's record reads) outside BL-279's scope; the owner decides whether a linked video keeps them.
+
 ## RISK-160 — Publishing settings: "saved" is any one field, and rows queued before the guard keep their frozen defaults — OPEN, 2026-11-26
 
 - **Affected components:** `publishing/upload-approval.ts` (`publishingSettingsSaved`, the BL-279 guard), `publishing/upload-runner.ts`

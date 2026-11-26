@@ -25,7 +25,8 @@ export type PackageCategoryDeps = Pick<PackageMetadataDeps, "assertDeviceAvailab
   readVideos(args: { credentialRef: { userId: string }; channelId: string; videoIds: string[] }): Promise<Map<string, ReadVideoFields>>;
 };
 
-export type PackageCategoryStatus = "write" | "same" | "upload_pending" | "not_on_youtube" | "not_in_channel";
+/** `audio_language_zxx`: YouTube's audio language is `zxx`, which a snippet write cannot send back (RISK-102) -- skipped, never written. */
+export type PackageCategoryStatus = "write" | "same" | "upload_pending" | "not_on_youtube" | "not_in_channel" | "audio_language_zxx";
 
 export type PackageCategoryPreview = {
   dryRun: true;
@@ -41,7 +42,7 @@ export type PackageCategoryVideoResult = {
   video: string;
   videoId: string;
   before: string | null;
-  status: "written" | "same" | "upload_pending" | "not_on_youtube" | "not_in_channel" | "failed";
+  status: "written" | "same" | "upload_pending" | "not_on_youtube" | "not_in_channel" | "audio_language_zxx" | "failed";
   backupPath?: string | null;
   error?: { code: string; message: string };
 };
@@ -59,11 +60,8 @@ export type PackageCategoryApplyResult = {
 };
 
 /** The fields the category write must leave as they were (the read just before the write against the read after it). */
-function untouchedFields(audioLanguageLeftOut: boolean): VerifyUnchangedField[] {
-  const fields: VerifyUnchangedField[] = ["title", "description", "tags", "defaultLanguage", "defaultAudioLanguage", "privacyStatus", "publishAt"];
-  // `zxx` is left out of the write (RISK-102), so YouTube may reset it: it is not compared then (as the packaging fix).
-  return audioLanguageLeftOut ? fields.filter((f) => f !== "defaultAudioLanguage") : fields;
-}
+const UNTOUCHED_FIELDS: VerifyUnchangedField[] = ["title", "description", "tags", "defaultLanguage", "defaultAudioLanguage", "privacyStatus", "publishAt"];
+const isZxx = (language: string | null | undefined) => (language ?? "").toLowerCase() === "zxx";
 
 export function createPackageCategory(deps: PackageCategoryDeps) {
   /** The channel's saved category, or the refusal: never saved (the built-in default is never pushed to YouTube), or in conflict. */
@@ -108,7 +106,10 @@ export function createPackageCategory(deps: PackageCategoryDeps) {
         if (!fields) status = "not_on_youtube";
         else if (fields.channelId !== channelId) status = "not_in_channel";
         else if (active.has(v.video)) status = "upload_pending";
-        else status = fields.categoryId === target ? "same" : "write";
+        else if (fields.categoryId === target) status = "same";
+        // Review finding 2: a `zxx` audio language would be dropped from the snippet and could be reset by the write -- skipped.
+        else if (isZxx(fields.defaultAudioLanguage)) status = "audio_language_zxx";
+        else status = "write";
         const visible = fields && fields.channelId === channelId;
         return { video: v.video, videoId: v.videoId, title: visible ? fields.title : null, current: visible ? fields.categoryId : null, status };
       });
@@ -125,7 +126,8 @@ export function createPackageCategory(deps: PackageCategoryDeps) {
      * video no package of the channel uploaded is refused before anything is read.
      */
     async apply(channelId: string, input: { expectedCategoryId?: string; videoIds?: string[] }, actor: PackageMetadataActor): Promise<PackageCategoryApplyResult> {
-      if (actor.kind === "owner" && (typeof input?.expectedCategoryId !== "string" || input.expectedCategoryId === "")) {
+      // Review finding 7: the owner and the Producer alike apply the category their dry run showed.
+      if (typeof input?.expectedCategoryId !== "string" || input.expectedCategoryId === "") {
         throw refuse("validation_failed", "expectedCategoryId is required: apply what the preview showed");
       }
       if (input?.videoIds !== undefined && (!Array.isArray(input.videoIds) || input.videoIds.length === 0 || input.videoIds.some((id) => typeof id !== "string" || id === ""))) {
@@ -149,6 +151,8 @@ export function createPackageCategory(deps: PackageCategoryDeps) {
       const credentialRef = await deps.credentialRef(channelId, actor);
       const results: PackageCategoryVideoResult[] = [];
       let stoppedAt: string | null = null;
+      /** Videos whose write call was made (its outcome may be a write even when it failed). */
+      const sentFor = new Set<string>();
       for (const v of chosen) {
         const outcome = await withPackageVideoLock(channelId, v.video, async (): Promise<PackageCategoryVideoResult> => {
           if ((await activeVideos(channelId)).has(v.video)) return { video: v.video, videoId: v.videoId, before: null, status: "upload_pending" };
@@ -161,17 +165,22 @@ export function createPackageCategory(deps: PackageCategoryDeps) {
           if (now === "not_found") return { video: v.video, videoId: v.videoId, before: null, status: "not_on_youtube" };
           if (now.channelId !== channelId) return { video: v.video, videoId: v.videoId, before: null, status: "not_in_channel" };
           if (now.categoryId === target) return { video: v.video, videoId: v.videoId, before: now.categoryId, status: "same" };
-          const audioLanguageLeftOut = (now.defaultAudioLanguage ?? "").toLowerCase() === "zxx";
+          if (isZxx(now.defaultAudioLanguage)) return { video: v.video, videoId: v.videoId, before: now.categoryId, status: "audio_language_zxx" };
           const context = { source: "package_category", actor: actor.kind, video: v.video, categoryBefore: now.categoryId, categoryAfter: target };
           try {
             const languagesBefore = await deps.localizationLanguages({ credentialRef, channelId, videoId: v.videoId });
+            // Review finding 3: without the languages before, the check after the write could not pass -- refuse before writing.
+            if (languagesBefore === null) {
+              return { video: v.video, videoId: v.videoId, before: now.categoryId, status: "failed", error: { code: "update_failed", message: "The video's translation languages could not be read before the write: nothing was written. Try again." } };
+            }
+            sentFor.add(v.videoId);
             const result: ApplyFieldsUpdateResult = await deps.applyFields({
               credentialRef,
               expectedChannelId: channelId,
               videoId: v.videoId,
               patch: { categoryId: target },
               ...(now.etag ? { expectedEtag: now.etag } : {}),
-              verifyUnchanged: untouchedFields(audioLanguageLeftOut),
+              verifyUnchanged: UNTOUCHED_FIELDS,
               auditContext: context,
             });
             const languagesAfter = await deps.localizationLanguages({ credentialRef, channelId, videoId: v.videoId });
@@ -198,7 +207,7 @@ export function createPackageCategory(deps: PackageCategoryDeps) {
       // Nothing written and the first video was refused before its write (Live writes off, a wrong channel): the refusal itself, so a
       // caller sees its code. A failure after the write may have been sent (`update_failed`: the read-back or the translation languages
       // differ; a backup was taken) is returned as a result, never hidden behind an error.
-      const maybeWritten = failure !== undefined && (failure.backupPath != null || failure.error?.code === "update_failed");
+      const maybeWritten = failure !== undefined && (failure.backupPath != null || (sentFor.has(failure.videoId) && failure.error?.code === "update_failed"));
       if (failure && written.length === 0 && failure.error && !maybeWritten) {
         throw refuse(failure.error.code as never, failure.error.message, { channelId, videoId: failure.videoId, video: failure.video });
       }
@@ -210,7 +219,9 @@ export function createPackageCategory(deps: PackageCategoryDeps) {
 function failed(v: UploadedPackageVideo, before: string | null, error: unknown): PackageCategoryVideoResult {
   const code = isDomainError(error) ? error.code : "update_failed";
   const message = error instanceof Error ? error.message : String(error);
-  return { video: v.video, videoId: v.videoId, before, status: "failed", error: { code, message } };
+  // Review finding 4: video-details names the backup it took before a write whose read-back then failed.
+  const backupPath = isDomainError(error) ? (error.details as { backupPath?: unknown } | undefined)?.backupPath : undefined;
+  return { video: v.video, videoId: v.videoId, before, status: "failed", ...(typeof backupPath === "string" ? { backupPath } : {}), error: { code, message } };
 }
 
 export type PackageCategory = ReturnType<typeof createPackageCategory>;

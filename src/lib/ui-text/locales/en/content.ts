@@ -290,6 +290,7 @@ export const content = {
   "categoryFix.status.upload_pending": "still uploading here — later",
   "categoryFix.status.not_on_youtube": "not on YouTube",
   "categoryFix.status.not_in_channel": "not this channel's video",
+  "categoryFix.status.audio_language_zxx": "audio language «zxx» — skipped, fix it in Studio",
   "categoryFix.status.written": "fixed and read back",
   "categoryFix.status.failed": "failed",
   "categoryFix.fix": "Fix category ({count})",

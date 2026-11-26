@@ -190,7 +190,7 @@
   (RISK-160). Панель настроек: бейдж «Не сохранены», предупреждение, первая запись шлёт все поля («Подтвердить и сохранить»).
 - **Исправление категории:** `publishing/package-category.ts` (`createPackageCategoryCore`; без нового писателя:
   `video-details.applyFieldsUpdate` с `{ categoryId }`) — только ролики, загруженные пакетом канала (запись загрузки в скане), только
-  сохранённая `categoryId` (иначе `publishing_settings_not_saved` / при конфликте `publishing_settings_changed`); dry run «было → станет»
+  сохранённая `categoryId` (иначе `publishing_settings_not_saved` / при конфликте `publishing_settings_changed`); привязанные владельцем ролики (BL-221, `youtube.linked`) не входят; ролик с языком аудио `zxx` пропускается (`audio_language_zxx`); `expectedCategoryId` обязателен и Продюсеру; dry run «было → станет»
   (пакетное чтение `getVideosPublishingFields`), запись по одному ролику под `withPackageVideoLock`, сверка нетронутых полей и языков
   переводов, аудит `source: package_category`; первая ошибка останавливает прогон. Маршрут владельца
   `/api/channels/[channelId]/publishing/category-fix`, карточка `channel-category-fix-card.tsx`; инструмент Продюсера

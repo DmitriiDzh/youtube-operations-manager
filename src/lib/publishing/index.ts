@@ -12,7 +12,7 @@ import { createPackageMetadata, type PackageMetadataDeps } from "./package-metad
 import { createPackageLocalizations } from "./package-localizations";
 import { createPackageCaptions, recordWithCaption, stepsWithCaptionsSetLater } from "./package-captions";
 import { createPackageCategory } from "./package-category";
-import { createVideoPublishingCheck, type UploadedPackageVideo } from "./video-publishing-check";
+import { createVideoPublishingCheck, uploadedPackageVideos, type UploadedPackageVideo } from "./video-publishing-check";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { createChannelVideoStoreAdapter } from "@/lib/channel-video-store";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
@@ -1417,23 +1417,7 @@ export type { PackageMetadataActor, PackageMetadataApplyResult, PackageMetadataP
  */
 async function uploadedPackageVideosOf(scan: ReturnType<typeof createPackageScanCore>, channelId: string): Promise<UploadedPackageVideo[] | "no_workspace" | "workspace_unavailable"> {
   const result = await scan.scan(channelId);
-  if (result.status !== "ok") return result.status;
-  const seen = new Set<string>();
-  const out: UploadedPackageVideo[] = [];
-  for (const p of result.packages) {
-    const videoId = p.youtube?.videoId;
-    if (!p.pkg || !p.video || !videoId || seen.has(videoId)) continue;
-    seen.add(videoId);
-    out.push({
-      video: p.video,
-      videoId,
-      defaultLanguage: p.pkg.defaultLanguage ?? null,
-      defaultAudioLanguage: p.pkg.defaultAudioLanguage ?? null,
-      containsSyntheticMedia: p.pkg.containsSyntheticMedia ?? null,
-      hasCaptions: (p.pkg.captions?.length ?? 0) > 0,
-    });
-  }
-  return out;
+  return result.status !== "ok" ? result.status : uploadedPackageVideos(result.packages);
 }
 
 /** BL-279: a channel's videos' publishing fields on YouTube now against its saved settings -- the Producer's check (read-only). */

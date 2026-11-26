@@ -31,6 +31,10 @@ test("a file is named after release Vn only when Vn is followed by a space, `_`,
 test("the upload record names the video; a BOM is accepted; anything else is no record", () => {
   assert.deepEqual(parseUploadRecord('﻿{"videoId":"abcdefghijk","privacyStatus":"private"}'), { videoId: "abcdefghijk" });
   assert.equal(parseUploadRecord("{nope"), null);
+  // BL-279 (review finding 1): the owner's link of a video uploaded outside the app (BL-221) is marked, so it is never read as an upload
+  // by a release package.
+  assert.deepEqual(parseUploadRecord('{"videoId":"abcdefghijk","result":"linked","linkedBy":"owner"}'), { videoId: "abcdefghijk", linked: true });
+  assert.deepEqual(parseUploadRecord('{"videoId":"abcdefghijk","result":"uploaded"}'), { videoId: "abcdefghijk" });
   // BL-243: the record's uploadedAt when valid (the runner writes it), none when it is not a time.
   assert.deepEqual(parseUploadRecord('{"videoId":"abcdefghijk","uploadedAt":"2026-11-02T10:00:00.000Z"}'), { videoId: "abcdefghijk", uploadedAt: "2026-11-02T10:00:00.000Z" });
   assert.deepEqual(parseUploadRecord('{"videoId":"abcdefghijk","uploadedAt":"soon"}'), { videoId: "abcdefghijk" });

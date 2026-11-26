@@ -1,4 +1,5 @@
 import { DomainError, isDomainError } from "@/lib/shared-domain";
+import type { ScannedPackage } from "./package-scan";
 import type { PublishingSettings } from "./settings";
 import type { PublishingSettingsView } from "./settings-service";
 
@@ -18,6 +19,30 @@ export type UploadedPackageVideo = {
   /** The package names an English captions file (BL-269). */
   hasCaptions: boolean;
 };
+
+/**
+ * The channel's videos a release package put on YouTube: the scanned packages whose upload record names a video id (either computer's
+ * upload), one per video id. The owner's link of a video uploaded outside the app (BL-221, `youtube.linked`) is not one (owner TG 4963:
+ * «только у роликов, загруженных через YTM», review finding 1).
+ */
+export function uploadedPackageVideos(packages: readonly ScannedPackage[]): UploadedPackageVideo[] {
+  const seen = new Set<string>();
+  const out: UploadedPackageVideo[] = [];
+  for (const p of packages) {
+    const videoId = p.youtube?.videoId;
+    if (!p.pkg || !p.video || !videoId || p.youtube?.linked || seen.has(videoId)) continue;
+    seen.add(videoId);
+    out.push({
+      video: p.video,
+      videoId,
+      defaultLanguage: p.pkg.defaultLanguage ?? null,
+      defaultAudioLanguage: p.pkg.defaultAudioLanguage ?? null,
+      containsSyntheticMedia: p.pkg.containsSyntheticMedia ?? null,
+      hasCaptions: (p.pkg.captions?.length ?? 0) > 0,
+    });
+  }
+  return out;
+}
 
 /** One video as `videos.list` returned it (`youtube-read-gateway` `VideoPublishingFields`). */
 export type ReadVideoFields = {

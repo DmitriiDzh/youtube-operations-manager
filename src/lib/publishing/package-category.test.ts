@@ -6,7 +6,8 @@ import { createPackageCategory, PACKAGE_CATEGORY_QUOTA_UNITS_PER_VIDEO, type Pac
 import type { PackageMetadataActor } from "./package-metadata";
 import { DEFAULT_PUBLISHING_SETTINGS } from "./settings";
 import type { PublishingSettingsView } from "./settings-service";
-import type { ReadVideoFields, UploadedPackageVideo } from "./video-publishing-check";
+import type { ScannedPackage } from "./package-scan";
+import { uploadedPackageVideos, type ReadVideoFields, type UploadedPackageVideo } from "./video-publishing-check";
 
 // BL-279 (owner TG 4963/4964; ADR 0072 amendment 2; docs/WRITE_AUTHORIZATIONS.md «Package metadata after upload», amended): the category
 // of a video a release package of the channel put on YouTube, set only to the channel's SAVED `categoryId`. Requirements (by hand from
@@ -163,7 +164,7 @@ test("BL-279: a video no release package of the channel uploaded is refused befo
 
 test("BL-279: a category equal to the setting already writes nothing (no backup, no write)", async () => {
   const h = harness({}, { vidA: snap("vidA", { categoryId: "27" }) });
-  const result = await h.svc.apply(CH, { videoIds: ["vidA"] }, PRODUCER);
+  const result = await h.svc.apply(CH, { expectedCategoryId: "27", videoIds: ["vidA"] }, PRODUCER);
   assert.deepEqual(result.written, []);
   assert.equal(result.videos[0].status, "same");
   assert.equal(h.calls.applied.length, 0);
@@ -224,16 +225,54 @@ test("BL-279: translation languages that differ after the write are a failure (u
 test("BL-279: a read-back mismatch on the only video is returned as that video's failure (the write may have been sent), not thrown", async () => {
   const h = harness({
     applyFields: async () => {
-      throw new DomainError({ code: "update_failed", message: "Post-write verification found at least one field did not match what was sent" });
+      throw new DomainError({ code: "update_failed", message: "Post-write verification found at least one field did not match what was sent", details: { backupPath: "/b/vidA-before.json" } });
     },
   });
-  const result = await h.svc.apply(CH, { videoIds: ["vidA"] }, PRODUCER);
+  const result = await h.svc.apply(CH, { expectedCategoryId: "27", videoIds: ["vidA"] }, PRODUCER);
   assert.deepEqual([result.verified, result.stoppedAt, result.videos[0].error?.code], [false, "vidA", "update_failed"]);
+  assert.equal(result.videos[0].backupPath, "/b/vidA-before.json", "video-details' backup of the write is carried to the result");
 });
 
-test("BL-279: an audio language read as zxx is not compared after the write (it is left out of the snippet, RISK-102)", async () => {
-  const h = harness({}, { vidA: snap("vidA", { defaultAudioLanguage: "zxx" }) });
-  await h.svc.apply(CH, { videoIds: ["vidA"] }, PRODUCER);
-  assert.equal(h.calls.applied[0].verifyUnchanged.includes("defaultAudioLanguage"), false);
-  assert.equal(h.calls.applied[0].verifyUnchanged.includes("title"), true);
+test("BL-279 (review 2): a video whose audio language is zxx is skipped with its own status -- in the dry run and the apply, never written", async () => {
+  const h = harness(
+    { readVideos: async ({ videoIds }) => new Map(videoIds.map((id) => [id, { ...fields(id === "vidB" ? "27" : "10"), defaultAudioLanguage: id === "vidA" ? "zxx" : "en" }])) },
+    { vidA: snap("vidA", { defaultAudioLanguage: "zxx" }) }
+  );
+  const preview = await h.svc.preview(CH, OWNER);
+  assert.equal(preview.videos[0].status, "audio_language_zxx");
+  assert.equal(preview.toWrite, 1);
+  const result = await h.svc.apply(CH, { expectedCategoryId: "27" }, OWNER);
+  assert.equal(result.videos[0].status, "audio_language_zxx");
+  assert.deepEqual(h.calls.applied.map((a) => a.videoId), ["vidC"]);
+  assert.ok(h.calls.applied.every((a) => a.verifyUnchanged.includes("defaultAudioLanguage")), "every write verifies the audio language unchanged");
+});
+
+test("BL-279 (review 3): translation languages unreadable before the write -> that video fails before anything is written", async () => {
+  const h = harness({ localizationLanguages: async () => null });
+  await assert.rejects(h.svc.apply(CH, { expectedCategoryId: "27", videoIds: ["vidA"] }, OWNER), refused("update_failed"));
+  assert.equal(h.calls.applied.length, 0, "nothing written");
+});
+
+test("BL-279 (review 7): the Producer's apply also needs the category its dry run showed", async () => {
+  const h = harness();
+  await assert.rejects(h.svc.apply(CH, { videoIds: ["vidA"] }, PRODUCER), refused("validation_failed"));
+  assert.equal(h.calls.snapshots + h.calls.applied.length, 0);
+});
+
+// Review finding 1 (owner TG 4963: «только у роликов, загруженных через YTM»): a release whose `Vn_youtube.json` is the owner's link of
+// a video uploaded outside the app (BL-221, `youtube.linked`) is not a package upload -- absent from the dry run, refused in the apply.
+test("BL-279 (review 1): a video the owner only linked to its release is absent from the dry run and refused (package_metadata_not_uploaded)", async () => {
+  const pkgOf = (video: string, videoId: string, linked: boolean) =>
+    ({
+      video,
+      pkg: { video, defaultLanguage: "en", defaultAudioLanguage: "en", containsSyntheticMedia: null, captions: null },
+      youtube: { videoId, privacyStatus: null, publishAt: null, ...(linked ? { linked: true } : {}) },
+    }) as unknown as ScannedPackage;
+  const listed = uploadedPackageVideos([pkgOf("V1", "vidA", false), pkgOf("V9", "vidLinked", true)]);
+  assert.deepEqual(listed.map((v) => v.videoId), ["vidA"]);
+  const h = harness({ uploadedVideos: async () => listed });
+  const preview = await h.svc.preview(CH, OWNER);
+  assert.deepEqual(preview.videos.map((v) => v.videoId), ["vidA"]);
+  await assert.rejects(h.svc.apply(CH, { expectedCategoryId: "27", videoIds: ["vidLinked"] }, OWNER), refused("package_metadata_not_uploaded"));
+  assert.equal(h.calls.applied.length, 0);
 });

@@ -4,9 +4,9 @@ import { useState } from "react";
 import { errorText, type UiTextKey } from "@/lib/ui-text";
 import { useT } from "./ui-text-provider";
 
-type PreviewRow = { video: string; videoId: string; title: string | null; current: string | null; status: "write" | "same" | "upload_pending" | "not_on_youtube" | "not_in_channel" };
+type PreviewRow = { video: string; videoId: string; title: string | null; current: string | null; status: "write" | "same" | "upload_pending" | "not_on_youtube" | "not_in_channel" | "audio_language_zxx" };
 type Preview = { targetCategoryId: string; videos: PreviewRow[]; toWrite: number; quotaUnits: number };
-type ResultRow = { video: string; videoId: string; before: string | null; status: "written" | "same" | "upload_pending" | "not_on_youtube" | "not_in_channel" | "failed"; error?: { code: string; message: string } };
+type ResultRow = { video: string; videoId: string; before: string | null; status: "written" | "same" | "upload_pending" | "not_on_youtube" | "not_in_channel" | "audio_language_zxx" | "failed"; error?: { code: string; message: string } };
 type Result = { targetCategoryId: string; videos: ResultRow[]; written: string[]; verified: boolean; stoppedAt: string | null };
 
 /**

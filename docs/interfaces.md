@@ -895,7 +895,7 @@ Key MCP tools:
     upload is queued (owner approval, automatic upload and `producer_upload_queue_add` alike).
     `POST /api/channels/[channelId]/publishing/category-fix` (BL-279, ADR 0072 amendment 2; owner session, active channel): `{ dryRun: true }`
     → `{ dryRun: true, channelId, targetCategoryId, videos: [{ video, videoId, title, current, status: write | same | upload_pending |
-    not_on_youtube | not_in_channel }], toWrite, quotaUnits }`; `{ expectedCategoryId, videoIds? }` → `{ dryRun: false, channelId,
+    not_on_youtube | not_in_channel | audio_language_zxx }], toWrite, quotaUnits }`; `{ expectedCategoryId, videoIds? }` → `{ dryRun: false, channelId,
     targetCategoryId, videos: [{ video, videoId, before, status: written | same | upload_pending | not_on_youtube | not_in_channel | failed,
     backupPath?, error? }], written, verified, stoppedAt }` (the category comes only from the channel's saved setting; refusals as
     `producer_video_category_fix`).
@@ -1704,7 +1704,7 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
   video all ended), `captions_track_changed`, `captions_scope_missing`, `video_not_in_channel`,
   `youtube_quota_exceeded`, `backup_item_failed`, `WRITE_CHANNEL_MISMATCH`, `live_writes_disabled`, `operation_lock_held` / `device_in_recovery_mode`.
 - **Category fix (BL-279, owner TG 4963/4964, ADR 0072 amendment 2; Producer 1.35.0):** `producer_video_category_fix { channelId, dryRun?,
-  videoIds? (1-200, apply only), expectedCategoryId? }` (strict; METADATA_WRITE; no category of the caller's) → the same shapes as the owner's
+  videoIds? (1-200, apply only), expectedCategoryId (required to apply) }` (strict; METADATA_WRITE; no category of the caller's) → the same shapes as the owner's
   `category-fix` route above, plus `forChannelId`. Sets the category of the channel's videos a release package put on YouTube to the channel's
   SAVED `categoryId` through `video-details` (full snippet read-merge-write, everything else sent back as read; identity check, backup, Live
   writes immediately before each `videos.update`, read-back of the category, the untouched snippet fields, privacy, `publishAt` and the

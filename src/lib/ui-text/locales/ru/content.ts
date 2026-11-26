@@ -294,6 +294,7 @@ export const content: Record<keyof typeof en, string> = {
   "categoryFix.status.upload_pending": "ещё загружается здесь — позже",
   "categoryFix.status.not_on_youtube": "нет на YouTube",
   "categoryFix.status.not_in_channel": "ролик не этого канала",
+  "categoryFix.status.audio_language_zxx": "язык аудио «zxx» — пропущен, исправьте в Studio",
   "categoryFix.status.written": "исправлена и проверена чтением",
   "categoryFix.status.failed": "ошибка",
   "categoryFix.fix": "Исправить категорию ({count})",
