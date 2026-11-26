@@ -1,7 +1,8 @@
 # 0077. vidIQ research through one gateway: an API key only, allowlisted read tools, a credits budget and a bounded cache
 
-Status: Proposed (owner TG 4949 and 4953, 2026-11-26). Stage 0: no code yet. The owner reviews the architecture and security
-choices below before stage 1 starts.
+Status: Accepted (owner TG 4949 and 4953, 2026-11-26; the plan's open questions answered in TG 4961 the same day: earnings
+estimates shown and labelled a vidIQ estimate, vidIQ credits are not a BL-228 paid call so the budget and the ledger are the only
+gate, the key on the Mac only; see the plan's §10).
 
 **Date:** 2026-11-26. **Backlog:** BL-278. **Plan:** `docs/roadmap/plans/VIDIQ_INTEGRATION_PLAN.md`.
 
@@ -201,7 +202,12 @@ What this collides with in the repository:
    - Every vidIQ number is labelled a third-party estimate and kept apart from YTM's own observed data. It is never stored as a
      Market Intelligence snapshot or evidence row, and never fed into derived metrics.
 
-   YTM itself draws no profitability conclusion. Stage 1 adds a dated note citing this ADR to both requirement documents.
+   YTM itself draws no profitability conclusion. Stage 1 adds a dated note citing this ADR to both requirement documents. The
+   owner confirmed the earnings estimates on 2026-11-26 (TG 4961: «да, это полезно для выбора ниши»).
+
+   **Credits are not a paid call (TG 4961).** vidIQ credits within the plan's allowance are not a "paid call" in the BL-228 (ADR
+   0053) sense: «Просто помним о нашем лимите, ведем подсчет. Но продюсер может использовать без доп согласования со мной.» The
+   budget and the ledger (decision 5) are the only gate; no per-call owner approval is asked.
 
 10. **Why YTM proxies vidIQ instead of each agent connecting to it.** If each agent connected to vidIQ itself:
     - every agent would hold the key in its own configuration and context;

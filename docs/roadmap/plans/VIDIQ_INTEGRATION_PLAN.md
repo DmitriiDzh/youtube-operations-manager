@@ -1,7 +1,7 @@
 # vidIQ integration plan (BL-278, ADR 0077)
 
-Status: stage 0 (this plan, ADR 0077 and the backlog row). No code yet. The owner reviews the architecture and security choices
-before stage 1. Branch: `feature/vidiq-integration`, shared by every stage (AGENTS.md §K.1); each stage is a complete working unit.
+Status: stage 0 accepted; the open questions (§10) were answered on 2026-11-26 (owner TG 4961) and stage 1 is assigned. The
+owner reviews the architecture and security choices before each merge. Branch: `feature/vidiq-integration`, shared by every stage (AGENTS.md §K.1); each stage is a complete working unit.
 
 ## 1. Goal
 
@@ -398,6 +398,20 @@ paid calls (about 25 credits) across all stages,** plus free `vidiq_balance`, `t
   in stage 1 if a new gap appears.
 
 ## 10. Open questions (for the owner, before or during stage 1)
+
+**Answered 2026-11-26** (owner TG 4961 for Q1, Q2 and Q4; the coordinator for Q3, Q5 and Q6). The answers below are binding for
+stage 1 onward; the original questions are kept under them.
+- **Q1: yes, option (a).** Earnings estimates are shown: «да, это полезно для выбора ниши». Each is labelled a vidIQ estimate. The
+  `FUTURE_PHASES.md` §5 and `PHASE_9_PLAN.md` §4/§16 limits change for vidIQ data only (dated notes there).
+- **Q2: option (a).** vidIQ credits are not "paid calls" in the BL-228 (ADR 0053) sense: «Просто помним о нашем лимите, ведем
+  подсчет. Но продюсер может использовать без доп согласования со мной.» The budget and the ledger are the only gate; there is no
+  per-call owner approval.
+- **Q3: option (a).** Watchlist only (through `producer_propose watchlist.add` and the owner's own add); no external discovery
+  candidates.
+- **Q4: option (a).** The key is on the Mac only: «только на маке пока достаточно».
+- **Q5:** the budget period follows vidIQ's own renewal cycle (`renewableResetsAt`).
+- **Q6:** the first key save that passes verification turns the module on.
+
 
 - **Q1. Earnings estimates.**
   - *The conflict.* ADR 0077 decision 9 records the owner's change as decided. But the quoted owner words (TG 4949/4953) speak of

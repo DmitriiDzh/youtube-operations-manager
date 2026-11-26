@@ -250,6 +250,14 @@ discovery rules instead; never assume access to a competitor's private analytics
 or revenue; never treat publicly observed growth as proof of profitability; never restrict
 discovery to music or the operator's existing niches.
 
+> **Dated note, 2026-11-26 (BL-278, ADR 0077 decision 9).** For vidIQ data only, the owner lifted two limits above (TG 4949/4953:
+> vidIQ for finding niches and competitors; TG 4961, Q1: earnings estimates are shown, «да, это полезно для выбора ниши»).
+> vidIQ's discovery tools and its earnings estimates (`vidiq_video_earnings_estimate`, `vidiq_channel_search`'s
+> `estimatedEarnings*` filters) may be shown, each labelled a vidIQ (third-party) estimate and kept apart from YTM's own observed
+> data; discovery runs only on an explicit call by the owner or the Producer, never scheduled. No vidIQ number is stored as Market
+> Intelligence evidence or fed into derived metrics, and YTM draws no profitability conclusion. For every other source the limits
+> stand unchanged.
+
 **Deliverable / completion criterion:** the system identifies new research candidates — previously
 unknown channels, topics, or niches — and states which public observations, with freshness
 metadata, support each one, never an unexplained ranking.
