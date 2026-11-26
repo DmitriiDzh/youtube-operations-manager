@@ -1870,6 +1870,27 @@ Every route: a Web session (401) and the active channel (403); `DomainError` →
 - `GET /api/channels/[channelId]/channel-localizations/preview` — reads the channel (`channels.list`, 1 unit) and answers `{ languages: [{ language, status: new | changed | unchanged }], untouched (the own-language entry included when it equals the base text), defaultLanguage: { current }, problems: [default_language_not_set | default_language_mismatch | own_language_in_live | own_language_in_set | empty_set], quota: { writes (0 or 1), writeUnits, readUnits }, ownLanguage, live, setVersion }`; nothing is written.
 - `POST /api/channels/[channelId]/channel-localizations/apply` — body `{ setVersion }` (from the preview). The owner's «Применить», the only path to YouTube: the stored set must still be the previewed one (else 409 `localizations_changed`), identity (`assertWriteChannel`), fresh read, refusals before any write (409 `channel_default_language_not_set` when `brandingSettings.channel.defaultLanguage` is not set -- the owner sets it once in YouTube Studio; 409 `default_language_mismatch`; 409 `own_language_in_live` when YouTube lists an own-language translation differing from the base text; `validation_failed`), backup, re-read (`update_failed` if the channel changed), `assertLiveWritesAuthorized`, ONE `channels.update part=localizations` with the full merged map (an own-language entry equal to the base text sent back unchanged), read-back, audit (`channel_localization_events`) → `{ at, ok, languages, writes, backupPath }` or `{ ok: false, failure: read_back_mismatch, detail, ... }`; also `live_writes_disabled`, `WRITE_CHANNEL_MISMATCH`. This writer never writes the channel's `brandingSettings` (owner msg 3350); the branding writer is BL-223's (ADR 0050, below).
 
+### vidIQ API (BL-278 stage 1, ADR 0077, Settings → Cloud APIs → vidIQ)
+
+Web session required on every route; never MCP. No answer carries the key (only `key.hint`, its last 4 characters); a non-domain
+failure answers `{ error: "internal_error" }` with a fixed message. The status answer `VidiqStatusView` is `{ key: { state, hint,
+status, verifiedAt }, enabled, balance: { type, planName, totalCredits, renewableCredits, maxRenewableCredits, renewableResetsAt,
+addOnCredits, maxAddOnCredits, readAt } | null, budget: { monthly, spentInPeriod, remaining, periodStartsAt, periodEndsAt }, ledger:
+[20 newest { id, at, caller, tool, argsSha256, statedCost, creditsUsed, outcome, errorCode, jobId, balanceAfter }] }`.
+
+- `GET /api/vidiq` → the status (local data only, no vidIQ call).
+- `PUT /api/vidiq/key` (`{ apiKey }`): checked with vidIQ's free `vidiq_balance` first (`vidiq_key_invalid` 422 stores nothing), then
+  stored in the device-secret slot `vidiq`; the first save turns the module on. `DELETE /api/vidiq/key`: removes it, turns the module
+  off, drops the balance snapshot. **Mac only** (`src/proxy.ts`, `remote_access_mac_only` from another device).
+- `PATCH /api/vidiq/settings` (`{ enabled?, monthlyBudgetCredits? }`, budget an integer 0–100 000): `enabled: true` without a key is
+  `vidiq_key_missing` (409).
+- `POST /api/vidiq/balance`: one free balance read → the status (`vidiq_disabled` 409 when off).
+- `POST /api/vidiq/check`: the free `tools/list` → `{ readAt, report: [18 × { tool, state: ok | vidiq_tool_missing |
+  vidiq_schema_drift | vidiq_cost_changed | vidiq_annotation_drift }] }`.
+- Codes and statuses: `vidiq_disabled`/`vidiq_key_missing`/drift codes/`vidiq_budget_exhausted`/`vidiq_insufficient_credits` 409,
+  `vidiq_key_invalid`/`vidiq_args_invalid`/`vidiq_canonical_id_required` 422, `vidiq_tool_not_allowed` 403, `vidiq_job_unknown` 404,
+  `vidiq_rate_limited` 429, `vidiq_unavailable` 503, `vidiq_outcome_unknown` 504, `vidiq_result_too_large` 502.
+
 ### Speech API (BL-236, ADR 0057)
 
 - `GET /api/elevenlabs-speech/settings-sync` (the shared limits on this computer: applied, held, conflicts) and `POST

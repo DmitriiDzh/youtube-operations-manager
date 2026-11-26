@@ -2,6 +2,11 @@
 
 ## 4. Статус компонентов
 
+### 2.9bs vidIQ (BL-278, ADR 0077) — **этап 1 IMPLEMENTED на ветке `feature/vidiq-integration`, не влито**
+- Шлюз `src/lib/vidiq-gateway/`, модуль `src/lib/vidiq-research/`, ключ в слоте `vidiq` (только Мак), журнал `vidiq_ledger` (v127),
+  бюджет и снимок баланса, карточка в Настройки → Облачные API (подробно `docs/system/vidiq-research.md` §2.9br). Платных
+  потребителей нет; инструменты Продюсера, кэш и подвкладка Исследований — этапы 2–3 (**PLANNED**, не назначены).
+
 ### 2.9bo2 Теги видео только на чтение (BL-273, FO-REQ-0056 часть 2) — **IMPLEMENTED** (dev, 24.11.2026)
 - `channel_sync` сохраняет `snippet.tags` из уже читаемой части `snippet` (без доп. квоты) в `videos.tags_json` (schema v125; `NULL` —
   ещё не прочитаны, до следующего синка). Проверенная запись video-details (`video_details_update`, «Применить упаковку»,
