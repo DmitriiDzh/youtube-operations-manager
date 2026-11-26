@@ -19,6 +19,7 @@ export const settingsCards = {
   "settingsCards.autoPrivateUpload.reason.quota_insufficient": "not enough of today's quota is left",
   "settingsCards.autoPrivateUpload.reason.quota_unknown": "today's quota cannot be read (Google Cloud not connected or not answering)",
   "settingsCards.autoPrivateUpload.reason.publishing_settings_changed": "publishing settings differ between the computers (choose them in Merge)",
+  "settingsCards.autoPrivateUpload.reason.publishing_settings_not_saved": "publishing settings of the channel were never saved (save them on Home)",
   "settingsCards.autoPrivateUpload.reason.upload_tags_too_long": "its tags are over YouTube's 500 characters",
   "settingsCards.autoPrivateUpload.reason.hash_failed": "its video file could not be read",
   "settingsCards.autoPrivateUpload.reason.no_connected_account": "no connected account on this computer",

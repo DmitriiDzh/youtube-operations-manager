@@ -98,6 +98,7 @@ function harness(initial: { packages: ScannedPackage[]; enabled?: boolean; files
   let id = 0;
   const approvalDeps: UploadApprovalDeps = {
     scan: async () => ({ status: "ok", packages: state.packages }),
+    // BL-279 (new requirement, owner TG 4964): a channel uploads only once its publishing settings were saved -- a saved one here.
     settings: async () => ({ channelId: CHANNEL, settings: SETTINGS, defaults: DEFAULT_PUBLISHING_SETTINGS, saved: ["playlistId"], conflictedFields: [] }),
     liveVideos: async () => new Set(state.rows.filter(holdsPackage).map((row) => row.video)),
     peerUploads: async () => state.peers,
@@ -304,7 +305,8 @@ test("AC-AU-07: a peer that starts the same package while the video is hashed st
     queue: async (input) =>
       createUploadApproval({
         scan: async () => ({ status: "ok", packages: [p] }),
-        settings: async () => ({ channelId: CHANNEL, settings: SETTINGS, defaults: DEFAULT_PUBLISHING_SETTINGS, saved: [], conflictedFields: [] }),
+        // BL-279 (new requirement, owner TG 4964): a channel uploads only once its publishing settings were saved -- a saved one here.
+        settings: async () => ({ channelId: CHANNEL, settings: SETTINGS, defaults: DEFAULT_PUBLISHING_SETTINGS, saved: ["playlistId"], conflictedFields: [] }),
         liveVideos: async () => new Set(),
         peerUploads: async () => h.state.peers,
         insertsToday: async () => 0,
@@ -393,7 +395,8 @@ test("an unknown quota is never acknowledged by the automatic path (it waits lik
   const h = harness({ packages: [p], files: fileOf(p) });
   const approval = createUploadApproval({
     scan: async () => ({ status: "ok", packages: [p] }),
-    settings: async () => ({ channelId: CHANNEL, settings: SETTINGS, defaults: DEFAULT_PUBLISHING_SETTINGS, saved: [], conflictedFields: [] }),
+    // BL-279 (new requirement, owner TG 4964): a channel uploads only once its publishing settings were saved -- a saved one here.
+    settings: async () => ({ channelId: CHANNEL, settings: SETTINGS, defaults: DEFAULT_PUBLISHING_SETTINGS, saved: ["playlistId"], conflictedFields: [] }),
     liveVideos: async () => new Set(),
     peerUploads: async () => new Map(),
     insertsToday: async () => 0,
@@ -488,7 +491,8 @@ test("waiting reasons: a refusal for one package (tags over 500 characters) is r
     queue: (input) =>
       createUploadApproval({
         scan: async () => ({ status: "ok", packages: [p] }),
-        settings: async () => ({ channelId: CHANNEL, settings: { ...SETTINGS, channelTags: longTags }, defaults: DEFAULT_PUBLISHING_SETTINGS, saved: [], conflictedFields: [] }),
+        // BL-279 (new requirement, owner TG 4964): a channel uploads only once its publishing settings were saved -- a saved one here.
+        settings: async () => ({ channelId: CHANNEL, settings: { ...SETTINGS, channelTags: longTags }, defaults: DEFAULT_PUBLISHING_SETTINGS, saved: ["playlistId"], conflictedFields: [] }),
         liveVideos: async () => new Set(),
         peerUploads: async () => new Map(),
         insertsToday: async () => 0,

@@ -282,6 +282,7 @@ export function createAutoPrivateUpload(deps: AutoUploadDeps) {
               const code = isDomainError(error) ? error.code : "refused";
               note({ kind: "package", channelId: channel.channelId, video: p.pkg.video, manifestSha256: p.manifestSha256, reason: code });
               if (code === "publishing_settings_changed") break; // this channel's settings wait for Merge; the next channel may go on
+              if (code === "publishing_settings_not_saved") break; // BL-279: this channel waits for the owner's first save; the next may go on
               if (AUTO_UPLOAD_WAIT_CODES.has(code)) {
                 // The bucket and the pool are the project's: nothing else fits this tick either. Never dropped -- tried again later.
                 result.waiting = code;

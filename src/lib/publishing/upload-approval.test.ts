@@ -309,3 +309,35 @@ test("AC-MG-21: the owner's approval row freezes the manifest's mp4 sha256 (and 
   assert.equal(JSON.parse(h.inserted[0].packageJson).videoSha256, sha);
   assert.equal("videoSha256" in JSON.parse(h.inserted[1].packageJson), false);
 });
+
+// BL-279 (owner TG 4963/4964): «Загрузка на канал, у которого настройки публикации в YT Manager ни разу не сохранялись, блокируется».
+// Requirement: the owner's approval, the automatic upload and the Producer's queue add of such a channel are each refused with
+// publishing_settings_not_saved and queue nothing; a channel that saved any one field (Tropico and Japan saved only tags and playlist)
+// keeps uploading with the default category.
+test("BL-279: a channel whose publishing settings were never saved queues nothing -- owner, automatic and Producer alike", async () => {
+  const neverSaved = async () => ({ channelId: "UC_t", settings: DEFAULT_PUBLISHING_SETTINGS, defaults: DEFAULT_PUBLISHING_SETTINGS, saved: [], conflictedFields: [] });
+  const owner = harness([scanned("V65")], { settings: neverSaved });
+  await refusedWith(owner.approval.approve({ channelId: "UC_t", userId: "u", items: [item("V65")], shownSettings: DEFAULT_PUBLISHING_SETTINGS }), "publishing_settings_not_saved");
+  assert.deepEqual(owner.inserted, []);
+  const p = scanned("V65");
+  const auto = harness([p], { settings: neverSaved });
+  await refusedWith(
+    auto.approval.queueAutomatic({ channelId: "UC_t", userId: "u", manifestPath: p.manifestPath, manifestSha256: p.manifestSha256!, scanned: { status: "ok", packages: [p] }, switchOn: true }),
+    "publishing_settings_not_saved"
+  );
+  assert.deepEqual(auto.inserted, []);
+  const producer = harness([p], { settings: neverSaved });
+  await refusedWith(
+    producer.approval.queueByProducer({ channelId: "UC_t", userId: "u", manifestPath: p.manifestPath, manifestSha256: p.manifestSha256!, scanned: { status: "ok", packages: [p] }, switchOn: true, tokenId: "t" }),
+    "publishing_settings_not_saved"
+  );
+  assert.deepEqual(producer.inserted, []);
+});
+
+test("BL-279: a channel that saved only its tags and playlist (Tropico, Japan) still uploads, with the default category Music", async () => {
+  const tropico = { ...DEFAULT_PUBLISHING_SETTINGS, playlistId: "PL_jazz", channelTags: ["jazz"] };
+  const h = harness([scanned("V65")], { settings: async () => ({ channelId: "UC_t", settings: tropico, defaults: DEFAULT_PUBLISHING_SETTINGS, saved: ["channelTags", "playlistId"], conflictedFields: [] }) });
+  const result = await h.approval.approve({ channelId: "UC_t", userId: "u", items: [item("V65")], shownSettings: tropico });
+  assert.equal(result.uploads.length, 1);
+  assert.equal(JSON.parse(h.inserted[0].settingsJson).categoryId, "10");
+});

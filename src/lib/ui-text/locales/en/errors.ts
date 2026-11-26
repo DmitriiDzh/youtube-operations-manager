@@ -149,6 +149,7 @@ export const errors = {
   "errors.package_exists": "A package is in this folder already.",
   "errors.package_held": "This video is already uploaded or queued: its package cannot be changed.",
   "errors.publishing_settings_changed": "The publishing settings changed after you looked at them (perhaps on the other computer). Check them and approve again.",
+  "errors.publishing_settings_not_saved": "This channel's publishing settings were never saved in YT Manager. Open Home → «Publishing settings», check them and save; uploads wait until then.",
   "errors.upload_daily_limit": "Not enough uploads left today: YouTube allows the project 100 uploads a day. It resets at midnight Pacific time.",
   "errors.upload_not_cancellable": "This upload can no longer be cancelled or stopped: its last part was already sent or it already finished, so the video may be on YouTube (or it changed meanwhile — look at the list again). It will be finished; delete the video in YouTube Studio if it is not wanted.",
   "errors.upload_not_releasable": "Only an upload with an unknown outcome can be released.",
