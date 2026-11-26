@@ -72,7 +72,8 @@ test("merge numbering: the current schema is 90 with both branches' tables", asy
   // v124: producer_call_log.target + details_json (owner TG 4782 review: renumbered from v123 at the merge after BL-252's owner_retry_at).
   // v125: FO-REQ-0056 videos.tags_json (BL-273; renumbered from v123 at the merge after v123 owner_retry_at and v124 producer_call_log).
   // v126: owner TG 4817 package_review_drafts (PACKAGE_REVIEW_PLAN.md AC-TC-03; renumbered from v124 at the merge after v124 producer_call_log and v125 videos.tags_json).
-  assert.equal(SCHEMA_CURRENT_VERSION, 126);
+  // v127: BL-278 vidiq_ledger (ADR 0077, VIDIQ_INTEGRATION_PLAN.md stage 1: a new additive migration, not a renumbering).
+  assert.equal(SCHEMA_CURRENT_VERSION, 127);
   await withDb(async (client) => {
     await initializeDatabaseSchema(client);
     const t = await tables(client);

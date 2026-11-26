@@ -966,7 +966,7 @@ test("getGatewayTrafficLast24h: every category reports a zeroed row before any c
       windows.map((w) => w.category).sort(),
       // BL-174 (GEMINI_MEDIA_PLAN.md §2.1): the media gateway's Gemini child adds its own counter, `gemini_api`; BL-200 adds
       // `github_api` (pod runtime profiles: ComfyUI releases, tag -> commit); BL-236 (ADR 0057) `elevenlabs_api`, the new
-      // ElevenLabs child (speech, voice design) gets its own counter.
+      // ElevenLabs child (speech, voice design) gets its own counter; BL-278 (ADR 0077 decision 1) `vidiq_api`, the vidIQ gateway.
       [
         "analytics_reads",
         "cloud_monitoring_reads",
@@ -981,6 +981,7 @@ test("getGatewayTrafficLast24h: every category reports a zeroed row before any c
         "reporting_reads",
         "runpod_api",
         "runpod_s3",
+        "vidiq_api",
         "wikipedia_reads",
         "youtube_feed_reads",
       ]
