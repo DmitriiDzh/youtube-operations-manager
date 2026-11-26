@@ -69,7 +69,8 @@ What this collides with in the repository:
    that.
 
 3. **The key lives in the device-secrets store (ADR 0042) as a new slot, `vidiq`.** The other candidates do not fit:
-   - `ai-connections` credentials hold an OpenAI-compatible provider's key, base URL and model for AI localization. That is a
+   - `ai-connections` holds AI provider connections (`AiConnection` in its `contracts.ts`: adapter type `mock |
+     openai_compatible`, a configurable `baseUrl`, a `modelId` and assigned AI tasks) with their credentials. That is a
      different domain, and its endpoint is configurable, which vidIQ's must not be.
    - The cloud-credentials transfer file is not a store. It only moves existing device secrets between computers.
 
@@ -114,7 +115,8 @@ What this collides with in the repository:
    - `userGoal` is never forwarded. It would carry an agent's context to a third party, and it would split the cache.
    - Channel and video arguments must be canonical ids: `UC` plus 22 characters, or 11 characters for a video. A handle or URL is
      refused, because the cache key and `watchlist.add` need ids.
-   - `job_poll` accepts only an `mcpJobId` that our own ledger recorded.
+   - `job_poll` accepts only an `mcpJobId` that our own ledger recorded. The ledger belongs to the feature module (decision 5),
+     so this check runs there, before the gateway is called.
 
    The live `tools/list` is free. It is read once per process and kept for an hour, and read again once before any drift
    refusal is returned.
@@ -122,9 +124,15 @@ What this collides with in the repository:
 5. **A credits ledger and a budget, owned by the feature module.**
    - **Ledger.** `src/lib/vidiq-research/` records every call in a device-local table: the time, the caller (`owner` or
      `producer`), the tool, a SHA-256 of the canonical arguments, the stated cost, `_credits.used`, the outcome
-     (`ok | cache_hit | refused | failed | unknown | job_pending`), the job id and the balance afterwards.
+     (`pending | ok | cache_hit | refused | failed | unknown | job_pending`), the job id and the balance afterwards.
    - **Budget.** A monthly budget setting defaults to 150, the Free tier.
-   - **Preflight.** The check runs under one per-process lock, so two calls cannot both pass it. A call whose stated cost exceeds
+   - **Order.** The switch, the key and the argument checks come first. A fresh cache answer (decision 6) is served next at 0
+     credits, whatever the budget, because nothing is sent. Only a call that will be sent goes on to the live drift check, the
+     stated cost and the preflight.
+   - **Spent.** Every row of the period counts its `_credits.used` where vidIQ reported it, whatever the outcome (a failed call
+     vidIQ charged counts), and its stated cost where the charge is not known yet.
+   - **Preflight.** The check runs under one lock per process (kept on `globalThis`, since the routes are separate bundles), so
+     two calls cannot both pass it. A call whose stated cost exceeds
      the budget left in the period (`vidiq_budget_exhausted`) is refused before anything is sent. So is a call that exceeds the
      last known account balance (`vidiq_insufficient_credits`). The balance is read again, free, when the stored snapshot is more
      than 10 minutes old.
@@ -152,12 +160,15 @@ What this collides with in the repository:
    - **Classification and storage.** The cache table is classified `non_authorized` in `src/lib/youtube-data-policy/` (clock
      column `fetched_at`), so the existing retention pass purges it and scrubs backups. It is device-local (not in the snapshot,
      not synced) and is never written to the research export, Market Intelligence's snapshots or `research_evidence`. Keeping it
-     to the computer that fetched it also respects §5(t), which forbids redistributing.
+     to the computer that fetched it also respects §5(t), which forbids redistributing. One existing path is outside the code's
+     control: the Producer's free-text `reason` on a `watchlist.add` proposal is stored in `agent_proposals`, which is in the
+     snapshot, and may quote a vidIQ number. That is RISK-122 (proposal text may quote other channels' data), unchanged; stage 2
+     adds vidIQ to it.
 
 7. **A feature module, `src/lib/vidiq-research/` (AGENTS.md §M).**
    - **Ownership.** It owns the tables, the services, the MCP tool handlers and the UI routes.
    - **Switch.** A Settings switch turns it off. The switch is off by default and can be on only while a key is saved; the first
-     verified key save turns it on, and clearing the key turns it off.
+     verified key save turns it on (plan Q6), and clearing the key turns it off. It is a device-local `app_settings` value, so it never reaches a computer without the key.
    - **When off or failing.** Every vidIQ tool answers `vidiq_disabled` or its own error. Nothing else in YTM depends on it, and
      it runs no background work at all (`src/instrumentation.ts` starts nothing for it).
    - **Market Intelligence.** The module reaches it only through public cores, never its `db` symbols: the existing

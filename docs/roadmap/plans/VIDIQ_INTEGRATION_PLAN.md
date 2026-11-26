@@ -101,7 +101,9 @@ All 18 tools the owner's list named exist under exactly these names. Nothing nee
   `^UC[0-9A-Za-z_-]{22}$`; a video argument (`videoId`, each of `videoIds`, `seedVideoId`) must match `^[0-9A-Za-z_-]{11}$`. A
   handle or URL is refused with `vidiq_canonical_id_required`. The fixture allows handles; we narrow it, for the cache key and for
   `watchlist.add`.
-- **Job ids.** `vidiq_job_poll` takes only an `mcpJobId` that this computer's ledger recorded as `job_pending`.
+- **Job ids.** `vidiq_job_poll` takes only an `mcpJobId` that this computer's ledger recorded as `job_pending`. The ledger belongs
+  to `vidiq-research`, so this check runs there, before the gateway is called; the gateway only checks that the id is a non-empty
+  string.
 
 **Cost rule.** The pinned cost per tool, and for `comment_insights` per mode, lives in `contract.ts`. The live description's "Cost:"
 sentence must parse to the same number:
@@ -146,26 +148,34 @@ when the stage is built" (127 today); the Producer API version likewise (1.34.0 
   The status read never returns the key, only `state` and the hint.
 
 **Feature module, `src/lib/vidiq-research/`** (`contracts`, `schemas`, `services`, `adapters`, `index`).
+- **Local settings.** `app_settings` is device-local (`SNAPSHOT_DEVICE_LOCAL_TABLES`: "per-device settings and toggles"), so the
+  three keys below never travel to another computer: a switch can never arrive "on" on a computer without the key.
 - **Switch.** `vidiq_enabled` in `app_settings`, default off. It can be on only with a saved key; the first verified save turns it
   on.
 - **Budget.** `vidiq_monthly_budget_credits` in `app_settings`, default 150, integer 0–100 000.
 - **Balance snapshot.** `vidiq_balance_snapshot` in `app_settings`: the last balance, its read time and the key's slot version, so
   a new key discards it.
-- **Call order** (under one per-process lock):
+- **Call order** (under one lock per process, kept on `globalThis` because the MCP route, the Web routes and other bundles are
+  separate module instances):
   1. switch;
   2. key;
-  3. gateway drift check;
-  4. stated cost;
-  5. preflight: refuse when the cost exceeds the budget left in the period (`vidiq_budget_exhausted`, with `details` `statedCost`,
+  3. allowlist and argument checks (no network): tool on the list, pinned schema, canonical ids, `userGoal` stripped, job id known
+     to the ledger;
+  4. cache lookup (stage 2): a fresh hit is answered here at 0 credits with a `cache_hit` row. It is not subject to the budget,
+     `maxCredits` or the live drift check, because nothing is sent;
+  5. gateway drift check against the live list (tool present, live schema, annotation, Cost sentence);
+  6. stated cost, then the caller's `maxCredits` (stage 2);
+  7. preflight: refuse when the cost exceeds the budget left in the period (`vidiq_budget_exhausted`, with `details` `statedCost`,
      `remainingBudget`, `periodEndsAt`), or exceeds the snapshot's `totalCredits` after a free re-read if the snapshot is older
      than 10 minutes (`vidiq_insufficient_credits`);
-  6. ledger row `pending` at the stated cost (the reservation);
-  7. gateway call;
-  8. row updated with `_credits.used` and the outcome;
-  9. free balance read, recorded as `balance_after`.
-- **Budget arithmetic.** Spent in the period = the sum of `credits_used` over rows that are `ok`, plus the stated cost of rows that
-  are `pending`, `unknown` or `job_pending`. Refunds come from vidIQ's `_credits.used` or `refunded`. An overcharge (used above the
-  pin) marks the tool drifted.
+  8. ledger row `pending` at the stated cost (the reservation);
+  9. gateway call;
+  10. row updated with `_credits.used` and the outcome;
+  11. free balance read, recorded as `balance_after`.
+- **Budget arithmetic.** Spent in the period = the sum, over every row of the period whatever its outcome, of `credits_used` where
+  vidIQ reported it, and of the stated cost where it is not known yet (`pending`, `unknown`, `job_pending`, or a failed job whose
+  refund is still pending). A `failed` row that vidIQ charged (for example `vidiq_result_too_large`) therefore counts. Refunds come
+  from vidIQ's `_credits.used` or `refunded`. An overcharge (used above the pin) marks the tool drifted.
 - **Period.** It ends at the snapshot's `renewableResetsAt` and starts one calendar month earlier, or it is the UTC calendar month
   while no snapshot exists.
 - **Stage 1 consumers.** Stage 1 has no paid consumer: the owner's balance and «Проверить подключение» are free. Paid calls are
@@ -214,7 +224,8 @@ Polling through `job_poll`:
 - `producer_vidiq_tools` (READ, free): for each allowlisted tool, the cost rule, the pinned input schema without `userGoal`, the
   TTL and the current drift state.
 - `producer_vidiq_call { tool, args, refresh?: boolean, maxCredits?: integer ≥ 0 }` (permission `VIDIQ_RESEARCH`). It refuses
-  when the stated cost exceeds `maxCredits`, before anything else. Its answer:
+  (`vidiq_max_credits_exceeded`) when a call that would be sent states a cost above `maxCredits`, before the budget check; a fresh
+  cache hit is answered first at 0 credits (stage 1 call order, step 4). Its answer:
   `{ source: "vidIQ (third-party estimate)", tool, cached, fetchedAt, creditsSpent, balance: { totalCredits, renewableResetsAt } | null, budget: { monthly, spentInPeriod, remaining, periodEndsAt }, job?: { mcpJobId, status }, data }`.
   Polling a job is `producer_vidiq_call { tool: "vidiq_job_poll", args: { mcpJobId } }`.
 - `producer_vidiq_balance { refresh?: boolean }` (READ, free): the snapshot (re-read when `refresh`), the budget, the period and
@@ -239,6 +250,11 @@ approves it in the Web UI. Stage 2 adds an end-to-end test of that path, startin
   backup scrub cover it;
 - left out of `research-export`.
 
+One path can still carry vidIQ numbers into the device snapshot: the free-text `reason` of a `watchlist.add` proposal, which the
+Producer writes and which is stored in `agent_proposals` (in the snapshot). That is the existing RISK-122 (a proposal's free text
+may quote other channels' data longer than 30 days). It applies unchanged and is not widened by code; stage 2 adds a line to
+RISK-122 naming vidIQ as a source.
+
 ### Stage 3: Research tab «vidIQ» sub-tab
 
 - **Placement.** The Research tab gains a «vidIQ» sub-tab with its own `FeatureErrorBoundary`; it is hidden when the module is off.
@@ -247,7 +263,7 @@ approves it in the Web UI. Stage 2 adds an end-to-end test of that path, startin
   before the click.
 - **Results.** Results show as tables labelled «Оценка vidIQ (сторонние данные)», kept visually apart from YTM's own observations.
 - **Watchlist add.** A channel row offers «Добавить в список наблюдения» (a required reason). It goes through Market Intelligence's
-  public `addToWatchlist` (`createdVia: "web"`), the owner's own act, so no proposal is needed.
+  public `addToWatchlist` (`createdVia: "web_ui"`, one of `CREATED_VIA_VALUES`), the owner's own act, so no proposal is needed.
 - **Ledger.** Calls are made by the caller `owner` under the same budget and cache.
 - **Schema.** None. UI texts in every language.
 
@@ -290,8 +306,10 @@ Expected values come from ADR 0077, the fixture and vidIQ's stated contract, nev
   `instrumentation.ts` starts nothing for it).
 - **AC-VQ-1.15** **Arguments.** A handle (`@name`) or URL as `channelId` is refused with `vidiq_canonical_id_required`. A
   `userGoal` argument is not in the request the fake server receives.
-- **AC-VQ-1.16** **Inventory and boundaries.** A test file outside the gateway that names `mcp.vidiq.com`, or imports
-  `@modelcontextprotocol/sdk/client`, makes the inventory test fail (proved by the test's own matcher over a sample string).
+- **AC-VQ-1.16** **Inventory and boundaries.** A production (non-test) source outside the gateway that names `mcp.vidiq.com`,
+  imports `@modelcontextprotocol/sdk/client` or a gateway child, or imports the barrel from a module other than `vidiq-research`,
+  makes the inventory test fail. The test skips `.test.` files like the existing inventory tests, so its matchers are proved over
+  sample strings.
   `vidiq-research` and the gateway import nothing from `write-context`, `youtube-write-gateway` or `youtube-read-gateway`.
 - **AC-VQ-1.17** **Mac only.** A remote (non-loopback) request to the key route is refused by `src/proxy.ts`.
 - **AC-VQ-1.18** **Interface text.** Every text of the card is a key in every language (ui-text tests). The key input is a
@@ -303,6 +321,10 @@ Expected values come from ADR 0077, the fixture and vidIQ's stated contract, nev
   different `userGoal`) within the TTL returns `cached: true`, `creditsSpent: 0`, writes a `cache_hit` row and sends nothing.
 - **AC-VQ-2.2** **Refresh.** `refresh: true` sends and pays. After the TTL (24 h for `vidiq_outliers`, simulated clock) the next call
   sends.
+- **AC-VQ-2.2a** **Cache under an exhausted budget.** With the budget used up (`vidiq_budget_exhausted` for a new call) and with
+  `maxCredits: 0`, a call whose answer is fresh in the cache is still answered: `cached: true`, `creditsSpent: 0`, one `cache_hit`
+  row, nothing sent. The same call with `refresh: true` is refused with `vidiq_max_credits_exceeded` (with `maxCredits: 0`) or
+  `vidiq_budget_exhausted` (without it).
 - **AC-VQ-2.3** **Retention.** No cache row survives 30 days: the retention pass deletes a row with `fetched_at` 31 days ago. The
   data-policy classification test lists `vidiq_cache` as `non_authorized`. `vidiq_cache` is not in the device snapshot or the
   research export.
@@ -406,6 +428,11 @@ paid calls (about 25 credits) across all stages,** plus free `vidiq_balance`, `t
 - **Q5. The budget period.**
   - *Options.* vidIQ's own renewal cycle (`renewableResetsAt`, the 26th today) or the calendar month.
   - *Recommendation.* vidIQ's cycle, so the budget and the real allowance reset together.
+- **Q6. Does saving a key turn the switch on?**
+  - *The question.* The brief says "off by default until a key is saved". This plan reads that as: the switch can be on only with
+    a saved key, and the first verified key save turns it on once.
+  - *Option.* Saving a key leaves the switch off until the owner turns it on.
+  - *Recommendation.* Turn it on at the first save: saving the key is already the owner's explicit act. Either way it is one line.
 
 ## 11. Documents per stage (DEVELOPMENT_PLAYBOOK §6.12)
 
@@ -415,6 +442,7 @@ paid calls (about 25 credits) across all stages,** plus free `vidiq_balance`, `t
     `docs/ARCHITECTURE.md`;
   - `docs/architecture/persistence-tests.md` (schema);
   - `docs/system/component-status.md`;
+  - `docs/interfaces.md` (the `/api/vidiq/*` routes);
   - `docs/TECHNICAL_DEBT.md` if a gap is accepted;
   - the dated requirement notes (§5 stage 1);
   - ui-text in every language.
