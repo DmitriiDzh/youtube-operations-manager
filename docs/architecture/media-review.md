@@ -296,6 +296,11 @@ On branch `feature/bl-229-music-library`. No schema change; no YouTube call; not
   `/api/channels/[channelId]/clip-reviews` (the only callers of `createClipReviewsOwnerCore`, pinned by a source scan). The owner's screen is Media → «Клипы»
   (`MEDIA_TABS`, mounted by `production-panel.tsx` in its own error boundary, badge from `clip-reviews-badge.ts`); it moved from
   Content on 2026-11-04 (owner msg 4025), and `/content/clips` redirects there.
+- **Which file (BL-280, FO-REQ-0062 B, Producer 1.36.0):** every clip view (`clipViewOf`, so every Producer and owner read) carries
+  `source: { clipId, file, sha256, submittedAt }` from the stored record (`model.clipSourceOf`): `file` is `clipPath` as the Producer
+  gave it, `sha256` the hash of the bytes read at submit; a field the record lacks or carries malformed is null, never derived from the
+  folder. The clip decision file in the Producer's Inbox (`composition/review-notify.clipNoticesOf`) adds «Clip SHA-256» and «Submitted
+  at». Nothing new is stored and YT Manager writes no channel file (no `piece.json`): the Producer records the pair itself.
 - **Attachments (BL-246, ADR 0065, plan items 10-17):** `attachments.ts` (pure, shared with the panel: limits, kinds by extension /
   declared type / first bytes, name sanitizing and case-insensitive de-duplication), `adapters/attachments.ts` (staging in
   `clipReviewUploadsDir` as `<id>.json` + `<id>.part`, swept after 24 h idle (the later of the two files) and, once at server start

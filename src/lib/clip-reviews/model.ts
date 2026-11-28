@@ -1,6 +1,6 @@
 import path from "node:path";
 import { earliestDecidingRecord } from "@/lib/review-items";
-import type { ClipReviewAttachment, ClipReviewClip, ClipReviewDecision, ClipReviewStatus, ClipReviewView } from "./contracts";
+import type { ClipReviewAttachment, ClipReviewClip, ClipReviewDecision, ClipReviewStatus, ClipReviewView, ClipSourceFile } from "./contracts";
 import { CLIP_VIDEO_TYPES } from "./contracts";
 
 // BL-241 (ADR 0061 §5): pure rules. The status is derived from the decisions, never stored, so two computers' documents merge
@@ -20,6 +20,22 @@ export function decidingRecordOf(clipId: string, decisions: readonly ClipReviewD
 
 export function statusOf(record: ClipReviewDecision | null): ClipReviewStatus {
   return record ? record.kind : "pending";
+}
+
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+/**
+ * BL-280 (FO-REQ-0062 B): the clip's submitted file as its stored record names it. The record comes from either computer's document
+ * (no schema on read), so each field is taken only when it is the expected shape; otherwise null -- never derived from anything else.
+ */
+export function clipSourceOf(clip: ClipReviewClip): ClipSourceFile {
+  const record = clip as Partial<Record<keyof ClipReviewClip, unknown>>;
+  return {
+    clipId: clip.clipId,
+    file: typeof record.clipPath === "string" && record.clipPath.length > 0 ? record.clipPath : null,
+    sha256: typeof record.sha256 === "string" && SHA256_HEX.test(record.sha256) ? record.sha256 : null,
+    submittedAt: typeof record.submittedAt === "string" && record.submittedAt.length > 0 ? record.submittedAt : null,
+  };
 }
 
 export function clipViewOf(clip: ClipReviewClip, decisions: readonly ClipReviewDecision[]): ClipReviewView {
@@ -45,6 +61,7 @@ export function clipViewOf(clip: ClipReviewClip, decisions: readonly ClipReviewD
     attachments: record?.by === "owner" ? wellFormedAttachments(record.attachments) : [],
     // BL-272 (ADR 0076): only a clip that names its approved source image carries the key.
     ...(typeof clip.approvedImageId === "string" ? { approvedImageId: clip.approvedImageId } : {}),
+    source: clipSourceOf(clip),
   };
 }
 

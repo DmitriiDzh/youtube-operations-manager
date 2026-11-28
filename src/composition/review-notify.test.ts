@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { PlanReviewActivity } from "@/lib/generation-plans";
-import type { ClipReviewsSnapshot, PackageReviewsSnapshot, PublishingPlansSnapshot, SharedPickAction, SharedPlan, SharedVerdict, StoryboardRecord } from "@/lib/sync-gateway";
+import type { ClipReviewClip, ClipReviewsSnapshot, PackageReviewsSnapshot, PublishingPlansSnapshot, SharedPickAction, SharedPlan, SharedVerdict, StoryboardRecord } from "@/lib/sync-gateway";
 import { reviewFileName } from "@/lib/review-notify";
 import { clipNoticesOf, packageNoticesOf, planFeedOfActivity, planFeedOfPeerPlan, planFeedsOfOutgoing, slotNoticesOf, storyboardNoticesOf, templateNoticesOf } from "./review-notify";
 
@@ -36,6 +36,37 @@ test("AC-RN-01/02: clips -- owner approved and returned give notices; the Produc
   assert.equal(returned.channelName, "Tropico Jazz");
   assert.equal(returned.ytmPlace, "Медиа → «Клипы»");
   assert.equal(returned.readTool, 'producer_clip_review_get {"channelId":"UCa2amtpeOmgP-HkiLKPm1gg","clipId":"c1"}');
+});
+
+// BL-280 (FO-REQ-0062 part B): a clip decision file says which bytes were decided -- the clip's SHA-256 and submit time as stored at
+// submit; a stored clip without a hash leaves that line out (never guessed). The hash is the FIPS 180-2 vector of "abc", by hand.
+test("BL-280: the clip decision file names the clip's SHA-256 and submit time; a stored clip without a hash leaves that line out", () => {
+  const ABC_SHA256 = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+  const CLIP_PATH = "03 Images/Scenes/bar/preview_v4.mp4";
+  const NOW = "2026-11-28T12:00:00.000Z";
+  const clip: ClipReviewClip = { clipId: "clip_434f", channelId: CH.channelId, sceneId: "bar", clipPath: CLIP_PATH, note: "v4", startSec: null, endSec: null, durationSeconds: 30, sizeBytes: 3, sha256: ABC_SHA256, submittedAt: NOW, submittedBy: "p", device: "Mac" };
+  // A clip as an older document may carry it: no sha256.
+  const oldClip = { clipId: "clip_old", channelId: CH.channelId, sceneId: "old", clipPath: "03 Images/old.mp4", note: "n", startSec: null, endSec: null, durationSeconds: 20, sizeBytes: 3, submittedAt: "2026-11-01T08:00:00.000Z", submittedBy: "p", device: "Mac" } as unknown as ClipReviewClip;
+  const snapshot: ClipReviewsSnapshot = {
+    clips: { clip_434f: clip, clip_old: oldClip },
+    decisions: {
+      cd_new: { id: "cd_new", clipId: "clip_434f", kind: "approved", by: "owner", comment: null, device: "Mac", at: "2026-11-28T13:00:00.000Z" },
+      cd_old: { id: "cd_old", clipId: "clip_old", kind: "approved", by: "owner", comment: null, device: "Mac", at: "2026-11-28T13:01:00.000Z" },
+    },
+  };
+  const notices = clipNoticesOf(CH, snapshot, Date.parse("2026-11-28T00:00:00Z"));
+  const fresh = notices.find((n) => n.decisionId === "cd_new")!;
+  assert.equal(fresh.itemId, "clip_434f");
+  assert.deepEqual(fresh.context, [
+    { label: "Scene", value: "bar" },
+    { label: "Clip file", value: CLIP_PATH },
+    { label: "Producer's note", value: "v4" },
+    { label: "Clip SHA-256", value: ABC_SHA256 },
+    { label: "Submitted at", value: NOW },
+  ]);
+  const old = notices.find((n) => n.decisionId === "cd_old")!;
+  assert.equal(old.context.some((line) => line.label === "Clip SHA-256"), false);
+  assert.deepEqual(old.context.find((line) => line.label === "Submitted at"), { label: "Submitted at", value: "2026-11-01T08:00:00.000Z" });
 });
 
 function storyboard(): StoryboardRecord {

@@ -1,6 +1,6 @@
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
-import { decidingRecordOf, wellFormedAttachments } from "@/lib/clip-reviews";
+import { clipSourceOf, decidingRecordOf, wellFormedAttachments } from "@/lib/clip-reviews";
 import { decidingImageRecordOf } from "@/lib/image-reviews";
 import { commentIsTimedText, decisionsOfVideo, issuesOf, issuesReadout, ownerReviewStateOf, standingDecision, timedCommentsReadout, wellFormedTimedComments } from "@/lib/package-reviews";
 import {
@@ -31,6 +31,7 @@ import {
   type PlanReviewEntry,
   type PlanReviewFeed,
   type ReviewDecisionNotice,
+  type ReviewNoticeLine,
   type ReviewNotify,
 } from "@/lib/review-notify";
 import { createDefaultLogger } from "@/lib/shared-logger";
@@ -73,6 +74,18 @@ const json = (value: Record<string, string>) => JSON.stringify(value);
 
 // --- clips -----------------------------------------------------------------------------------------------------------------
 
+/**
+ * BL-280 (FO-REQ-0062 B): the submitted file's SHA-256 and submit time, so the decision file alone says which bytes were decided
+ * (the clip's id is the file's own name). A field the stored clip does not carry is left out, never guessed.
+ */
+function clipSourceLines(clip: ClipReviewsSnapshot["clips"][string]): ReviewNoticeLine[] {
+  const source = clipSourceOf(clip);
+  return [
+    ...(source.sha256 !== null ? [{ label: "Clip SHA-256", value: source.sha256 }] : []),
+    ...(source.submittedAt !== null ? [{ label: "Submitted at", value: source.submittedAt }] : []),
+  ];
+}
+
 /** REVIEW_NOTIFY_PLAN.md §2: an owner `approved` / `returned` record; never the Producer's withdrawal or a submit. */
 export function clipNoticesOf(channel: Channel, snapshot: ClipReviewsSnapshot, sinceMs: number): ReviewDecisionNotice[] {
   const all = Object.values(snapshot.decisions);
@@ -82,7 +95,7 @@ export function clipNoticesOf(channel: Channel, snapshot: ClipReviewsSnapshot, s
     const clip = snapshot.clips[decision.clipId];
     const deciding = decidingRecordOf(decision.clipId, all);
     const context = [
-      ...(clip ? [{ label: "Scene", value: clip.sceneId }, { label: "Clip file", value: clip.clipPath }, { label: "Producer's note", value: clip.note }] : []),
+      ...(clip ? [{ label: "Scene", value: clip.sceneId }, { label: "Clip file", value: clip.clipPath }, { label: "Producer's note", value: clip.note }, ...clipSourceLines(clip)] : []),
       ...(deciding && deciding.id !== decision.id ? [{ label: "Counts", value: `no: an earlier owner decision (${deciding.id}) decides this clip` }] : []),
     ];
     out.push({

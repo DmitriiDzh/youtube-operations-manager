@@ -98,6 +98,8 @@ test("AC-CR-01: a 30 s mp4 inside the workspace becomes a pending clip with its 
     decidedOn: null,
     // BL-246 (AC-CR-24/25): every clip view carries its deciding decision's attachments; a pending clip has none.
     attachments: [],
+    // BL-280 (FO-REQ-0062 B -- new requirement: every read says which file the clip is): the path as given and the submit-time hash.
+    source: { clipId: clip.clipId, file: "03 Images/Scenes/bar/preview_30s.mp4", sha256: SHA, submittedAt: "2026-11-03T10:00:00.000Z" },
   };
   assert.deepEqual(clip, expected);
   assert.match(clip.clipId, /^clip_/);
