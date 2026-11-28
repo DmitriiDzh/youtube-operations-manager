@@ -1,17 +1,24 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, McpError } from "@modelcontextprotocol/sdk/types.js";
+import type { FetchLike } from "../client";
 import balanceFixture from "../fixtures/balance.2026-11-26.json";
 import toolsFixture from "../fixtures/tools-list.2026-11-26.json";
 
 // ---------------------------------------------------------------------------
-// BL-278 (VIDIQ_INTEGRATION_PLAN.md §7): a local fake of vidIQ's MCP server for tests only. The SDK's low-level `Server` over
-// Streamable HTTP on 127.0.0.1 with an ephemeral port; a new Server and transport per request (stateless, JSON answers), as
+// BL-278 (VIDIQ_INTEGRATION_PLAN.md §7): a fake of vidIQ's MCP server for tests only, reached through an injected `fetch`
+// (`createVidiqGateway({ endpoint: fake.url, fetch: fake.fetch })`), never through a socket. The SDK's low-level `Server` over its
+// Web-standard Streamable HTTP transport, a new Server and transport per request (stateless, JSON answers), as
 // `producer-mcp-endpoint` does. `tools/list` answers the dated fixture verbatim (or a per-test mutation); `tools/call` answers a
-// per-test script. Auth, HTTP failures and delays are handled in the node:http layer, which also records every request so a test
-// can assert what was (and was not) sent. Never imported by production code.
+// per-test script. Auth, HTTP failures and hangs are handled before the MCP layer, which also records every request so a test can
+// assert what was (and was not) sent. Never imported by production code.
+//
+// Why in-process (2026-11-28): the first version listened on 127.0.0.1 and the gateway reached it with the real global `fetch`, so
+// every test depended on the shared undici connection pool and the machine's loopback TCP state; under a loaded full-suite run an
+// operation could stall for the length of a timeout and fail before its `tools/call` went out (a flaky `vidiq_unavailable`). Here a
+// request is a function call: it answers as soon as the test's script says, and a "hang" is a promise that settles only when the
+// client aborts the request (as `fetch` does), so a timeout test depends on its own timeout alone. `fake.url` is a loopback URL on
+// port 1, where nothing listens: a gateway that ignored the injected `fetch` would fail at once instead of reaching anything.
 //
 // Its failure bodies (401/429/5xx) and its `isError` results echo the Authorization header it received, so a test proves the
 // gateway never passes a transport error's text (which embeds the response body) on to a log, an answer or the ledger.
@@ -41,7 +48,10 @@ export type FakeRequestRecord = {
 };
 
 export type FakeVidiqServer = {
+  /** A loopback URL nothing listens on; requests reach the fake only through `fetch`. */
   url: string;
+  /** Pass as the gateway's `fetch`. */
+  fetch: FetchLike;
   requests: FakeRequestRecord[];
   toolCalls(): FakeRequestRecord[];
   /** Replaces the `tools/list` answer (a deep copy of the fixture by default). */
@@ -50,6 +60,7 @@ export type FakeVidiqServer = {
   script: Map<string, (args: Record<string, unknown>) => FakeCallAnswer>;
   /** An HTTP failure for `tools/list`, or no answer at all (null = answer normally). */
   listFailure: { http: number; headers?: Record<string, string> } | { hang: true } | null;
+  /** Fails every request still waiting (a hang or a delay) as aborted. */
   close(): Promise<void>;
 };
 
@@ -72,18 +83,21 @@ export function balanceResult(totalCredits: number, renewableResetsAt = "2026-12
   return { _meta: { widgetData: { ...body, planName: "Free" } }, content: [{ type: "text", text: JSON.stringify(body) }], structuredContent: body };
 }
 
-async function readBody(req: IncomingMessage): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
-  return Buffer.concat(chunks).toString("utf8");
-}
+const FAKE_URL = "http://127.0.0.1:1/mcp";
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+function abortError(): Error {
+  return new DOMException("This operation was aborted", "AbortError");
+}
 
 export async function startFakeVidiqServer(options: { acceptKey: string }): Promise<FakeVidiqServer> {
   const requests: FakeRequestRecord[] = [];
+  /** Requests waiting on a delay or a hang; `close` fails them. */
+  const waiting = new Set<() => void>();
   const state: FakeVidiqServer = {
-    url: "",
+    url: FAKE_URL,
+    fetch: async () => {
+      throw new Error("replaced below");
+    },
     requests,
     toolCalls: () => requests.filter((r) => r.rpcMethod === "tools/call"),
     tools: fixtureToolsCopy(),
@@ -93,14 +107,46 @@ export async function startFakeVidiqServer(options: { acceptKey: string }): Prom
   };
   state.script.set("vidiq_balance", () => ({ result: FIXTURE_BALANCE }));
 
-  function fail(res: ServerResponse, status: number, authorization: string | null, headers: Record<string, string> = {}) {
-    res.writeHead(status, { "content-type": "text/plain", ...headers });
-    res.end(`refused, received authorization: ${authorization ?? "(none)"}`);
+  /**
+   * Resolves after `ms` (or never, for `ms === null`); rejects as aborted when the client's signal aborts or the fake closes. A
+   * delay is a timer, but no test's outcome depends on how long it takes, only on the order it imposes.
+   */
+  function wait(signal: AbortSignal | null | undefined, ms: number | null): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      if (signal?.aborted) return reject(abortError());
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const fail = () => {
+        cleanup();
+        reject(abortError());
+      };
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        signal?.removeEventListener("abort", fail);
+        waiting.delete(fail);
+      };
+      signal?.addEventListener("abort", fail, { once: true });
+      waiting.add(fail);
+      if (ms !== null) {
+        timer = setTimeout(() => {
+          cleanup();
+          resolve();
+        }, ms);
+      }
+    });
   }
 
-  const http = createServer(async (req, res) => {
-    const authorization = typeof req.headers.authorization === "string" ? req.headers.authorization : null;
-    const text = req.method === "POST" ? await readBody(req) : "";
+  function fail(status: number, authorization: string | null, headers: Record<string, string> = {}): Response {
+    return new Response(`refused, received authorization: ${authorization ?? "(none)"}`, { status, headers: { "content-type": "text/plain", ...headers } });
+  }
+
+  async function handle(url: string, init: RequestInit | undefined): Promise<Response> {
+    const signal = init?.signal ?? null;
+    if (signal?.aborted) throw abortError();
+    if (url !== FAKE_URL) throw new TypeError(`fake vidIQ: unexpected URL ${url}`);
+    const method = (init?.method ?? "GET").toUpperCase();
+    const headers = new Headers(init?.headers);
+    const authorization = headers.get("authorization");
+    const text = method === "POST" ? (typeof init?.body === "string" ? init.body : "") : "";
     let parsed: unknown = undefined;
     try {
       parsed = text ? JSON.parse(text) : undefined;
@@ -110,26 +156,22 @@ export async function startFakeVidiqServer(options: { acceptKey: string }): Prom
     const message = (Array.isArray(parsed) ? parsed[0] : parsed) as { method?: string; params?: { name?: string; arguments?: unknown } } | undefined;
     const rpcMethod = typeof message?.method === "string" ? message.method : null;
     const tool = rpcMethod === "tools/call" && typeof message?.params?.name === "string" ? message.params.name : null;
-    requests.push({ httpMethod: req.method ?? "", rpcMethod, tool, args: rpcMethod === "tools/call" ? message?.params?.arguments : undefined, authorization });
+    requests.push({ httpMethod: method, rpcMethod, tool, args: rpcMethod === "tools/call" ? message?.params?.arguments : undefined, authorization });
 
-    if (req.method !== "POST") {
-      res.writeHead(405, { allow: "POST" }).end();
-      return;
-    }
-    if (authorization !== `Bearer ${options.acceptKey}`) return fail(res, 401, authorization);
-    if (rpcMethod === "tools/list" && state.listFailure) {
-      if ("hang" in state.listFailure) return; // never answers: the client's list timeout fires
-      return fail(res, state.listFailure.http, authorization, state.listFailure.headers);
-    }
+    if (method !== "POST") return new Response(null, { status: 405, headers: { allow: "POST" } });
+    if (authorization !== `Bearer ${options.acceptKey}`) return fail(401, authorization);
+    const listFailure = rpcMethod === "tools/list" ? state.listFailure : null;
+    if (listFailure && "hang" in listFailure) await wait(signal, null); // never answers: the client's list timeout fires and aborts
+    else if (listFailure) return fail(listFailure.http, authorization, listFailure.headers);
 
     let answer: FakeCallAnswer | null = null;
     if (rpcMethod === "tools/call" && tool) {
       const scripted = state.script.get(tool);
       const args = (message?.params?.arguments ?? {}) as Record<string, unknown>;
       answer = scripted ? scripted(args) : { result: paidResult(0) };
-      if (answer.delayMs) await sleep(answer.delayMs);
-      if ("hang" in answer) return; // never answers: the client times out after sending
-      if ("http" in answer) return fail(res, answer.http, authorization, answer.headers);
+      if ("hang" in answer) await wait(signal, null); // never answers: the client times out after sending
+      if (answer.delayMs) await wait(signal, answer.delayMs);
+      if ("http" in answer) return fail(answer.http, authorization, answer.headers);
     }
 
     const server = new Server({ name: "vidiq-mcp", version: "1.0.0" }, { capabilities: { tools: {} } });
@@ -143,22 +185,23 @@ export async function startFakeVidiqServer(options: { acceptKey: string }): Prom
       }
       return result as never;
     });
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
-    res.on("close", () => {
-      void transport.close();
-      void server.close();
-    });
-    await server.connect(transport);
-    await transport.handleRequest(req, res, parsed);
-  });
+    const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    try {
+      await server.connect(transport);
+      const response = await transport.handleRequest(new Request(url, { method, headers, body: text }), { parsedBody: parsed });
+      // The whole answer is read here, so nothing of this request stays open after it returns.
+      const body = response.status === 202 || response.status === 204 ? null : await response.arrayBuffer();
+      if (signal?.aborted) throw abortError();
+      return new Response(body, { status: response.status, headers: response.headers });
+    } finally {
+      await transport.close().catch(() => undefined);
+      await server.close().catch(() => undefined);
+    }
+  }
 
-  await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
-  const { port } = http.address() as AddressInfo;
-  state.url = `http://127.0.0.1:${port}/mcp`;
-  state.close = () =>
-    new Promise<void>((resolve) => {
-      http.closeAllConnections();
-      http.close(() => resolve());
-    });
+  state.fetch = (input, init) => handle(String(input), init);
+  state.close = async () => {
+    for (const abort of [...waiting]) abort();
+  };
   return state;
 }

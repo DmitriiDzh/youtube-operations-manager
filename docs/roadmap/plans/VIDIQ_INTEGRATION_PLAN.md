@@ -354,8 +354,10 @@ Expected values come from ADR 0077, the fixture and vidIQ's stated contract, nev
 
 ## 7. Testing
 
-- **Fake server.** All automated tests run against a local fake MCP server: the SDK's low-level `Server` over Streamable HTTP on
-  `127.0.0.1` with an ephemeral port.
+- **Fake server.** All automated tests run against a fake MCP server: the SDK's low-level `Server` over its Web-standard Streamable
+  HTTP transport, reached through the gateway's injected `fetch`, in process (no socket, so no test depends on the machine's
+  loopback TCP state or on wall-clock speed; a "hang" settles only when the client aborts). Its URL is a loopback URL nothing
+  listens on. One test uses the real `fetch` against a closed loopback port, for the real refusal.
   - **`tools/list`.** It answers with the dated fixture verbatim, or with a per-test mutation of it (a renamed tool, a schema
     change, a flipped annotation, a changed Cost sentence).
   - **`tools/call`.** It answers scripted results built from the fixture's output schemas, with chosen `_credits.used`, `isError`,

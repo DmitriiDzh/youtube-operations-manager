@@ -21,7 +21,7 @@ async function withFake(run: (fake: FakeVidiqServer, outcomes: string[]) => Prom
 }
 
 function gatewayFor(fake: FakeVidiqServer, outcomes: string[], timeoutMs = 30_000) {
-  return createVidiqGateway({ endpoint: fake.url, timeoutMs, connectTimeoutMs: 120_000, recordOutcome: async (outcome) => void outcomes.push(outcome) });
+  return createVidiqGateway({ endpoint: fake.url, fetch: fake.fetch, timeoutMs, connectTimeoutMs: 120_000, recordOutcome: async (outcome) => void outcomes.push(outcome) });
 }
 
 async function codeOf(run: () => Promise<unknown>): Promise<{ code: string | null; error: unknown }> {
@@ -65,7 +65,7 @@ test("balance: free, parsed from the fixture (150, resets 2026-12-26), the key o
 
 test("AC-VQ-1.2 (gateway half): a key the server refuses (401) is vidiq_key_invalid, with no response text in the error", () =>
   withFake(async (fake, outcomes) => {
-    const gateway = createVidiqGateway({ endpoint: fake.url, connectTimeoutMs: 120_000, recordOutcome: async (o) => void outcomes.push(o) });
+    const gateway = createVidiqGateway({ endpoint: fake.url, fetch: fake.fetch, connectTimeoutMs: 120_000, recordOutcome: async (o) => void outcomes.push(o) });
     const wrong = "vq_WRONG_KEY_123";
     const { code, error } = await codeOf(() => gateway.balance(wrong));
     assert.equal(code, "vidiq_key_invalid");
@@ -185,10 +185,9 @@ test("429 is vidiq_rate_limited with retryAfterSeconds; 5xx is vidiq_unavailable
   }));
 
 test("a server that cannot be reached is vidiq_unavailable before anything was sent", async () => {
-  const fake = await startFakeVidiqServer({ acceptKey: KEY });
-  const url = fake.url;
-  await fake.close();
-  const gateway = createVidiqGateway({ endpoint: url, timeoutMs: 1_000, recordOutcome: async () => undefined });
+  // The real `fetch` against loopback port 1, where nothing listens (a privileged port no test process can bind): the connection
+  // is refused at once, so this is the one test that checks the real refusal's shape, without the fake.
+  const gateway = createVidiqGateway({ endpoint: "http://127.0.0.1:1/mcp", timeoutMs: 1_000, recordOutcome: async () => undefined });
   const { code, error } = await codeOf(() => gateway.balance(KEY));
   assert.equal(code, "vidiq_unavailable");
   assert.notEqual((error as { details?: { requestSent?: boolean } }).details?.requestSent, true);
@@ -245,7 +244,7 @@ test("review 2: a tools/list answering 503 is vidiq_unavailable, not sent, 'noth
 test("review 2: a tools/list that never answers times out as vidiq_unavailable, not sent", () =>
   withFake(async (fake, outcomes) => {
     fake.listFailure = { hang: true };
-    const gateway = createVidiqGateway({ endpoint: fake.url, timeoutMs: 30_000, connectTimeoutMs: 1_500, recordOutcome: async (outcome) => void outcomes.push(outcome) });
+    const gateway = createVidiqGateway({ endpoint: fake.url, fetch: fake.fetch, timeoutMs: 30_000, connectTimeoutMs: 1_500, recordOutcome: async (outcome) => void outcomes.push(outcome) });
     const { code, error } = await codeOf(() => gateway.listToolsChecked(KEY, { refresh: true }));
     assert.equal(code, "vidiq_unavailable");
     assert.equal((error as { details?: { requestSent?: boolean } }).details?.requestSent, false);
@@ -255,7 +254,7 @@ test("review 2: a tools/list that never answers times out as vidiq_unavailable, 
 test("review 2: callTool whose list re-read (cache expired) fails before sending reports requestSent false and sends no tools/call", () =>
   withFake(async (fake, outcomes) => {
     let at = Date.parse("2026-11-28T10:00:00Z");
-    const gateway = createVidiqGateway({ endpoint: fake.url, timeoutMs: 30_000, connectTimeoutMs: 120_000, now: () => at, recordOutcome: async (outcome) => void outcomes.push(outcome) });
+    const gateway = createVidiqGateway({ endpoint: fake.url, fetch: fake.fetch, timeoutMs: 30_000, connectTimeoutMs: 120_000, now: () => at, recordOutcome: async (outcome) => void outcomes.push(outcome) });
     await gateway.listToolsChecked(KEY);
     at += 61 * 60_000; // past the 1 h list cache
     fake.listFailure = { http: 503 };
