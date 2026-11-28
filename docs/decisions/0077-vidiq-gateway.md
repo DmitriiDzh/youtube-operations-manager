@@ -254,3 +254,31 @@ drops two device-local tables and a key slot.
 - **Agents connect to vidIQ directly.** Rejected for the reasons in decision 10.
 - **One Producer tool per vidIQ tool.** Rejected: it would tie YTM's MCP contract to vidIQ's argument lists. The generic call
   checks arguments against the pinned and live schemas instead, and `producer_vidiq_tools` publishes them.
+
+## Amendment 1 — review fixes to the ledger and the gateway's failure mapping (2026-11-28)
+
+An independent review of stage 1 (before its merge) found four gaps. The fixes keep schema v127 and change no MCP or Producer
+contract.
+
+1. **The owner clears an overcharge.** Decision 5 marks a tool drifted after an overcharge "until the pin is reviewed", but stage 1
+   had no way to review it, so one overcharge blocked the tool for the ledger's whole 90 days. For example, a `comment_insights`
+   raw page whose cursor expired could be charged 5 against its pin of 0. The fix is an acknowledgement time in `app_settings`
+   (`vidiq_overcharge_ack_at`). Overcharges recorded at or before it no longer block. The owner sets it from the vidIQ card with
+   «Разблокировать», behind a ConfirmDialog (`POST /api/vidiq/overcharge-ack`, a Web session only, never MCP). The ledger rows
+   stay and keep counting against the budget, and a later overcharge blocks the tool again. A developer refreshing the pins
+   remains the answer to a real price change (the live drift check, decision 4). A timestamp was chosen over the contract
+   version because the contract version needs a release to clear a one-off charge.
+2. **Only a `tools/call` can be charged.** A failure of the free `tools/list`, or of the handshake, never reports the request as
+   sent, and its message says nothing was charged. The services send exactly the call the live drift check passed (the gateway's
+   `callChecked`, which accepts only an object its own `checkLive` issued for the same key, once). The gateway no longer reads the
+   list again between the check and the send, so a list failure there can no longer book a call that was never sent as `unknown`.
+3. **An answered error is not a timeout.** An HTTP 4xx to the call itself, or a JSON-RPC error answer, is
+   `vidiq_answered_error` (502). "No usable answer" (a timeout or a lost connection after sending) stays `vidiq_outcome_unknown`.
+   An answered error is recorded `failed` with its credits unknown, so it counts at the stated cost. The free balance read that
+   follows settles it to 0 when the balance and its renewal date are exactly what the snapshot read just before the call showed.
+   Anything else keeps the stated cost, since another client may have spent meanwhile. A timeout is never settled this way,
+   because its charge can land after the read.
+4. **A `pending` row cannot stay pending.** A process that ends mid-call leaves its `pending` row. Before the status or a call
+   reads the ledger, `pending` rows older than 15 minutes become `unknown` with `vidiq_outcome_unknown`. Their credits stay
+   unknown, so they keep counting at the stated cost (decision 5, "Uncertain outcomes"). A call takes at most about two minutes
+   (the 60 s timeouts), so 15 minutes cannot catch a live one.

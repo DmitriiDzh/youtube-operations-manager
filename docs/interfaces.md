@@ -1906,7 +1906,9 @@ Web session required on every route; never MCP. No answer carries the key (only 
 failure answers `{ error: "internal_error" }` with a fixed message. The status answer `VidiqStatusView` is `{ key: { state, hint,
 status, verifiedAt }, enabled, balance: { type, planName, totalCredits, renewableCredits, maxRenewableCredits, renewableResetsAt,
 addOnCredits, maxAddOnCredits, readAt } | null, budget: { monthly, spentInPeriod, remaining, periodStartsAt, periodEndsAt }, ledger:
-[20 newest { id, at, caller, tool, argsSha256, statedCost, creditsUsed, outcome, errorCode, jobId, balanceAfter }] }`.
+[20 newest { id, at, caller, tool, argsSha256, statedCost, creditsUsed, outcome, errorCode, jobId, balanceAfter }], overchargedTools:
+[tool names blocked by an overcharge, sorted] }`. Reading it (or making a call) first turns `pending` rows older than 15 minutes
+into `unknown` (`vidiq_outcome_unknown`, still counted at the stated cost; ADR 0077 amendment 1).
 
 - `GET /api/vidiq` → the status (local data only, no vidIQ call).
 - `PUT /api/vidiq/key` (`{ apiKey }`): checked with vidIQ's free `vidiq_balance` first (`vidiq_key_invalid` 422 stores nothing), then
@@ -1916,10 +1918,14 @@ addOnCredits, maxAddOnCredits, readAt } | null, budget: { monthly, spentInPeriod
   `vidiq_key_missing` (409).
 - `POST /api/vidiq/balance`: one free balance read → the status (`vidiq_disabled` 409 when off).
 - `POST /api/vidiq/check`: the free `tools/list` → `{ readAt, report: [18 × { tool, state: ok | vidiq_tool_missing |
-  vidiq_schema_drift | vidiq_cost_changed | vidiq_annotation_drift }] }`.
+  vidiq_schema_drift | vidiq_cost_changed | vidiq_annotation_drift }] }`. A failed list is `vidiq_unavailable` with `requestSent:
+  false` (nothing is charged).
+- `POST /api/vidiq/overcharge-ack` (no body): the owner's acknowledgement; overcharges recorded until now stop blocking their tools
+  (the rows stay and count; a later overcharge blocks again). Local only, works with the module off → the status.
 - Codes and statuses: `vidiq_disabled`/`vidiq_key_missing`/drift codes/`vidiq_budget_exhausted`/`vidiq_insufficient_credits` 409,
   `vidiq_key_invalid`/`vidiq_args_invalid`/`vidiq_canonical_id_required` 422, `vidiq_tool_not_allowed` 403, `vidiq_job_unknown` 404,
-  `vidiq_rate_limited` 429, `vidiq_unavailable` 503, `vidiq_outcome_unknown` 504, `vidiq_result_too_large` 502.
+  `vidiq_rate_limited` 429, `vidiq_unavailable` 503, `vidiq_outcome_unknown` 504 (sent, no usable answer),
+  `vidiq_answered_error` 502 (sent, vidIQ answered with an HTTP 4xx or a JSON-RPC error), `vidiq_result_too_large` 502.
 
 ### Speech API (BL-236, ADR 0057)
 

@@ -19,16 +19,22 @@ the ledger are the only gate); the key on the Mac only.
   once before any drift refusal) it is refused for a missing tool, a live schema that requires more or rejects the arguments, a
   changed or unreadable Cost sentence, or `readOnlyHint` false (except `comment_insights`). Pinned and live schemas are compiled by
   separate validator instances, with `$id`/`$schema` dropped. A charge above the pin (from the ledger) marks the tool drifted until
-  the pin is reviewed.
+  the owner acknowledges it (`vidiq_overcharge_ack_at`; ADR 0077 amendment 1): older overcharges stop blocking, a later one blocks
+  again, the rows keep counting.
 - **Transport and errors.** One fresh SDK client per operation; one operation in flight per process (queue on `globalThis`).
   `tools/call` goes through `client.request` with `CallToolResultSchema`, never `client.callTool` (which validates against a cached
   output schema and could throw after vidIQ charged). A wrapped `fetch` records the HTTP status, `Retry-After` and whether the
-  `tools/call` POST left: a timeout or lost connection after it left is `vidiq_outcome_unknown`; before it, `vidiq_unavailable`. Every
+  `tools/call` POST left: a timeout or lost connection after it left is `vidiq_outcome_unknown`; an HTTP 4xx or JSON-RPC error answer
+  to it is `vidiq_answered_error`; before it, `vidiq_unavailable`. Only a `tools/call` can report `requestSent: true`: a failed free
+  `tools/list` or handshake never does ("nothing was charged"). The services send the call `checkLive` passed (`callChecked`, which
+  takes only an object `checkLive` issued for the same key, once), so no list is read between the check and the send. Every
   error has a fixed message; SDK/transport text (which embeds the response body) is never logged or returned. A result that quotes the
   key is scrubbed in the gateway. Results over 256 KB are refused but still report `_credits.used`.
 - **Budget arithmetic.** Spent in the period = Σ over the period's rows of `credits_used` where vidIQ reported it, else the stated
   cost (pending, unknown, job_pending). Refused rows and failures before sending record 0; a 5xx or timeout after sending records
-  `unknown` and counts the stated cost (never over-spends). The period ends at the snapshot's `renewableResetsAt` (rolled forward by
+  `unknown` and counts the stated cost (never over-spends). An answered error records `failed` at the stated cost, settled to 0 only
+  when the free balance read after it equals the pre-call snapshot (total and renewal date); a timeout is never settled. A `pending`
+  row older than 15 minutes (a process that ended mid-call) becomes `unknown` before the status or a call reads the ledger. The period ends at the snapshot's `renewableResetsAt` (rolled forward by
   whole months once past) and starts one calendar month earlier; without a snapshot, the UTC month. The preflight runs under one lock
   per process, so two calls cannot both pass it.
 - **Key handling.** Device-secret slot `vidiq` (ADR 0042), hint = last 4 characters, saved only after a free `vidiq_balance` with it

@@ -4,8 +4,9 @@
 
 ### 2.9bs vidIQ (BL-278, ADR 0077) — **этап 1 IMPLEMENTED на ветке `feature/vidiq-integration`, не влито**
 - Шлюз `src/lib/vidiq-gateway/`, модуль `src/lib/vidiq-research/`, ключ в слоте `vidiq` (только Мак), журнал `vidiq_ledger` (v127),
-  бюджет и снимок баланса, карточка в Настройки → Облачные API (подробно `docs/system/vidiq-research.md` §2.9br). Платных
+  бюджет и снимок баланса, карточка в Настройки → Облачные API (подробно `docs/system/vidiq-research.md` §2.9bt). Платных
   потребителей нет; инструменты Продюсера, кэш и подвкладка Исследований — этапы 2–3 (**PLANNED**, не назначены).
+
 ### 2.9br2 Настройки публикации канала: статус (BL-279, ADR 0072 поправка 2) — **IMPLEMENTED на ветке** `feature/channel-publishing-defaults` (не в dev)
 - Защита загрузки `publishing_settings_not_saved`, исправление категории (`package-category.ts`, владелец на «Главной» и
   `producer_video_category_fix`), проверка `producer_video_publishing_check` (Producer 1.35.0), перенос настроек канала на «Главную».
