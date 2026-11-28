@@ -123,7 +123,7 @@ is already set everywhere), 2734 (one merge for the whole stage).
   list over YouTube's 500 characters; FO-MSG-0017 / BL-190: the approval dialog shows each row's tag count, characters and source -- the package's, or the channel's when the package has `tags: []` -- and a package tag with `<` or `>` is the problem `tags_angle_brackets`). Studio's automatic chapters, places and concept explanations have no Data API property: they stay
   as YouTube sets them (on), changeable only in Studio. A stored value this build cannot use falls back to the default. Saved fields only (the panel sends
   what the owner changed); a conflict is chosen in Merge (actor-based, like the language settings). Routes:
-  `GET/PUT /api/channels/[id]/publishing-settings`, `GET/POST .../publishing-settings/conflicts`. Panel: Settings → Channels (Content → «Публикация» before BL-266),
+  `GET/PUT /api/channels/[id]/publishing-settings`, `GET/POST .../publishing-settings/conflicts`. Panel: Home of the active channel (since BL-279; Settings → Channels before it, Content → «Публикация» before BL-266),
   the time as `UtcTimeField`.
 - **Release packages** (`publishing/packages.ts`, `package-scan.ts`). The scan walks `04 Videos/` of the channel workspace on this
   computer (the shared `src/lib/workspace-videos/` walk and reads since BL-187), at most three levels, never through a symlinked folder, for `V*_release.json` (`yt-release-package/1`, FO-REQ-0023 §4 A);

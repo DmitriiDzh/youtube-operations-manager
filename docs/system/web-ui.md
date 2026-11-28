@@ -46,7 +46,7 @@
   «Публикация» («Ролики и релизы») убрана, `/content/publishing` ведёт на `/content/week-plan`. На «Плане» строки `PlanExtras`:
   «Без слота: N» (доска роликов `VideoProjectsPanel`), «Очередь: …» (`PublishingUploads`; процент загрузки и на карточке слота),
   «⋯» (`PublishingPackages` с ручной загрузкой, ссылки в настройки); действия упаковки/субтитров загруженного пакета — и на его
-  карточке слота. `PublishingSettingsPanel` и `LocalVideoCleanupCard` — в Настройки → Каналы для активного канала. Подробно —
+  карточке слота. `PublishingSettingsPanel` и `LocalVideoCleanupCard` — на «Главной» активного канала (с BL-279, см. ниже; до него в Настройки → Каналы). Подробно —
   `docs/architecture/web-ui.md` «BL-266».
 - **BL-279 (owner TG 4964).** «Главная» активного канала получила раздел «Настройки канала»: `PublishingSettingsPanel` (свёрнут до сводки,
   сам раскрыт с бейджем «Не сохранены» и предупреждением, пока настройки канала ни разу не сохранялись), `ChannelCategoryFixCard`
