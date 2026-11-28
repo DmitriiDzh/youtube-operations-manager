@@ -126,7 +126,7 @@ export function createPackageCategory(deps: PackageCategoryDeps) {
      * video no package of the channel uploaded is refused before anything is read.
      */
     async apply(channelId: string, input: { expectedCategoryId?: string; videoIds?: string[] }, actor: PackageMetadataActor): Promise<PackageCategoryApplyResult> {
-      // Review finding 7: the owner and the Producer alike apply the category their dry run showed.
+      // Review finding 9: the owner and the Producer alike apply the category their dry run showed.
       if (typeof input?.expectedCategoryId !== "string" || input.expectedCategoryId === "") {
         throw refuse("validation_failed", "expectedCategoryId is required: apply what the preview showed");
       }

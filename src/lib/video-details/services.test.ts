@@ -253,6 +253,21 @@ test("AC-SVC-05: post-write verification failure throws update_failed and record
   assert.deepEqual(verificationEvent!.detail, { verified: false });
 });
 
+// BL-279 review finding 4: a read-back failure comes after the backup and the write, so the error names the backup taken before it
+// (the caller reports "a failure after the write may have been sent ... with its backupPath").
+test("BL-279: a post-write verification failure names the backup it took (details.backupPath)", async () => {
+  const { deps } = makeDeps({
+    youtubeApi: {
+      getSnapshot: async () => makeSnapshot(),
+      applyPatch: async () => ({ before: makeSnapshot(), after: makeSnapshot({ title: "Untouched" }) }),
+    },
+  });
+  await assert.rejects(
+    () => createVideoDetailsServices(deps).applyFieldsUpdate(baseInput({ title: "New Title" })),
+    (error: unknown) => error instanceof DomainError && error.code === "update_failed" && (error.details as { backupPath?: string }).backupPath === "/fake/backup.json"
+  );
+});
+
 test("AC-SVC-06: localCache.refreshVideoFields is called exactly once on success, with the after snapshot", async () => {
   const { deps, calls } = makeDeps();
   const services = createVideoDetailsServices(deps);

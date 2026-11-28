@@ -314,6 +314,25 @@ test("BL-243 AC-WP-78: no completed removed check -> existsOnChannel never true;
   assert.equal(by.V73.youtube?.uploadedAt, null, "no uploadedAt in the record");
 });
 
+// BL-279 review finding 1 (owner TG 4963 «только у роликов, загруженных через YTM»): the owner's BL-221 «Привязать к видео» record
+// (`result: "linked"`, `linkedBy: "owner"`) is marked `youtube.linked` -- for a visible and for a removed video alike; an upload by the
+// app (`result: "uploaded"`) is not.
+test("BL-279: an owner-linked upload record is marked youtube.linked, an app upload record is not", async () => {
+  const files = uploadedFiles();
+  const linked = (videoId: string) => ({ text: JSON.stringify({ schema: "yt-release-upload/1", videoId, linkedBy: "owner", result: "linked" }), bytes: 80 });
+  files["04 Videos/11 November/1110 V74/V74_youtube.json"] = linked("vid74");
+  files["04 Videos/11 November/1109 V73/V73_youtube.json"] = linked("vid73");
+  files["04 Videos/11 November/1111 V75/V75_youtube.json"] = { text: JSON.stringify({ videoId: "vid75", result: "uploaded" }), bytes: 40 };
+  const result = await createPackageScan(
+    deps(files, { videos: visible74, removedVideos: async () => [{ videoId: "vid73", removedAt: REMOVED }], videosCheckedAt: async () => null })
+  ).scan("UC_t");
+  if (result.status !== "ok") return assert.fail(result.status);
+  const by = Object.fromEntries(result.packages.map((p) => [p.video, p]));
+  assert.deepEqual([by.V74.youtube?.videoId, by.V74.youtube?.linked], ["vid74", true]);
+  assert.deepEqual([by.V73.youtube?.videoId, by.V73.youtube?.linked], ["vid73", true], "a removed linked video stays marked");
+  assert.deepEqual([by.V75.youtube?.videoId, by.V75.youtube?.linked], ["vid75", undefined]);
+});
+
 // BL-243 review round 3, item 6 (AC-WP-80): the copy keeps no "first seen" time, so "on the channel" (true) also needs YouTube's
 // publishedAt not later than the completed removed check -- a video published (or uploaded) after it is unknown (null).
 test("BL-243 AC-WP-80: a video published after the removed check is not 'on the channel' (null)", async () => {

@@ -15,7 +15,7 @@ import { uploadedPackageVideos, type ReadVideoFields, type UploadedPackageVideo 
 // be saved (else publishing_settings_not_saved, nothing read or written); a video already in that category is not written; the write is
 // video-details' with the fresh etag, the untouched snippet/status fields verified unchanged (title, description, tags, both languages,
 // privacy, publishAt -- never categoryId) and the translation languages read before and after; a read-back mismatch, Live writes off or a
-// wrong channel is a failure that stops the run; the dry run reads and writes nothing; the owner binds the apply to the category shown.
+// wrong channel is a failure that stops the run; the dry run reads and writes nothing; the owner and (review finding 9) the Producer bind the apply to the category shown.
 
 const CH = "UC_wwe";
 const OWNER: PackageMetadataActor = { kind: "owner", userId: "u-owner" };
@@ -253,7 +253,7 @@ test("BL-279 (review 3): translation languages unreadable before the write -> th
   assert.equal(h.calls.applied.length, 0, "nothing written");
 });
 
-test("BL-279 (review 7): the Producer's apply also needs the category its dry run showed", async () => {
+test("BL-279 (review 9): the Producer's apply also needs the category its dry run showed", async () => {
   const h = harness();
   await assert.rejects(h.svc.apply(CH, { videoIds: ["vidA"] }, PRODUCER), refused("validation_failed"));
   assert.equal(h.calls.snapshots + h.calls.applied.length, 0);

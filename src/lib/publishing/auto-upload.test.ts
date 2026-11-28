@@ -710,7 +710,7 @@ test("BL-257 AC-PR-02: a package waiting for the owner's review (or returned) is
   }
 });
 
-// BL-279 (owner TG 4963/4964, review finding 5): the automatic upload with two channels -- the one whose publishing settings were never
+// BL-279 (owner TG 4963/4964, review finding 6): the automatic upload with two channels -- the one whose publishing settings were never
 // saved is refused (publishing_settings_not_saved) and not marked tried, so it uploads once the owner saves them; the saved one uploads.
 test("BL-279: two channels -- the never-saved one is refused and not marked tried; the saved one uploads", async () => {
   const p1 = scanned(release("V65"), "mf-1");
