@@ -19,6 +19,7 @@ const AUTO_UPLOAD_REASONS = new Set([
   "quota_insufficient",
   "quota_unknown",
   "publishing_settings_changed",
+  "publishing_settings_not_saved",
   "upload_tags_too_long",
   "hash_failed",
   "no_connected_account",

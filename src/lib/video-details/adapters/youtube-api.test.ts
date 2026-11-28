@@ -69,6 +69,41 @@ test("AC-MG-26: a title/description/tags patch sends the whole snippet as read (
   assert.equal(result.before.channelId, "UC_x", "the snapshot names the video's channel (read only)");
 });
 
+// BL-279 (owner TG 4963/4964; YouTube Data API videos.update: a part is replaced whole, a snippet field left out is reset): the
+// category fix sends `part=snippet` with the new categoryId and the title, description, tags, defaultLanguage and defaultAudioLanguage
+// exactly as read just before, no status part, never localizations.
+test("BL-279: a categoryId patch sends the whole snippet as read with only the category changed, and no status or localizations", async () => {
+  const { io, sent } = fakeIo(true);
+  await createVideoDetailsYoutubeApiAdapter(io).applyPatch({ credentials: CREDENTIALS, videoId: "v1", patch: { categoryId: "27" }, readBackRetries: 0 });
+  assert.deepEqual(sent, [{ snippet: { title: "Old", description: "D", tags: ["a"], categoryId: "27", defaultLanguage: "ja", defaultAudioLanguage: "ja" } }]);
+});
+
+// BL-279 second review, finding 1: `videos.update` returned (the write landed) and the read-back then failed with its own code (quota
+// exhausted, Data API reads switched off) -- the error keeps its code and says the write call was made (`writeSent`); a refusal before
+// the call (Live writes off) never does.
+test("BL-279: a read-back failing after the update call carries writeSent with its own code; Live writes off does not", async () => {
+  for (const code of ["youtube_quota_exceeded", "data_api_reads_disabled"] as const) {
+    const fake = fakeIo(true);
+    const io: VideoDetailsYoutubeIo = {
+      ...fake.io,
+      readContext: async (youtube, videoId) => {
+        if (fake.sent.length > 0) throw new DomainError({ code, message: code, details: { videoId } });
+        return fake.io.readContext(youtube, videoId);
+      },
+    };
+    await assert.rejects(
+      () => createVideoDetailsYoutubeApiAdapter(io).applyPatch({ credentials: CREDENTIALS, videoId: "v1", patch: { categoryId: "27" }, readBackRetries: 0 }),
+      (error: unknown) => error instanceof DomainError && error.code === code && (error.details as { writeSent?: unknown; videoId?: unknown }).writeSent === true && (error.details as { videoId?: unknown }).videoId === "v1"
+    );
+    assert.equal(fake.sent.length, 1, "the write was sent");
+  }
+  const off = fakeIo(false);
+  await assert.rejects(
+    () => createVideoDetailsYoutubeApiAdapter(off.io).applyPatch({ credentials: CREDENTIALS, videoId: "v1", patch: { categoryId: "27" }, readBackRetries: 0 }),
+    (error: unknown) => error instanceof DomainError && error.code === "live_writes_disabled" && (error.details as { writeSent?: unknown } | undefined)?.writeSent === undefined
+  );
+});
+
 test("AC-MG-27: snippetPartOf leaves an audio language read as zxx out (RISK-102); keeps any other as read", () => {
   const read = { title: "Old", categoryId: "10", defaultLanguage: "ja", defaultAudioLanguage: "zxx", channelId: "UC_x" };
   assert.deepEqual(snippetPartOf(read, { title: "New" }), { title: "New", categoryId: "10", defaultLanguage: "ja" });

@@ -114,6 +114,7 @@ const DOMAIN_ERROR_STATUS = {
   package_exists: 409,
   package_held: 409,
   publishing_settings_changed: 409,
+  publishing_settings_not_saved: 409,
   upload_daily_limit: 409,
   video_details_conflict: 409,
   device_unavailable: 503,

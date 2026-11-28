@@ -98,6 +98,7 @@ function harness(initial: { packages: ScannedPackage[]; enabled?: boolean; files
   let id = 0;
   const approvalDeps: UploadApprovalDeps = {
     scan: async () => ({ status: "ok", packages: state.packages }),
+    // BL-279 (new requirement, owner TG 4964): a channel uploads only once its publishing settings were saved -- a saved one here.
     settings: async () => ({ channelId: CHANNEL, settings: SETTINGS, defaults: DEFAULT_PUBLISHING_SETTINGS, saved: ["playlistId"], conflictedFields: [] }),
     liveVideos: async () => new Set(state.rows.filter(holdsPackage).map((row) => row.video)),
     peerUploads: async () => state.peers,
@@ -304,7 +305,8 @@ test("AC-AU-07: a peer that starts the same package while the video is hashed st
     queue: async (input) =>
       createUploadApproval({
         scan: async () => ({ status: "ok", packages: [p] }),
-        settings: async () => ({ channelId: CHANNEL, settings: SETTINGS, defaults: DEFAULT_PUBLISHING_SETTINGS, saved: [], conflictedFields: [] }),
+        // BL-279 (new requirement, owner TG 4964): a channel uploads only once its publishing settings were saved -- a saved one here.
+        settings: async () => ({ channelId: CHANNEL, settings: SETTINGS, defaults: DEFAULT_PUBLISHING_SETTINGS, saved: ["playlistId"], conflictedFields: [] }),
         liveVideos: async () => new Set(),
         peerUploads: async () => h.state.peers,
         insertsToday: async () => 0,
@@ -393,7 +395,8 @@ test("an unknown quota is never acknowledged by the automatic path (it waits lik
   const h = harness({ packages: [p], files: fileOf(p) });
   const approval = createUploadApproval({
     scan: async () => ({ status: "ok", packages: [p] }),
-    settings: async () => ({ channelId: CHANNEL, settings: SETTINGS, defaults: DEFAULT_PUBLISHING_SETTINGS, saved: [], conflictedFields: [] }),
+    // BL-279 (new requirement, owner TG 4964): a channel uploads only once its publishing settings were saved -- a saved one here.
+    settings: async () => ({ channelId: CHANNEL, settings: SETTINGS, defaults: DEFAULT_PUBLISHING_SETTINGS, saved: ["playlistId"], conflictedFields: [] }),
     liveVideos: async () => new Set(),
     peerUploads: async () => new Map(),
     insertsToday: async () => 0,
@@ -488,7 +491,8 @@ test("waiting reasons: a refusal for one package (tags over 500 characters) is r
     queue: (input) =>
       createUploadApproval({
         scan: async () => ({ status: "ok", packages: [p] }),
-        settings: async () => ({ channelId: CHANNEL, settings: { ...SETTINGS, channelTags: longTags }, defaults: DEFAULT_PUBLISHING_SETTINGS, saved: [], conflictedFields: [] }),
+        // BL-279 (new requirement, owner TG 4964): a channel uploads only once its publishing settings were saved -- a saved one here.
+        settings: async () => ({ channelId: CHANNEL, settings: { ...SETTINGS, channelTags: longTags }, defaults: DEFAULT_PUBLISHING_SETTINGS, saved: ["playlistId"], conflictedFields: [] }),
         liveVideos: async () => new Set(),
         peerUploads: async () => new Map(),
         insertsToday: async () => 0,
@@ -704,4 +708,58 @@ test("BL-257 AC-PR-02: a package waiting for the owner's review (or returned) is
     assert.deepEqual((await h.auto.tick()).queued, []);
     assert.deepEqual([h.state.rows.length, h.state.hashCalls.length], [0, 0]);
   }
+});
+
+// BL-279 (owner TG 4963/4964, review finding 6): the automatic upload with two channels -- the one whose publishing settings were never
+// saved is refused (publishing_settings_not_saved) and not marked tried, so it uploads once the owner saves them; the saved one uploads.
+test("BL-279: two channels -- the never-saved one is refused and not marked tried; the saved one uploads", async () => {
+  const p1 = scanned(release("V65"), "mf-1");
+  const p2 = scanned(release("V66"), "mf-2");
+  const rows: unknown[] = [];
+  const tried = new Map<string, { manifests: Set<string>; media: Set<string> }>();
+  const triedOf = (channelId: string) => tried.get(channelId) ?? (tried.set(channelId, { manifests: new Set(), media: new Set() }), tried.get(channelId)!);
+  const packagesOf = (channelId: string) => (channelId === "UC_never" ? [p1] : [p2]);
+  let savedFields: Record<string, string[]> = { UC_never: [], UC_saved: ["categoryId"] };
+  const auto = () =>
+    createAutoPrivateUpload({
+      enabled: async () => true,
+      channels: async () => [
+        { channelId: "UC_never", userId: OWNER },
+        { channelId: "UC_saved", userId: OWNER },
+      ],
+      scan: async (channelId) => ({ status: "ok", packages: packagesOf(channelId) }),
+      liveVideos: async () => new Set(),
+      peerUploads: async () => new Map(),
+      triedHashes: async (channelId) => triedOf(channelId),
+      videoFile: async () => ({ path: "/ws/v", bytes: 1000, mtimeMs: 1 }),
+      hashFile: async () => HASH_A,
+      queue: async (input) =>
+        createUploadApproval({
+          scan: async () => ({ status: "ok", packages: packagesOf(input.channelId) }),
+          settings: async (channelId) => ({ channelId, settings: SETTINGS, defaults: DEFAULT_PUBLISHING_SETTINGS, saved: savedFields[channelId] as never, conflictedFields: [] }),
+          liveVideos: async () => new Set(),
+          peerUploads: async () => new Map(),
+          insertsToday: async () => 0,
+          pending: async () => ({ inserts: 0, units: 0 }),
+          checkUnits: async (units) => ({ decision: "allow", estimatedUnits: units, remainingUnits: 9000 }),
+          insert: async (r) => (rows.push(...r), true),
+          newId: () => `up-${rows.length + 1}`,
+          audit: async () => undefined,
+          clock: { now: () => NOW },
+        }).queueAutomatic(input),
+      logMismatch: async () => undefined,
+      hashCache: new Map(),
+      loggedMismatches: new Set(),
+      logWaiting: async () => undefined,
+      saveWaiting: async () => undefined,
+      waiting: new Map(),
+    });
+  const first = await auto().tick();
+  assert.deepEqual(first.queued.map((q) => [q.channelId, q.video]), [["UC_saved", "V66"]]);
+  assert.equal(triedOf("UC_never").manifests.size, 0, "the refused package is not marked tried");
+  assert.ok(first.reasons.some((r) => r.channelId === "UC_never" && r.reason === "publishing_settings_not_saved"));
+  // The owner saves the channel's settings: the next tick uploads it.
+  savedFields = { ...savedFields, UC_never: ["categoryId"] };
+  const second = await auto().tick();
+  assert.deepEqual(second.queued.map((q) => [q.channelId, q.video]), [["UC_never", "V65"]]);
 });

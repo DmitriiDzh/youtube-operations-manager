@@ -133,3 +133,4 @@ Every section below was moved verbatim (2026-11-17, `docs/roadmap/plans/DOCS_SPL
 | BL-263 | the second video code `S<n>` and the Short recode | `docs/architecture/publishing.md` |
 | BL-277 | file-stamp caches safe on whole-second file systems (`src/lib/file-fingerprint/`) | `docs/architecture/media-review.md` |
 | BL-278 | vidIQ research through one gateway (`src/lib/vidiq-gateway/`, `src/lib/vidiq-research/`) | `docs/architecture/vidiq-research.md` |
+| BL-279 | channel publishing defaults: the upload guard, the category fix and the Producer's check (ADR 0072 amendment 2) | `docs/architecture/publishing.md` |

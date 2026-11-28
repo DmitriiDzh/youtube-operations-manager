@@ -52,7 +52,8 @@ async function files(dir: string): Promise<string[]> {
 
 /** Tools whose names match but only read: the publishing calendar, and the analytics milestones of published uploads (BL-166). */
 /** BL-235 (owner msgs 3806/3807, a new requirement): `agent_publishing_coverage` reads which days are covered -- it writes nothing. */
-const KNOWN_READS = new Set(["agent_get_publishing_calendar", "producer_upload_milestones", "agent_publishing_coverage"]);
+/** BL-279 (owner TG 4964, a new requirement): `producer_video_publishing_check` reads a video's publishing fields -- it writes nothing. */
+const KNOWN_READS = new Set(["agent_get_publishing_calendar", "producer_upload_milestones", "agent_publishing_coverage", "producer_video_publishing_check"]);
 /**
  * BL-225 (FO-REQ-0040, ADR 0051 §6 -- a new requirement, not a relaxation of this one): a channel worker drafts its weekly
  * publishing plan. The draft neither uploads nor schedules anything: only the owner's approval of a slot in the Web UI does, and
@@ -154,11 +155,14 @@ test("AC-AU-11: setAutoPrivateUploadEnabled is called only by the Settings route
 // BL-265 (MEDIA_GATE_PLAN.md AC-MG-34; owner TG 4578/4581, ADR 0072 §8 -- a new requirement, not a relaxation): the Producer fixes an
 // uploaded video's title / description / tags from its package. Exactly one tool, producer-only; the factory and the channel workers
 // have no metadata tool; the packaging-fix service is reached only by the Producer session wiring and the owner's route.
-test("BL-265 AC-MG-34: the Producer's metadata tool is exactly one, producer-only; the factory and workers have none", () => {
-  assert.deepEqual([...PRODUCER_METADATA_TOOLS], ["producer_video_metadata_update"]);
+// BL-279 (owner TG 4963/4964, ADR 0072 amendment 2 -- a new requirement, not a relaxation): the Producer's metadata tools are now the
+// texts/translations fix and the category fix, both producer-only; the factory and the channel workers still have none.
+test("BL-265 AC-MG-34: the Producer's metadata tools are exactly these two, producer-only; the factory and workers have none", () => {
+  assert.deepEqual([...PRODUCER_METADATA_TOOLS], ["producer_video_metadata_update", "producer_video_category_fix"]);
   assert.equal(MCP_TOOL_CLASSIFICATION.producer_video_metadata_update, "producer-only");
-  const metadataLike = (name: string) => /metadata_update|video_metadata|package_metadata|packaging/i.test(name);
-  assert.deepEqual(Object.keys(MCP_TOOL_CLASSIFICATION).filter(metadataLike), ["producer_video_metadata_update"]);
+  assert.equal(MCP_TOOL_CLASSIFICATION.producer_video_category_fix, "producer-only");
+  const metadataLike = (name: string) => /metadata_update|video_metadata|package_metadata|packaging|categor/i.test(name);
+  assert.deepEqual(Object.keys(MCP_TOOL_CLASSIFICATION).filter(metadataLike), ["producer_video_metadata_update", "producer_video_category_fix"]);
   assert.deepEqual((FACTORY_TOOL_NAMES as readonly string[]).filter(metadataLike), []);
   assert.deepEqual(Object.keys(WORKER_FACTORY_TOOLS).filter(metadataLike), []);
   assert.deepEqual(Object.values(WORKER_FACTORY_TOOLS).map((tool) => tool.agentName).filter(metadataLike), []);
@@ -170,6 +174,16 @@ test("BL-265 AC-MG-34: createPackageMetadataCore is used only by the Producer se
     if (/\bcreatePackageMetadataCore\b/.test(await readFile(file, "utf8"))) callers.push(path.relative(SRC, file));
   }
   assert.deepEqual(callers.sort(), ["app/api/channels/[channelId]/publishing/package-metadata/handlers.ts", "lib/producer-mcp-endpoint/session-deps.ts", "lib/publishing/index.ts"]);
+});
+
+// BL-279 (owner TG 4963/4964, ADR 0072 amendment 2): the category fix has the same two callers only -- the Producer session wiring and
+// the owner's category-fix route; no worker agent or factory path reaches it.
+test("BL-279: createPackageCategoryCore is used only by the Producer session wiring and the owner's category-fix route", async () => {
+  const callers: string[] = [];
+  for (const file of await files(SRC)) {
+    if (/\bcreatePackageCategoryCore\b/.test(await readFile(file, "utf8"))) callers.push(path.relative(SRC, file));
+  }
+  assert.deepEqual(callers.sort(), ["app/api/channels/[channelId]/publishing/category-fix/handlers.ts", "lib/producer-mcp-endpoint/session-deps.ts", "lib/publishing/index.ts"]);
 });
 
 // Owner TG 4839/4842 (ADR 0072 amendment 1, a new requirement): the package translations fix has the same two callers only -- the

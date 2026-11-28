@@ -60,7 +60,7 @@ export type ScannedPackage = {
    */
   warnings?: PackageProblem[];
   /** From `Vn_youtube.json`, once uploaded. BL-243: `removedAt` (ISO) when the sync found the video removed on YouTube. */
-  youtube: { videoId: string; privacyStatus: string | null; publishAt: string | null; removedAt?: string | null; uploadedAt?: string | null } | null;
+  youtube: { videoId: string; privacyStatus: string | null; publishAt: string | null; removedAt?: string | null; uploadedAt?: string | null; linked?: true } | null;
   /**
    * BL-243: the uploaded video is in the synced copy, not removed, as of a completed removed check (true), removed on YouTube (false), or
    * unknown -- no upload record, or a video id the copy does not have (null).
@@ -264,7 +264,7 @@ export function createPackageScan(deps: PackageScanDeps) {
       });
     }
     const recordFile = await deps.resolveFile(workspace, `${folder}/${youtubeRecordFileName(pkg.video)}`);
-    let record: { videoId: string; uploadedAt?: string } | null = null;
+    let record: { videoId: string; uploadedAt?: string; linked?: true } | null = null;
     if (recordFile) {
       record = await deps.readText(recordFile.path, MANIFEST_MAX_BYTES).then(parseUploadRecord, () => null);
     }
@@ -311,8 +311,8 @@ export function createPackageScan(deps: PackageScanDeps) {
       warnings: record ? [] : warnings,
       youtube: record
         ? removedAt !== undefined
-          ? { videoId: record.videoId, privacyStatus: null, publishAt: null, removedAt, uploadedAt }
-          : { videoId: record.videoId, privacyStatus: uploaded?.privacyStatus ?? null, publishAt: uploaded?.publishAt ?? null, removedAt: null, uploadedAt }
+          ? { videoId: record.videoId, privacyStatus: null, publishAt: null, removedAt, uploadedAt, ...(record.linked ? { linked: true as const } : {}) }
+          : { videoId: record.videoId, privacyStatus: uploaded?.privacyStatus ?? null, publishAt: uploaded?.publishAt ?? null, removedAt: null, uploadedAt, ...(record.linked ? { linked: true as const } : {}) }
         : null,
       // BL-243: the shared rule (ADR 0063 §1) -- the removed mark is proof; "on the channel" only as of a completed check that
       // could have seen the video.

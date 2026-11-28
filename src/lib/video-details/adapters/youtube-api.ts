@@ -11,6 +11,7 @@ import { DomainError, type ResolvedCredentials } from "@/lib/shared-domain";
 import { publishAtWriteRefusal } from "../publish-at-rule";
 import { missingWriteOnlyStatusFields, readBackUntilApplied } from "../read-back";
 import type { VideoDetailsPatch, VideoDetailsSnapshot } from "../contracts";
+import { withWriteErrorDetails } from "../write-error";
 
 function createAuthorizedClient(credentials: ResolvedCredentials) {
   const oauth2 = createGoogleOAuthClient();
@@ -157,46 +158,52 @@ export function createVideoDetailsYoutubeApiAdapter(io: VideoDetailsYoutubeIo = 
       const touchesPaidPlacement = "paidProductPlacement" in args.patch;
 
       await io.assertLiveWrites();
-      await io.applyUpdate({
-        youtube,
-        videoId: args.videoId,
-        parts: {
-          ...(touchesSnippet ? { snippet: snippetPartOf(context.snippet as Record<string, unknown>, args.patch) as typeof context.snippet } : {}),
-          ...(touchesStatus
-            ? {
-                status: statusPartOf(context.status as Record<string, unknown>, args.patch) as typeof context.status,
-              }
-            : {}),
-          ...(touchesRecordingDetails
-            ? {
-                recordingDetails: pickWritableRecordingDetailsFields({
-                  recordingDate: args.patch.recordingDate,
-                }),
-              }
-            : {}),
-          ...(touchesPaidPlacement ? { paidProductPlacementDetails: { hasPaidProductPlacement: args.patch.paidProductPlacement === true } } : {}),
-        },
-      });
+      // BL-279 (second review, finding 1): from the update call on, the write may have landed -- even when the call itself or the
+      // read-back fails -- so every such error says so (`writeSent`); the refusals above never do.
+      try {
+        await io.applyUpdate({
+          youtube,
+          videoId: args.videoId,
+          parts: {
+            ...(touchesSnippet ? { snippet: snippetPartOf(context.snippet as Record<string, unknown>, args.patch) as typeof context.snippet } : {}),
+            ...(touchesStatus
+              ? {
+                  status: statusPartOf(context.status as Record<string, unknown>, args.patch) as typeof context.status,
+                }
+              : {}),
+            ...(touchesRecordingDetails
+              ? {
+                  recordingDetails: pickWritableRecordingDetailsFields({
+                    recordingDate: args.patch.recordingDate,
+                  }),
+                }
+              : {}),
+            ...(touchesPaidPlacement ? { paidProductPlacementDetails: { hasPaidProductPlacement: args.patch.paidProductPlacement === true } } : {}),
+          },
+        });
 
-      // YouTube may serve the old value for a few seconds after the write (observed live for
-      // defaultAudioLanguage) -- re-read a bounded number of times before verification judges it.
-      const after = await readBackUntilApplied({
-        patch: args.patch,
-        ...(args.readBackRetries !== undefined ? { retries: args.readBackRetries } : {}),
-        read: async () => {
-          const verifiedContext = await io.readContext(youtube, args.videoId);
-          if (!verifiedContext) {
-            throw new DomainError({
-              code: "update_failed",
-              message: "Video disappeared immediately after a successful update call",
-              details: { videoId: args.videoId },
-            });
-          }
-          return toSnapshot(args.videoId, verifiedContext);
-        },
-      });
+        // YouTube may serve the old value for a few seconds after the write (observed live for
+        // defaultAudioLanguage) -- re-read a bounded number of times before verification judges it.
+        const after = await readBackUntilApplied({
+          patch: args.patch,
+          ...(args.readBackRetries !== undefined ? { retries: args.readBackRetries } : {}),
+          read: async () => {
+            const verifiedContext = await io.readContext(youtube, args.videoId);
+            if (!verifiedContext) {
+              throw new DomainError({
+                code: "update_failed",
+                message: "Video disappeared immediately after a successful update call",
+                details: { videoId: args.videoId },
+              });
+            }
+            return toSnapshot(args.videoId, verifiedContext);
+          },
+        });
 
-      return { before, after };
+        return { before, after };
+      } catch (error) {
+        throw withWriteErrorDetails(error, { writeSent: true });
+      }
     },
   };
 }

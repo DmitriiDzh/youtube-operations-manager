@@ -145,6 +145,9 @@ export type DomainErrorCode =
   | "package_exists"
   | "package_held"
   | "publishing_settings_changed"
+  // BL-279 (owner TG 4963/4964): the channel's publishing settings were never saved in YT Manager -- no upload is queued with the
+  // built-in defaults (WWE went up as Music with captions off); a category fix needs the category itself saved.
+  | "publishing_settings_not_saved"
   | "upload_daily_limit"
   // Owner msg 2753: a package's tags and the channel's own tags together pass YouTube's 500 characters (details.video).
   | "upload_tags_too_long"
