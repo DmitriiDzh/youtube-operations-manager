@@ -676,4 +676,3 @@ flags the error as not sent; the mark keeps the retry count, so a failing insert
 - **UI:** the panel moved to Home (owner TG 4964: per-channel settings belong to the channel's page; Settings keeps YT Manager-wide
   ones). On Home it starts folded to a summary and opens by itself while never saved, so the playlist list (a Data API read) is not
   fetched on every Home visit. Settings → Channels keeps a pointer (bookmarks).
-
