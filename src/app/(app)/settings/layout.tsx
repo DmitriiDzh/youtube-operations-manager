@@ -28,6 +28,7 @@ import { SocialAccountsSettings } from "@/components/social-accounts-settings";
 import { CloudCredentialsTransfer } from "@/components/cloud-credentials-transfer";
 import { HfTokenSettings } from "@/components/hf-token-settings";
 import { GithubTokenSettings } from "@/components/github-token-settings";
+import { VidiqSettings } from "@/components/vidiq-settings";
 import { LiveStreamsSettings } from "@/components/live-streams-settings";
 import { DeviceAutoSyncSettings } from "@/components/device-auto-sync-settings";
 import { AppVersionInfo } from "@/components/app-version-info";
@@ -203,6 +204,10 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
         {/* BL-236 (ADR 0057): ElevenLabs speech -- its key, switch (off by default) and character limits; fails on its own. */}
         <FeatureErrorBoundary label={section("speech.el.title")}>
           <ElevenlabsSettings />
+        </FeatureErrorBoundary>
+        {/* BL-278 (ADR 0077): vidIQ research -- its key (Mac only), switch, balance, credits budget and ledger; fails on its own. */}
+        <FeatureErrorBoundary label={section("vidiq.title")}>
+          <VidiqSettings />
         </FeatureErrorBoundary>
         <FeatureErrorBoundary label={section("hfToken.title")}>
           <HfTokenSettings />

@@ -547,10 +547,17 @@ test("AC-RA-3: switch on -- MCP and Mac-only routes 403, CSRF origin enforced, t
   const origin = { origin: "https://mac.tail1234.ts.net" };
   for (const p of ["/api/mcp", "/api/mcp/factory", "/api/agent-tokens", "/api/cloud-credentials/export", "/api/auth/signin/google",
     "/api/gemini-media/key", "/api/elevenlabs-speech/key", "/api/media-generation/credentials", "/api/logical-paths/value",
-    "/api/channel-connections/disconnect", "/api/social/meta/app", "/api/social/posting", "/api/social/disconnect"]) {
+    "/api/channel-connections/disconnect", "/api/social/meta/app", "/api/social/posting", "/api/social/disconnect",
+    // BL-278 (ADR 0077 decision 3, AC-VQ-1.17): the vidIQ key is entered on the Mac only.
+    "/api/vidiq/key"]) {
     const r = await proxy(remoteReq("POST", p, origin));
     assert.equal(r.status, 403, p);
     assert.equal((await r.json()).error, "remote_access_mac_only", p);
+  }
+  for (const method of ["PUT", "DELETE"]) {
+    const r = await proxy(remoteReq(method, "/api/vidiq/key", origin));
+    assert.equal(r.status, 403, `${method} /api/vidiq/key`);
+    assert.equal((await r.json()).error, "remote_access_mac_only");
   }
   assert.equal((await proxy(remoteReq("PUT", "/api/remote-access", origin))).status, 403);
   assert.equal((await proxy(remoteReq("GET", "/api/remote-access"))).status, 200);

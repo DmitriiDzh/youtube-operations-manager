@@ -175,6 +175,7 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   social_accounts: "cross-posting accounts with tokens sealed by this device's key (BL-252); each computer connects its own",
   transferred_change_counters: "this device's own change counters of the transferred tables (BL-270); only tells this device's sync that its data moved",
   package_review_drafts: "the owner's unsent draft of timed comments on a release package, on the computer he reviews on (owner TG 4817)",
+  vidiq_ledger: "this computer's vidIQ call ledger and credits budget source; the key lives on this computer only (BL-278, ADR 0077, owner TG 4961)",
   review_notify_ledger: "this device's own record of the owner decisions it wrote into the Producer's Inbox (BL-248); each writer keeps its own",
   analytics_weekly_reports: "rebuilt from the device's own local metrics",
   video_milestones: "accepted limitation (RISK-52, same as video_metrics_daily): each computer collects its own channels' milestones (BL-166)",

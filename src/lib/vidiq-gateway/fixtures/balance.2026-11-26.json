@@ -1,0 +1,32 @@
+{
+  "_meta": {
+    "widgetData": {
+      "type": "limited",
+      "totalCredits": 150,
+      "renewableCredits": 150,
+      "maxRenewableCredits": 150,
+      "renewableResetsAt": "2026-12-26T14:01:17.657045Z",
+      "addOnCredits": 0,
+      "maxAddOnCredits": 0,
+      "planName": "Free"
+    }
+  },
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"type\":\"limited\",\"totalCredits\":150,\"renewableCredits\":150,\"maxRenewableCredits\":150,\"renewableResetsAt\":\"2026-12-26T14:01:17.657045Z\",\"addOnCredits\":0,\"maxAddOnCredits\":0,\"_credits\":{\"used\":0}}"
+    }
+  ],
+  "structuredContent": {
+    "type": "limited",
+    "totalCredits": 150,
+    "renewableCredits": 150,
+    "maxRenewableCredits": 150,
+    "renewableResetsAt": "2026-12-26T14:01:17.657045Z",
+    "addOnCredits": 0,
+    "maxAddOnCredits": 0,
+    "_credits": {
+      "used": 0
+    }
+  }
+}

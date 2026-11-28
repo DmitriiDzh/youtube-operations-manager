@@ -41,7 +41,8 @@ import { imageReviews } from "./ru/imageReviews";
 import { packageReviews } from "./ru/packageReviews";
 import { remoteAccess } from "./ru/remoteAccess";
 import { social } from "./ru/social";
+import { vidiq } from "./ru/vidiq";
 
-export const ruAreas = { common, shell, settings, production, media, languages, batches, decisions, research, researchData, analytics, content, merge, settingsCards, errors, analyticsLabels, liveStreams, storyboards, musicLibrary, weeklyBuild, weekTemplate, speech, diskGuard, localVideoCleanup, clipReviews, imageReviews, packageReviews, remoteAccess, social } as const;
+export const ruAreas = { common, shell, settings, production, media, languages, batches, decisions, research, researchData, analytics, content, merge, settingsCards, errors, analyticsLabels, liveStreams, storyboards, musicLibrary, weeklyBuild, weekTemplate, speech, diskGuard, localVideoCleanup, clipReviews, imageReviews, packageReviews, remoteAccess, social, vidiq } as const;
 
-export const ru: Record<UiTextKey, string> = { ...common, ...shell, ...settings, ...production, ...media, ...languages, ...batches, ...decisions, ...research, ...researchData, ...analytics, ...content, ...merge, ...settingsCards, ...errors, ...analyticsLabels, ...liveStreams, ...storyboards, ...musicLibrary, ...weeklyBuild, ...weekTemplate, ...speech, ...diskGuard, ...localVideoCleanup, ...clipReviews, ...imageReviews, ...packageReviews, ...remoteAccess, ...social };
+export const ru: Record<UiTextKey, string> = { ...common, ...shell, ...settings, ...production, ...media, ...languages, ...batches, ...decisions, ...research, ...researchData, ...analytics, ...content, ...merge, ...settingsCards, ...errors, ...analyticsLabels, ...liveStreams, ...storyboards, ...musicLibrary, ...weeklyBuild, ...weekTemplate, ...speech, ...diskGuard, ...localVideoCleanup, ...clipReviews, ...imageReviews, ...packageReviews, ...remoteAccess, ...social, ...vidiq };

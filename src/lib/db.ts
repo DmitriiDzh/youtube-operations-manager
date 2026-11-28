@@ -2166,6 +2166,31 @@ export const packageReviewDrafts = sqliteTable(
 );
 
 /**
+ * SCHEMA_MIGRATIONS version 127 (BL-278, ADR 0077 decision 5, VIDIQ_INTEGRATION_PLAN.md stage 1): one row per vidIQ call made through
+ * `src/lib/vidiq-research/` -- who called (`owner` | `producer`), which tool, a SHA-256 of the canonical arguments (never the
+ * arguments), the stated cost, vidIQ's `_credits.used` (null until known), the outcome, the error code, an asynchronous job's id and
+ * the balance read after it. The budget is summed from it. Device-local (one computer holds the key, owner TG 4961), pruned to 90
+ * days on insert, classified not_api_data (names, hashes and numbers; no YouTube data).
+ */
+export const vidiqLedger = sqliteTable(
+  "vidiq_ledger",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    at: integer("at", { mode: "timestamp_ms" }).notNull(),
+    caller: text("caller").notNull(),
+    tool: text("tool").notNull(),
+    argsSha256: text("args_sha256").notNull(),
+    statedCost: integer("stated_cost").notNull(),
+    creditsUsed: integer("credits_used"),
+    outcome: text("outcome").notNull(),
+    errorCode: text("error_code"),
+    jobId: text("job_id"),
+    balanceAfter: integer("balance_after"),
+  },
+  (table) => [index("vidiq_ledger_at_idx").on(table.at)]
+);
+
+/**
  * SCHEMA_MIGRATIONS version 45 (BL-118) -- CHANNEL-level daily totals (views, watch time, subscribers...) collected with the per-video
  * metrics, so the agent's channel analytics can be read locally instead of a live Analytics API call every time. Same shape and
  * rules as `video_metrics_daily` (the API omits zero-activity days: absence is not zero), device-local like it.
@@ -6295,6 +6320,27 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       )`);
     },
   },
+  {
+    version: 127,
+    description:
+      "vidiq_ledger -- BL-278 (ADR 0077 decision 5, VIDIQ_INTEGRATION_PLAN.md stage 1): one row per vidIQ call (caller, tool, argument hash, stated cost, credits used, outcome, job id, balance after), the credits budget's source. Additive (one new table and its index on at), device-local, pruned to 90 days on insert",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS vidiq_ledger (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        at INTEGER NOT NULL,
+        caller TEXT NOT NULL,
+        tool TEXT NOT NULL,
+        args_sha256 TEXT NOT NULL,
+        stated_cost INTEGER NOT NULL,
+        credits_used INTEGER,
+        outcome TEXT NOT NULL,
+        error_code TEXT,
+        job_id TEXT,
+        balance_after INTEGER
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS vidiq_ledger_at_idx ON vidiq_ledger (at)");
+    },
+  },
 ];
 
 /**
@@ -8936,7 +8982,9 @@ export type GatewayTrafficCategory =
   // BL-200 -- GitHub's public API (ComfyUI releases, tag -> commit for pod runtime profiles), the media gateway's `github.ts`.
   | "github_api"
   // BL-236 -- ElevenLabs' API (speech, voice design), the media gateway's `elevenlabs-api.ts` child.
-  | "elevenlabs_api";
+  | "elevenlabs_api"
+  // BL-278 (ADR 0077 decision 1) -- vidIQ's MCP server, its own gateway `src/lib/vidiq-gateway/`.
+  | "vidiq_api";
 
 export type GatewayTrafficWindow = {
   category: GatewayTrafficCategory;
@@ -8962,6 +9010,7 @@ const GATEWAY_TRAFFIC_CATEGORIES: readonly GatewayTrafficCategory[] = [
   "gemini_api",
   "github_api",
   "elevenlabs_api",
+  "vidiq_api",
 ];
 
 // Kept well past the 24h window this table exists to answer (owner instruction, 2026-09-22:
@@ -11107,6 +11156,107 @@ export async function prunePackageReviewDrafts(channelId: string, keepManifests:
 /** AC-TC-03/05: the draft is gone (emptied, or sent with a decision). */
 export async function deletePackageReviewDraft(channelId: string, manifestSha256: string, database: AppDb = db): Promise<void> {
   await database.delete(packageReviewDrafts).where(and(eq(packageReviewDrafts.channelId, channelId), eq(packageReviewDrafts.manifestSha256, manifestSha256)));
+}
+
+// --- BL-278 (ADR 0077): the vidIQ ledger and the module's three device-local settings ----------------------------------------
+
+export type VidiqLedgerOutcome = "pending" | "ok" | "cache_hit" | "refused" | "failed" | "unknown" | "job_pending";
+
+export type VidiqLedgerRow = {
+  id: number;
+  at: Date;
+  caller: "owner" | "producer";
+  tool: string;
+  argsSha256: string;
+  statedCost: number;
+  creditsUsed: number | null;
+  outcome: VidiqLedgerOutcome;
+  errorCode: string | null;
+  jobId: string | null;
+  balanceAfter: number | null;
+};
+
+/** How long a vidIQ ledger row is kept (like producer_call_log). */
+export const VIDIQ_LEDGER_RETENTION_MS = 90 * 24 * 60 * 60_000;
+
+/** The `app_settings` keys of the vidIQ module (device-local by the table's own classification). */
+/** `vidiq_overcharge_ack_at` (ADR 0077 amendment 1): the owner's acknowledgement time; overcharges recorded at or before it no longer block. */
+export const VIDIQ_SETTING_KEYS = ["vidiq_enabled", "vidiq_monthly_budget_credits", "vidiq_balance_snapshot", "vidiq_overcharge_ack_at"] as const;
+export type VidiqSettingKey = (typeof VIDIQ_SETTING_KEYS)[number];
+
+function assertVidiqSettingKey(key: string): asserts key is VidiqSettingKey {
+  if (!(VIDIQ_SETTING_KEYS as readonly string[]).includes(key)) throw new Error(`not a vidIQ setting: ${key}`);
+}
+
+export async function getVidiqSetting(key: VidiqSettingKey, database: AppDb = db): Promise<string | null> {
+  assertVidiqSettingKey(key);
+  return getAppSetting(key, database);
+}
+
+/** Stores one vidIQ setting; null removes it. */
+export async function setVidiqSetting(key: VidiqSettingKey, value: string | null, database: AppDb = db): Promise<void> {
+  assertVidiqSettingKey(key);
+  if (value === null) await database.delete(appSettings).where(eq(appSettings.key, key));
+  else await setAppSetting(key, value, database);
+}
+
+function toVidiqLedgerRow(row: typeof vidiqLedger.$inferSelect): VidiqLedgerRow {
+  return { ...row, caller: row.caller === "producer" ? "producer" : "owner", outcome: row.outcome as VidiqLedgerOutcome };
+}
+
+/** Records one row and drops rows older than the retention, in one transaction; returns the new row's id. */
+export async function insertVidiqLedgerRow(row: Omit<VidiqLedgerRow, "id">, database: AppDb = db): Promise<number> {
+  return database.transaction(async (tx) => {
+    const [inserted] = await tx.insert(vidiqLedger).values(row).returning({ id: vidiqLedger.id });
+    await tx.delete(vidiqLedger).where(lt(vidiqLedger.at, new Date(row.at.getTime() - VIDIQ_LEDGER_RETENTION_MS)));
+    return inserted.id;
+  });
+}
+
+export async function updateVidiqLedgerRow(
+  id: number,
+  patch: Partial<Pick<VidiqLedgerRow, "outcome" | "creditsUsed" | "errorCode" | "jobId" | "balanceAfter">>,
+  database: AppDb = db
+): Promise<void> {
+  if (Object.keys(patch).length === 0) return;
+  await database.update(vidiqLedger).set(patch).where(eq(vidiqLedger.id, id));
+}
+
+/** Newest first, within the retention; `since` (inclusive) narrows it further. */
+export async function listVidiqLedgerRows(input: { limit: number; since?: Date; now?: Date }, database: AppDb = db): Promise<VidiqLedgerRow[]> {
+  const now = input.now ?? new Date();
+  const floor = new Date(now.getTime() - VIDIQ_LEDGER_RETENTION_MS);
+  const since = input.since && input.since > floor ? input.since : floor;
+  const rows = await database
+    .select()
+    .from(vidiqLedger)
+    .where(gte(vidiqLedger.at, since))
+    .orderBy(desc(vidiqLedger.at), desc(vidiqLedger.id))
+    .limit(input.limit);
+  return rows.map(toVidiqLedgerRow);
+}
+
+/**
+ * ADR 0077 amendment 1: a `pending` row recorded before `before` belongs to a call whose process ended mid-call (a call takes at
+ * most about two minutes); it becomes `unknown` with `vidiq_outcome_unknown`, its credits still unknown (so it keeps counting at
+ * its stated cost). Idempotent; returns how many rows changed.
+ */
+export async function expireVidiqPendingRows(before: Date, database: AppDb = db): Promise<number> {
+  const result = await database
+    .update(vidiqLedger)
+    .set({ outcome: "unknown", errorCode: "vidiq_outcome_unknown" })
+    .where(and(eq(vidiqLedger.outcome, "pending"), lt(vidiqLedger.at, before)));
+  return Number(result.rowsAffected ?? 0);
+}
+
+/** Whether this computer's ledger recorded `jobId` as a job still pending (the job_poll rule, plan §4). */
+export async function hasVidiqPendingJob(jobId: string, database: AppDb = db): Promise<boolean> {
+  const [row] = await database
+    .select({ id: vidiqLedger.id })
+    .from(vidiqLedger)
+    .where(and(eq(vidiqLedger.jobId, jobId), eq(vidiqLedger.outcome, "job_pending")))
+    .limit(1);
+  return Boolean(row);
 }
 
 /** BL-248: retention -- removes rows recorded before `cutoff`; returns how many. */

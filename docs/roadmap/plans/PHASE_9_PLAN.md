@@ -135,6 +135,11 @@ automatically.
   `create_experiment_proposal` stays a `CAPABILITY_NOT_AVAILABLE` placeholder; this phase produces
   evidence Phase 10 will eventually consume, it does not build Phase 10 itself.
 
+> **Dated note, 2026-11-26 (BL-278, ADR 0077 decision 9; owner TG 4949/4953/4961).** For vidIQ data only: discovery through vidIQ's
+> tools on an explicit owner or Producer call (never automatic crawling), and vidIQ's earnings estimates are allowed (TG 4961, Q1),
+> each labelled a vidIQ estimate, kept apart from YTM's own observations, and never stored as `research_evidence` or a snapshot.
+> The limits above stand unchanged for every other source.
+
 ## 5. Interfaces, data structures, and security boundaries
 
 - Additive tables (SCHEMA_MIGRATIONS, next version after whatever is current when this slice
@@ -555,6 +560,10 @@ No Phase 10 decision/experiment engine; no automatic content generation, product
 publishing; no revenue estimation or competitor CTR/retention/traffic-source claims of any kind,
 estimated or otherwise; no mandatory graph or vector database; no opaque "score" without exposed
 components — all restated directly from the spec's own §33/§34/§21, not reinterpreted.
+
+> **Dated note, 2026-11-26 (BL-278, ADR 0077 decision 9; owner TG 4961, Q1).** The revenue-estimation non-goal is lifted for vidIQ's
+> own earnings estimates only: they may be shown, labelled a vidIQ (third-party) estimate. YTM computes no revenue estimate of its
+> own and draws no profitability conclusion. See §4's note.
 
 ## 17. What this Part II does not authorize
 

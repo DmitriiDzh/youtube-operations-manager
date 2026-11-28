@@ -29,9 +29,10 @@ import { imageReviews } from "./en/imageReviews";
 import { packageReviews } from "./en/packageReviews";
 import { remoteAccess } from "./en/remoteAccess";
 import { social } from "./en/social";
+import { vidiq } from "./en/vidiq";
 
-export const enAreas = { common, shell, settings, production, media, languages, batches, decisions, research, researchData, analytics, content, merge, settingsCards, errors, analyticsLabels, liveStreams, storyboards, musicLibrary, weeklyBuild, weekTemplate, speech, diskGuard, localVideoCleanup, clipReviews, imageReviews, packageReviews, remoteAccess, social } as const;
+export const enAreas = { common, shell, settings, production, media, languages, batches, decisions, research, researchData, analytics, content, merge, settingsCards, errors, analyticsLabels, liveStreams, storyboards, musicLibrary, weeklyBuild, weekTemplate, speech, diskGuard, localVideoCleanup, clipReviews, imageReviews, packageReviews, remoteAccess, social, vidiq } as const;
 
-export const en = { ...common, ...shell, ...settings, ...production, ...media, ...languages, ...batches, ...decisions, ...research, ...researchData, ...analytics, ...content, ...merge, ...settingsCards, ...errors, ...analyticsLabels, ...liveStreams, ...storyboards, ...musicLibrary, ...weeklyBuild, ...weekTemplate, ...speech, ...diskGuard, ...localVideoCleanup, ...clipReviews, ...imageReviews, ...packageReviews, ...remoteAccess, ...social } as const;
+export const en = { ...common, ...shell, ...settings, ...production, ...media, ...languages, ...batches, ...decisions, ...research, ...researchData, ...analytics, ...content, ...merge, ...settingsCards, ...errors, ...analyticsLabels, ...liveStreams, ...storyboards, ...musicLibrary, ...weeklyBuild, ...weekTemplate, ...speech, ...diskGuard, ...localVideoCleanup, ...clipReviews, ...imageReviews, ...packageReviews, ...remoteAccess, ...social, ...vidiq } as const;
 
 export type UiTextKey = keyof typeof en;
