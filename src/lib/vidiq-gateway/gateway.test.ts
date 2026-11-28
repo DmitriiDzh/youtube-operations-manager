@@ -225,3 +225,82 @@ test("pollJob is a free job_poll call; a balance result with other numbers parse
     assert.equal(balance.totalCredits, 42);
     assert.equal(balance.renewableResetsAt, "2027-01-26T00:00:00Z");
   }));
+
+// Independent review 2026-11-28, finding 2: only a tools/call can be charged. A failure of the free tools/list must never say the
+// request was sent (the ledger would book it as possibly charged), and a call whose list read fails before sending was not sent.
+
+const listRequests = (fake: FakeVidiqServer) => fake.requests.filter((r) => r.rpcMethod === "tools/list").length;
+
+test("review 2: a tools/list answering 503 is vidiq_unavailable, not sent, 'nothing was charged', no response text", () =>
+  withFake(async (fake, outcomes) => {
+    fake.listFailure = { http: 503 };
+    const { code, error } = await codeOf(() => gatewayFor(fake, outcomes).listToolsChecked(KEY, { refresh: true }));
+    assert.equal(code, "vidiq_unavailable");
+    assert.equal((error as { details?: { requestSent?: boolean } }).details?.requestSent, false);
+    assert.match((error as Error).message, /nothing was charged/);
+    assertNoSentinel(error, "list 503 error");
+    assert.equal(fake.toolCalls().length, 0);
+  }));
+
+test("review 2: a tools/list that never answers times out as vidiq_unavailable, not sent", () =>
+  withFake(async (fake, outcomes) => {
+    fake.listFailure = { hang: true };
+    const gateway = createVidiqGateway({ endpoint: fake.url, timeoutMs: 30_000, connectTimeoutMs: 1_500, recordOutcome: async (outcome) => void outcomes.push(outcome) });
+    const { code, error } = await codeOf(() => gateway.listToolsChecked(KEY, { refresh: true }));
+    assert.equal(code, "vidiq_unavailable");
+    assert.equal((error as { details?: { requestSent?: boolean } }).details?.requestSent, false);
+    assert.equal(fake.toolCalls().length, 0);
+  }));
+
+test("review 2: callTool whose list re-read (cache expired) fails before sending reports requestSent false and sends no tools/call", () =>
+  withFake(async (fake, outcomes) => {
+    let at = Date.parse("2026-11-28T10:00:00Z");
+    const gateway = createVidiqGateway({ endpoint: fake.url, timeoutMs: 30_000, connectTimeoutMs: 120_000, now: () => at, recordOutcome: async (outcome) => void outcomes.push(outcome) });
+    await gateway.listToolsChecked(KEY);
+    at += 61 * 60_000; // past the 1 h list cache
+    fake.listFailure = { http: 503 };
+    const { code, error } = await codeOf(() => gateway.callTool(KEY, "vidiq_channel_stats", { channelId: UC }));
+    assert.equal(code, "vidiq_unavailable");
+    assert.equal((error as { details?: { requestSent?: boolean } }).details?.requestSent, false);
+    assert.equal(fake.toolCalls().length, 0);
+  }));
+
+test("review 2: callChecked sends what checkLive passed without listing again; a forged, reused or other-key object is refused unsent", () =>
+  withFake(async (fake, outcomes) => {
+    const gateway = gatewayFor(fake, outcomes);
+    const checked = await gateway.checkLive(KEY, "vidiq_channel_stats", { channelId: UC });
+    assert.equal(checked.statedCost, 5);
+    const lists = listRequests(fake);
+    const out = await gateway.callChecked(KEY, checked);
+    assert.equal(out.tool, "vidiq_channel_stats");
+    assert.equal(listRequests(fake), lists, "no second tools/list");
+    assert.equal(fake.toolCalls().length, 1);
+    await assert.rejects(() => gateway.callChecked(KEY, checked), /checkLive/, "single use");
+    await assert.rejects(() => gateway.callChecked(KEY, { tool: "vidiq_channel_stats", args: { channelId: UC }, statedCost: 5 }), /checkLive/, "forged");
+    const another = await gateway.checkLive(KEY, "vidiq_channel_stats", { channelId: UC });
+    await assert.rejects(() => gateway.callChecked("vq_another_key_12345", another), /checkLive/, "another key");
+    assert.equal(fake.toolCalls().length, 1);
+  }));
+
+// Finding 3: an error vidIQ ANSWERED is not a timeout. An HTTP 4xx to the call or a JSON-RPC error answer is vidiq_answered_error
+// (sent, so it may have been charged), never vidiq_outcome_unknown ("no usable answer") or vidiq_unavailable ("not reachable").
+
+test("review 3: an HTTP 400 answer to tools/call is vidiq_answered_error, sent, with no response text", () =>
+  withFake(async (fake, outcomes) => {
+    fake.script.set("vidiq_channel_stats", () => ({ http: 400 }));
+    const { code, error } = await codeOf(() => gatewayFor(fake, outcomes).callTool(KEY, "vidiq_channel_stats", { channelId: UC }));
+    assert.equal(code, "vidiq_answered_error");
+    assert.equal((error as { details?: { requestSent?: boolean } }).details?.requestSent, true);
+    assertNoSentinel(error, "400 error");
+    assert.equal(fake.toolCalls().length, 1);
+  }));
+
+test("review 3: a JSON-RPC error answer to tools/call is vidiq_answered_error, sent, with no error text from vidIQ", () =>
+  withFake(async (fake, outcomes) => {
+    fake.script.set("vidiq_channel_stats", () => ({ rpcError: -32603 }));
+    const { code, error } = await codeOf(() => gatewayFor(fake, outcomes).callTool(KEY, "vidiq_channel_stats", { channelId: UC }));
+    assert.equal(code, "vidiq_answered_error");
+    assert.equal((error as { details?: { requestSent?: boolean } }).details?.requestSent, true);
+    assertNoSentinel(error, "JSON-RPC error");
+    assert.equal(fake.toolCalls().length, 1);
+  }));

@@ -7,6 +7,7 @@ import { type Client } from "@libsql/client";
 import { createLibsqlClient } from "@/lib/libsql-client";
 import {
   createIsolatedDb,
+  expireVidiqPendingRows,
   getVidiqSetting,
   hasVidiqPendingJob,
   initializeDatabaseSchema,
@@ -95,7 +96,7 @@ test("an insert prunes rows older than 90 days", async () => {
   });
 });
 
-test("the three vidIQ settings are stored in app_settings; null removes one; another key is refused", async () => {
+test("the four vidIQ settings are stored in app_settings; null removes one; another key is refused", async () => {
   await withDb(async (client) => {
     const database = createIsolatedDb(client);
     assert.equal(await getVidiqSetting("vidiq_enabled", database), null);
@@ -105,6 +106,25 @@ test("the three vidIQ settings are stored in app_settings; null removes one; ano
     await setVidiqSetting("vidiq_enabled", null, database);
     assert.equal(await getVidiqSetting("vidiq_enabled", database), null);
     assert.equal(await getVidiqSetting("vidiq_monthly_budget_credits", database), "150");
+    await setVidiqSetting("vidiq_overcharge_ack_at", "2026-11-28T10:00:00.000Z", database);
+    assert.equal(await getVidiqSetting("vidiq_overcharge_ack_at", database), "2026-11-28T10:00:00.000Z");
     await assert.rejects(() => setVidiqSetting("live_writes_enabled" as never, "false", database));
+  });
+});
+
+test("review 5: pending rows recorded before the cutoff become unknown (vidiq_outcome_unknown, credits still null); others untouched", async () => {
+  await withDb(async (client) => {
+    const database = createIsolatedDb(client);
+    const now = new Date("2026-11-28T10:00:00Z");
+    const cutoff = new Date(now.getTime() - 15 * 60_000);
+    const stale = await insertVidiqLedgerRow(row(new Date(now.getTime() - 16 * 60_000)), database);
+    const fresh = await insertVidiqLedgerRow(row(new Date(now.getTime() - 14 * 60_000)), database);
+    const done = await insertVidiqLedgerRow(row(new Date(now.getTime() - 30 * 60_000), { outcome: "ok", creditsUsed: 5 }), database);
+    assert.equal(await expireVidiqPendingRows(cutoff, database), 1);
+    assert.equal(await expireVidiqPendingRows(cutoff, database), 0, "idempotent");
+    const byId = new Map((await listVidiqLedgerRows({ limit: 10, now }, database)).map((r) => [r.id, r]));
+    assert.deepEqual([byId.get(stale)?.outcome, byId.get(stale)?.errorCode, byId.get(stale)?.creditsUsed], ["unknown", "vidiq_outcome_unknown", null]);
+    assert.deepEqual([byId.get(fresh)?.outcome, byId.get(fresh)?.errorCode], ["pending", null]);
+    assert.deepEqual([byId.get(done)?.outcome, byId.get(done)?.creditsUsed], ["ok", 5]);
   });
 });

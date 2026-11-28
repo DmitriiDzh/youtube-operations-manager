@@ -312,6 +312,7 @@ export type DomainErrorCode =
   | "vidiq_rate_limited"
   | "vidiq_unavailable"
   | "vidiq_outcome_unknown"
+  | "vidiq_answered_error"
   | "vidiq_result_too_large"
   | "vidiq_budget_exhausted"
   | "vidiq_insufficient_credits"

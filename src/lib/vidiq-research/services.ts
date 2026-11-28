@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 import type { DeviceSecretSlot } from "@/lib/device-secrets";
 import { DomainError, isDomainError } from "@/lib/shared-domain";
-import { pinnedCostsOf, type VidiqBalance, type VidiqDriftReport, type VidiqGateway } from "@/lib/vidiq-gateway";
+import { pinnedCostsOf, type LiveCheckedCall, type VidiqBalance, type VidiqDriftReport, type VidiqGateway } from "@/lib/vidiq-gateway";
 import {
   VIDIQ_BALANCE_MAX_AGE_MS,
   VIDIQ_DEFAULT_MONTHLY_BUDGET,
   VIDIQ_MAX_MONTHLY_BUDGET,
+  VIDIQ_PENDING_STALE_MS,
   VIDIQ_RECENT_LEDGER_ROWS,
   type VidiqBalanceSnapshot,
   type VidiqBudgetView,
@@ -23,13 +24,16 @@ import { callInputSchema, parseInput, pollInputSchema, saveKeyInputSchema, updat
 // one lock per process (the caller passes the lock; production keeps it on `globalThis`):
 //   1 switch, 2 key, 3 allowlist and argument checks (no network; a job id must be one this ledger recorded), 4 cache (stage 2),
 //   5 live drift check (and an earlier overcharge), 6 stated cost, 7 preflight (budget left in the period, then the account balance,
-//   re-read free when older than 10 minutes), 8 a `pending` row at the stated cost, 9 the gateway call, 10 the row updated with
-//   vidIQ's `_credits.used` and the outcome, 11 a free balance read recorded as `balance_after`.
+//   re-read free when older than 10 minutes), 8 a `pending` row at the stated cost, 9 the gateway call (the call step 5 passed,
+//   never listed again), 10 the row updated with vidIQ's `_credits.used` and the outcome, 11 a free balance read recorded as
+//   `balance_after` (it also settles an error vidIQ answered: an unchanged balance means it charged nothing).
+// ADR 0077 amendment 1: `pending` rows older than 15 minutes (a process that ended mid-call) become `unknown` before the status or
+// a call reads the ledger; an overcharge blocks its tool only until the owner acknowledges it (`vidiq_overcharge_ack_at`).
 // A paid call is never retried. Logs carry fixed text and error codes only, never a key, an argument or a vidIQ answer.
 // ---------------------------------------------------------------------------
 
 export type VidiqSecretSlot = Pick<DeviceSecretSlot, "state" | "info" | "readWithVersion" | "write" | "clear" | "setStatus">;
-export type VidiqGatewayPort = Pick<VidiqGateway, "checkStaticCall" | "checkLive" | "callTool" | "balance" | "listToolsChecked">;
+export type VidiqGatewayPort = Pick<VidiqGateway, "checkStaticCall" | "checkLive" | "callChecked" | "balance" | "listToolsChecked">;
 
 export type VidiqResearchDeps = {
   store: VidiqStore;
@@ -161,10 +165,29 @@ export function createVidiqResearchServices(deps: VidiqResearchDeps) {
     return { monthly, spentInPeriod: spent, remaining: monthly - spent, periodStartsAt: start.toISOString(), periodEndsAt: end.toISOString() };
   }
 
-  /** Tools whose recorded charge exceeded the current pin (marked drifted until the pin is reviewed). */
+  /** When the owner last acknowledged the recorded overcharges (ms), or null. */
+  async function overchargeAckAt(): Promise<number | null> {
+    const raw = await deps.store.getSetting("vidiq_overcharge_ack_at");
+    const at = raw === null ? NaN : Date.parse(raw);
+    return Number.isNaN(at) ? null : at;
+  }
+
+  /**
+   * Tools whose recorded charge exceeded the current pin after the owner's last acknowledgement (ADR 0077 decision 5 "until the
+   * pin is reviewed", amendment 1: the owner's review clears it; a later overcharge blocks again).
+   */
   async function overchargedTools(at: Date): Promise<Set<string>> {
-    const rows = await deps.store.listLedger({ limit: 1_000_000, now: at });
-    return new Set(rows.filter((r) => r.creditsUsed !== null && r.creditsUsed > r.statedCost && pinnedCostsOf(r.tool).includes(r.statedCost)).map((r) => r.tool));
+    const [rows, ackAt] = await Promise.all([deps.store.listLedger({ limit: 1_000_000, now: at }), overchargeAckAt()]);
+    return new Set(
+      rows
+        .filter((r) => (ackAt === null || r.at.getTime() > ackAt) && r.creditsUsed !== null && r.creditsUsed > r.statedCost && pinnedCostsOf(r.tool).includes(r.statedCost))
+        .map((r) => r.tool)
+    );
+  }
+
+  /** A process that ended mid-call leaves a `pending` row: after 15 minutes it is `unknown` (still counted at its stated cost). */
+  async function expireStalePending(at: Date): Promise<void> {
+    await deps.store.expireStalePending(new Date(at.getTime() - VIDIQ_PENDING_STALE_MS));
   }
 
   // ---- the key ------------------------------------------------------------------------------------------------------------
@@ -225,6 +248,7 @@ export function createVidiqResearchServices(deps: VidiqResearchDeps) {
 
   async function status(): Promise<VidiqStatusView> {
     const at = now();
+    await expireStalePending(at);
     const snap = await snapshot();
     const rows = await deps.store.listLedger({ limit: VIDIQ_RECENT_LEDGER_ROWS, now: at });
     let balance: VidiqStatusView["balance"] = null;
@@ -239,7 +263,23 @@ export function createVidiqResearchServices(deps: VidiqResearchDeps) {
       balance,
       budget: await budgetView(at),
       ledger: rows.map((r) => ({ ...r, at: r.at.toISOString() })),
+      overchargedTools: [...(await overchargedTools(at))].sort(),
     };
+  }
+
+  /**
+   * After vidIQ ANSWERED a paid call with an error: one free balance read. The same total and the same renewal date as the snapshot
+   * read just before the call means vidIQ charged nothing, so the row counts 0; anything else keeps the stated cost (another client
+   * may have spent meanwhile). A timeout is never settled this way: its charge can land after the read.
+   */
+  async function settleAnsweredError(key: { value: string; version: string }, rowId: number, before: VidiqBalanceSnapshot): Promise<void> {
+    try {
+      const after = await readBalance(key);
+      const unchanged = after.totalCredits === before.totalCredits && after.renewableResetsAt === before.renewableResetsAt;
+      await deps.store.updateLedger(rowId, { balanceAfter: after.totalCredits, ...(unchanged ? { creditsUsed: 0 } : {}) });
+    } catch (error) {
+      log(`[vidiq-research] the balance after an answered error could not be read (${isDomainError(error) ? error.code : "unexpected error"})`);
+    }
   }
 
   /** Steps 1-11 for one call (inside the lock). */
@@ -258,13 +298,14 @@ export function createVidiqResearchServices(deps: VidiqResearchDeps) {
     }
     // 4: the cache arrives in stage 2.
     const at = now();
+    await expireStalePending(at);
     if ((await overchargedTools(at)).has(checked.tool)) {
       return refused(caller, tool, args, checked.pinnedCost, new DomainError({ code: "vidiq_cost_changed", message: "vidIQ charged more than the pinned cost for this tool; YTM refuses it until the contract is reviewed.", details: { tool: checked.tool } }));
     }
     // 5 + 6: live drift check; the stated cost.
-    let statedCost: number;
+    let live: LiveCheckedCall;
     try {
-      statedCost = (await deps.gateway.checkLive(key.value, tool, args)).statedCost;
+      live = await deps.gateway.checkLive(key.value, tool, args);
     } catch (error) {
       if (!isDomainError(error)) throw error;
       if (error.code === "vidiq_key_invalid") await markKeyRefused(key.version);
@@ -272,6 +313,7 @@ export function createVidiqResearchServices(deps: VidiqResearchDeps) {
       await record({ at, caller, tool: checked.tool, argsSha256: argsSha256(args), statedCost: checked.pinnedCost, creditsUsed: 0, outcome: "failed", errorCode: error.code, jobId: null, balanceAfter: null });
       throw error;
     }
+    const statedCost = live.statedCost;
     // 7: preflight.
     const budget = await budgetView(at);
     if (statedCost > budget.remaining) {
@@ -281,9 +323,11 @@ export function createVidiqResearchServices(deps: VidiqResearchDeps) {
         details: { statedCost, remainingBudget: Math.max(0, budget.remaining), periodEndsAt: budget.periodEndsAt },
       }));
     }
+    let before: VidiqBalanceSnapshot | null = null;
     if (statedCost > 0) {
       let snap = await snapshot();
       if (!snap || at.getTime() - Date.parse(snap.readAt) > VIDIQ_BALANCE_MAX_AGE_MS) snap = await readBalance(key);
+      before = snap;
       if (statedCost > snap.totalCredits) {
         return refused(caller, tool, args, statedCost, new DomainError({
           code: "vidiq_insufficient_credits",
@@ -297,7 +341,7 @@ export function createVidiqResearchServices(deps: VidiqResearchDeps) {
     // 9 + 10: the call and its outcome.
     let outcome;
     try {
-      outcome = await deps.gateway.callTool(key.value, tool, args);
+      outcome = await deps.gateway.callChecked(key.value, live);
     } catch (error) {
       if (!isDomainError(error)) {
         await deps.store.updateLedger(rowId, { outcome: "unknown", errorCode: "vidiq_unavailable" });
@@ -309,6 +353,10 @@ export function createVidiqResearchServices(deps: VidiqResearchDeps) {
         await deps.store.updateLedger(rowId, { outcome: "failed", errorCode: error.code, creditsUsed: typeof details.creditsUsed === "number" ? details.creditsUsed : null });
       } else if (DRIFT_CODES.has(error.code)) {
         await deps.store.updateLedger(rowId, { outcome: "refused", errorCode: error.code, creditsUsed: 0 });
+      } else if (error.code === "vidiq_answered_error") {
+        // vidIQ answered with an error: counted at the stated cost unless its own balance shows it charged nothing.
+        await deps.store.updateLedger(rowId, { outcome: "failed", errorCode: error.code, creditsUsed: null });
+        if (before) await settleAnsweredError(key, rowId, before);
       } else if (details.requestSent === true && error.code !== "vidiq_key_invalid" && error.code !== "vidiq_rate_limited") {
         // The call left and no usable answer came back: counted at the stated cost until vidIQ's own numbers say otherwise.
         await deps.store.updateLedger(rowId, { outcome: "unknown", errorCode: error.code, creditsUsed: null });
@@ -413,6 +461,16 @@ export function createVidiqResearchServices(deps: VidiqResearchDeps) {
           if (isDomainError(error)) await record({ at: started, caller: "owner", tool: "vidiq_balance", argsSha256: argsSha256({}), statedCost: 0, creditsUsed: 0, outcome: "failed", errorCode: error.code, jobId: null, balanceAfter: null });
           throw error;
         }
+        return status();
+      }),
+
+    /**
+     * The owner's acknowledgement of the recorded overcharges (ADR 0077 amendment 1): from now on they no longer block their tools;
+     * the ledger rows stay and still count. A later overcharge blocks its tool again. Local only, nothing is sent.
+     */
+    acknowledgeOvercharges: () =>
+      deps.withLock(async () => {
+        await deps.store.setSetting("vidiq_overcharge_ack_at", now().toISOString());
         return status();
       }),
 

@@ -40,5 +40,15 @@ export function createMemoryVidiqStore(): VidiqStore & { settings: Map<VidiqSett
     async hasPendingJob(jobId) {
       return rows.some((r) => r.jobId === jobId && r.outcome === "job_pending");
     },
+    async expireStalePending(before) {
+      let changed = 0;
+      for (const r of rows) {
+        if (r.outcome === "pending" && r.at.getTime() < before.getTime()) {
+          Object.assign(r, { outcome: "unknown", errorCode: "vidiq_outcome_unknown" });
+          changed++;
+        }
+      }
+      return changed;
+    },
   };
 }

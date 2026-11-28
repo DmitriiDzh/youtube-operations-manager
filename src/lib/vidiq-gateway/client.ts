@@ -55,25 +55,37 @@ function parseRetryAfter(value: string | null): number | null {
   return Number.isNaN(date) ? null : Math.max(0, Math.round((date - Date.now()) / 1000));
 }
 
-function classify(error: unknown, tracker: Tracker): DomainError {
+/**
+ * `charged`: whether the operation is a `tools/call` (vidIQ bills only those). A failure of the free `tools/list` (or of the
+ * handshake) never reports `requestSent: true`, so nothing downstream books it as possibly charged.
+ */
+function classify(error: unknown, tracker: Tracker, charged: boolean): DomainError {
   if (error instanceof DomainError) return error;
   const status = tracker.status;
+  const sent = charged && tracker.rpcSent;
   if (status === 401 || status === 403) return new DomainError({ code: "vidiq_key_invalid", message: "vidIQ refused the API key." });
   if (status === 429) {
     return new DomainError({
       code: "vidiq_rate_limited",
       message: "vidIQ asks to wait (rate limit).",
-      details: { ...(tracker.retryAfterSeconds !== null ? { retryAfterSeconds: tracker.retryAfterSeconds } : {}), requestSent: tracker.rpcSent },
+      details: { ...(tracker.retryAfterSeconds !== null ? { retryAfterSeconds: tracker.retryAfterSeconds } : {}), requestSent: sent },
     });
   }
-  if (status !== null && status >= 500) return new DomainError({ code: "vidiq_unavailable", message: "vidIQ is not available right now.", details: { requestSent: tracker.rpcSent } });
+  if (!charged) {
+    return new DomainError({ code: "vidiq_unavailable", message: "vidIQ's tool list could not be read right now; nothing was charged.", details: { requestSent: false } });
+  }
+  if (status !== null && status >= 500) return new DomainError({ code: "vidiq_unavailable", message: "vidIQ is not available right now.", details: { requestSent: sent } });
   const timedOut = (error instanceof McpError && error.code === ErrorCode.RequestTimeout) || (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError"));
-  if (tracker.rpcSent && (timedOut || !NOT_SENT_CODES.has(errorCodeOf(error) ?? ""))) {
-    // The call left and no usable answer came back: vidIQ may have charged it.
-    if (timedOut || !(error instanceof McpError)) {
-      return new DomainError({ code: "vidiq_outcome_unknown", message: "vidIQ did not answer in time; the call may have been charged.", details: { requestSent: true } });
+  if (sent && (timedOut || !NOT_SENT_CODES.has(errorCodeOf(error) ?? ""))) {
+    // An answer came back, but an error: an HTTP 4xx to the call itself, or a JSON-RPC error answer (an McpError that is neither
+    // the SDK's own timeout nor its "connection closed").
+    const answeredHttp = !timedOut && status !== null && status >= 400 && status < 500;
+    const answeredRpc = !timedOut && error instanceof McpError && error.code !== ErrorCode.ConnectionClosed;
+    if (answeredHttp || answeredRpc) {
+      return new DomainError({ code: "vidiq_answered_error", message: "vidIQ answered the call with an error; it may still have been charged.", details: { requestSent: true } });
     }
-    return new DomainError({ code: "vidiq_unavailable", message: "vidIQ answered with an error.", details: { requestSent: true } });
+    // The call left and no usable answer came back: vidIQ may have charged it.
+    return new DomainError({ code: "vidiq_outcome_unknown", message: "No usable answer came back from vidIQ; the call may have been charged.", details: { requestSent: true } });
   }
   return new DomainError({ code: "vidiq_unavailable", message: "vidIQ cannot be reached right now.", details: { requestSent: false } });
 }
@@ -122,7 +134,7 @@ async function withClient<T>(options: McpOperationOptions, trackRpc: string, ope
       await client.connect(transport, { timeout: options.connectTimeoutMs, signal: controller.signal });
       return await operation(client, controller.signal);
     } catch (error) {
-      throw classify(error, tracker);
+      throw classify(error, tracker, trackRpc === "tools/call");
     } finally {
       controller.abort();
       await client.close().catch(() => undefined);

@@ -31,8 +31,10 @@ export async function createVidiqHarness(options: { now?: Date; timeoutMs?: numb
   const clock = { at: options.now ?? new Date("2026-11-26T15:00:00Z") };
   const logs: string[] = [];
   const gatewayOutcomes: string[] = [];
+  /** The gateway's own clock (its 1 h tool-list cache): real time plus an offset a test may move forward. */
+  const gatewayClock = { offsetMs: 0 };
   // The handshake gets a generous timeout (a loaded test machine); `timeoutMs` is the tools/call timeout a test may shorten.
-  const gateway = createVidiqGateway({ endpoint: fake.url, timeoutMs: options.timeoutMs ?? 30_000, connectTimeoutMs: 120_000, recordOutcome: async (outcome) => void gatewayOutcomes.push(outcome) });
+  const gateway = createVidiqGateway({ endpoint: fake.url, timeoutMs: options.timeoutMs ?? 30_000, connectTimeoutMs: 120_000, now: () => Date.now() + gatewayClock.offsetMs, recordOutcome: async (outcome) => void gatewayOutcomes.push(outcome) });
   const services = createVidiqResearchServices({
     store,
     secret,
@@ -50,6 +52,7 @@ export async function createVidiqHarness(options: { now?: Date; timeoutMs?: numb
     clock,
     logs,
     gatewayOutcomes,
+    gatewayClock,
     services,
     /** tools/call requests the fake received for one tool. */
     callsOf: (tool: string) => fake.toolCalls().filter((c) => c.tool === tool).length,

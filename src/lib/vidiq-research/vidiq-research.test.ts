@@ -394,3 +394,143 @@ test("AC-VQ-1.4: the sentinel key appears nowhere but the Bearer header the fake
     Object.assign(console, originals);
   }
 });
+
+// Independent review 2026-11-28. Expected values by hand from ADR 0077 decision 5 and its amendment 1.
+
+const RAW_PAGE = { mode: "raw", cursor: "c".repeat(64) }; // a raw continuation page (cursor: 64 hex): pinned at 0 credits
+const listReads = (h: VidiqHarness) => h.fake.requests.filter((r) => r.rpcMethod === "tools/list").length;
+
+test("review 1: a free comment_insights page charged 5 blocks the tool until the owner acknowledges; then it is sent; a new overcharge blocks again", () =>
+  withHarness(async (h) => {
+    await saveKey(h);
+    h.fake.script.set("vidiq_comment_insights", () => ({ result: paidResult(5, { items: [] }) }));
+    const first = await h.services.callTool({ caller: "producer", tool: "vidiq_comment_insights", args: RAW_PAGE });
+    assert.equal(first.statedCost, 0);
+    assert.equal(first.creditsSpent, 5);
+    assert.deepEqual((await h.services.getStatus()).overchargedTools, ["vidiq_comment_insights"]);
+    assert.equal((await failure(() => h.services.callTool({ caller: "producer", tool: "vidiq_comment_insights", args: RAW_PAGE }))).code, "vidiq_cost_changed");
+    assert.equal(h.callsOf("vidiq_comment_insights"), 1);
+
+    h.clock.at = new Date(NOW.getTime() + 1 * MIN);
+    const acked = await h.services.acknowledgeOvercharges();
+    assert.deepEqual(acked.overchargedTools, []);
+    // The charge stays in the ledger and in the budget.
+    const charged = acked.ledger.find((r) => r.tool === "vidiq_comment_insights" && r.outcome === "ok");
+    assert.equal(charged?.creditsUsed, 5);
+    assert.equal(acked.budget.spentInPeriod, 5);
+    assert.equal((await h.services.checkConnection()).report.find((r) => r.tool === "vidiq_comment_insights")?.state, "ok");
+
+    h.clock.at = new Date(NOW.getTime() + 2 * MIN);
+    h.fake.script.set("vidiq_comment_insights", () => ({ result: paidResult(0, { items: [] }) }));
+    assert.equal((await h.services.callTool({ caller: "producer", tool: "vidiq_comment_insights", args: RAW_PAGE })).creditsSpent, 0);
+    assert.equal(h.callsOf("vidiq_comment_insights"), 2);
+
+    h.clock.at = new Date(NOW.getTime() + 3 * MIN);
+    h.fake.script.set("vidiq_comment_insights", () => ({ result: paidResult(5, { items: [] }) }));
+    await h.services.callTool({ caller: "producer", tool: "vidiq_comment_insights", args: RAW_PAGE });
+    assert.deepEqual((await h.services.getStatus()).overchargedTools, ["vidiq_comment_insights"]);
+    assert.equal((await failure(() => h.services.callTool({ caller: "producer", tool: "vidiq_comment_insights", args: RAW_PAGE }))).code, "vidiq_cost_changed");
+    assert.equal(h.callsOf("vidiq_comment_insights"), 3);
+    assert.equal((await h.services.getStatus()).budget.spentInPeriod, 10);
+  }));
+
+test("review 1: acknowledging sends nothing to vidIQ and works with the module off", () =>
+  withHarness(async (h) => {
+    await saveKey(h);
+    await priorRow(h, new Date(NOW.getTime() - 5 * MIN), 9, "ok", 5, "vidiq_outliers");
+    await h.services.updateSettings({ enabled: false });
+    assert.deepEqual((await h.services.getStatus()).overchargedTools, ["vidiq_outliers"]);
+    const sent = h.fake.requests.length;
+    assert.deepEqual((await h.services.acknowledgeOvercharges()).overchargedTools, []);
+    assert.equal(h.fake.requests.length, sent);
+  }));
+
+test("review 2: a call whose tool list cannot be read is recorded failed at 0 credits (not unknown); no tools/call goes out", () =>
+  withHarness(async (h) => {
+    await saveKey(h);
+    h.gatewayClock.offsetMs = 61 * MIN; // the list read at key save has expired
+    h.fake.listFailure = { http: 503 };
+    const sent = h.fake.toolCalls().length;
+    const refused = await failure(() => h.services.callTool({ caller: "producer", tool: "vidiq_channel_stats", args: { channelId: UC } }));
+    assert.equal(refused.code, "vidiq_unavailable");
+    assert.equal(refused.details?.requestSent, false);
+    assert.equal(h.fake.toolCalls().length, sent);
+    const status = await h.services.getStatus();
+    const row = status.ledger.find((r) => r.tool === "vidiq_channel_stats");
+    assert.equal(row?.outcome, "failed");
+    assert.equal(row?.creditsUsed, 0);
+    assert.equal(status.budget.spentInPeriod, 0);
+  }));
+
+test("review 2: a paid call reads the tool list at most once; the call sent is the one the drift check passed", () =>
+  withHarness(async (h) => {
+    await saveKey(h);
+    h.gatewayClock.offsetMs = 61 * MIN;
+    const lists = listReads(h);
+    await h.services.callTool({ caller: "producer", tool: "vidiq_channel_stats", args: { channelId: UC } });
+    assert.equal(listReads(h) - lists, 1);
+    assert.equal(h.callsOf("vidiq_channel_stats"), 1);
+  }));
+
+test("review 2: checkConnection with the tool list failing is vidiq_unavailable, not sent; the ledger gets no possibly-charged row", () =>
+  withHarness(async (h) => {
+    await saveKey(h);
+    h.fake.listFailure = { http: 502 };
+    const refused = await failure(() => h.services.checkConnection());
+    assert.equal(refused.code, "vidiq_unavailable");
+    assert.equal(refused.details?.requestSent, false);
+    assert.equal((await h.services.getStatus()).ledger.some((r) => r.outcome === "unknown"), false);
+  }));
+
+test("review 3: an HTTP 400 answer to a paid call is vidiq_answered_error; an unchanged balance afterwards settles the row to 0", () =>
+  withHarness(async (h) => {
+    await saveKey(h);
+    await freshSnapshot(h, 150);
+    h.fake.script.set("vidiq_channel_stats", () => ({ http: 400 }));
+    assert.equal((await failure(() => h.services.callTool({ caller: "producer", tool: "vidiq_channel_stats", args: { channelId: UC } }))).code, "vidiq_answered_error");
+    assert.equal(h.callsOf("vidiq_channel_stats"), 1);
+    const status = await h.services.getStatus();
+    const row = status.ledger.find((r) => r.tool === "vidiq_channel_stats");
+    assert.equal(row?.outcome, "failed");
+    assert.equal(row?.errorCode, "vidiq_answered_error");
+    assert.equal(row?.creditsUsed, 0);
+    assert.equal(row?.balanceAfter, 150);
+    assert.equal(status.budget.spentInPeriod, 0);
+  }));
+
+test("review 3: a JSON-RPC error answer with the balance lower afterwards keeps the stated 5 (another client may have spent)", () =>
+  withHarness(async (h) => {
+    await saveKey(h);
+    await freshSnapshot(h, 150);
+    h.fake.script.set("vidiq_balance", () => ({ result: balanceResult(145) }));
+    h.fake.script.set("vidiq_channel_stats", () => ({ rpcError: -32603 }));
+    assert.equal((await failure(() => h.services.callTool({ caller: "producer", tool: "vidiq_channel_stats", args: { channelId: UC } }))).code, "vidiq_answered_error");
+    const status = await h.services.getStatus();
+    const row = status.ledger.find((r) => r.tool === "vidiq_channel_stats");
+    assert.equal(row?.outcome, "failed");
+    assert.equal(row?.creditsUsed, null);
+    assert.equal(row?.balanceAfter, 145);
+    assert.equal(status.budget.spentInPeriod, 5);
+  }));
+
+test("review 5: a pending row older than 15 minutes becomes unknown at the next status read (still counted); a 14-minute one stays", () =>
+  withHarness(async (h) => {
+    await h.store.insertLedger({ at: new Date(NOW.getTime() - 16 * MIN), caller: "producer", tool: "vidiq_outliers", argsSha256: "1".repeat(64), statedCost: 5, creditsUsed: null, outcome: "pending", errorCode: null, jobId: null, balanceAfter: null });
+    await h.store.insertLedger({ at: new Date(NOW.getTime() - 14 * MIN), caller: "producer", tool: "vidiq_trending_videos", argsSha256: "2".repeat(64), statedCost: 5, creditsUsed: null, outcome: "pending", errorCode: null, jobId: null, balanceAfter: null });
+    const status = await h.services.getStatus();
+    const old = status.ledger.find((r) => r.tool === "vidiq_outliers");
+    const recent = status.ledger.find((r) => r.tool === "vidiq_trending_videos");
+    assert.equal(old?.outcome, "unknown");
+    assert.equal(old?.errorCode, "vidiq_outcome_unknown");
+    assert.equal(old?.creditsUsed, null);
+    assert.equal(recent?.outcome, "pending");
+    assert.equal(status.budget.spentInPeriod, 10);
+  }));
+
+test("review 5: a call also turns a stale pending row unknown before it reads the ledger", () =>
+  withHarness(async (h) => {
+    await saveKey(h);
+    await h.store.insertLedger({ at: new Date(NOW.getTime() - 20 * MIN), caller: "owner", tool: "vidiq_outliers", argsSha256: "1".repeat(64), statedCost: 5, creditsUsed: null, outcome: "pending", errorCode: null, jobId: null, balanceAfter: null });
+    await h.services.callTool({ caller: "producer", tool: "vidiq_trend_categories", args: {} });
+    assert.equal(h.store.rows.find((r) => r.tool === "vidiq_outliers")?.outcome, "unknown");
+  }));

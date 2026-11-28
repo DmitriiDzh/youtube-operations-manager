@@ -239,6 +239,7 @@ const DOMAIN_ERROR_STATUS = {
   vidiq_rate_limited: 429,
   vidiq_unavailable: 503,
   vidiq_outcome_unknown: 504,
+  vidiq_answered_error: 502,
   vidiq_result_too_large: 502,
   vidiq_budget_exhausted: 409,
   vidiq_insufficient_credits: 409,

@@ -17,6 +17,8 @@ export const VIDIQ_DEFAULT_MONTHLY_BUDGET = 150;
 export const VIDIQ_MAX_MONTHLY_BUDGET = 100_000;
 /** A balance snapshot older than this is re-read (free) before a paid call. */
 export const VIDIQ_BALANCE_MAX_AGE_MS = 10 * 60_000;
+/** A `pending` row older than this belongs to a call whose process ended mid-call: it becomes `unknown` (ADR 0077 amendment 1). */
+export const VIDIQ_PENDING_STALE_MS = 15 * 60_000;
 /** The Settings card's ledger rows. */
 export const VIDIQ_RECENT_LEDGER_ROWS = 20;
 
@@ -53,6 +55,8 @@ export type VidiqStatusView = {
   balance: Omit<VidiqBalanceSnapshot, "keyVersion"> | null;
   budget: VidiqBudgetView;
   ledger: VidiqLedgerView[];
+  /** Tools blocked because vidIQ charged more than their pin, until the owner acknowledges it (ADR 0077 amendment 1); sorted. */
+  overchargedTools: string[];
 };
 
 export type VidiqCallResult = {
@@ -75,4 +79,6 @@ export type VidiqStore = {
   /** Newest first, within the 90-day retention; `since` inclusive. */
   listLedger(input: { limit: number; since?: Date; now?: Date }): Promise<VidiqLedgerRow[]>;
   hasPendingJob(jobId: string): Promise<boolean>;
+  /** `pending` rows recorded before `before` become `unknown` (`vidiq_outcome_unknown`, credits still unknown); returns how many. */
+  expireStalePending(before: Date): Promise<number>;
 };

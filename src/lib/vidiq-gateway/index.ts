@@ -55,6 +55,9 @@ export type VidiqBalance = {
   creditsUsed: number | null;
 };
 
+/** What `checkLive` passed: the call exactly as it would be sent, with its stated cost. */
+export type LiveCheckedCall = Readonly<{ tool: VidiqToolName; args: Record<string, unknown>; statedCost: number }>;
+
 export type VidiqCallOutcome = { tool: VidiqToolName; statedCost: number; result: McpCallResult; creditsUsed: number | null; isError: boolean };
 
 export type VidiqGatewayDeps = {
@@ -165,6 +168,8 @@ export function createVidiqGateway(deps: VidiqGatewayDeps = {}) {
   const now = deps.now ?? (() => Date.now());
   const maxResultBytes = deps.maxResultBytes ?? VIDIQ_MAX_RESULT_BYTES;
   const lists = new Map<string, LiveList>();
+  /** Calls `checkLive` passed, each usable once by `callChecked` with the same key (it cannot be forged by a caller). */
+  const issued = new WeakMap<object, string>();
 
   const options = (key: string) => ({ url, key, timeoutMs, connectTimeoutMs, fetchImpl });
   const keyId = (key: string) => createHash("sha256").update(key).digest("hex");
@@ -221,7 +226,7 @@ export function createVidiqGateway(deps: VidiqGatewayDeps = {}) {
   };
 
   /** Static checks, then the live drift check (re-reading the list once before refusing). Returns what would be sent. */
-  async function checkLive(key: string, tool: unknown, args: unknown): Promise<{ tool: VidiqToolName; args: Record<string, unknown>; statedCost: number }> {
+  async function checkLive(key: string, tool: unknown, args: unknown): Promise<LiveCheckedCall> {
     let checked;
     try {
       checked = checkStaticCall(tool, args);
@@ -238,11 +243,13 @@ export function createVidiqGateway(deps: VidiqGatewayDeps = {}) {
       drift = driftOf(list, checked.tool, checked.args);
     }
     if (drift) return refuse(new DomainError({ code: drift, message: DRIFT_MESSAGES[drift], details: { tool: checked.tool } }));
-    return { tool: checked.tool, args: checked.args, statedCost: checked.pinnedCost };
+    const passed: LiveCheckedCall = Object.freeze({ tool: checked.tool, args: Object.freeze(structuredClone(checked.args)), statedCost: checked.pinnedCost });
+    issued.set(passed, keyId(key));
+    return passed;
   }
 
-  async function callTool(key: string, tool: unknown, args: unknown): Promise<VidiqCallOutcome> {
-    const checked = await checkLive(key, tool, args);
+  /** Sends a call `checkLive` has just passed, without listing again (a list failure there could not be told from a sent call). */
+  async function send(key: string, checked: LiveCheckedCall): Promise<VidiqCallOutcome> {
     await count("allowed");
     const result = redactKey(await mcpCallTool(options(key), checked.tool, checked.args), key);
     const creditsUsed = creditsUsedOf(result);
@@ -252,10 +259,22 @@ export function createVidiqGateway(deps: VidiqGatewayDeps = {}) {
     return { tool: checked.tool, statedCost: checked.statedCost, result, creditsUsed, isError: result.isError === true };
   }
 
+  async function callTool(key: string, tool: unknown, args: unknown): Promise<VidiqCallOutcome> {
+    return send(key, await checkLive(key, tool, args));
+  }
+
+  /** The checked result of `checkLive` for the same key, once; anything else is refused before sending. */
+  async function callChecked(key: string, checked: LiveCheckedCall): Promise<VidiqCallOutcome> {
+    if (issued.get(checked) !== keyId(key)) throw new Error("vidIQ gateway: callChecked takes only a call checkLive passed for this key, once.");
+    issued.delete(checked);
+    return send(key, checked);
+  }
+
   return {
     checkStaticCall,
     checkLive,
     callTool,
+    callChecked,
 
     /** The free `tools/list` and a drift row per allowlisted tool (argument-independent checks). */
     async listToolsChecked(key: string, input: { refresh?: boolean } = {}): Promise<VidiqDriftReport> {

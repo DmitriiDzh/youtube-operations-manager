@@ -4,6 +4,7 @@ import { createVidiqHarness, SENTINEL_KEY } from "@/lib/vidiq-research/testing/h
 import { createVidiqBalancePostHandler } from "./balance/route";
 import { createVidiqCheckPostHandler } from "./check/route";
 import { createVidiqKeyDeleteHandler, createVidiqKeyPutHandler } from "./key/route";
+import { createVidiqOverchargeAckPostHandler } from "./overcharge-ack/route";
 import { createVidiqStatusGetHandler } from "./route";
 import { createVidiqSettingsPatchHandler } from "./settings/route";
 import type { VidiqRouteDeps } from "./shared";
@@ -18,7 +19,7 @@ test("every route answers 401 without a Web session and calls nothing", async ()
   let touched = false;
   const core = new Proxy({}, { get: () => () => ((touched = true), Promise.resolve({})) }) as VidiqRouteDeps["core"];
   const deps: VidiqRouteDeps = { getSession: async () => null, core };
-  for (const handler of [createVidiqStatusGetHandler(deps), createVidiqKeyPutHandler(deps), createVidiqKeyDeleteHandler(deps), createVidiqSettingsPatchHandler(deps), createVidiqBalancePostHandler(deps), createVidiqCheckPostHandler(deps)]) {
+  for (const handler of [createVidiqStatusGetHandler(deps), createVidiqKeyPutHandler(deps), createVidiqKeyDeleteHandler(deps), createVidiqSettingsPatchHandler(deps), createVidiqBalancePostHandler(deps), createVidiqCheckPostHandler(deps), createVidiqOverchargeAckPostHandler(deps)]) {
     assert.equal((await handler(json("POST", {}))).status, 401);
   }
   assert.equal(touched, false);
@@ -52,6 +53,9 @@ test("save, status, settings, balance, check and clear answer without the key (s
     assert.equal((await call(createVidiqBalancePostHandler(deps), json("POST"))).status, 200);
     const check = await call(createVidiqCheckPostHandler(deps), json("POST"));
     assert.equal((check.body.report as unknown[]).length, 18);
+    const acked = await call(createVidiqOverchargeAckPostHandler(deps), json("POST"));
+    assert.equal(acked.status, 200);
+    assert.deepEqual(acked.body.overchargedTools, []);
     h.fake.script.set("vidiq_balance", () => ({ http: 503 }));
     const down = await call(createVidiqBalancePostHandler(deps), json("POST"));
     assert.equal(down.status, 503);

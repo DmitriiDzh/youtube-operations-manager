@@ -5,12 +5,12 @@ import { authOptions } from "@/lib/auth";
 import { createVidiqResearchCore, isDomainError, type VidiqResearchCore } from "@/lib/vidiq-research";
 
 // BL-278 (ADR 0077, VIDIQ_INTEGRATION_PLAN.md stage 1): the owner's routes for Settings → Cloud APIs → vidIQ -- the status, the key
-// (Mac only: `/api/vidiq/key` is in src/proxy.ts REMOTE_BLOCKED_PREFIXES), the switch and budget, the balance and the drift check.
-// Every handler: Web session required (401), a thin call into the one core, DomainError -> status. No answer ever carries the key
-// (only its last 4 characters), and a non-domain failure answers a fixed message, never the error's own text (it could quote a
-// request). Never reachable from MCP.
+// (Mac only: `/api/vidiq/key` is in src/proxy.ts REMOTE_BLOCKED_PREFIXES), the switch and budget, the balance, the drift check and
+// the overcharge acknowledgement (ADR 0077 amendment 1). Every handler: Web session required (401), a thin call into the one core,
+// DomainError -> status. No answer ever carries the key (only its last 4 characters), and a non-domain failure answers a fixed
+// message, never the error's own text (it could quote a request). Never reachable from MCP.
 
-export type VidiqRouteCore = Pick<VidiqResearchCore, "getStatus" | "saveKey" | "clearKey" | "updateSettings" | "refreshBalance" | "checkConnection">;
+export type VidiqRouteCore = Pick<VidiqResearchCore, "getStatus" | "saveKey" | "clearKey" | "updateSettings" | "refreshBalance" | "checkConnection" | "acknowledgeOvercharges">;
 
 export type VidiqRouteDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;

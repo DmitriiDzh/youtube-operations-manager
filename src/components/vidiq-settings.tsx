@@ -12,7 +12,8 @@ import { useUiText } from "./ui-text-provider";
 // BL-278 (ADR 0077, VIDIQ_INTEGRATION_PLAN.md §5 stage 1): Settings → Cloud APIs → vidIQ. The key (checked with vidIQ's free balance
 // read, stored encrypted on this computer, shown only by its last 4 characters; entered on the Mac only), the switch, the connection
 // status, «Проверить подключение» (the free drift report of the 18 allowed tools), the balance with «Обновить», the monthly credits
-// budget and the 20 newest ledger rows. The card talks only to /api/vidiq; its view types are local (no server code in the bundle).
+// budget and the 20 newest ledger rows. ADR 0077 amendment 1: tools blocked by an overcharge are listed with «Разблокировать»
+// (behind a ConfirmDialog), the owner's acknowledgement after checking the charge in the ledger. The card talks only to /api/vidiq; its view types are local (no server code in the bundle).
 
 type DriftState = "ok" | "vidiq_tool_missing" | "vidiq_schema_drift" | "vidiq_cost_changed" | "vidiq_annotation_drift";
 type LedgerOutcome = "pending" | "ok" | "cache_hit" | "refused" | "failed" | "unknown" | "job_pending";
@@ -32,6 +33,7 @@ type VidiqStatus = {
   } | null;
   budget: { monthly: number; spentInPeriod: number; remaining: number; periodStartsAt: string; periodEndsAt: string };
   ledger: Array<{ id: number; at: string; caller: "owner" | "producer"; tool: string; statedCost: number; creditsUsed: number | null; outcome: LedgerOutcome; errorCode: string | null }>;
+  overchargedTools: string[];
 };
 
 type DriftReport = { readAt: string; report: Array<{ tool: string; state: DriftState }> };
@@ -53,6 +55,7 @@ export function VidiqSettings() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [confirmUnblock, setConfirmUnblock] = useState(false);
 
   const request = useCallback(
     async <T,>(path: string, init?: RequestInit): Promise<T> => {
@@ -235,6 +238,16 @@ export function VidiqSettings() {
         </button>
       </div>
 
+      {status.overchargedTools.length > 0 && (
+        <div className="space-y-2 rounded-lg border border-amber-900 bg-amber-950/30 p-3">
+          <p className="text-sm text-amber-300">{t("vidiq.overcharge.blocked", { tools: status.overchargedTools.join(", ") })}</p>
+          <p className="text-xs text-zinc-400">{t("vidiq.overcharge.help")}</p>
+          <button type="button" disabled={busy} className={secondaryButton} onClick={() => setConfirmUnblock(true)}>
+            {t("vidiq.overcharge.unblock")}
+          </button>
+        </div>
+      )}
+
       {keySet && (
         <div className="space-y-2">
           <button type="button" disabled={busy || !status.enabled} className={secondaryButton} onClick={() => void run(() => request<DriftReport>("/check", json("POST")), null, setReport)}>
@@ -303,6 +316,19 @@ export function VidiqSettings() {
             setConfirmClear(false);
             setReport(null);
             void run(() => request<VidiqStatus>("/key", json("DELETE")), t("vidiq.key.removed"), apply);
+          }}
+        />
+      )}
+      {confirmUnblock && (
+        <ConfirmDialog
+          title={t("vidiq.overcharge.confirmTitle")}
+          description={t("vidiq.overcharge.confirmDescription")}
+          confirmLabel={t("vidiq.overcharge.unblock")}
+          onCancel={() => setConfirmUnblock(false)}
+          onConfirm={() => {
+            setConfirmUnblock(false);
+            setReport(null);
+            void run(() => request<VidiqStatus>("/overcharge-ack", json("POST")), t("vidiq.overcharge.unblocked"), apply);
           }}
         />
       )}

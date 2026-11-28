@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { AddressInfo } from "node:net";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, ListToolsRequestSchema, McpError } from "@modelcontextprotocol/sdk/types.js";
 import balanceFixture from "../fixtures/balance.2026-11-26.json";
 import toolsFixture from "../fixtures/tools-list.2026-11-26.json";
 
@@ -28,7 +28,9 @@ export type FakeToolResult = {
 export type FakeCallAnswer =
   | { result: FakeToolResult; delayMs?: number }
   | { http: number; headers?: Record<string, string>; delayMs?: number }
-  | { delayMs: number; hang: true };
+  | { delayMs: number; hang: true }
+  /** A JSON-RPC error answer (HTTP 200); its message echoes the Authorization header, so a leaked error text is detectable. */
+  | { rpcError: number; delayMs?: number };
 
 export type FakeRequestRecord = {
   httpMethod: string;
@@ -46,8 +48,8 @@ export type FakeVidiqServer = {
   tools: Array<Record<string, unknown>>;
   /** Per-tool scripted answers; a tool with no script answers `paidResult(0)`. */
   script: Map<string, (args: Record<string, unknown>) => FakeCallAnswer>;
-  /** An HTTP failure for `tools/list` (null = answer normally). */
-  listFailure: { http: number; headers?: Record<string, string> } | null;
+  /** An HTTP failure for `tools/list`, or no answer at all (null = answer normally). */
+  listFailure: { http: number; headers?: Record<string, string> } | { hang: true } | null;
   close(): Promise<void>;
 };
 
@@ -115,7 +117,10 @@ export async function startFakeVidiqServer(options: { acceptKey: string }): Prom
       return;
     }
     if (authorization !== `Bearer ${options.acceptKey}`) return fail(res, 401, authorization);
-    if (rpcMethod === "tools/list" && state.listFailure) return fail(res, state.listFailure.http, authorization, state.listFailure.headers);
+    if (rpcMethod === "tools/list" && state.listFailure) {
+      if ("hang" in state.listFailure) return; // never answers: the client's list timeout fires
+      return fail(res, state.listFailure.http, authorization, state.listFailure.headers);
+    }
 
     let answer: FakeCallAnswer | null = null;
     if (rpcMethod === "tools/call" && tool) {
@@ -130,6 +135,7 @@ export async function startFakeVidiqServer(options: { acceptKey: string }): Prom
     const server = new Server({ name: "vidiq-mcp", version: "1.0.0" }, { capabilities: { tools: {} } });
     server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: state.tools as never }));
     server.setRequestHandler(CallToolRequestSchema, async () => {
+      if (answer && "rpcError" in answer) throw new McpError(answer.rpcError, `tool failed, received authorization: ${authorization}`);
       const result = answer && "result" in answer ? answer.result : paidResult(0);
       if (result.isError) {
         // The echo makes a leaked tool-error text detectable.

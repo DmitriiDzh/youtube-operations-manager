@@ -11180,7 +11180,8 @@ export type VidiqLedgerRow = {
 export const VIDIQ_LEDGER_RETENTION_MS = 90 * 24 * 60 * 60_000;
 
 /** The `app_settings` keys of the vidIQ module (device-local by the table's own classification). */
-export const VIDIQ_SETTING_KEYS = ["vidiq_enabled", "vidiq_monthly_budget_credits", "vidiq_balance_snapshot"] as const;
+/** `vidiq_overcharge_ack_at` (ADR 0077 amendment 1): the owner's acknowledgement time; overcharges recorded at or before it no longer block. */
+export const VIDIQ_SETTING_KEYS = ["vidiq_enabled", "vidiq_monthly_budget_credits", "vidiq_balance_snapshot", "vidiq_overcharge_ack_at"] as const;
 export type VidiqSettingKey = (typeof VIDIQ_SETTING_KEYS)[number];
 
 function assertVidiqSettingKey(key: string): asserts key is VidiqSettingKey {
@@ -11233,6 +11234,19 @@ export async function listVidiqLedgerRows(input: { limit: number; since?: Date; 
     .orderBy(desc(vidiqLedger.at), desc(vidiqLedger.id))
     .limit(input.limit);
   return rows.map(toVidiqLedgerRow);
+}
+
+/**
+ * ADR 0077 amendment 1: a `pending` row recorded before `before` belongs to a call whose process ended mid-call (a call takes at
+ * most about two minutes); it becomes `unknown` with `vidiq_outcome_unknown`, its credits still unknown (so it keeps counting at
+ * its stated cost). Idempotent; returns how many rows changed.
+ */
+export async function expireVidiqPendingRows(before: Date, database: AppDb = db): Promise<number> {
+  const result = await database
+    .update(vidiqLedger)
+    .set({ outcome: "unknown", errorCode: "vidiq_outcome_unknown" })
+    .where(and(eq(vidiqLedger.outcome, "pending"), lt(vidiqLedger.at, before)));
+  return Number(result.rowsAffected ?? 0);
 }
 
 /** Whether this computer's ledger recorded `jobId` as a job still pending (the job_poll rule, plan §4). */
