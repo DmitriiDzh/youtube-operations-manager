@@ -78,6 +78,13 @@ const json = (value: Record<string, string>) => JSON.stringify(value);
  * BL-280 (FO-REQ-0062 B): the submitted file's SHA-256 and submit time, so the decision file alone says which bytes were decided
  * (the clip's id is the file's own name). A field the stored clip does not carry is left out, never guessed.
  */
+/** BL-280 (review): the path from the stored clip; a clip without one (read without a schema) leaves the line out -- rendering
+ *  an undefined value would throw and the Producer would get no file. */
+function clipFileLine(clip: ClipReviewsSnapshot["clips"][string]): ReviewNoticeLine[] {
+  const file = clipSourceOf(clip).file;
+  return file !== null ? [{ label: "Clip file", value: file }] : [];
+}
+
 function clipSourceLines(clip: ClipReviewsSnapshot["clips"][string]): ReviewNoticeLine[] {
   const source = clipSourceOf(clip);
   return [
@@ -95,7 +102,7 @@ export function clipNoticesOf(channel: Channel, snapshot: ClipReviewsSnapshot, s
     const clip = snapshot.clips[decision.clipId];
     const deciding = decidingRecordOf(decision.clipId, all);
     const context = [
-      ...(clip ? [{ label: "Scene", value: clip.sceneId }, { label: "Clip file", value: clip.clipPath }, { label: "Producer's note", value: clip.note }, ...clipSourceLines(clip)] : []),
+      ...(clip ? [{ label: "Scene", value: clip.sceneId }, ...clipFileLine(clip), { label: "Producer's note", value: clip.note }, ...clipSourceLines(clip)] : []),
       ...(deciding && deciding.id !== decision.id ? [{ label: "Counts", value: `no: an earlier owner decision (${deciding.id}) decides this clip` }] : []),
     ];
     out.push({

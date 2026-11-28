@@ -84,8 +84,10 @@ export function wellFormedAttachments(value: unknown): ClipReviewAttachment[] {
 
 /** Pending first, oldest first (the queue); then the rest, newest first. */
 export function sortClipViews<T extends Pick<ClipReviewView, "status" | "submittedAt" | "clipId">>(views: readonly T[]): T[] {
-  const pending = views.filter((v) => v.status === "pending").sort((a, b) => a.submittedAt.localeCompare(b.submittedAt) || a.clipId.localeCompare(b.clipId));
-  const rest = views.filter((v) => v.status !== "pending").sort((a, b) => b.submittedAt.localeCompare(a.submittedAt) || a.clipId.localeCompare(b.clipId));
+  // BL-280 (review): a synced record may lack `submittedAt`; it sorts as "" instead of throwing (which broke every list and submit).
+  const at = (v: T) => String(v.submittedAt ?? "");
+  const pending = views.filter((v) => v.status === "pending").sort((a, b) => at(a).localeCompare(at(b)) || a.clipId.localeCompare(b.clipId));
+  const rest = views.filter((v) => v.status !== "pending").sort((a, b) => at(b).localeCompare(at(a)) || a.clipId.localeCompare(b.clipId));
   return [...pending, ...rest];
 }
 

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { PlanReviewActivity } from "@/lib/generation-plans";
 import type { ClipReviewClip, ClipReviewsSnapshot, PackageReviewsSnapshot, PublishingPlansSnapshot, SharedPickAction, SharedPlan, SharedVerdict, StoryboardRecord } from "@/lib/sync-gateway";
-import { reviewFileName } from "@/lib/review-notify";
+import { renderDecisionNotice, reviewFileName } from "@/lib/review-notify";
 import { clipNoticesOf, packageNoticesOf, planFeedOfActivity, planFeedOfPeerPlan, planFeedsOfOutgoing, slotNoticesOf, storyboardNoticesOf, templateNoticesOf } from "./review-notify";
 
 // BL-248 (REVIEW_NOTIFY_PLAN.md §2): only the owner's decisions become notices -- never the Producer's withdrawal or submit, never
@@ -67,6 +67,20 @@ test("BL-280: the clip decision file names the clip's SHA-256 and submit time; a
   const old = notices.find((n) => n.decisionId === "cd_old")!;
   assert.equal(old.context.some((line) => line.label === "Clip SHA-256"), false);
   assert.deepEqual(old.context.find((line) => line.label === "Submitted at"), { label: "Submitted at", value: "2026-11-01T08:00:00.000Z" });
+});
+
+test("BL-280 (review): an approved clip whose stored record has no clipPath still renders its decision file, without a «Clip file» line", () => {
+  const noPath = { clipId: "clip_nopath", channelId: CH.channelId, sceneId: "bar", note: "v1", startSec: null, endSec: null, durationSeconds: 20, sizeBytes: 3, sha256: "a".repeat(64), submittedAt: "2026-11-01T08:00:00.000Z", submittedBy: "p", device: "Mac" } as unknown as ClipReviewClip;
+  const snapshot: ClipReviewsSnapshot = {
+    clips: { clip_nopath: noPath },
+    decisions: { cd_np: { id: "cd_np", clipId: "clip_nopath", kind: "approved", by: "owner", comment: null, device: "Mac", at: "2026-11-28T13:00:00.000Z" } },
+  };
+  const [notice] = clipNoticesOf(CH, snapshot, Date.parse("2026-11-28T00:00:00Z"));
+  assert.equal(notice.decisionId, "cd_np");
+  assert.equal(notice.context.some((line) => line.label === "Clip file"), false);
+  const text = renderDecisionNotice(notice);
+  assert.equal(text.includes("Clip file"), false);
+  assert.ok(text.includes("a".repeat(64)));
 });
 
 function storyboard(): StoryboardRecord {

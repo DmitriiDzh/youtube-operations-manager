@@ -109,8 +109,8 @@
   Продюсера. Схема БД не меняется.
 - **Продюсер (Producer API 1.15.0; 1.19.0 — вложения, BL-246):** `producer_clip_review_submit` / `_withdraw` (DRAFT), `_list` / `_get` (READ), `producer-only`.
   Работники каналов и фабрика их не получают; одобрения и возврата нет ни в одном MCP-пути (`clip-reviews/boundaries.test.ts`).
-- **Какой это файл (BL-280, FO-REQ-0062 B, Producer 1.36.0):** каждый клип в ответах submit / list / get / withdraw и в списке
-  владельца несёт `source: { clipId, file, sha256, submittedAt }` — путь, как его передал Продюсер, и SHA-256 байтов, прочитанных при
+- **Какой это файл (BL-280, FO-REQ-0062 B, Producer 1.36.0):** каждый клип в ответах submit / list / get / withdraw, в списке и
+  решении владельца несёт `source: { clipId, file, sha256, submittedAt }` — путь, как его передал Продюсер, и SHA-256 байтов, прочитанных при
   отправке (из записи клипа; поле, которого в записи нет, — null). Файл решения по клипу во «Входящих» Продюсера получил строки
   «Clip SHA-256» и «Submitted at». YTM не пишет `piece.json` и другие файлы канала. Схема БД не меняется.
 - **Владелец:** маршруты `/api/channels/[channelId]/clip-reviews` (+ `/[clipId]/decision`, `/[clipId]/video` — HTTP Range, только

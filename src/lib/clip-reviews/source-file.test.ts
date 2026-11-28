@@ -126,3 +126,31 @@ test("BL-280: a stored clip without the path or hash returns file and sha256 nul
   const bad = service(root, memoryStore({ clips: { clip_old: { ...oldClip(), clipPath: CLIP_PATH, sha256: "x" } }, decisions: {} }));
   assert.deepEqual((await bad.get({ channelId: CH, clipId: "clip_old" })).clip.source, { ...expected, file: CLIP_PATH });
 });
+
+test("BL-280 (review): a synced clip without submittedAt does not break list, the owner's list or submit; its source.submittedAt is null", async (t) => {
+  const root = await channelFolder(t);
+  const noTime = { clipId: "clip_notime", channelId: CH, sceneId: "old", clipPath: "03 Images/old.mp4", note: "n", startSec: null, endSec: null, durationSeconds: 20, sizeBytes: 3, sha256: ABC_SHA256, submittedBy: "p", device: "Mac" } as unknown as ClipReviewClip;
+  const clips = service(root, memoryStore({ clips: { clip_notime: noTime }, decisions: {} }));
+  const { clip } = await clips.submit({ channelId: CH, sceneId: "bar-night", clipPath: CLIP_PATH, note: "v4" }, { tokenId: "tok" });
+  assert.equal(clip.status, "pending");
+  const listed = await clips.list({ channelId: CH });
+  assert.equal(listed.pending, 2);
+  assert.deepEqual(
+    listed.clips.map((c) => c.source).find((s) => s.clipId === "clip_notime"),
+    { clipId: "clip_notime", file: "03 Images/old.mp4", sha256: ABC_SHA256, submittedAt: null }
+  );
+  const owner = await clips.ownerList(CH);
+  assert.deepEqual(owner.clips.map((c) => c.clipId).sort(), [clip.clipId, "clip_notime"].sort());
+  assert.equal(owner.clips.find((c) => c.clipId === "clip_notime")!.source.submittedAt, null);
+});
+
+test("BL-280 (review): a file overwritten after submit -- every read still names the submitted bytes' SHA-256; the owner's list shows it changed", async (t) => {
+  const root = await channelFolder(t);
+  const clips = service(root, memoryStore());
+  const { clip } = await clips.submit({ channelId: CH, sceneId: "bar-night", clipPath: CLIP_PATH, note: "v4" }, { tokenId: "tok" });
+  await writeFile(path.join(root, CLIP_PATH), "abcd");
+  assert.equal((await clips.get({ channelId: CH, clipId: clip.clipId })).clip.source.sha256, ABC_SHA256);
+  assert.deepEqual((await clips.list({ channelId: CH })).clips.map((c) => c.source.sha256), [ABC_SHA256]);
+  const owner = (await clips.ownerList(CH)).clips;
+  assert.deepEqual(owner.map((c) => [c.source.sha256, c.file]), [[ABC_SHA256, "changed"]]);
+});
