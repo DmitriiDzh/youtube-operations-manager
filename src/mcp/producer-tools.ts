@@ -98,7 +98,10 @@
 // free value); producer_video_publishing_check (READ) -- a channel's videos' categoryId, languages, license, madeForKids, embeddable,
 // containsSyntheticMedia, paid placement and (captions: true) caption tracks on YouTube now, against its publishing settings;
 // producer_upload_queue_add refuses publishing_settings_not_saved for a channel whose publishing settings were never saved. Additive.
-export const PRODUCER_API_VERSION = "1.35.0";
+// 1.36.0 (BL-280, FO-REQ-0062 B): every clip that producer_clip_review_submit / _list / _get / _withdraw answers gains
+// `source: { clipId, file, sha256, submittedAt }` -- the path given at submit and the SHA-256 of the bytes read then, as stored (null
+// only where the stored clip lacks a field); a clip decision file in the Inbox gains «Clip SHA-256» and «Submitted at». Additive.
+export const PRODUCER_API_VERSION = "1.36.0";
 
 /** The channel agent's READ tools the Producer gets; each call names its channel and runs in that channel's agent scope. */
 export const PRODUCER_CHANNEL_TOOLS: Readonly<Record<string, { capability: string }>> = Object.freeze({

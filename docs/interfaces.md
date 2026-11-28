@@ -1593,7 +1593,8 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
 
 - **Transport:** as the factory endpoint, with `Authorization: Bearer ytom_pr_...` (the same checks and codes; a channel or factory token is
   401 `AGENT_TOKEN_INVALID` here, and a producer token on `/api/mcp` and `/api/mcp/factory`). Re-verified on every tool call.
-- **Producer API version:** `1.35.0` (BL-279, owner TG 4963/4964, ADR 0072 amendment 2; additive: `producer_video_category_fix`
+- **Producer API version:** `1.36.0` (BL-280, FO-REQ-0062 B; additive: every clip of the clip review tools gains `source`, below; the
+  clip decision file gains «Clip SHA-256» / «Submitted at»); `1.35.0` (BL-279, owner TG 4963/4964, ADR 0072 amendment 2; additive: `producer_video_category_fix`
   (METADATA_WRITE, joins `metadataTools`) and `producer_video_publishing_check` (READ), below; `producer_upload_queue_add` refuses
   `publishing_settings_not_saved`; 1.34.0 is another branch's); `1.33.0` (package playlists, owner TG 4858/4859, ADR 0051 amendment 2026-11-24, BL-276; additive: `producer_video_playlists`
   below; release packages may name `playlists`); `1.32.0` (since owner TG 4817, AC-TC-08, additive: `producer_publishing_plan_get` / `_list` packages gain `reviewTimedComments`, the wake file gains «Timed comments»); `1.31.0` (owner TG 4839/4842, ADR 0072 amendment 1, BL-274, additive: `producer_video_metadata_update` takes `localizations: true` -- the package's translations, below); `1.30.0` (FO-REQ-0056 part 2, BL-273, additive: `channel_video_list` / `agent_get_video_context` carry each
@@ -1809,7 +1810,10 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
     (`clip_review_not_found`). `producer_clip_review_withdraw` `{ channelId, clipId }` → `{ clip, forChannelId }` (a pending clip only:
     `clip_review_not_pending`, `details.status`).
   - A clip: `{ clipId, channelId, sceneId, clipPath, note, startSec, endSec, durationSeconds, sizeBytes, sha256, submittedAt, device,
-    status: pending | approved | returned | withdrawn, comment, decidedAt, decidedOn, attachments }`. `attachments` (1.19.0, BL-246,
+    status: pending | approved | returned | withdrawn, comment, decidedAt, decidedOn, attachments, source }`. `source` (1.36.0, BL-280,
+    FO-REQ-0062 B): `{ clipId, file, sha256, submittedAt }` -- which file the clip is: `file` the `clipPath` given at submit, `sha256` the
+    SHA-256 of the bytes YT Manager read at submit, both from the stored clip (the same values as `clipPath` / `sha256`); `null` where a
+    stored clip lacks the field (never guessed). The owner's routes carry the same `source`. YT Manager writes no channel file for it. `attachments` (1.19.0, BL-246,
     ADR 0065): the files the owner attached to the deciding answer, `[]` otherwise -- `[{ path (relative to the channel workspace,
     `99 Data Exchange/From YTM/clip-reviews/<clipId>/<decisionId>/<name>`), name, mime, size, sha256 }]`; they reach the other
     computer by Syncthing, so check size and SHA-256 before relying on a fresh one. The Producer has no way to add attachments. Shared by both computers (sync family

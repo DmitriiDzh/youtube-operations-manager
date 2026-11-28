@@ -52,7 +52,8 @@ export function createClipReviewsService(ports: ClipReviewsPorts) {
   /** This computer's copy of a clip, resolved by the shared workspace rule; null when it is not here (or not allowed). */
   async function localFile(clip: ClipReviewClip): Promise<ResolvedClipFile | null> {
     const workspace = await ports.workspace(clip.channelId);
-    if (!workspace || !clipVideoTypeOf(clip.clipPath)) return null;
+    // BL-280: a stored record without a path (the other computer's document is read without a schema) has no copy here.
+    if (!workspace || typeof clip.clipPath !== "string" || !clipVideoTypeOf(clip.clipPath)) return null;
     const resolved = await ports.resolveFile(workspace, clip.clipPath).catch(() => null);
     return resolved?.ok ? { path: resolved.path, bytes: resolved.bytes } : null;
   }

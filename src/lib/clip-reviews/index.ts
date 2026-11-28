@@ -79,7 +79,7 @@ export function createClipReviewsOwnerCore(): ClipReviewsOwnerSurface {
 
 export { createClipReviewsService, producerSurface, ownerSurface } from "./services";
 export type { ClipReviewsService, ClipReviewsProducerSurface, ClipReviewsOwnerSurface } from "./services";
-export { clipViewOf, decidingRecordOf, sortClipViews, clipVideoTypeOf, durationAccepted, wellFormedAttachments } from "./model";
+export { clipSourceOf, clipViewOf, decidingRecordOf, sortClipViews, clipVideoTypeOf, durationAccepted, wellFormedAttachments } from "./model";
 export { attachmentPathOf } from "./services";
 export { createClipSourceImageLookup } from "./adapters/source-image";
 export * from "./attachments";

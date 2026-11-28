@@ -29,6 +29,13 @@ export const CLIP_VIDEO_TYPES: Readonly<Record<string, string>> = Object.freeze(
 
 export type ClipReviewStatus = "pending" | "approved" | "returned" | "withdrawn";
 
+/**
+ * BL-280 (FO-REQ-0062 B): which file a clip is -- the path the Producer gave at submit (`clipPath`, relative to the channel workspace)
+ * and the SHA-256 of the bytes YT Manager read at submit, as stored in the clip record. A worker checks "approved clip = this file" by
+ * the hash. A field the stored record does not carry (or carries malformed) is null, never guessed from the folder.
+ */
+export type ClipSourceFile = { clipId: string; file: string | null; sha256: string | null; submittedAt: string | null };
+
 /** A clip as the Producer reads it (and the owner, with `file`). Never an absolute path. */
 export type ClipReviewView = {
   clipId: string;
@@ -54,6 +61,8 @@ export type ClipReviewView = {
   attachments: ClipReviewAttachment[];
   /** BL-272 (ADR 0076): the approved master still image the clip was made from; the key is present only when the Producer named one. */
   approvedImageId?: string;
+  /** BL-280 (FO-REQ-0062 B): the submitted file and its hash, the same on every read of the clip or its decision. */
+  source: ClipSourceFile;
 };
 
 /** BL-272: the source image of a clip as the owner's screen shows it (read now from the image reviews; null when it is gone). */
