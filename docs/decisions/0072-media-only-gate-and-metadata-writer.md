@@ -160,7 +160,7 @@ for one value only; `docs/WRITE_AUTHORIZATIONS.md` «Package metadata after uplo
    (`publishing_settings_changed`). Never a value the caller gives: the owner's route and the Producer's tool take only
    `expectedCategoryId` (required of both), which binds the apply to the preview and refuses when the saved value changed since.
 2. **Writer.** No new writer, no new gateway function: `src/lib/publishing/package-category.ts` decides, `video-details.applyFieldsUpdate`
-   writes `{ categoryId }` (full snippet read-merge-write; title, description, tags and both languages sent back as read, `zxx` left out),
+   writes `{ categoryId }` (full snippet read-merge-write; title, description, tags and both languages sent back as read),
    with the fresh read's etag, `verifyUnchanged` = title, description, tags, both languages, privacy, `publishAt` (a video whose audio
    language reads `zxx` is skipped, `audio_language_zxx`: the snippet write could not send it back; unreadable translation languages
    before the write fail that video with nothing written; an `update_failed` after the write carries video-details' `backupPath`), plus the localization-language read before and after (§5). Audit `source: package_category`. One video at a time under

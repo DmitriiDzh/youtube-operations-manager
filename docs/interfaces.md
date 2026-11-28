@@ -896,8 +896,8 @@ Key MCP tools:
     `POST /api/channels/[channelId]/publishing/category-fix` (BL-279, ADR 0072 amendment 2; owner session, active channel): `{ dryRun: true }`
     → `{ dryRun: true, channelId, targetCategoryId, videos: [{ video, videoId, title, current, status: write | same | upload_pending |
     not_on_youtube | not_in_channel | audio_language_zxx }], toWrite, quotaUnits }`; `{ expectedCategoryId, videoIds? }` → `{ dryRun: false, channelId,
-    targetCategoryId, videos: [{ video, videoId, before, status: written | same | upload_pending | not_on_youtube | not_in_channel | failed,
-    backupPath?, error? }], written, verified, stoppedAt }` (the category comes only from the channel's saved setting; refusals as
+    targetCategoryId, videos: [{ video, videoId, before, status: written | same | upload_pending | not_on_youtube | not_in_channel | audio_language_zxx |
+    failed, backupPath?, error? }], written, verified, stoppedAt }` (the category comes only from the channel's saved setting; refusals as
     `producer_video_category_fix`).
     `/api/settings` since BL-183: `analyticsSyncUtcTime`, `analyticsEveningUtcTime`, `userTimezone`.
   - `POST /api/analytics/evening-collect` (BL-181, Web only) — the dashboard's 5-minute evening check: `{ due: false }`,
@@ -1720,7 +1720,7 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
   defaultLanguage | defaultAudioLanguage | englishCaptions, youtube, expected, source: saved | default | package | unknown, status: match |
   mismatch | unreadable | unchecked }], mismatches, captionTracks | null, captionsError? } | { videoId, video, found: false, reason:
   not_on_youtube | not_in_channel }], mismatched, captionsChecked, quotaUnits }` plus `forChannelId`. Without `videoIds`: every video a
-  release package of the channel put on YouTube. `videos.list part=snippet,status,paidProductPlacementDetails` 50 ids a call (1 unit,
+  release package of the channel put on YouTube (not one the owner only linked, BL-221 `result: "linked"`). `videos.list part=snippet,status,paidProductPlacementDetails` 50 ids a call (1 unit,
   read gateway `getVideosPublishingFields`); `captions: true` adds `captions.list` per video (50 units; at most 50 videos). Errors:
   `CHANNEL_NOT_ACTIVE`, `package_no_workspace`, `package_workspace_unavailable`, `data_api_reads_disabled`, `validation_failed`.
 - **Metadata tool (BL-265, ADR 0072, owner TG 4578/4581; Producer 1.24.0):** `producer_video_metadata_update` `{ channelId, video, dryRun? }`

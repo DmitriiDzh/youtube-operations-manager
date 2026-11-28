@@ -664,8 +664,11 @@ flags the error as not sent; the mark keeps the retry count, so a failing insert
 - **Category fix:** a sibling of `package-metadata.ts` / `package-localizations.ts`, sharing `withPackageVideoLock`, `refuse` and the
   deps of `uploadedPackageDeps` (device gate, credential, snapshot). The write is video-details' (`applyFieldsUpdate`): one
   `videos.update part=snippet` with the snippet as read and only `categoryId` changed; `verifyUnchanged` names every other snippet field
-  plus privacy and `publishAt`. The video list is the scan's packages with an upload record (`uploadedPackageVideosOf`), so an upload
-  from either computer counts and a video uploaded in Studio never does. The preview reads the videos in batches of 50
+  plus privacy and `publishAt`. The video list is the scan's packages with an upload record (`uploadedPackageVideos`), so an upload
+  from either computer counts and a video uploaded in Studio never does -- not even when the owner linked it to its release (BL-221
+  writes the same `Vn_youtube.json` with `result: "linked"`; `parseUploadRecord` marks it and the scan carries `youtube.linked`). A
+  video whose audio language reads `zxx` is skipped (`audio_language_zxx`): the snippet write cannot send `zxx` back (RISK-102), so
+  the audio language could change unverified. Both applies need the dry run's `expectedCategoryId`. The preview reads the videos in batches of 50
   (`getVideosPublishingFields`); the apply re-reads each video fresh (its etag goes into the write).
 - **Check:** read-only, the same batch reader; captions are opt-in because `captions.list` costs 50 units and needs youtube.force-ssl
   (a missing grant marks that video's captions `unreadable`, never fails the call). Each expectation carries its source (saved /
