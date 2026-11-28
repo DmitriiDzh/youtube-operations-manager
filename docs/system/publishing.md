@@ -17,7 +17,7 @@
 - **Этап 2** (`docs/ARCHITECTURE.md` §47.3).
   - Общие теги канала (`channelTags`, FO-MSG-0017 / BL-190): пакет с `tags: []` получает теги канала, с непустыми — только свои (сообщение владельца 2817, вариант «б»); окно подтверждения показывает теги каждой строки и их источник; тег с `<`/`>` в пакете — проблема `tags_angle_brackets`.
   - Дефолты публикации канала: `publishing/settings.ts`, семейство синхронизации `channel-publishing-settings` (документ на
-    канал), конфликты в «Слиянии»; Настройки → Каналы (до BL-266 — Контент → «Публикация»), время — `UtcTimeField` (12:00 UTC по умолчанию).
+    канал), конфликты в «Слиянии»; «Главная» активного канала (с BL-279; до него Настройки → Каналы, до BL-266 — Контент → «Публикация»), время — `UtcTimeField` (12:00 UTC по умолчанию).
   - Пакеты релизов: `publishing/packages.ts`, `package-scan.ts` (`04 Videos/**/V*_release.json`, проверки по правилам YouTube,
     состояние по `Vn_youtube.json`; обход и чтения — общий `src/lib/workspace-videos/`, BL-187). BL-243 (ADR 0063): состояние
     `deleted_on_youtube` — видео записи помечено синхронизацией удалённым (`removed_on_youtube_at`); `uploaded_unknown` — его нет
@@ -75,7 +75,7 @@
   - Затем sha256 из пакета, если он есть.
 - **Удаление:** метка `….mp4.deleted.json` (`deleted-video/1`, контракт Оператора) пишется через tmp + fsync + rename, затем перечитывается; только после этого unlink. Перед unlink повторно проверяются allowlist, dev/inode/размер и метка.
 - **Журнал:** «ждёт» не пишется и проверяется снова. «Отказ» и «удалён» пишутся один раз на загрузку в `local_video_cleanup_log` (v116, device-local) и строкой в `99 Data Exchange/From YTM/cleanup-log.csv`.
-- **Переключатель:** `app_settings.local_video_cleanup_settings`, на канал и компьютер, по умолчанию вкл. (сообщение владельца 3900: с первой проверки, старые загрузки не трогаются; «выкл.» владельца сохраняется), не синхронизируется. UI: карточка в Настройки → Каналы (до BL-266 — Контент → Публикация; `LocalVideoCleanupCard`, своя `FeatureErrorBoundary`): переключатель с подтверждением, освобождено ГБ, ожидают, последние удаления/отказы. Маршрут `GET/PUT /api/channels/[channelId]/local-video-cleanup`; MCP-инструмента нет.
+- **Переключатель:** `app_settings.local_video_cleanup_settings`, на канал и компьютер, по умолчанию вкл. (сообщение владельца 3900: с первой проверки, старые загрузки не трогаются; «выкл.» владельца сохраняется), не синхронизируется. UI: карточка на «Главной» активного канала (с BL-279; до него Настройки → Каналы, до BL-266 — Контент → Публикация; `LocalVideoCleanupCard`, своя `FeatureErrorBoundary`): переключатель с подтверждением, освобождено ГБ, ожидают, последние удаления/отказы. Маршрут `GET/PUT /api/channels/[channelId]/local-video-cleanup`; MCP-инструмента нет.
 - **Не в этом этапе:** очистка старых видео кнопкой владельца, предпросмотр `factory_cleanup_preview`, видео, загруженные не через YT Manager (вариант Б).
 
 ### 2.9bl Проверка владельцем итогового пакета (BL-257, owner msgs 4514/4516/4519, ADR 0070, `docs/roadmap/plans/PACKAGE_REVIEW_PLAN.md`) — **IMPLEMENTED на ветке** `feature/bl-257-package-review` (ждёт ревью и разрешения на мердж)
@@ -179,3 +179,25 @@
 - **Чтение Продюсера:** `producer_video_playlists` (Producer 1.33.0), модуль `src/lib/video-playlist-membership/` (кэш 10 мин, refresh не чаще
   раза в минуту, кэш старше результата шага плейлиста загрузки не используется) +
   `publishing.listUploadPlaylistRecords` через композицию (`session-deps.ts`).
+
+### 2.9br Настройки публикации канала: защита, исправление категории, проверка Продюсера, перенос на «Главную» (BL-279, owner TG 4963/4964, ADR 0072 поправка 2) — **IMPLEMENTED на ветке** `feature/channel-publishing-defaults` (ждёт ревью и разрешения на мердж)
+
+- **Причина:** строка загрузки замораживает настройки публикации канала (`settingsJson`); канал, который их ни разу не сохранял, получал
+  `DEFAULT_PUBLISHING_SETTINGS` (категория Music, субтитры выключены) — так ушли все ролики WWE.
+- **Защита:** `upload-approval.ts` `queue()` (одобрение владельца, автозагрузка, добавление Продюсером) отказывает
+  `publishing_settings_not_saved`, пока у канала нет ни одного сохранённого поля (`publishingSettingsSaved` = `view.saved.length > 0`, не
+  «файл документа есть»). Автозагрузка останавливает только этот канал на тик. Строки, поставленные до сборки, не перепроверяются
+  (RISK-160). Панель настроек: бейдж «Не сохранены», предупреждение, первая запись шлёт все поля («Подтвердить и сохранить»).
+- **Исправление категории:** `publishing/package-category.ts` (`createPackageCategoryCore`; без нового писателя:
+  `video-details.applyFieldsUpdate` с `{ categoryId }`) — только ролики, загруженные пакетом канала (запись загрузки в скане), только
+  сохранённая `categoryId` (иначе `publishing_settings_not_saved` / при конфликте `publishing_settings_changed`); привязанные владельцем ролики (BL-221, `youtube.linked`) не входят; ролик с языком аудио `zxx` пропускается (`audio_language_zxx`); `expectedCategoryId` обязателен и Продюсеру; dry run «было → станет»
+  (пакетное чтение `getVideosPublishingFields`), запись по одному ролику под `withPackageVideoLock`, сверка нетронутых полей и языков
+  переводов, аудит `source: package_category`; первая ошибка останавливает прогон. Маршрут владельца
+  `/api/channels/[channelId]/publishing/category-fix`, карточка `channel-category-fix-card.tsx`; инструмент Продюсера
+  `producer_video_category_fix` (METADATA_WRITE).
+- **Проверка Продюсера:** `publishing/video-publishing-check.ts` (`createVideoPublishingCheckCore`) → `producer_video_publishing_check`
+  (READ, Producer 1.35.0): categoryId, языки, лицензия, selfDeclaredMadeForKids, embeddable, containsSyntheticMedia, платное размещение и
+  (по `captions: true`) дорожки субтитров против настроек канала и пакета; новый ребёнок чтения не нужен — функция
+  `getVideosPublishingFields` в `youtube-read-gateway/data-api.ts` (50 id за вызов).
+- **Перенос:** настройки публикации и очистка локальных копий активного канала — на «Главной» (раздел «Настройки канала», вместе с
+  карточкой категории), в «Настройки → Каналы» осталась ссылка-указатель; ссылки «⋯» на «Плане» ведут на `/home#…`.

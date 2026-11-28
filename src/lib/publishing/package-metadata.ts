@@ -61,7 +61,8 @@ export type PackageMetadataDeps = {
     credentialRef: { userId: string };
     expectedChannelId: string;
     videoId: string;
-    patch: { title?: string; description?: string; tags?: string[] };
+    /** BL-279 (ADR 0072 amendment 2): `categoryId` only from `package-category.ts`, only the channel's saved setting. */
+    patch: { title?: string; description?: string; tags?: string[]; categoryId?: string };
     expectedEtag?: string;
     verifyUnchanged: VerifyUnchangedField[];
     auditContext: Record<string, string | number | boolean | null | string[]>;

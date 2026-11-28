@@ -106,7 +106,8 @@ function harness(rows: StoredPublishingUpload[], options: { packages?: ScannedPa
   const switchOn = () => (typeof options.switchOn === "function" ? options.switchOn() : (options.switchOn ?? true));
   const approval = createUploadApproval({
     scan: async () => ({ status: "ok", packages: options.packages ?? [] }),
-    settings: async () => ({ channelId: "UC_x", settings: SETTINGS, defaults: DEFAULT_PUBLISHING_SETTINGS, saved: [], conflictedFields: [] }),
+    // BL-279 (new requirement, owner TG 4964): a channel uploads only once its publishing settings were saved -- a saved one here.
+    settings: async () => ({ channelId: "UC_x", settings: SETTINGS, defaults: DEFAULT_PUBLISHING_SETTINGS, saved: ["playlistId"], conflictedFields: [] }),
     liveVideos: async () => new Set([...store.values()].filter((r) => ACTIVE.has(r.status) || r.status === "done").map((r) => r.video)),
     peerUploads: async () => new Map(),
     insertsToday: async () => 0,

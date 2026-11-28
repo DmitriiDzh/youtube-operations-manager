@@ -7,10 +7,12 @@ import { releaseRecodeJournalDir, releaseRecodeJournalPath } from "@/lib/release
 import { lstat, mkdir, open, readdir, readFile, realpath, rename as renamePath, stat, unlink } from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
-import { YOUTUBE_READ_SCOPE, YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
+import { YOUTUBE_FORCE_SSL_SCOPE, YOUTUBE_READ_SCOPE, YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
 import { createPackageMetadata, type PackageMetadataDeps } from "./package-metadata";
 import { createPackageLocalizations } from "./package-localizations";
 import { createPackageCaptions, recordWithCaption, stepsWithCaptionsSetLater } from "./package-captions";
+import { createPackageCategory } from "./package-category";
+import { createVideoPublishingCheck, uploadedPackageVideos, type UploadedPackageVideo } from "./video-publishing-check";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { createChannelVideoStoreAdapter } from "@/lib/channel-video-store";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
@@ -74,7 +76,7 @@ import { cachedForFile, statFileStamp } from "@/lib/file-fingerprint";
 import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
 import { createWriteContextCore } from "@/lib/write-context";
-import { createYoutubeClient, getPlaylistForUpdate, getVideoMetadataContext, getVideoUploadState, listUploadsPlaylistFirstPage, playlistContainsVideo } from "@/lib/youtube-read-gateway";
+import { createYoutubeClient, getPlaylistForUpdate, getVideoMetadataContext, getVideosPublishingFields, getVideoUploadState, listUploadsPlaylistFirstPage, listVideoCaptions, playlistContainsVideo } from "@/lib/youtube-read-gateway";
 import { createWorkspaceExchangeFsForPublishing, isRealVideoFolder, resolveWorkspaceFileForPublishing, writeVideoFolderFile } from "./adapters/files";
 import { createWorkspaceVideoFiles, videoNumberOfFolder, videosFolderSignature, writeUploadRecordFile } from "@/lib/workspace-videos";
 import { reportVersionFor } from "@/lib/shared-video-code";
@@ -1408,6 +1410,76 @@ export function createPackageMetadataCore() {
   });
 }
 export type { PackageMetadataActor, PackageMetadataApplyResult, PackageMetadataPreview } from "./package-metadata";
+
+/**
+ * BL-279 (owner TG 4963/4964): the channel's videos a release package put on YouTube -- the packages of this computer's scan whose
+ * upload record names a video id (either computer's upload), one per video id, with what each package states.
+ */
+async function uploadedPackageVideosOf(scan: ReturnType<typeof createPackageScanCore>, channelId: string): Promise<UploadedPackageVideo[] | "no_workspace" | "workspace_unavailable"> {
+  const result = await scan.scan(channelId);
+  return result.status !== "ok" ? result.status : uploadedPackageVideos(result.packages);
+}
+
+/** BL-279: a channel's videos' publishing fields on YouTube now against its saved settings -- the Producer's check (read-only). */
+export function createVideoPublishingCheckCore() {
+  const scan = createPackageScanCore();
+  const settings = createPublishingSettingsCore();
+  const resolved = (userId: string, scopes: readonly string[]) => resolveGoogleCredentials({ credentialRef: { userId }, requiredScopes: scopes });
+  const common = uploadedPackageDeps(scan, createVideoDetailsCore());
+  return createVideoPublishingCheck({
+    settings: (channelId) => settings.read(channelId),
+    uploadedVideos: (channelId) => uploadedPackageVideosOf(scan, channelId),
+    credentialRef: common.credentialRef,
+    async readVideos({ credentialRef, videoIds }) {
+      const youtube = await createYoutubeClient(authorizedOAuth(await resolved(credentialRef.userId, [YOUTUBE_READ_SCOPE])));
+      return getVideosPublishingFields(youtube, videoIds);
+    },
+    async captions({ credentialRef, videoId }) {
+      // `captions.list` needs youtube.force-ssl (the captions reference), not the plain read scope.
+      const youtube = await createYoutubeClient(authorizedOAuth(await resolved(credentialRef.userId, [YOUTUBE_WRITE_SCOPE, YOUTUBE_FORCE_SSL_SCOPE])));
+      return (await listVideoCaptions(youtube, videoId)).map((t) => ({ language: t.language, trackKind: t.trackKind, status: t.status, isDraft: t.isDraft }));
+    },
+  });
+}
+export type { VideoPublishingCheckResult } from "./video-publishing-check";
+
+/**
+ * BL-279 (owner TG 4963/4964, ADR 0072 amendment 2): the category fix of a channel's package-uploaded videos to its saved setting --
+ * the owner's route and the Producer's tool, one service. The write is video-details' own (`applyFieldsUpdate`).
+ */
+export function createPackageCategoryCore() {
+  const scan = createPackageScanCore();
+  const settings = createPublishingSettingsCore();
+  const videoDetails = createVideoDetailsCore();
+  const common = uploadedPackageDeps(scan, videoDetails);
+  const resolved = (userId: string, scopes: readonly string[]) => resolveGoogleCredentials({ credentialRef: { userId }, requiredScopes: scopes });
+  return createPackageCategory({
+    settings: (channelId) => settings.read(channelId),
+    uploadedVideos: (channelId) => uploadedPackageVideosOf(scan, channelId),
+    async uploadRows(channelId) {
+      return (await listPublishingUploads({ channelId, limit: 5000 })).map((row) => ({ status: row.status, video: row.video, videoId: row.videoId }));
+    },
+    assertDeviceAvailable: common.assertDeviceAvailable,
+    credentialRef: common.credentialRef,
+    snapshot: common.snapshot,
+    async readVideos({ credentialRef, videoIds }) {
+      const youtube = await createYoutubeClient(authorizedOAuth(await resolved(credentialRef.userId, [YOUTUBE_READ_SCOPE])));
+      return getVideosPublishingFields(youtube, videoIds);
+    },
+    async localizationLanguages({ credentialRef, videoId }) {
+      try {
+        const youtube = await createYoutubeClient(authorizedOAuth(await resolved(credentialRef.userId, [YOUTUBE_READ_SCOPE])));
+        const context = await getVideoMetadataContext(youtube, videoId);
+        return context ? Object.keys(context.localizations).sort() : null;
+      } catch {
+        return null;
+      }
+    },
+    applyFields: (args) => videoDetails.applyFieldsUpdate(args),
+    audit: ({ channelId, videoId, eventType, detail }) => insertVideoEditAuditEvent({ channelId, videoId, eventType, detail }),
+  });
+}
+export type { PackageCategoryApplyResult, PackageCategoryPreview } from "./package-category";
 
 /**
  * Package localizations after upload (owner TG 4839/4842, ADR 0072 amendment): the package's current translations onto its uploaded

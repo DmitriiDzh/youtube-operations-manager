@@ -46,8 +46,11 @@ export function parseChannelTags(text: string): string[] {
  * (owner msgs 2725/2727). Only the fields the owner changed are sent, so a value that arrived from the other computer after this
  * screen loaded is never overwritten by this screen's stale copy.
  */
-export function PublishingSettingsPanel({ channelId, visible }: { channelId: string | null; visible: boolean }) {
+export function PublishingSettingsPanel({ channelId, visible, collapsible = false }: { channelId: string | null; visible: boolean; collapsible?: boolean }) {
   const t = useT();
+  // BL-279 (owner TG 4964): on Home the card starts folded to a one-line summary (no playlist read until it is opened) -- open by
+  // itself while the channel's settings were never saved, because uploads wait for that first save.
+  const [expanded, setExpanded] = useState<boolean | null>(collapsible ? null : true);
   const [view, setView] = useState<View | null>(null);
   const [draft, setDraft] = useState<Settings | null>(null);
   const [playlists, setPlaylists] = useState<Playlist[] | null>(null);
@@ -68,6 +71,7 @@ export function PublishingSettingsPanel({ channelId, visible }: { channelId: str
       setView(data);
       setDraft(data.settings);
       setTagsText((data.settings.channelTags ?? []).join(", "));
+      setExpanded((was) => (was === null ? (data.saved ?? []).length === 0 : was));
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : t("publishingSettings.loadFailed"));
@@ -80,7 +84,7 @@ export function PublishingSettingsPanel({ channelId, visible }: { channelId: str
 
   // The channel's playlists (one Data API read, only once the tab is shown): the picker offers them by name.
   useEffect(() => {
-    if (!visible || !channelId || playlists !== null) return;
+    if (!visible || expanded !== true || !channelId || playlists !== null) return;
     let cancelled = false;
     (async () => {
       try {
@@ -98,7 +102,7 @@ export function PublishingSettingsPanel({ channelId, visible }: { channelId: str
     return () => {
       cancelled = true;
     };
-  }, [visible, channelId, playlists, playlistsRefresh, t]);
+  }, [visible, expanded, channelId, playlists, playlistsRefresh, t]);
 
   if (!channelId) return null;
   if (!view || !draft) {
@@ -110,6 +114,9 @@ export function PublishingSettingsPanel({ channelId, visible }: { channelId: str
   }
 
   const changed = (Object.keys(draft) as Array<keyof Settings>).filter((field) => JSON.stringify(draft[field]) !== JSON.stringify(view.settings[field]));
+  // BL-279: never saved -- the first save sends every field (also the defaults the owner keeps), so the channel counts as saved and
+  // its uploads are allowed; afterwards only the changed fields are sent, as before.
+  const neverSaved = view.saved.length === 0;
   const timeValid = isValidLocalTimeOfDay(draft.publishTimeUtc);
   const channelTags = draft.channelTags ?? [];
   const tagsChars = tagsLength(channelTags);
@@ -128,7 +135,8 @@ export function PublishingSettingsPanel({ channelId, visible }: { channelId: str
     setError(null);
     setSavedNotice(false);
     try {
-      const body = Object.fromEntries(changed.map((field) => [field, draft[field]]));
+      const fields = neverSaved ? (Object.keys(draft) as Array<keyof Settings>) : changed;
+      const body = Object.fromEntries(fields.map((field) => [field, draft[field]]));
       const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/publishing-settings`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
@@ -150,19 +158,54 @@ export function PublishingSettingsPanel({ channelId, visible }: { channelId: str
   const selectClass = "rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100";
   const knownPlaylist = draft.playlistId === null || (playlists ?? []).some((p) => p.id === draft.playlistId);
 
-  return (
-    <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4 text-sm">
+  const header = (
+    <div className="flex flex-wrap items-start justify-between gap-3">
       <div>
-        <h3 className="flex items-center gap-1.5 text-base font-medium text-zinc-100">
+        <h3 className="flex flex-wrap items-center gap-2 text-base font-medium text-zinc-100">
           {t("publishingSettings.title")}
           <InfoTooltip>{t("publishingSettings.languageNote")}</InfoTooltip>
+          {neverSaved && (
+            <span className="rounded-full border border-amber-700/70 bg-amber-950/40 px-2 py-0.5 text-xs font-medium text-amber-200">{t("publishingSettings.neverSavedBadge")}</span>
+          )}
         </h3>
         <p className="mt-1 text-xs text-zinc-400">{t("publishingSettings.intro")}</p>
       </div>
+      {collapsible && (
+        <button type="button" onClick={() => setExpanded(!expanded)} aria-expanded={expanded === true} className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800">
+          {expanded ? t("publishingSettings.collapse") : t("publishingSettings.expand")}
+        </button>
+      )}
+    </div>
+  );
+  const neverSavedWarning = neverSaved && (
+    <p role="alert" className="rounded-lg border border-amber-700/70 bg-amber-950/30 px-3 py-2 text-xs text-amber-100">
+      {t("publishingSettings.neverSavedWarning")}
+    </p>
+  );
+
+  if (!expanded) {
+    return (
+      <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4 text-sm">
+        {header}
+        {neverSavedWarning}
+        <p className="text-xs text-zinc-300">
+          {t("publishingSettings.summary", {
+            category: t(`publishingSettings.category.${draft.categoryId}` as UiTextKey),
+            time: draft.publishTimeUtc,
+            captions: draft.captionsEnabled ? t("publishingSettings.summaryCaptionsOn") : t("publishingSettings.summaryCaptionsOff"),
+          })}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4 text-sm">
+      {header}
       {view.conflictedFields.length > 0 && (
         <p className="rounded-lg border border-amber-800/60 bg-amber-950/20 px-3 py-2 text-xs text-amber-200">{t("publishingSettings.differsBetweenComputers")}</p>
       )}
-      {view.saved.length === 0 && <p className="text-xs text-zinc-500">{t("publishingSettings.notSavedYet")}</p>}
+      {neverSavedWarning}
 
       <div className="flex flex-wrap items-start gap-4">
         <div className="space-y-1">
@@ -250,10 +293,10 @@ export function PublishingSettingsPanel({ channelId, visible }: { channelId: str
         <button
           type="button"
           onClick={() => void save()}
-          disabled={saving || changed.length === 0 || !timeValid || tagsProblem !== null}
-          className="rounded-lg bg-zinc-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-zinc-600 disabled:opacity-50"
+          disabled={saving || (changed.length === 0 && !neverSaved) || !timeValid || tagsProblem !== null}
+          className={`rounded-lg px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50 ${neverSaved ? "bg-amber-600 hover:bg-amber-500" : "bg-zinc-700 hover:bg-zinc-600"}`}
         >
-          {saving ? t("common.saving") : t("publishingSettings.save")}
+          {saving ? t("common.saving") : neverSaved ? t("publishingSettings.confirmAndSave") : t("publishingSettings.save")}
         </button>
         {!timeValid && <span className="text-xs text-red-400">{t("publishingSettings.invalidTime")}</span>}
         {savedNotice && changed.length === 0 && <span className="text-xs font-medium text-green-500">{t("common.saved")}</span>}

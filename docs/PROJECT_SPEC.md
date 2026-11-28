@@ -869,7 +869,11 @@ that video has not finished its read-back; never automatic, never `status`, cate
 4839/4842, ADR 0072 amendment 1):* the same two callers may write the package's current manifest `localizations` (per-language
 title/description) onto that video through the shared video translations writer -- never the video's own default language, never a
 removal, a per-language three-way check where any conflict refuses the whole call, one write per call, the same safety steps
-(`source: package_localizations`); see `docs/WRITE_AUTHORIZATIONS.md`. The owner's package
+(`source: package_localizations`); see `docs/WRITE_AUTHORIZATIONS.md`. *Amended 2026-11-26 (owner TG 4963/4964, BL-279, ADR 0072
+amendment 2):* the same two callers may set such a video's `snippet.categoryId` to the channel's **saved** publishing setting only
+(refused while the category was never saved or is in conflict; never a value of the caller's), through the same video-details
+read-merge-write and safety steps (`source: package_category`; a video already in that category is not written); and no upload of a
+channel whose publishing settings were never saved is queued (`publishing_settings_not_saved`). The owner's package
 review (BL-257) now gates the **media** only: an approval covers the mp4 (`sha256` + `sizeBytes`, per channel and video code, or its
 BL-263 recode alias); packaging changes neither need nor reset it, and a queued upload takes a re-package of only its packaging.
 

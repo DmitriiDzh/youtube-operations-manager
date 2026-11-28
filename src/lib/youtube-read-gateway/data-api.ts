@@ -1002,6 +1002,52 @@ export async function getVideosCleanupState(youtube: youtube_v3.Youtube, videoId
   return out;
 }
 
+/**
+ * BL-279 (owner TG 4964): the publishing fields of up to 50 videos as YouTube has them now, for the Producer's check and the category
+ * fix's preview -- `videos.list part=snippet,status,paidProductPlacementDetails` (1 unit per call, whatever the parts). `channelId` is
+ * `snippet.channelId`, so a caller can drop a video that is not the channel's before showing any value. A field YouTube omits is null
+ * (never a default); a video YouTube does not return (deleted, or not visible to this account) is absent from the map.
+ */
+export type VideoPublishingFields = {
+  channelId: string | null;
+  title: string | null;
+  categoryId: string | null;
+  defaultLanguage: string | null;
+  defaultAudioLanguage: string | null;
+  privacyStatus: string | null;
+  license: string | null;
+  /** `status.selfDeclaredMadeForKids` (what the channel declared); `madeForKids` is YouTube's own effective value. */
+  selfDeclaredMadeForKids: boolean | null;
+  madeForKids: boolean | null;
+  embeddable: boolean | null;
+  containsSyntheticMedia: boolean | null;
+  hasPaidProductPlacement: boolean | null;
+};
+
+export async function getVideosPublishingFields(youtube: youtube_v3.Youtube, videoIds: readonly string[]): Promise<Map<string, VideoPublishingFields>> {
+  if (videoIds.length === 0 || videoIds.length > YOUTUBE_VIDEOS_LIST_BATCH_SIZE) throw new Error("getVideosPublishingFields takes 1 to 50 video ids");
+  const res = await youtube.videos.list({ part: ["snippet", "status", "paidProductPlacementDetails"], id: [...videoIds], maxResults: YOUTUBE_VIDEOS_LIST_BATCH_SIZE });
+  const out = new Map<string, VideoPublishingFields>();
+  for (const item of res.data.items ?? []) {
+    if (!item.id) continue;
+    out.set(item.id, {
+      channelId: item.snippet?.channelId ?? null,
+      title: item.snippet?.title ?? null,
+      categoryId: item.snippet?.categoryId ?? null,
+      defaultLanguage: item.snippet?.defaultLanguage ?? null,
+      defaultAudioLanguage: item.snippet?.defaultAudioLanguage ?? null,
+      privacyStatus: item.status?.privacyStatus ?? null,
+      license: item.status?.license ?? null,
+      selfDeclaredMadeForKids: item.status?.selfDeclaredMadeForKids ?? null,
+      madeForKids: item.status?.madeForKids ?? null,
+      embeddable: item.status?.embeddable ?? null,
+      containsSyntheticMedia: item.status?.containsSyntheticMedia ?? null,
+      hasPaidProductPlacement: item.paidProductPlacementDetails?.hasPaidProductPlacement ?? null,
+    });
+  }
+  return out;
+}
+
 export type PlaylistPrivacyStatus = "private" | "public" | "unlisted";
 
 export type PlaylistMetadata = {

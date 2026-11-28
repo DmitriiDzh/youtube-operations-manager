@@ -20,6 +20,7 @@ export const settingsCards: Record<keyof typeof en, string> = {
   "settingsCards.autoPrivateUpload.reason.quota_insufficient": "не хватает сегодняшней квоты",
   "settingsCards.autoPrivateUpload.reason.quota_unknown": "сегодняшнюю квоту не прочитать (Google Cloud не подключён или не отвечает)",
   "settingsCards.autoPrivateUpload.reason.publishing_settings_changed": "настройки публикации различаются между компьютерами (выберите в «Слиянии»)",
+  "settingsCards.autoPrivateUpload.reason.publishing_settings_not_saved": "настройки публикации канала ни разу не сохранялись (сохраните их на «Главной»)",
   "settingsCards.autoPrivateUpload.reason.upload_tags_too_long": "теги длиннее 500 символов YouTube",
   "settingsCards.autoPrivateUpload.reason.hash_failed": "не удалось прочитать файл видео",
   "settingsCards.autoPrivateUpload.reason.no_connected_account": "на этом компьютере нет подключённого аккаунта",

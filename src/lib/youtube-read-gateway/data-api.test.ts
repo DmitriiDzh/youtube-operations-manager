@@ -27,6 +27,7 @@ import {
   getVideoCommentCounts,
   listOwnVideoComments,
   playlistContainsVideo,
+  getVideosPublishingFields,
 } from "./data-api";
 
 // The "Data API reads" toggle (owner instruction, 2026-09-22): default-enabled, unlike Gate B's
@@ -1177,4 +1178,50 @@ test("readVideoDetailsContext: no item -> no_item; an item without snippet/statu
   const partial = fakeYoutubeClient({ videosList: (async () => ({ data: { items: [{ id: "v1", snippet: { title: "T" } }] } })) as unknown as youtube_v3.Youtube["videos"]["list"] });
   assert.deepEqual(await readVideoDetailsContext(partial, "v1"), { missing: "partial" });
   assert.equal(await getVideoDetailsContext(partial, "v1"), null, "the old read still says null for both");
+});
+
+// BL-279 (owner TG 4964; YouTube Data API videos.list: `snippet.categoryId`, `status.license`, `status.selfDeclaredMadeForKids`,
+// `status.embeddable`, `status.containsSyntheticMedia`, `paidProductPlacementDetails`): one call of at most 50 ids, the three parts,
+// an omitted field null (never a default), and a video YouTube does not return absent.
+test("getVideosPublishingFields reads snippet,status,paidProductPlacementDetails for at most 50 ids and keeps omitted fields null", async () => {
+  const calls: Array<{ part?: string[]; id?: string[] }> = [];
+  const youtube = fakeYoutubeClient({
+    videosList: (async (args: { part?: string[]; id?: string[] }) => {
+      calls.push(args);
+      return {
+        data: {
+          items: [
+            {
+              id: "v1",
+              snippet: { channelId: "UC_w", title: "T", categoryId: "10", defaultLanguage: "en", defaultAudioLanguage: "en" },
+              status: { privacyStatus: "private", license: "youtube", selfDeclaredMadeForKids: false, madeForKids: false, embeddable: true, containsSyntheticMedia: true },
+              paidProductPlacementDetails: { hasPaidProductPlacement: false },
+            },
+            { id: "v2", snippet: { channelId: "UC_w" }, status: {} },
+          ],
+        },
+      };
+    }) as unknown as youtube_v3.Youtube["videos"]["list"],
+  });
+  const map = await getVideosPublishingFields(youtube, ["v1", "v2", "v3"]);
+  assert.deepEqual(calls.map((c) => [c.part, c.id]), [[["snippet", "status", "paidProductPlacementDetails"], ["v1", "v2", "v3"]]]);
+  assert.deepEqual(map.get("v1"), {
+    channelId: "UC_w",
+    title: "T",
+    categoryId: "10",
+    defaultLanguage: "en",
+    defaultAudioLanguage: "en",
+    privacyStatus: "private",
+    license: "youtube",
+    selfDeclaredMadeForKids: false,
+    madeForKids: false,
+    embeddable: true,
+    containsSyntheticMedia: true,
+    hasPaidProductPlacement: false,
+  });
+  assert.equal(map.get("v2")?.categoryId, null);
+  assert.equal(map.get("v2")?.containsSyntheticMedia, null);
+  assert.equal(map.has("v3"), false);
+  await assert.rejects(() => getVideosPublishingFields(youtube, []));
+  await assert.rejects(() => getVideosPublishingFields(youtube, Array.from({ length: 51 }, (_, i) => `v${i}`)));
 });

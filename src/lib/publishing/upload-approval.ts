@@ -58,6 +58,14 @@ type Refuse = (code: ConstructorParameters<typeof DomainError>[0]["code"], messa
  */
 type QueueMode = { kind: "owner" } | { kind: "automatic"; switchOn: boolean } | { kind: "producer"; switchOn: boolean; tokenId: string };
 
+/**
+ * BL-279 (owner TG 4963/4964): whether the channel's publishing settings were saved at least once (any field a computer saved, as
+ * `effectivePublishingSettings` reads it). Not "a document file exists": a sync from the other computer writes that file too.
+ */
+export function publishingSettingsSaved(view: Pick<PublishingSettingsView, "saved">): boolean {
+  return view.saved.length > 0;
+}
+
 /** The DomainError codes after which the automatic upload waits for a later tick instead of giving the package up (plan §2). */
 export const AUTO_UPLOAD_WAIT_CODES: ReadonlySet<string> = new Set(["upload_daily_limit", "quota_insufficient", "quota_unknown", "publishing_settings_changed"]);
 
@@ -79,6 +87,12 @@ export function createUploadApproval(deps: UploadApprovalDeps) {
     now: Date;
   }): Promise<{ uploads: Array<{ id: string; video: string; publishAt: string | null }>; estimatedUnits: number }> {
     const { refuse, now, view, scanned } = args;
+    // BL-279 (owner TG 4963/4964): a channel whose publishing settings were never saved gets no upload -- its rows would freeze the
+    // built-in defaults (category Music, captions off), which is how every WWE upload went out as Music. Any saved field counts: the
+    // owner has looked at the panel (Tropico and Japan saved their tags and playlist and keep the default category on purpose).
+    if (!publishingSettingsSaved(view)) {
+      throw refuse("publishing_settings_not_saved", "This channel's publishing settings were never saved in YT Manager: check and save them on Home first.", { saved: view.saved });
+    }
     const live = await deps.liveVideos(args.channelId);
     const elsewhere = await deps.peerUploads(args.channelId);
     const heldSlots = deps.heldSlots ? await deps.heldSlots(args.channelId) : new Set<string>();

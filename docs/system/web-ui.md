@@ -46,8 +46,14 @@
   «Публикация» («Ролики и релизы») убрана, `/content/publishing` ведёт на `/content/week-plan`. На «Плане» строки `PlanExtras`:
   «Без слота: N» (доска роликов `VideoProjectsPanel`), «Очередь: …» (`PublishingUploads`; процент загрузки и на карточке слота),
   «⋯» (`PublishingPackages` с ручной загрузкой, ссылки в настройки); действия упаковки/субтитров загруженного пакета — и на его
-  карточке слота. `PublishingSettingsPanel` и `LocalVideoCleanupCard` — в Настройки → Каналы для активного канала. Подробно —
+  карточке слота. `PublishingSettingsPanel` и `LocalVideoCleanupCard` — на «Главной» активного канала (с BL-279, см. ниже; до него в Настройки → Каналы). Подробно —
   `docs/architecture/web-ui.md` «BL-266».
+- **BL-279 (owner TG 4964).** «Главная» активного канала получила раздел «Настройки канала»: `PublishingSettingsPanel` (свёрнут до сводки,
+  сам раскрыт с бейджем «Не сохранены» и предупреждением, пока настройки канала ни разу не сохранялись), `ChannelCategoryFixCard`
+  («Исправить категорию»: список «было → станет», подтверждение в карточке, без системных диалогов) и `LocalVideoCleanupCard` —
+  каждый в своей `FeatureErrorBoundary`, якоря `#publishing-settings` / `#local-video-cleanup`. В «Настройки → Каналы» вместо них —
+  карточка-указатель со ссылкой на `/home#publishing-settings`; там остались общие для YT Manager вещи (подключения каналов, соцсети
+  с приложением Meta). Подробно — `docs/system/publishing.md` §2.9br.
 
 ### 2.9ar Интерфейс всегда показывает, что происходит (BL-195, `docs/roadmap/plans/UI_FEEDBACK_CLARITY_PLAN.md`) — **IMPLEMENTED** (влито в `dev` 2026-10-17, 40a71883)
 

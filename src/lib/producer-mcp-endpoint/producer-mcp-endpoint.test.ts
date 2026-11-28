@@ -103,6 +103,8 @@ function setup(initial: { enabled?: boolean; core?: Parameters<typeof createMcpS
   const metadataCalls: Array<Record<string, unknown>> = [];
   const captionsCalls: Array<Record<string, unknown>> = [];
   const playlistCalls: Array<Record<string, unknown>> = [];
+  const categoryCalls: Array<Record<string, unknown>> = [];
+  const checkCalls: Array<Record<string, unknown>> = [];
   const planCalls: Array<[string, unknown]> = [];
   const endpoint = createProducerMcpEndpoint({
     isConnectionEnabled: async () => state.enabled,
@@ -207,11 +209,21 @@ function setup(initial: { enabled?: boolean; core?: Parameters<typeof createMcpS
             return { channelId: input.channelId, videoId: input.videoId, playlists: [{ id: "PL_a", title: "A", privacyStatus: "public" }], cached: false, quotaUnits: 3, uploads: [] };
           },
         },
+        videoCategory: {
+          fix: async (input) => {
+            categoryCalls.push(input);
+            if (input.channelId === "UC_PR_X" && input.expectedCategoryId === "10") throw new DomainError({ code: "publishing_settings_changed", message: "changed" });
+            return input.dryRun === true ? { dryRun: true, channelId: input.channelId, targetCategoryId: "27", videos: [], toWrite: 0, quotaUnits: 1 } : { dryRun: false, written: [] };
+          },
+        },
+        publishingCheck: {
+          check: async (input) => (checkCalls.push(input), { channelId: input.channelId, settingsSaved: true, videos: [], mismatched: 0, quotaUnits: 1 }),
+        },
       };
       return createMcpServer(initial.core, { connectionEnabled: true, producerSession });
     },
   });
-  return { endpoint, tokens, state, calls, refused, proposalCalls, queueCalls, clipCalls, imageCalls, thumbnailCalls, metadataCalls, captionsCalls, planCalls, playlistCalls };
+  return { endpoint, tokens, state, calls, refused, proposalCalls, queueCalls, clipCalls, imageCalls, thumbnailCalls, metadataCalls, captionsCalls, planCalls, playlistCalls, categoryCalls, checkCalls };
 }
 
 function rpc(body: unknown, headers: Record<string, string> = {}, method = "POST"): Request {
@@ -830,7 +842,10 @@ test("AC-PR-07 / AC-PR-10: the Producer's own tools -- its channels with their f
   // 1.29.0 adds the five channel playlist tools, PLAYLIST_WRITE and playlistTools / playlistWriteTools.
   // Package playlists (owner TG 4858/4859, ADR 0051 amendment -- the requirement changed: release packages name playlists and the
   // Producer reads a video's playlists): 1.33.0 adds producer_video_playlists.
-  assert.equal(PRODUCER_API_VERSION, "1.33.0"); // 1.33.0 (new requirement owner TG 4858/4859, package playlists, BL-276): producer_video_playlists; 1.32.0 (owner TG 4817, new requirement AC-TC-08): reviewTimedComments, reviewIssues and the wake file sections; 1.31.0 (BL-274, new requirement owner TG 4839/4842, ADR 0072 amendment 1): producer_video_metadata_update localizations: true; 1.30.0 (FO-REQ-0056 part 2, BL-273, new requirement): video tags in channel_video_list / agent_get_video_context; 1.29.0 (owner TG 4782, ADR 0048 amendment): the five channel playlist tools, PLAYLIST_WRITE; 1.28.0 (BL-272): producer_image_review_*; 1.27.0 (BL-271, new requirement owner TG 3617/3618, ADR 0075): producer_wait; 1.26.0 (BL-269): producer_video_captions_add; 1.24.0 (BL-265, new requirement PRD-REQ-0195 B, ADR 0072): producer_video_metadata_update, METADATA_WRITE / metadataTools, calendar warnings, the media-keyed review gate; 1.23.0 (BL-263, new requirement PRD-REQ-0194, ADR 0071): S codes in the calendar, the queue tools and wake file names; 1.22.0 = PRD-REQ-0195 C (queue add after an approved, cancelled-before-approval version); 1.21.0 (BL-257, new requirement ADR 0070): calendar problem codes owner_review_pending / _returned; 1.20.0 (BL-255): producer_video_thumbnail_replace; 1.19.0 (BL-246): clip review answers carry the owner's attachments; 1.18.0 (BL-244): producer_upload_queue_cancel also stops a row being sent before its last chunk; 1.17.0 (BL-243): the calendar read's deleted_on_youtube / missingOnChannel, channel_video_list videoIds; 1.16.0 (BL-242): the add dates only the approved manifest in the packaged stage; 1.14.0 (BL-239): the upload queue tools; 1.13.0 (BL-235): the calendar read's due / gapDates from the daily coverage, published_pending; 1.12.0 (BL-221): a live sample without a count is 0 viewers; 1.10.0 (BL-209): the calendar read's uploads gain automatic / progressPercent / finishedAt; 1.8.0 (BL-182 stage 2): the calendar read lists packages and uploads
+  // BL-279 (owner TG 4963/4964, ADR 0072 amendment 2 -- the requirement changed: the Producer fixes the category from the channel's saved
+  // setting and reads/checks the publishing fields): 1.35.0 (1.34.0 is another branch's) adds producer_video_category_fix (METADATA_WRITE)
+  // and producer_video_publishing_check.
+  assert.equal(PRODUCER_API_VERSION, "1.35.0"); // 1.35.0 (new requirement owner TG 4963/4964, BL-279): producer_video_category_fix, producer_video_publishing_check; 1.33.0 (new requirement owner TG 4858/4859, package playlists, BL-276): producer_video_playlists; 1.32.0 (owner TG 4817, new requirement AC-TC-08): reviewTimedComments, reviewIssues and the wake file sections; 1.31.0 (BL-274, new requirement owner TG 4839/4842, ADR 0072 amendment 1): producer_video_metadata_update localizations: true; 1.30.0 (FO-REQ-0056 part 2, BL-273, new requirement): video tags in channel_video_list / agent_get_video_context; 1.29.0 (owner TG 4782, ADR 0048 amendment): the five channel playlist tools, PLAYLIST_WRITE; 1.28.0 (BL-272): producer_image_review_*; 1.27.0 (BL-271, new requirement owner TG 3617/3618, ADR 0075): producer_wait; 1.26.0 (BL-269): producer_video_captions_add; 1.24.0 (BL-265, new requirement PRD-REQ-0195 B, ADR 0072): producer_video_metadata_update, METADATA_WRITE / metadataTools, calendar warnings, the media-keyed review gate; 1.23.0 (BL-263, new requirement PRD-REQ-0194, ADR 0071): S codes in the calendar, the queue tools and wake file names; 1.22.0 = PRD-REQ-0195 C (queue add after an approved, cancelled-before-approval version); 1.21.0 (BL-257, new requirement ADR 0070): calendar problem codes owner_review_pending / _returned; 1.20.0 (BL-255): producer_video_thumbnail_replace; 1.19.0 (BL-246): clip review answers carry the owner's attachments; 1.18.0 (BL-244): producer_upload_queue_cancel also stops a row being sent before its last chunk; 1.17.0 (BL-243): the calendar read's deleted_on_youtube / missingOnChannel, channel_video_list videoIds; 1.16.0 (BL-242): the add dates only the approved manifest in the packaged stage; 1.14.0 (BL-239): the upload queue tools; 1.13.0 (BL-235): the calendar read's due / gapDates from the daily coverage, published_pending; 1.12.0 (BL-221): a live sample without a count is 0 viewers; 1.10.0 (BL-209): the calendar read's uploads gain automatic / progressPercent / finishedAt; 1.8.0 (BL-182 stage 2): the calendar read lists packages and uploads
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_stored_suggested_sources"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_publishing_calendar"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_video_comments"));
@@ -845,7 +860,7 @@ test("AC-PR-07 / AC-PR-10: the Producer's own tools -- its channels with their f
   assert.deepEqual(capabilities.planTools, ["producer_week_template_get", "producer_week_template_propose", "producer_publishing_plan_get", "producer_publishing_plan_list", "producer_publishing_plan_move_slot"]);
   assert.deepEqual(capabilities.planMoveTools, ["producer_publishing_plan_move_slot"]);
   assert.deepEqual(capabilities.thumbnailTools, ["producer_video_thumbnail_replace"]);
-  assert.deepEqual(capabilities.metadataTools, ["producer_video_metadata_update"]);
+  assert.deepEqual(capabilities.metadataTools, ["producer_video_metadata_update", "producer_video_category_fix"]);
   assert.deepEqual([...PRODUCER_THUMBNAIL_TOOLS], ["producer_video_thumbnail_replace"]);
   assert.deepEqual(capabilities.uploadQueueTools, ["producer_upload_queue_list", "producer_upload_queue_add", "producer_upload_queue_move", "producer_upload_queue_cancel"]);
   assert.deepEqual([...PRODUCER_UPLOAD_QUEUE_TOOLS], ["producer_upload_queue_list", "producer_upload_queue_add", "producer_upload_queue_move", "producer_upload_queue_cancel"]);
@@ -897,6 +912,8 @@ test("a token revoked mid-session is refused on its next call, before any channe
       plans: { templateGet: async () => ({}), templatePropose: async () => ({}), get: async () => ({}), list: async () => ({}), move: async () => ({}) },
       wait: { waitFor: async () => ({}) },
       videoPlaylists: { get: async () => ({}) },
+      videoCategory: { fix: async () => ({}) },
+      publishingCheck: { check: async () => ({}) },
     },
   });
   const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<{ isError?: boolean }> }> })._registeredTools;
@@ -1091,6 +1108,8 @@ test("BL-163 AC-PR-05: no approve, reject or apply tool exists on any endpoint",
       plans: { templateGet: async () => ({}), templatePropose: async () => ({}), get: async () => ({}), list: async () => ({}), move: async () => ({}) },
       wait: { waitFor: async () => ({}) },
       videoPlaylists: { get: async () => ({}) },
+      videoCategory: { fix: async () => ({}) },
+      publishingCheck: { check: async () => ({}) },
     },
   });
   const agent = createMcpServer(undefined, { connectionEnabled: true, agentSession: { tokenId: "t", channelId: "UC_PR_X", async reverify() {} } });
@@ -1280,6 +1299,36 @@ test("AC-PP-35: producer_video_playlists reaches only the session's videoPlaylis
   assert.deepEqual(playlistCalls, [args, { channelId: "UC_PR_X", videoId: "vidNotOurs1" }]);
   assert.deepEqual([calls[0].tool, calls[0].channelId, calls[0].outcome], ["producer_video_playlists", "UC_PR_X", "ok"]);
   assert.deepEqual([calls.at(-1)!.tool, calls.at(-1)!.outcome, calls.at(-1)!.errorCode], ["producer_video_playlists", "error", "video_not_in_channel"]);
+});
+
+// BL-279 (owner TG 4963/4964): the category fix reaches only the session's `videoCategory` with a strict input -- no category of the
+// caller's (only an expected one to compare), video ids of YouTube's form -- and the check only `publishingCheck`; both logged under
+// their channel; a refusal stays an error.
+test("BL-279: producer_video_category_fix and producer_video_publishing_check reach only their session parts; strict input; logged", async () => {
+  const { endpoint, tokens, calls, categoryCalls, checkCalls } = setup();
+  const token = (await tokens.issueToken({})).token;
+  const dry = { channelId: "UC_PR_X", dryRun: true };
+  const result = await toolResult(await endpoint.handle(rpc(call("producer_video_category_fix", dry), bearer(token))));
+  assert.equal(result.isError, false, result.text);
+  assert.equal(payloadOf(result.text).targetCategoryId, "27");
+  for (const bad of [{ channelId: "UC_PR_X", categoryId: "27" }, { channelId: "UC_PR_X", videoIds: ["short"] }, { channelId: "UC_PR_X", videoIds: [] }, { dryRun: true }]) {
+    const refusedResult = await toolResult(await endpoint.handle(rpc(call("producer_video_category_fix", bad), bearer(token))));
+    assert.equal(refusedResult.isError, true, JSON.stringify(bad));
+  }
+  const changed = await toolResult(await endpoint.handle(rpc(call("producer_video_category_fix", { channelId: "UC_PR_X", expectedCategoryId: "10" }), bearer(token))));
+  assert.equal(changed.isError, true);
+  assert.match(changed.text, /publishing_settings_changed/);
+  assert.deepEqual(categoryCalls, [dry, { channelId: "UC_PR_X", expectedCategoryId: "10" }]);
+  const check = { channelId: "UC_PR_X", videoIds: ["ZeRdh3bZlkg"], captions: true };
+  const checked = await toolResult(await endpoint.handle(rpc(call("producer_video_publishing_check", check), bearer(token))));
+  assert.equal(checked.isError, false, checked.text);
+  assert.equal(payloadOf(checked.text).forChannelId, "UC_PR_X");
+  const badCheck = await toolResult(await endpoint.handle(rpc(call("producer_video_publishing_check", { channelId: "UC_PR_X", captions: "yes" }), bearer(token))));
+  assert.equal(badCheck.isError, true);
+  assert.deepEqual(checkCalls, [check]);
+  assert.deepEqual([calls[0].tool, calls[0].channelId, calls[0].outcome], ["producer_video_category_fix", "UC_PR_X", "ok"]);
+  assert.ok(calls.some((c) => c.tool === "producer_video_category_fix" && c.outcome === "error" && c.errorCode === "publishing_settings_changed"));
+  assert.ok(calls.some((c) => c.tool === "producer_video_publishing_check" && c.channelId === "UC_PR_X" && c.outcome === "ok"));
 });
 
 // BL-265 (MEDIA_GATE_PLAN.md AC-MG-34; ADR 0072 §5, §8; owner TG 4578/4581): the packaging-fix tool reaches only the session's

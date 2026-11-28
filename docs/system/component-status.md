@@ -2,6 +2,11 @@
 
 ## 4. Статус компонентов
 
+### 2.9br2 Настройки публикации канала: статус (BL-279, ADR 0072 поправка 2) — **IMPLEMENTED на ветке** `feature/channel-publishing-defaults` (не в dev)
+- Защита загрузки `publishing_settings_not_saved`, исправление категории (`package-category.ts`, владелец на «Главной» и
+  `producer_video_category_fix`), проверка `producer_video_publishing_check` (Producer 1.35.0), перенос настроек канала на «Главную».
+  Настоящий прогон на WWE (dry run, затем запись) — после мерджа, координатором. Строки, поставленные до сборки, не перепроверяются (RISK-160).
+
 ### 2.9bo2 Теги видео только на чтение (BL-273, FO-REQ-0056 часть 2) — **IMPLEMENTED** (dev, 24.11.2026)
 - `channel_sync` сохраняет `snippet.tags` из уже читаемой части `snippet` (без доп. квоты) в `videos.tags_json` (schema v125; `NULL` —
   ещё не прочитаны, до следующего синка). Проверенная запись video-details (`video_details_update`, «Применить упаковку»,

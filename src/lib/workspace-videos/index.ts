@@ -107,20 +107,22 @@ export function stripBom(text: string): string {
 
 /**
  * The uploaded video's id from a `Vn_youtube.json` text, and (BL-243) its `uploadedAt` when it carries a valid time; null when the
- * text is not JSON or names no video.
+ * text is not JSON or names no video. BL-279: `linked: true` for the owner's link of a video uploaded outside the app (BL-221
+ * «Привязать к видео»: `result: "linked"` / `linkedBy: "owner"`) -- not an upload by a release package.
  */
-export function parseUploadRecord(text: string): { videoId: string; uploadedAt?: string } | null {
+export function parseUploadRecord(text: string): { videoId: string; uploadedAt?: string; linked?: true } | null {
   let value: unknown;
   try {
     value = JSON.parse(stripBom(text));
   } catch {
     return null;
   }
-  const record = value && typeof value === "object" ? (value as { videoId?: unknown; uploadedAt?: unknown }) : undefined;
+  const record = value && typeof value === "object" ? (value as { videoId?: unknown; uploadedAt?: unknown; result?: unknown; linkedBy?: unknown }) : undefined;
   const videoId = record?.videoId;
   if (typeof videoId !== "string" || videoId === "") return null;
   const uploadedAt = record?.uploadedAt;
-  return typeof uploadedAt === "string" && Number.isFinite(Date.parse(uploadedAt)) ? { videoId, uploadedAt } : { videoId };
+  const linked = record?.result === "linked" || typeof record?.linkedBy === "string" ? { linked: true as const } : {};
+  return typeof uploadedAt === "string" && Number.isFinite(Date.parse(uploadedAt)) ? { videoId, uploadedAt, ...linked } : { videoId, ...linked };
 }
 
 /**

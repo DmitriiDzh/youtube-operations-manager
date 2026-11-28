@@ -212,4 +212,7 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   producer_wait: "producer-only",
   // Package playlists (owner TG 4858/4859): a video's playlists on its channel -- a read, on the Producer's endpoint only.
   producer_video_playlists: "producer-only",
+  // BL-279 (owner TG 4963/4964): the category fix (a YouTube write, METADATA_WRITE) and the publishing fields check (a read).
+  producer_video_category_fix: "producer-only",
+  producer_video_publishing_check: "producer-only",
 });

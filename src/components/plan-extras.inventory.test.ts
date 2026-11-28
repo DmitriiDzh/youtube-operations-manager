@@ -6,10 +6,13 @@ import test from "node:test";
 // BL-266 (owner TG 4730/4732): the «Ролики и релизы» tab is removed without losing a function. Its four parts each have one new home:
 // the videos board, the packages and the uploads on «План» (PlanExtras), the publishing settings and the local copy cleanup in
 // Settings → Channels -- each in its own error boundary (AGENTS.md §M). Read from the source, like the other inventory tests.
+// BL-279 (owner TG 4964, a changed requirement: «то что уникально для конкретного канала — лучше настраивать например на странице
+// Главная»): the publishing settings and the cleanup moved on to Home; Settings → Channels keeps a pointer to them.
 
 const root = process.cwd();
 const read = (file: string) => readFileSync(path.join(root, file), "utf8");
 const settingsLayout = read("src/app/(app)/settings/layout.tsx");
+const homePage = read("src/app/(app)/home/page.tsx");
 const contentLayout = read("src/app/(app)/content/layout.tsx");
 const planExtras = read("src/components/plan-extras.tsx");
 
@@ -31,15 +34,18 @@ function inOwnBoundary(source: string, component: string): boolean {
   return open >= 0 && open > closeBefore && closeAfter > at && source.slice(open, closeAfter).split(new RegExp(`<${component}\\s`)).length === 2;
 }
 
-test("BL-266: the publishing settings and the local copy cleanup render in Settings → Channels, each in its own boundary, for the active channel", () => {
-  const pane = settingsPane("channels");
-  for (const component of ["PublishingSettingsPanel", "LocalVideoCleanupCard"]) {
-    assert.ok(pane.includes(`<${component} channelId={channel.id} visible={settingsSubTab === "channels"} />`), component);
-    assert.ok(inOwnBoundary(pane, component), `${component} in its own FeatureErrorBoundary`);
+test("BL-279 (was BL-266): the publishing settings, the category fix and the local copy cleanup render on Home, each in its own boundary, for the active channel", () => {
+  for (const component of ["PublishingSettingsPanel", "ChannelCategoryFixCard", "LocalVideoCleanupCard"]) {
+    assert.ok(homePage.includes(`<${component} channelId={channel.id}`), component);
+    assert.ok(inOwnBoundary(homePage, component), `${component} in its own FeatureErrorBoundary`);
   }
-  // The cards say which channel they set, and remount for another one.
-  assert.match(pane, /key=\{channel\.id\}/);
-  assert.match(pane, /planExtras\.settings\.channel/);
+  // The section says which channel it sets; Home remounts its content for another channel.
+  assert.match(homePage, /key=\{channel\?\.id \?\? "no-channel"\}/);
+  assert.match(homePage, /channelSettings\.title/);
+  // Settings → Channels no longer mounts them, only a pointer to Home.
+  const pane = settingsPane("channels");
+  for (const component of ["PublishingSettingsPanel", "LocalVideoCleanupCard"]) assert.ok(!pane.includes(`<${component} `), `${component} not in Settings`);
+  assert.ok(pane.includes("href={`/home#${PUBLISHING_SETTINGS_ANCHOR}`}"), "pointer to Home");
 });
 
 test("BL-266: Content no longer mounts the former tab's panels itself; «План» carries the board, the packages and the uploads", () => {
@@ -56,15 +62,14 @@ test("BL-266: the «Ролики и релизы» badge is counted on «Пла�
   assert.ok(!contentLayout.includes('"publishing"'));
 });
 
-test("BL-266 review: both «⋯» settings links land on an anchor around their moved card in Settings → Channels", () => {
-  const pane = settingsPane("channels");
+test("BL-279 (was BL-266 review): both «⋯» settings links land on an anchor around their moved card on Home", () => {
   for (const [anchor, component] of [
     ["PUBLISHING_SETTINGS_ANCHOR", "PublishingSettingsPanel"],
     ["LOCAL_CLEANUP_ANCHOR", "LocalVideoCleanupCard"],
   ] as const) {
-    const at = pane.indexOf(`id={${anchor}}`);
-    assert.ok(at >= 0 && pane.indexOf(`<${component} `, at) > at, `${anchor} wraps ${component}`);
-    assert.ok(planExtras.includes(`href={\`/settings/channels#\${${anchor}}\`}`), `link to ${anchor}`);
+    const at = homePage.indexOf(`id={${anchor}}`);
+    assert.ok(at >= 0 && homePage.indexOf(`<${component} `, at) > at, `${anchor} wraps ${component}`);
+    assert.ok(planExtras.includes(`href={\`/home#\${${anchor}}\`}`), `link to ${anchor}`);
   }
 });
 

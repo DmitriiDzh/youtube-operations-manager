@@ -200,10 +200,10 @@ export function PlanExtras({
                 >
                   {t("planExtras.more.packages")}
                 </button>
-                <Link role="menuitem" href={`/settings/channels#${PUBLISHING_SETTINGS_ANCHOR}`} className={menuItemClass} onClick={close}>
+                <Link role="menuitem" href={`/home#${PUBLISHING_SETTINGS_ANCHOR}`} className={menuItemClass} onClick={close}>
                   {t("planExtras.more.publishingSettings")}
                 </Link>
-                <Link role="menuitem" href={`/settings/channels#${LOCAL_CLEANUP_ANCHOR}`} className={menuItemClass} onClick={close}>
+                <Link role="menuitem" href={`/home#${LOCAL_CLEANUP_ANCHOR}`} className={menuItemClass} onClick={close}>
                   {t("planExtras.more.cleanup")}
                 </Link>
               </div>
