@@ -165,8 +165,9 @@ for one value only; `docs/WRITE_AUTHORIZATIONS.md` «Package metadata after uplo
    language reads `zxx` is skipped, `audio_language_zxx`: the snippet write could not send it back; unreadable translation languages
    before the write fail that video with nothing written; an `update_failed` after the write carries video-details' `backupPath`), plus the localization-language read before and after (§5). Audit `source: package_category`. One video at a time under
    `withPackageVideoLock`; a video already in the category, gone, not the channel's or still uploading here is not written; the first
-   failure stops the run; a refusal before any write on the first video is the call's error, a failure after the write may have been
-   sent (`update_failed`) is that video's result with its backup path.
+   failure stops the run; a refusal before any write on the first video is the call's error, any failure once the
+   `videos.update` call was made, whatever its code (video-details marks such errors `writeSent` and every error after the backup with
+   its `backupPath`), is that video's result (`maybeWritten: true`) with its backup path. At least 57 quota units a written video.
 3. **Who.** The owner on Home (BL-279's section: «Проверить категории» → list «было → станет» → inline «Да, исправить»; route
    `/api/channels/[channelId]/publishing/category-fix`) and the Producer (`producer_video_category_fix`, METADATA_WRITE, dry run first).
    A new tool rather than a flag on `producer_video_metadata_update`: that tool is per video and manifest-driven with a three-way check

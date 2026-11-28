@@ -12,8 +12,12 @@ import type { ReadVideoFields, UploadedPackageVideo } from "./video-publishing-c
 // `videos.update`, read-back, audit). This service decides which videos, refuses what the authority does not cover, checks the untouched
 // fields and the translation languages afterwards and audits with `source: package_category`. Never automatic.
 
-/** Per video: a fresh `videos.list` (1) + `videos.update` (50) + its own read before and read-back (2) + translation languages (2). */
-export const PACKAGE_CATEGORY_QUOTA_UNITS_PER_VIDEO = 55;
+/**
+ * Per written video, at least (second review, finding 2): this service's fresh read (`videos.list`, 1) + the translation languages
+ * before and after (2) + video-details' identity check (`channels.list mine`, 1) and its own read before the backup (1) + the adapter's
+ * fresh read right before the write (1) + `videos.update` (50) + one read-back (1; a lagging read-back re-reads, each 1 more) = 57.
+ */
+export const PACKAGE_CATEGORY_QUOTA_UNITS_PER_VIDEO = 57;
 const ACTIVE_UPLOAD = new Set(["queued", "uploading", "processing", "finishing", "paused"]);
 
 export type PackageCategoryDeps = Pick<PackageMetadataDeps, "assertDeviceAvailable" | "credentialRef" | "snapshot" | "localizationLanguages" | "applyFields" | "audit"> & {
@@ -44,6 +48,11 @@ export type PackageCategoryVideoResult = {
   before: string | null;
   status: "written" | "same" | "upload_pending" | "not_on_youtube" | "not_in_channel" | "audio_language_zxx" | "failed";
   backupPath?: string | null;
+  /**
+   * Second review, finding 1: on a failure, the write may have landed -- the `videos.update` call was made (video-details'
+   * `writeSent`), or it returned and a later check failed. Such a failure is that video's result, never a refusal of the run.
+   */
+  maybeWritten?: true;
   error?: { code: string; message: string };
 };
 
@@ -151,8 +160,6 @@ export function createPackageCategory(deps: PackageCategoryDeps) {
       const credentialRef = await deps.credentialRef(channelId, actor);
       const results: PackageCategoryVideoResult[] = [];
       let stoppedAt: string | null = null;
-      /** Videos whose write call was made (its outcome may be a write even when it failed). */
-      const sentFor = new Set<string>();
       for (const v of chosen) {
         const outcome = await withPackageVideoLock(channelId, v.video, async (): Promise<PackageCategoryVideoResult> => {
           if ((await activeVideos(channelId)).has(v.video)) return { video: v.video, videoId: v.videoId, before: null, status: "upload_pending" };
@@ -167,13 +174,16 @@ export function createPackageCategory(deps: PackageCategoryDeps) {
           if (now.categoryId === target) return { video: v.video, videoId: v.videoId, before: now.categoryId, status: "same" };
           if (isZxx(now.defaultAudioLanguage)) return { video: v.video, videoId: v.videoId, before: now.categoryId, status: "audio_language_zxx" };
           const context = { source: "package_category", actor: actor.kind, video: v.video, categoryBefore: now.categoryId, categoryAfter: target };
+          /** The write call was handed to video-details / it returned (the write landed). */
+          let sent = false;
+          let applied = false;
           try {
             const languagesBefore = await deps.localizationLanguages({ credentialRef, channelId, videoId: v.videoId });
             // Review finding 3: without the languages before, the check after the write could not pass -- refuse before writing.
             if (languagesBefore === null) {
               return { video: v.video, videoId: v.videoId, before: now.categoryId, status: "failed", error: { code: "update_failed", message: "The video's translation languages could not be read before the write: nothing was written. Try again." } };
             }
-            sentFor.add(v.videoId);
+            sent = true;
             const result: ApplyFieldsUpdateResult = await deps.applyFields({
               credentialRef,
               expectedChannelId: channelId,
@@ -183,17 +193,23 @@ export function createPackageCategory(deps: PackageCategoryDeps) {
               verifyUnchanged: UNTOUCHED_FIELDS,
               auditContext: context,
             });
+            applied = true;
             const languagesAfter = await deps.localizationLanguages({ credentialRef, channelId, videoId: v.videoId });
             const sameLanguages = languagesBefore !== null && languagesAfter !== null && JSON.stringify([...languagesBefore].sort()) === JSON.stringify([...languagesAfter].sort());
             await deps
               .audit({ channelId, videoId: v.videoId, eventType: "VERIFICATION", detail: { ...context, event: "package_category.applied", localizationLanguages: { before: languagesBefore, after: languagesAfter, same: sameLanguages }, verified: sameLanguages, backupPath: result.backupPath } })
               .catch(() => undefined);
             if (!sameLanguages) {
-              return { video: v.video, videoId: v.videoId, before: now.categoryId, status: "failed", backupPath: result.backupPath, error: { code: "update_failed", message: "The category was written, but the video's translation languages could not be confirmed unchanged afterwards: check them in Studio." } };
+              return { video: v.video, videoId: v.videoId, before: now.categoryId, status: "failed", backupPath: result.backupPath, maybeWritten: true, error: { code: "update_failed", message: "The category was written, but the video's translation languages could not be confirmed unchanged afterwards: check them in Studio." } };
             }
             return { video: v.video, videoId: v.videoId, before: now.categoryId, status: "written", backupPath: result.backupPath };
           } catch (error) {
-            return failed(v, now.categoryId, error);
+            const outcome = failed(v, now.categoryId, error);
+            // video-details marks every error from its update call on (`writeSent`); its own post-write `update_failed` (a read-back
+            // mismatch, or an unexpected error it maps) is one too. A refusal before the call (wrong channel, Live writes off, an etag
+            // conflict) is none of these and keeps refusing the run.
+            const writeSent = isDomainError(error) && (error.details as { writeSent?: unknown } | undefined)?.writeSent === true;
+            return applied || writeSent || (sent && outcome.error?.code === "update_failed") ? { ...outcome, maybeWritten: true } : outcome;
           }
         });
         results.push(outcome);
@@ -205,10 +221,9 @@ export function createPackageCategory(deps: PackageCategoryDeps) {
       const written = results.filter((r) => r.status === "written").map((r) => r.videoId);
       const failure = results.find((r) => r.status === "failed");
       // Nothing written and the first video was refused before its write (Live writes off, a wrong channel): the refusal itself, so a
-      // caller sees its code. A failure after the write may have been sent (`update_failed`: the read-back or the translation languages
-      // differ; a backup was taken) is returned as a result, never hidden behind an error.
-      const maybeWritten = failure !== undefined && (failure.backupPath != null || (sentFor.has(failure.videoId) && failure.error?.code === "update_failed"));
-      if (failure && written.length === 0 && failure.error && !maybeWritten) {
+      // caller sees its code. A failure after the write call was made (`maybeWritten`: any code -- a read-back that differs, or a quota
+      // or reads-disabled error on the read-back) is returned as that video's result with its backup path, never hidden behind an error.
+      if (failure && written.length === 0 && failure.error && !failure.maybeWritten) {
         throw refuse(failure.error.code as never, failure.error.message, { channelId, videoId: failure.videoId, video: failure.video });
       }
       return { dryRun: false, channelId, targetCategoryId: target, videos: results, written, verified: !failure, stoppedAt };

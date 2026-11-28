@@ -6,7 +6,7 @@ import { useT } from "./ui-text-provider";
 
 type PreviewRow = { video: string; videoId: string; title: string | null; current: string | null; status: "write" | "same" | "upload_pending" | "not_on_youtube" | "not_in_channel" | "audio_language_zxx" };
 type Preview = { targetCategoryId: string; videos: PreviewRow[]; toWrite: number; quotaUnits: number };
-type ResultRow = { video: string; videoId: string; before: string | null; status: "written" | "same" | "upload_pending" | "not_on_youtube" | "not_in_channel" | "audio_language_zxx" | "failed"; error?: { code: string; message: string } };
+type ResultRow = { video: string; videoId: string; before: string | null; status: "written" | "same" | "upload_pending" | "not_on_youtube" | "not_in_channel" | "audio_language_zxx" | "failed"; maybeWritten?: true; error?: { code: string; message: string } };
 type Result = { targetCategoryId: string; videos: ResultRow[]; written: string[]; verified: boolean; stoppedAt: string | null };
 
 /**
@@ -138,6 +138,7 @@ export function ChannelCategoryFixCard({ channelId }: { channelId: string }) {
               <li key={v.videoId} className={v.status === "failed" ? "text-red-400" : "text-zinc-300"}>
                 <span className="font-mono text-zinc-400">{v.video}</span> {statusText(v.status)}
                 {v.error ? ` — ${errorText(t, { error: v.error.code, message: v.error.message }, v.error.message)}` : ""}
+                {v.maybeWritten ? ` ${t("categoryFix.maybeWritten")}` : ""}
               </li>
             ))}
           </ul>

@@ -268,6 +268,35 @@ test("BL-279: a post-write verification failure names the backup it took (detail
   );
 });
 
+// BL-279 second review, finding 1: any error after the backup names it, keeping its own code and details (here the adapter's quota
+// error on the read-back, marked writeSent); an error before the backup (a wrong channel) names none.
+test("BL-279: an error after the backup keeps its code and gains details.backupPath; one before the backup has none", async () => {
+  const late = makeDeps({
+    youtubeApi: {
+      getSnapshot: async () => makeSnapshot(),
+      applyPatch: async () => {
+        throw new DomainError({ code: "youtube_quota_exceeded", message: "quota", details: { writeSent: true } });
+      },
+    },
+  });
+  await assert.rejects(
+    () => createVideoDetailsServices(late.deps).applyFieldsUpdate(baseInput({ title: "New Title" })),
+    (error: unknown) =>
+      error instanceof DomainError && error.code === "youtube_quota_exceeded" && JSON.stringify(error.details) === JSON.stringify({ backupPath: "/fake/backup.json", writeSent: true })
+  );
+  const early = makeDeps({
+    writeContext: {
+      assertWriteChannel: async () => {
+        throw new DomainError({ code: "WRITE_CHANNEL_MISMATCH", message: "wrong channel" });
+      },
+    },
+  });
+  await assert.rejects(
+    () => createVideoDetailsServices(early.deps).applyFieldsUpdate(baseInput({ title: "New Title" })),
+    (error: unknown) => error instanceof DomainError && error.code === "WRITE_CHANNEL_MISMATCH" && error.details === undefined
+  );
+});
+
 test("AC-SVC-06: localCache.refreshVideoFields is called exactly once on success, with the after snapshot", async () => {
   const { deps, calls } = makeDeps();
   const services = createVideoDetailsServices(deps);

@@ -1,4 +1,5 @@
 import { YOUTUBE_READ_SCOPE, YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
+import { withWriteErrorDetails } from "./write-error";
 import { publishAtWriteRefusal } from "./publish-at-rule";
 import { isUnverifiable, sameFieldValue } from "./read-back";
 import type { ResolvedCredentials } from "@/lib/shared-domain";
@@ -140,6 +141,8 @@ export function createVideoDetailsServices(deps: ServiceDependencies) {
      */
     async applyFieldsUpdate(input: unknown): Promise<ApplyFieldsUpdateResult> {
       const parsedInput = parseWithSchema(applyFieldsUpdateInputSchema, input, "apply fields update input");
+      /** BL-279 (second review, finding 1): once the backup exists, every later error names it (`withWriteErrorDetails`). */
+      let backupTaken: string | null = null;
 
       try {
         const credentials = await deps.authResolver.resolve({
@@ -200,6 +203,7 @@ export function createVideoDetailsServices(deps: ServiceDependencies) {
           },
         });
 
+        backupTaken = backupRecord.path;
         await deps.auditStore.record({
           channelId: guardrail.expectedChannelId,
           videoId: parsedInput.videoId,
@@ -252,7 +256,7 @@ export function createVideoDetailsServices(deps: ServiceDependencies) {
           throw new DomainError({
             code: "update_failed",
             message: verified ? `Post-write verification found a field that was not written changed: ${changedUntouched.join(", ")}` : "Post-write verification found at least one field did not match what was sent",
-            details: { videoId: parsedInput.videoId, patch: parsedInput.patch, after, backupPath: backupRecord.path, ...(changedUntouched.length > 0 ? { changedUntouched } : {}) },
+            details: { videoId: parsedInput.videoId, patch: parsedInput.patch, after, backupPath: backupRecord.path, writeSent: true, ...(changedUntouched.length > 0 ? { changedUntouched } : {}) },
           });
         }
 
@@ -275,7 +279,7 @@ export function createVideoDetailsServices(deps: ServiceDependencies) {
           backupPath: backupRecord.path,
         };
       } catch (error) {
-        throw mapUnknownError(error, "update_failed");
+        throw backupTaken !== null ? withWriteErrorDetails(error, { backupPath: backupTaken }) : mapUnknownError(error, "update_failed");
       }
     },
   };

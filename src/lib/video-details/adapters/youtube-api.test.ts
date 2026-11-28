@@ -78,6 +78,32 @@ test("BL-279: a categoryId patch sends the whole snippet as read with only the c
   assert.deepEqual(sent, [{ snippet: { title: "Old", description: "D", tags: ["a"], categoryId: "27", defaultLanguage: "ja", defaultAudioLanguage: "ja" } }]);
 });
 
+// BL-279 second review, finding 1: `videos.update` returned (the write landed) and the read-back then failed with its own code (quota
+// exhausted, Data API reads switched off) -- the error keeps its code and says the write call was made (`writeSent`); a refusal before
+// the call (Live writes off) never does.
+test("BL-279: a read-back failing after the update call carries writeSent with its own code; Live writes off does not", async () => {
+  for (const code of ["youtube_quota_exceeded", "data_api_reads_disabled"] as const) {
+    const fake = fakeIo(true);
+    const io: VideoDetailsYoutubeIo = {
+      ...fake.io,
+      readContext: async (youtube, videoId) => {
+        if (fake.sent.length > 0) throw new DomainError({ code, message: code, details: { videoId } });
+        return fake.io.readContext(youtube, videoId);
+      },
+    };
+    await assert.rejects(
+      () => createVideoDetailsYoutubeApiAdapter(io).applyPatch({ credentials: CREDENTIALS, videoId: "v1", patch: { categoryId: "27" }, readBackRetries: 0 }),
+      (error: unknown) => error instanceof DomainError && error.code === code && (error.details as { writeSent?: unknown; videoId?: unknown }).writeSent === true && (error.details as { videoId?: unknown }).videoId === "v1"
+    );
+    assert.equal(fake.sent.length, 1, "the write was sent");
+  }
+  const off = fakeIo(false);
+  await assert.rejects(
+    () => createVideoDetailsYoutubeApiAdapter(off.io).applyPatch({ credentials: CREDENTIALS, videoId: "v1", patch: { categoryId: "27" }, readBackRetries: 0 }),
+    (error: unknown) => error instanceof DomainError && error.code === "live_writes_disabled" && (error.details as { writeSent?: unknown } | undefined)?.writeSent === undefined
+  );
+});
+
 test("AC-MG-27: snippetPartOf leaves an audio language read as zxx out (RISK-102); keeps any other as read", () => {
   const read = { title: "Old", categoryId: "10", defaultLanguage: "ja", defaultAudioLanguage: "zxx", channelId: "UC_x" };
   assert.deepEqual(snippetPartOf(read, { title: "New" }), { title: "New", categoryId: "10", defaultLanguage: "ja" });

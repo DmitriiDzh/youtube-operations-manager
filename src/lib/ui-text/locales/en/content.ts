@@ -293,6 +293,7 @@ export const content = {
   "categoryFix.status.audio_language_zxx": "audio language «zxx» — skipped, fix it in Studio",
   "categoryFix.status.written": "fixed and read back",
   "categoryFix.status.failed": "failed",
+  "categoryFix.maybeWritten": "The write may already be on YouTube: check this video's category in Studio (a backup was taken).",
   "categoryFix.fix": "Fix category ({count})",
   "categoryFix.confirmTitle": "Confirm the category fix",
   "categoryFix.confirm": "Write the category «{category}» on YouTube for {count, plural, one {# video} other {# videos}}? Each one gets a backup, the channel check and a read-back.",

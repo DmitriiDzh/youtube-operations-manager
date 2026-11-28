@@ -297,6 +297,7 @@ export const content: Record<keyof typeof en, string> = {
   "categoryFix.status.audio_language_zxx": "язык аудио «zxx» — пропущен, исправьте в Studio",
   "categoryFix.status.written": "исправлена и проверена чтением",
   "categoryFix.status.failed": "ошибка",
+  "categoryFix.maybeWritten": "Запись могла уже попасть на YouTube: проверьте категорию этого ролика в Studio (бэкап сделан).",
   "categoryFix.fix": "Исправить категорию ({count})",
   "categoryFix.confirmTitle": "Подтвердите исправление категории",
   "categoryFix.confirm": "Записать на YouTube категорию «{category}» для {count, plural, one {# ролика} few {# роликов} many {# роликов} other {# ролика}}? Для каждого — бэкап, проверка канала и проверка чтением.",

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DomainError, isDomainError } from "@/lib/shared-domain";
 import type { VideoDetailsSnapshot } from "@/lib/video-details/contracts";
-import { createPackageCategory, PACKAGE_CATEGORY_QUOTA_UNITS_PER_VIDEO, type PackageCategoryDeps } from "./package-category";
+import { createPackageCategory, type PackageCategoryDeps } from "./package-category";
 import type { PackageMetadataActor } from "./package-metadata";
 import { DEFAULT_PUBLISHING_SETTINGS } from "./settings";
 import type { PublishingSettingsView } from "./settings-service";
@@ -112,8 +112,10 @@ test("BL-279: the dry run lists every package-uploaded video with its category n
     ]
   );
   assert.equal(preview.toWrite, 2);
-  // By hand: one batch read of 3 ids (1 unit) + 2 writes × 55.
-  assert.equal(preview.quotaUnits, 1 + 2 * PACKAGE_CATEGORY_QUOTA_UNITS_PER_VIDEO);
+  // By hand (second review, finding 2): one batch read of 3 ids (1 unit) + 2 written videos × 57 -- per video: the service's fresh read
+  // 1, translation languages before and after 2, video-details' channels.list identity check 1 and its read before the backup 1, the
+  // adapter's fresh read before the write 1, videos.update 50, one read-back 1.
+  assert.equal(preview.quotaUnits, 1 + 2 * 57);
   assert.equal(h.calls.applied.length, 0);
   assert.deepEqual(h.calls.audits.map((a) => a.eventType), ["DRY_RUN"]);
 });
@@ -231,6 +233,45 @@ test("BL-279: a read-back mismatch on the only video is returned as that video's
   const result = await h.svc.apply(CH, { expectedCategoryId: "27", videoIds: ["vidA"] }, PRODUCER);
   assert.deepEqual([result.verified, result.stoppedAt, result.videos[0].error?.code], [false, "vidA", "update_failed"]);
   assert.equal(result.videos[0].backupPath, "/b/vidA-before.json", "video-details' backup of the write is carried to the result");
+});
+
+// Second review, finding 1: videos.update succeeded and the read-back inside it then failed with ITS OWN code (quota exhausted, Data API
+// reads switched off). YouTube may already show the new category, so it is never reported as "refused before any write": it is that
+// video's failure, marked maybeWritten, with the backup path video-details names. A refusal before the call (Live writes off -- even
+// after the backup, so with a backupPath) still refuses the run.
+test("BL-279 (second review 1): a quota or reads-disabled error after the update call is that video's result (maybeWritten, backupPath), not a refusal", async () => {
+  for (const code of ["youtube_quota_exceeded", "data_api_reads_disabled"] as const) {
+    const h = harness({
+      applyFields: async () => {
+        throw new DomainError({ code, message: code, details: { writeSent: true, backupPath: "/b/vidA-before.json" } });
+      },
+    });
+    const result = await h.svc.apply(CH, { expectedCategoryId: "27" }, OWNER);
+    assert.deepEqual(
+      [result.verified, result.stoppedAt, result.written, result.videos.length, result.videos[0].status, result.videos[0].error?.code, result.videos[0].maybeWritten, result.videos[0].backupPath],
+      [false, "vidA", [], 1, "failed", code, true, "/b/vidA-before.json"]
+    );
+  }
+  const refusedAfterBackup = harness({
+    applyFields: async () => {
+      throw new DomainError({ code: "live_writes_disabled", message: "off", details: { backupPath: "/b/vidA-before.json" } });
+    },
+  });
+  await assert.rejects(refusedAfterBackup.svc.apply(CH, { expectedCategoryId: "27" }, OWNER), refused("live_writes_disabled"));
+});
+
+test("BL-279 (second review 1): the translation languages failing to read after a returned write is that video's result (maybeWritten)", async () => {
+  let calls = 0;
+  const h = harness({
+    localizationLanguages: async () => {
+      calls += 1;
+      if (calls === 2) throw new DomainError({ code: "data_api_reads_disabled", message: "off" });
+      return ["de", "ja"];
+    },
+  });
+  const result = await h.svc.apply(CH, { expectedCategoryId: "27", videoIds: ["vidA"] }, OWNER);
+  assert.deepEqual([result.videos[0].status, result.videos[0].error?.code, result.videos[0].maybeWritten], ["failed", "data_api_reads_disabled", true]);
+  assert.equal(h.calls.applied.length, 1);
 });
 
 test("BL-279 (review 2): a video whose audio language is zxx is skipped with its own status -- in the dry run and the apply, never written", async () => {

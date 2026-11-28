@@ -897,7 +897,7 @@ Key MCP tools:
     → `{ dryRun: true, channelId, targetCategoryId, videos: [{ video, videoId, title, current, status: write | same | upload_pending |
     not_on_youtube | not_in_channel | audio_language_zxx }], toWrite, quotaUnits }`; `{ expectedCategoryId, videoIds? }` → `{ dryRun: false, channelId,
     targetCategoryId, videos: [{ video, videoId, before, status: written | same | upload_pending | not_on_youtube | not_in_channel | audio_language_zxx |
-    failed, backupPath?, error? }], written, verified, stoppedAt }` (the category comes only from the channel's saved setting; refusals as
+    failed, backupPath?, maybeWritten?, error? }], written, verified, stoppedAt }` (the category comes only from the channel's saved setting; refusals as
     `producer_video_category_fix`).
     `/api/settings` since BL-183: `analyticsSyncUtcTime`, `analyticsEveningUtcTime`, `userTimezone`.
   - `POST /api/analytics/evening-collect` (BL-181, Web only) — the dashboard's 5-minute evening check: `{ due: false }`,
@@ -1709,7 +1709,7 @@ publishing calendar, 1.9.0 (BL-191) the stored "Suggested videos" sources, 1.10.
   SAVED `categoryId` through `video-details` (full snippet read-merge-write, everything else sent back as read; identity check, backup, Live
   writes immediately before each `videos.update`, read-back of the category, the untouched snippet fields, privacy, `publishAt` and the
   localization languages; audit `source: package_category`, actor `producer`). One video at a time; the first failure stops the run
-  (`stoppedAt`); a refusal before any write on the first video is the call's error, a failure after the write may have been sent (`update_failed`) is that video's result. Errors: `publishing_settings_not_saved` (`details.field: categoryId`),
+  (`stoppedAt`); a refusal before any write on the first video is the call's error, any failure once the `videos.update` call was made, whatever its code (a read-back that differs, or a quota or reads-disabled error on the read-back), is that video's result with `maybeWritten: true` and its `backupPath`; at least 57 quota units a written video. Errors: `publishing_settings_not_saved` (`details.field: categoryId`),
   `publishing_settings_changed`, `package_metadata_not_uploaded` (`details.videoIds`), `package_no_workspace`, `package_workspace_unavailable`,
   `CHANNEL_NOT_ACTIVE`, `WRITE_CHANNEL_MISMATCH`, `live_writes_disabled`, `video_details_conflict`, `update_failed`, `operation_lock_held` /
   `device_in_recovery_mode`, `validation_failed`.
